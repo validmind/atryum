@@ -1,0 +1,28 @@
+[server]
+listen_addr = ":8080"
+database_path = "./atryum.db"
+log_level = "info"
+
+[defaults]
+request_timeout_seconds = 30
+
+[[upstreams]]
+name = "shortcut"
+mode = "stdio"
+command = "npx"
+args = ["-y", "@shortcut/mcp@latest"]
+timeout_seconds = 60
+enabled = true
+
+[upstreams.env]
+SHORTCUT_API_TOKEN = "replace-me"
+SHORTCUT_READONLY = "true"
+
+# Optional example of an HTTP upstream:
+# [[upstreams]]
+# name = "github"
+# mode = "http"
+# base_url = "http://localhost:9000"
+# timeout_seconds = 30
+# enabled = true
+# auth_token = ""

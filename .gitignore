@@ -1,0 +1,6 @@
+.pi
+.direnv
+.envrc
+*.nix
+atryum.toml
+atryum.db
