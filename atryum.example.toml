@@ -6,6 +6,9 @@ log_level = "info"
 [defaults]
 request_timeout_seconds = 30
 
+# Bootstrap-only upstream definitions.
+# On startup, Atryum seeds mcp_servers from these entries only when the DB is empty.
+# After bootstrap, runtime resolution uses SQLite as the source of truth.
 [[upstreams]]
 name = "shortcut"
 mode = "stdio"
@@ -18,7 +21,7 @@ enabled = true
 SHORTCUT_API_TOKEN = "replace-me"
 SHORTCUT_READONLY = "true"
 
-# Optional example of an HTTP upstream:
+# Optional HTTP bootstrap example:
 # [[upstreams]]
 # name = "github"
 # mode = "http"

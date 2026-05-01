@@ -41,10 +41,15 @@ func main() {
 
 	invRepo := store.NewInvocationRepo(db)
 	eventRepo := store.NewEventRepo(db)
-	resolver := mcp.NewResolver(cfg)
+	serverRepo := store.NewServerRepo(db)
+	resolver := mcp.NewResolver(serverRepo, cfg)
+	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
+		log.Fatalf("bootstrap servers: %v", err)
+	}
 	client := mcp.NewHTTPClient()
 	service := invocation.NewService(invRepo, eventRepo, resolver, client, time.Duration(cfg.Defaults.RequestTimeoutSeconds)*time.Second)
-	handler := api.NewHandler(service)
+	serverAdmin := api.NewServerAdminService(serverRepo, 5*time.Second)
+	handler := api.NewHandler(service, serverAdmin)
 
 	srv := &http.Server{
 		Addr:              cfg.Server.ListenAddr,

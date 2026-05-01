@@ -51,6 +51,19 @@ type Event struct {
 	CreatedAt    time.Time       `json:"-"`
 }
 
+type InvocationListFilter struct {
+	Offset uint64
+	Limit  uint64
+	Server string
+	Tool   string
+	Status string
+}
+
+type EventListFilter struct {
+	Offset uint64
+	Limit  uint64
+}
+
 type EventResponse struct {
 	Type      string          `json:"type"`
 	Timestamp time.Time       `json:"timestamp"`
@@ -74,4 +87,18 @@ type InvocationResponse struct {
 	CompletedAt  *time.Time      `json:"completed_at,omitempty"`
 	Result       json.RawMessage `json:"result,omitempty"`
 	Error        json.RawMessage `json:"error,omitempty"`
+}
+
+type InvocationListResponse struct {
+	Items  []InvocationResponse `json:"items"`
+	Total  int                  `json:"total"`
+	Offset uint64               `json:"offset"`
+	Limit  uint64               `json:"limit"`
+}
+
+type EventListResponse struct {
+	Items  []EventResponse `json:"items"`
+	Total  int             `json:"total"`
+	Offset uint64          `json:"offset"`
+	Limit  uint64          `json:"limit"`
 }

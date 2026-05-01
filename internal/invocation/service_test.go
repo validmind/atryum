@@ -93,6 +93,29 @@ func TestBusinessToolErrorMarksInvocationFailed(t *testing.T) {
 	}
 }
 
+func TestResolverBootstrapsServersFromConfigWhenDBEmpty(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := store.InitDB(db); err != nil {
+		t.Fatal(err)
+	}
+	repo := store.NewServerRepo(db)
+	resolver := mcp.NewResolver(repo, config.Config{Upstreams: []config.UpstreamConfig{{Name: "bootstrap", Mode: "http", BaseURL: "http://example.com", Enabled: true, TimeoutSeconds: 7}}})
+	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	upstream, err := repo.GetServer(context.Background(), "bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upstream.BaseURL != "http://example.com" {
+		t.Fatalf("unexpected base url %q", upstream.BaseURL)
+	}
+}
+
 func newTestService(t *testing.T, cfg config.Config) *invocation.Service {
 	t.Helper()
 	db, err := sql.Open("sqlite", ":memory:")
@@ -103,7 +126,12 @@ func newTestService(t *testing.T, cfg config.Config) *invocation.Service {
 	if err := store.InitDB(db); err != nil {
 		t.Fatal(err)
 	}
-	return invocation.NewService(store.NewInvocationRepo(db), store.NewEventRepo(db), mcp.NewResolver(cfg), mcp.NewHTTPClient(), 5*time.Second)
+	serverRepo := store.NewServerRepo(db)
+	resolver := mcp.NewResolver(serverRepo, cfg)
+	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return invocation.NewService(store.NewInvocationRepo(db), store.NewEventRepo(db), resolver, mcp.NewHTTPClient(), 5*time.Second)
 }
 
 func assertInvokeLifecycle(t *testing.T, service *invocation.Service, server, tool string) {
@@ -140,17 +168,17 @@ func assertInvokeLifecycle(t *testing.T, service *invocation.Service, server, to
 		t.Fatal("expected idempotent replay to return same invocation")
 	}
 
-	events, err := service.Events(context.Background(), resp.InvocationID)
+	events, err := service.Events(context.Background(), resp.InvocationID, invocation.EventListFilter{Limit: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) < 2 {
-		t.Fatalf("expected events, got %d", len(events))
+	if len(events.Items) < 2 {
+		t.Fatalf("expected events, got %d", len(events.Items))
 	}
-	if events[0].Type == "" {
+	if events.Items[0].Type == "" {
 		t.Fatal("expected event type")
 	}
-	if events[0].Timestamp.IsZero() {
+	if events.Items[0].Timestamp.IsZero() {
 		t.Fatal("expected event timestamp")
 	}
 }

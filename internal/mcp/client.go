@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -32,10 +33,25 @@ type Upstream struct {
 	Command   string
 	Args      []string
 	Env       map[string]string
+	Enabled   bool
+}
+
+type ServerStore interface {
+	GetServer(ctx context.Context, name string) (Upstream, error)
+	ListServers(ctx context.Context, filter ServerFilter) ([]Upstream, int, error)
+	CountServers(ctx context.Context) (int, error)
+	CreateServer(ctx context.Context, upstream Upstream) error
+}
+
+type ServerFilter struct {
+	Offset  uint64
+	Limit   uint64
+	Enabled *bool
 }
 
 type Resolver struct {
-	byName map[string]Upstream
+	store     ServerStore
+	bootstrap map[string]Upstream
 }
 
 type Client struct {
@@ -56,38 +72,58 @@ type rpcResponse struct {
 	Error   json.RawMessage `json:"error"`
 }
 
-func NewResolver(cfg config.Config) *Resolver {
-	byName := make(map[string]Upstream)
+func NewResolver(store ServerStore, cfg config.Config) *Resolver {
+	bootstrap := make(map[string]Upstream)
 	for _, u := range cfg.Upstreams {
-		if !u.Enabled {
+		upstream := fromConfig(u)
+		if !upstream.Enabled {
 			continue
 		}
-		mode := UpstreamModeHTTP
-		if u.Mode != "" {
-			mode = UpstreamMode(u.Mode)
-		}
-		byName[u.Name] = Upstream{
-			Name:      u.Name,
-			Mode:      mode,
-			BaseURL:   strings.TrimRight(u.BaseURL, "/"),
-			AuthToken: u.AuthToken,
-			Timeout:   time.Duration(u.TimeoutSeconds) * time.Second,
-			Command:   u.Command,
-			Args:      append([]string(nil), u.Args...),
-			Env:       cloneMap(u.Env),
-		}
+		bootstrap[upstream.Name] = upstream
 	}
-	return &Resolver{byName: byName}
+	return &Resolver{store: store, bootstrap: bootstrap}
 }
 
 func NewHTTPClient() *Client { return &Client{httpClient: &http.Client{}} }
 
 func (r *Resolver) Resolve(name string) (Upstream, error) {
-	u, ok := r.byName[name]
-	if !ok {
+	return r.ResolveContext(context.Background(), name)
+}
+
+func (r *Resolver) ResolveContext(ctx context.Context, name string) (Upstream, error) {
+	if r.store != nil {
+		upstream, err := r.store.GetServer(ctx, name)
+		if err == nil {
+			return upstream, nil
+		}
+		if err != nil && err != sql.ErrNoRows {
+			return Upstream{}, err
+		}
+	}
+	upstream, ok := r.bootstrap[name]
+	if !ok || !upstream.Enabled {
 		return Upstream{}, fmt.Errorf("upstream %q not configured or disabled", name)
 	}
-	return u, nil
+	return upstream, nil
+}
+
+func (r *Resolver) BootstrapIfEmpty(ctx context.Context) error {
+	if r.store == nil {
+		return nil
+	}
+	count, err := r.store.CountServers(ctx)
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	for _, upstream := range r.bootstrap {
+		if err := r.store.CreateServer(ctx, upstream); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *Client) Invoke(ctx context.Context, upstream Upstream, tool string, input map[string]any, requestID *string) (InvokeResult, error) {
@@ -198,6 +234,28 @@ func (c *Client) invokeStdio(ctx context.Context, upstream Upstream, tool string
 		body = []byte(`{"ok":true}`)
 	}
 	return InvokeResult{StatusCode: http.StatusOK, Body: body, Failed: looksLikeToolError(body)}, nil
+}
+
+func FromConfig(cfg config.UpstreamConfig) Upstream {
+	return fromConfig(cfg)
+}
+
+func fromConfig(u config.UpstreamConfig) Upstream {
+	mode := UpstreamModeHTTP
+	if u.Mode != "" {
+		mode = UpstreamMode(u.Mode)
+	}
+	return Upstream{
+		Name:      u.Name,
+		Mode:      mode,
+		BaseURL:   strings.TrimRight(u.BaseURL, "/"),
+		AuthToken: u.AuthToken,
+		Timeout:   time.Duration(u.TimeoutSeconds) * time.Second,
+		Command:   u.Command,
+		Args:      append([]string(nil), u.Args...),
+		Env:       cloneMap(u.Env),
+		Enabled:   u.Enabled,
+	}
 }
 
 func writeRPC(w interface{ Write([]byte) (int, error) }, id int64, method string, params map[string]any) error {

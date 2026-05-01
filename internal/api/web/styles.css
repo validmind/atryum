@@ -1,0 +1,29 @@
+body { font-family: Arial, sans-serif; margin: 0; background: #f5f5f5; color: #222; }
+header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; background: #1f2937; color: white; }
+nav button { margin-left: 8px; padding: 8px 12px; }
+nav .active { font-weight: bold; }
+main { padding: 16px; }
+.toolbar { display: flex; gap: 8px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
+.layout { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.layout-servers { align-items: start; }
+table { width: 100%; border-collapse: collapse; background: white; }
+th, td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }
+tr:hover { background: #f0f4f8; cursor: pointer; }
+pre { background: white; padding: 12px; border: 1px solid #ddd; overflow: auto; min-height: 240px; }
+.hidden { display: none !important; }
+input, button, select, textarea { padding: 8px; font: inherit; }
+textarea { width: 100%; box-sizing: border-box; }
+label { display: flex; flex-direction: column; gap: 6px; }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; background: white; border: 1px solid #ddd; padding: 12px; }
+.full-width { grid-column: 1 / -1; }
+.button-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.panel-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+.checkbox-inline { display: inline-flex; flex-direction: row; align-items: center; gap: 8px; }
+.status-message { margin-top: 12px; background: white; border: 1px solid #ddd; padding: 12px; }
+.error-text { color: #b42318; }
+.selected-row { background: #dbeafe; }
+.danger { background: #fee2e2; }
+@media (max-width: 960px) {
+  .layout, .form-grid { grid-template-columns: 1fr; }
+  .panel-header { flex-direction: column; align-items: stretch; }
+}

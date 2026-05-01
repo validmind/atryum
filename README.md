@@ -4,10 +4,12 @@ A local-first Go proof of concept for mediating MCP tool calls. Atryum accepts i
 
 ## Features
 
-- Go binary configured by TOML
-- Main public endpoints: `POST /mcp/{server}`
-- Admin inspection endpoints for listing invocations and events
-- SQLite-backed durable invocation state
+- Go binary configured by TOML for process/bootstrap settings only
+- Main public endpoint preserved: `POST /mcp/{server}`
+- SQLite-backed runtime MCP server registry via `mcp_servers`
+- Admin APIs for servers, invocations, and invocation events
+- Minimal built-in web UI served from the Go binary at `/ui/` for creating, editing, enabling/disabling, testing, and deleting server connections
+- SQLite-backed durable invocation state and lifecycle events
 - Request ID and idempotency key support
 - Supports both HTTP upstreams and stdio-launched MCP servers
 - Business-level tool failures are recorded as failed invocations
@@ -30,12 +32,25 @@ Public invocation envelope:
 
 ## Endpoints
 
+Public:
 - `POST /mcp/:server`
-- `POST /api/v1/invocations` (optional/internal-compatible)
-- `GET /api/v1/admin/invocations`
-- `GET /api/v1/admin/invocations/:id`
-- `GET /api/v1/admin/invocations/:id/events`
+- `POST /api/v1/invocations`
 - `GET /healthz`
+
+Admin APIs:
+- `GET /api/v1/admin/invocations?offset=0&limit=50&server=&tool=&status=`
+- `GET /api/v1/admin/invocations/:id`
+- `GET /api/v1/admin/invocations/:id/events?offset=0&limit=200`
+- `GET /api/v1/admin/servers?offset=0&limit=50&enabled=`
+- `GET /api/v1/admin/servers/:name`
+- `POST /api/v1/admin/servers`
+- `PUT /api/v1/admin/servers/:name`
+- `DELETE /api/v1/admin/servers/:name`
+- `DELETE /api/v1/admin/servers/:name?mode=disable`
+- `POST /api/v1/admin/servers/:name/test`
+
+UI:
+- `GET /ui/`
 
 ## Request shape
 
@@ -48,37 +63,41 @@ Requests to `POST /mcp/:server` and `POST /api/v1/invocations` use:
 }
 ```
 
-For `/mcp/:server`, the `server` path segment selects the configured upstream. No tool-to-upstream routing config is needed.
+For `/mcp/:server`, the `server` path segment selects the runtime server from SQLite. No tool-to-upstream mapping config is required.
 
-## Config modes
+## Managing server connections
 
-Each upstream can run in one of two modes:
+Runtime server resolution uses the `mcp_servers` SQLite table as the source of truth.
 
-- `mode = "http"` for an HTTP MCP proxy endpoint
-- `mode = "stdio"` for a locally launched MCP server command
+Manage MCP server connections through:
+- the built-in UI at `/ui/`
+- the admin server APIs under `/api/v1/admin/servers`
 
-### Example stdio Shortcut config
+Do not treat TOML as the normal place to add or edit runtime MCP servers.
 
-```toml
-[[upstreams]]
-name = "shortcut"
-mode = "stdio"
-command = "npx"
-args = ["-y", "@shortcut/mcp@latest"]
-timeout_seconds = 60
-enabled = true
+### Remaining TOML/bootstrap behavior
 
-[upstreams.env]
-SHORTCUT_API_TOKEN = "replace-me"
-SHORTCUT_READONLY = "true"
-```
+`[[upstreams]]` entries are bootstrap-only:
+- if `mcp_servers` is empty at startup, Atryum seeds it from TOML once for convenience
+- if `mcp_servers` already has rows, TOML upstreams are ignored for runtime resolution
+
+After bootstrap, server changes should be made through the UI/API, not by editing TOML.
 
 ## Run
 
 ```bash
-go mod tidy
 go run ./cmd/atryum -config ./atryum.example.toml
 ```
+
+Then open:
+- `http://localhost:8080/ui/`
+
+In the Servers tab you can:
+- create a server
+- edit an existing server
+- enable or disable a server
+- test a server connection
+- delete a server
 
 ## CLI for manual testing
 
@@ -88,14 +107,6 @@ A small local CLI is available at `cmd/atryum-cli` and targets `POST /mcp/{serve
 go run ./cmd/atryum-cli --server shortcut --tool workflows-list --input '{}'
 ```
 
-Useful flags:
-- `--base-url http://localhost:8080`
-- `--server shortcut`
-- `--tool workflows-list`
-- `--input '{}'`
-- `--request-id req-123`
-- `--idempotency-key demo-1`
-
 Equivalent curl example:
 
 ```bash
@@ -104,19 +115,3 @@ curl -X POST http://localhost:8080/mcp/shortcut \
   -H 'Idempotency-Key: demo-1' \
   -d '{"tool":"workflows-list","input":{}}'
 ```
-
-## How stdio Shortcut mode works
-
-When an upstream is configured with `mode = "stdio"`, Atryum:
-1. launches the configured command locally
-2. sends MCP JSON-RPC messages over stdin/stdout
-3. performs `initialize`
-4. sends `tools/call` for the requested tool
-5. captures the result and stores invocation state and events in SQLite
-
-## Notes
-
-- You must provide a valid `SHORTCUT_API_TOKEN` to use the Shortcut MCP server.
-- `SHORTCUT_READONLY=true` is recommended for local proof-of-concept use.
-- The stdio implementation is intentionally minimal and currently launches a fresh MCP process per invocation.
-- Approvals are not implemented yet, but the API reserves future-friendly approval fields such as `request_id` and `expires_at`.

@@ -17,16 +17,16 @@ type invocationRepo interface {
 	UpdateResult(ctx context.Context, inv Invocation) error
 	Get(ctx context.Context, id string) (Invocation, error)
 	GetByIdempotencyKey(ctx context.Context, key string) (Invocation, error)
-	List(ctx context.Context, limit uint64) ([]Invocation, error)
+	List(ctx context.Context, filter InvocationListFilter) ([]Invocation, int, error)
 }
 
 type eventRepo interface {
 	Create(ctx context.Context, evt Event) error
-	ListByInvocation(ctx context.Context, invocationID string) ([]Event, error)
+	ListByInvocation(ctx context.Context, invocationID string, filter EventListFilter) ([]Event, int, error)
 }
 
 type resolver interface {
-	Resolve(name string) (mcp.Upstream, error)
+	ResolveContext(ctx context.Context, name string) (mcp.Upstream, error)
 }
 
 type upstreamClient interface {
@@ -61,7 +61,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 			return InvocationResponse{}, err
 		}
 	}
-	upstream, err := s.resolver.Resolve(req.Server)
+	upstream, err := s.resolver.ResolveContext(ctx, req.Server)
 	if err != nil {
 		return InvocationResponse{}, err
 	}
@@ -115,28 +115,28 @@ func (s *Service) Get(ctx context.Context, id string) (InvocationResponse, error
 	return s.toResponse(inv), nil
 }
 
-func (s *Service) List(ctx context.Context, limit uint64) ([]InvocationResponse, error) {
-	invocations, err := s.invocations.List(ctx, limit)
+func (s *Service) List(ctx context.Context, filter InvocationListFilter) (InvocationListResponse, error) {
+	invocations, total, err := s.invocations.List(ctx, filter)
 	if err != nil {
-		return nil, err
+		return InvocationListResponse{}, err
 	}
 	out := make([]InvocationResponse, 0, len(invocations))
 	for _, inv := range invocations {
 		out = append(out, s.toResponse(inv))
 	}
-	return out, nil
+	return InvocationListResponse{Items: out, Total: total, Offset: filter.Offset, Limit: normalizedLimit(filter.Limit, 50)}, nil
 }
 
-func (s *Service) Events(ctx context.Context, invocationID string) ([]EventResponse, error) {
-	events, err := s.events.ListByInvocation(ctx, invocationID)
+func (s *Service) Events(ctx context.Context, invocationID string, filter EventListFilter) (EventListResponse, error) {
+	events, total, err := s.events.ListByInvocation(ctx, invocationID, filter)
 	if err != nil {
-		return nil, err
+		return EventListResponse{}, err
 	}
 	out := make([]EventResponse, 0, len(events))
 	for _, evt := range events {
 		out = append(out, EventResponse{Type: evt.EventType, Timestamp: evt.CreatedAt, Data: evt.Payload})
 	}
-	return out, nil
+	return EventListResponse{Items: out, Total: total, Offset: filter.Offset, Limit: normalizedLimit(filter.Limit, 200)}, nil
 }
 
 func (s *Service) toResponse(inv Invocation) InvocationResponse {
@@ -153,4 +153,11 @@ func (s *Service) toResponse(inv Invocation) InvocationResponse {
 func mustJSON(v any) []byte {
 	b, _ := json.Marshal(v)
 	return b
+}
+
+func normalizedLimit(limit uint64, fallback uint64) uint64 {
+	if limit == 0 {
+		return fallback
+	}
+	return limit
 }

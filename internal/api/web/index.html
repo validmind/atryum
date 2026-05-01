@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Atryum Admin</title>
+    <link rel="stylesheet" href="/ui/styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Atryum Admin</h1>
+      <nav>
+        <button id="show-invocations" class="active">Invocations</button>
+        <button id="show-servers">Servers</button>
+      </nav>
+    </header>
+
+    <main>
+      <section id="invocations-view">
+        <div class="toolbar">
+          <input id="filter-server" placeholder="server" />
+          <input id="filter-tool" placeholder="tool" />
+          <input id="filter-status" placeholder="status" />
+          <button id="apply-filters">Apply</button>
+        </div>
+        <div class="layout">
+          <div>
+            <h2>Invocation list</h2>
+            <table id="invocation-table">
+              <thead>
+                <tr><th>ID</th><th>Status</th><th>Submitted</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div>
+            <h2>Invocation detail</h2>
+            <pre id="invocation-detail">Select an invocation</pre>
+            <h3>Events</h3>
+            <pre id="invocation-events">[]</pre>
+          </div>
+        </div>
+      </section>
+
+      <section id="servers-view" class="hidden">
+        <div class="toolbar server-toolbar">
+          <button id="new-server">New server</button>
+          <button id="refresh-servers">Refresh</button>
+          <label class="checkbox-inline"><input id="show-disabled-servers" type="checkbox" /> Show disabled</label>
+        </div>
+        <div class="layout layout-servers">
+          <div>
+            <h2>Servers</h2>
+            <table id="server-table">
+              <thead>
+                <tr><th>Name</th><th>Mode</th><th>Enabled</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div>
+            <div class="panel-header">
+              <h2>Server editor</h2>
+              <div class="button-row">
+                <button id="test-server">Test</button>
+                <button id="toggle-server-enabled">Disable</button>
+                <button id="delete-server" class="danger">Delete</button>
+              </div>
+            </div>
+            <form id="server-form" class="form-grid">
+              <label>
+                <span>Name</span>
+                <input id="server-name" required />
+              </label>
+              <label>
+                <span>Mode</span>
+                <select id="server-mode">
+                  <option value="http">http</option>
+                  <option value="stdio">stdio</option>
+                </select>
+              </label>
+              <label class="field-http">
+                <span>Base URL</span>
+                <input id="server-base-url" placeholder="http://localhost:9000" />
+              </label>
+              <label>
+                <span>Timeout seconds</span>
+                <input id="server-timeout" type="number" min="1" value="30" />
+              </label>
+              <label class="field-http">
+                <span>Auth token</span>
+                <input id="server-auth-token" />
+              </label>
+              <label class="field-stdio">
+                <span>Command</span>
+                <input id="server-command" placeholder="npx" />
+              </label>
+              <label class="field-stdio full-width">
+                <span>Args JSON array</span>
+                <textarea id="server-args" rows="3">[]</textarea>
+              </label>
+              <label class="full-width">
+                <span>Env JSON object</span>
+                <textarea id="server-env" rows="5">{}</textarea>
+              </label>
+              <label class="checkbox-inline">
+                <input id="server-enabled" type="checkbox" checked />
+                <span>Enabled</span>
+              </label>
+              <div class="button-row full-width">
+                <button type="submit" id="save-server">Save server</button>
+                <button type="button" id="reset-server-form">Reset</button>
+              </div>
+            </form>
+            <div id="server-status" class="status-message">Select a server or create a new one.</div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="/ui/app.js"></script>
+  </body>
+</html>
