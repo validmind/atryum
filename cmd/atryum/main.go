@@ -48,7 +48,7 @@ func main() {
 	}
 	client := mcp.NewHTTPClient()
 	service := invocation.NewService(invRepo, eventRepo, resolver, client, time.Duration(cfg.Defaults.RequestTimeoutSeconds)*time.Second)
-	serverAdmin := api.NewServerAdminService(serverRepo, 5*time.Second)
+	serverAdmin := api.NewServerAdminService(serverRepo, client, 5*time.Second)
 	handler := api.NewHandler(service, serverAdmin)
 
 	srv := &http.Server{

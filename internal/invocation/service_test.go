@@ -114,6 +114,57 @@ func TestResolverBootstrapsServersFromConfigWhenDBEmpty(t *testing.T) {
 	if upstream.BaseURL != "http://example.com" {
 		t.Fatalf("unexpected base url %q", upstream.BaseURL)
 	}
+	if upstream.Status.ConnectionStatus != mcp.ConnectionStatusUnknown {
+		t.Fatalf("unexpected initial connection status %q", upstream.Status.ConnectionStatus)
+	}
+}
+
+func TestServerStatusPersistsAfterUpdate(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := store.InitDB(db); err != nil {
+		t.Fatal(err)
+	}
+	repo := store.NewServerRepo(db)
+	upstream := mcp.FromConfig(config.UpstreamConfig{Name: "status-demo", Mode: "http", BaseURL: "http://example.com", Enabled: true, TimeoutSeconds: 5})
+	if err := repo.CreateServer(context.Background(), upstream); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	errSummary := "unauthorized"
+	action := "refresh credentials"
+	status := mcp.ServerStatus{
+		AuthType:         mcp.AuthTypeBearer,
+		ConnectionStatus: mcp.ConnectionStatusNeedsAttention,
+		AuthStatus:       mcp.AuthStatusInvalid,
+		ReauthNeeded:     true,
+		LastCheckedAt:    &now,
+		LastCheckOK:      false,
+		LastErrorSummary: &errSummary,
+		ActionRequired:   &action,
+	}
+	if err := repo.UpdateServerStatus(context.Background(), "status-demo", status); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := repo.GetServerAny(context.Background(), "status-demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status.AuthStatus != mcp.AuthStatusInvalid {
+		t.Fatalf("unexpected auth status %q", stored.Status.AuthStatus)
+	}
+	if !stored.Status.ReauthNeeded {
+		t.Fatal("expected reauth needed")
+	}
+	if stored.Status.LastErrorSummary == nil || *stored.Status.LastErrorSummary != errSummary {
+		t.Fatal("expected last error summary")
+	}
+	if stored.Status.ActionRequired == nil || *stored.Status.ActionRequired != action {
+		t.Fatal("expected action required")
+	}
 }
 
 func newTestService(t *testing.T, cfg config.Config) *invocation.Service {

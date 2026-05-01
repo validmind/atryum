@@ -14,4 +14,7 @@ fmt:
 run:
 	go run ./cmd/atryum -config {{config}}
 
+stop:
+	pkill -f '/atryum -config|go run ./cmd/atryum'
+
 check: fmt test

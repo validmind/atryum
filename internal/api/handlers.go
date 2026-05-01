@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +23,7 @@ var webFS embed.FS
 
 type service interface {
 	Invoke(ctx context.Context, req invocation.CreateInvocationRequest) (invocation.InvocationResponse, error)
+	ListTools(ctx context.Context, server string) ([]mcp.Tool, error)
 	Get(ctx context.Context, id string) (invocation.InvocationResponse, error)
 	List(ctx context.Context, filter invocation.InvocationListFilter) (invocation.InvocationListResponse, error)
 	Events(ctx context.Context, invocationID string, filter invocation.EventListFilter) (invocation.EventListResponse, error)
@@ -38,18 +41,27 @@ type Handler struct {
 	svc        service
 	serverSvc  serverService
 	staticHTTP http.Handler
+	debug      bool
 }
 
 type AdminServer struct {
-	Name           string            `json:"name"`
-	Mode           string            `json:"mode"`
-	BaseURL        string            `json:"base_url,omitempty"`
-	AuthToken      string            `json:"auth_token,omitempty"`
-	TimeoutSeconds int               `json:"timeout_seconds"`
-	Command        string            `json:"command,omitempty"`
-	Args           []string          `json:"args,omitempty"`
-	Env            map[string]string `json:"env,omitempty"`
-	Enabled        bool              `json:"enabled"`
+	Name             string            `json:"name"`
+	Mode             string            `json:"mode"`
+	BaseURL          string            `json:"base_url,omitempty"`
+	AuthToken        string            `json:"auth_token,omitempty"`
+	TimeoutSeconds   int               `json:"timeout_seconds"`
+	Command          string            `json:"command,omitempty"`
+	Args             []string          `json:"args,omitempty"`
+	Env              map[string]string `json:"env,omitempty"`
+	Enabled          bool              `json:"enabled"`
+	AuthType         string            `json:"auth_type"`
+	ConnectionStatus string            `json:"connection_status"`
+	AuthStatus       string            `json:"auth_status"`
+	ReauthNeeded     bool              `json:"reauth_needed"`
+	LastCheckedAt    *time.Time        `json:"last_checked_at,omitempty"`
+	LastCheckOK      bool              `json:"last_check_ok"`
+	LastErrorSummary *string           `json:"last_error_summary,omitempty"`
+	ActionRequired   *string           `json:"action_required,omitempty"`
 }
 
 type AdminServerUpsertRequest struct {
@@ -72,8 +84,33 @@ type ServerListResponse struct {
 }
 
 type ServerTestResponse struct {
-	Ok      bool   `json:"ok"`
-	Message string `json:"message"`
+	Ok               bool       `json:"ok"`
+	Message          string     `json:"message"`
+	ConnectionStatus string     `json:"connection_status"`
+	AuthStatus       string     `json:"auth_status"`
+	ReauthNeeded     bool       `json:"reauth_needed"`
+	LastCheckedAt    *time.Time `json:"last_checked_at,omitempty"`
+	LastCheckOK      bool       `json:"last_check_ok"`
+	LastErrorSummary *string    `json:"last_error_summary,omitempty"`
+	ActionRequired   *string    `json:"action_required,omitempty"`
+}
+
+type jsonRPCRequest struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id,omitempty"`
+	Method  string          `json:"method"`
+	Params  json.RawMessage `json:"params,omitempty"`
+}
+
+type jsonRPCResponse struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id,omitempty"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   json.RawMessage `json:"error,omitempty"`
+}
+
+type invocationStreamEnvelope struct {
+	Items []invocation.InvocationResponse `json:"items"`
 }
 
 func NewHandler(svc service, serverSvc serverService) *Handler {
@@ -81,7 +118,8 @@ func NewHandler(svc service, serverSvc serverService) *Handler {
 	if err != nil {
 		panic(err)
 	}
-	return &Handler{svc: svc, serverSvc: serverSvc, staticHTTP: http.FileServer(http.FS(staticSub))}
+	debug := strings.EqualFold(os.Getenv("ATRYUM_MCP_DEBUG"), "1") || strings.EqualFold(os.Getenv("ATRYUM_MCP_DEBUG"), "true")
+	return &Handler{svc: svc, serverSvc: serverSvc, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug}
 }
 
 func (h *Handler) Routes() http.Handler {
@@ -90,6 +128,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/mcp/", h.invokeUpstream)
 	mux.HandleFunc("/api/v1/invocations", h.invocations)
 	mux.HandleFunc("/api/v1/admin/invocations", h.adminInvocations)
+	mux.HandleFunc("/api/v1/admin/invocations/stream", h.adminInvocationStream)
 	mux.HandleFunc("/api/v1/admin/invocations/", h.adminInvocationDetail)
 	mux.HandleFunc("/api/v1/admin/servers", h.adminServers)
 	mux.HandleFunc("/api/v1/admin/servers/", h.adminServerDetail)
@@ -130,7 +169,18 @@ func (h *Handler) invokeUpstream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "server not found")
 		return
 	}
+	if isJSONRPCRequest(r) {
+		h.handleMCPProxy(w, r, server)
+		return
+	}
 	h.handleInvocation(w, r, server)
+}
+
+func isJSONRPCRequest(r *http.Request) bool {
+	if strings.Contains(strings.ToLower(r.Header.Get("Content-Type")), "application/json") {
+		return true
+	}
+	return true
 }
 
 func (h *Handler) invocations(w http.ResponseWriter, r *http.Request) {
@@ -168,6 +218,72 @@ func (h *Handler) handleInvocation(w http.ResponseWriter, r *http.Request, serve
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server string) {
+	started := time.Now()
+	var req jsonRPCRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeRPCError(w, nil, -32700, "parse error")
+		return
+	}
+	requestID := compactRequestID(req.ID)
+	h.debugf("server-side mcp request server=%s method=%s id=%s", server, req.Method, requestID)
+	defer func() {
+		h.debugf("server-side mcp complete server=%s method=%s id=%s duration_ms=%d", server, req.Method, requestID, time.Since(started).Milliseconds())
+	}()
+
+	switch req.Method {
+	case "initialize":
+		result := map[string]any{
+			"protocolVersion": "2024-11-05",
+			"serverInfo": map[string]any{
+				"name":    "atryum",
+				"version": "0.1.0",
+			},
+			"capabilities": map[string]any{
+				"tools": map[string]any{},
+			},
+		}
+		h.writeRPCResult(w, req.ID, result)
+	case "notifications/initialized":
+		w.WriteHeader(http.StatusAccepted)
+	case "tools/list":
+		tools, err := h.svc.ListTools(r.Context(), server)
+		if err != nil {
+			h.writeRPCError(w, req.ID, -32000, err.Error())
+			return
+		}
+		_ = h.emitTraceEvent(r.Context(), server, "mcp.tools.list", map[string]any{"tool_count": len(tools), "request_id": requestID})
+		h.writeRPCResult(w, req.ID, map[string]any{"tools": tools})
+	case "tools/call":
+		var params struct {
+			Name      string         `json:"name"`
+			Arguments map[string]any `json:"arguments"`
+		}
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			h.writeRPCError(w, req.ID, -32602, "invalid params")
+			return
+		}
+		toolReq := invocation.CreateInvocationRequest{Server: server, Tool: params.Name, Input: params.Arguments}
+		if requestID != "" {
+			toolReq.RequestID = stringPtr(requestID)
+		}
+		resp, err := h.svc.Invoke(r.Context(), toolReq)
+		if err != nil {
+			h.writeRPCError(w, req.ID, -32000, err.Error())
+			return
+		}
+		tracePayload := map[string]any{"request_id": requestID, "status": resp.Status, "invocation_id": resp.InvocationID, "tool": params.Name}
+		_ = h.emitTraceEvent(r.Context(), server, "mcp.tools.call", tracePayload)
+		if len(resp.Error) > 0 {
+			h.writeRPCResult(w, req.ID, normalizeToolCallResult(resp.Error, true))
+			return
+		}
+		h.writeRPCResult(w, req.ID, normalizeToolCallResult(resp.Result, false))
+	default:
+		h.writeRPCError(w, req.ID, -32601, "method not found")
+	}
+}
+
 func (h *Handler) adminInvocations(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -186,6 +302,46 @@ func (h *Handler) adminInvocations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) adminInvocationStream(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	filter := invocation.InvocationListFilter{
+		Offset: 0,
+		Limit:  readUintQuery(r, "limit", 50),
+		Server: strings.TrimSpace(r.URL.Query().Get("server")),
+		Tool:   strings.TrimSpace(r.URL.Query().Get("tool")),
+		Status: strings.TrimSpace(r.URL.Query().Get("status")),
+	}
+	ctx := r.Context()
+	lastSignature := ""
+	for {
+		resp, err := h.svc.List(ctx, filter)
+		if err != nil {
+			fmt.Fprintf(w, "event: error\ndata: %s\n\n", mustJSONString(map[string]any{"message": err.Error()}))
+			flusher.Flush()
+			return
+		}
+		signature := invocationSignature(resp.Items)
+		if signature != lastSignature {
+			payload := invocationStreamEnvelope{Items: resp.Items}
+			fmt.Fprintf(w, "event: invocations\ndata: %s\n\n", mustJSONString(payload))
+			flusher.Flush()
+			lastSignature = signature
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+	}
 }
 
 func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) {
@@ -345,6 +501,7 @@ func readUintQuery(r *http.Request, key string, fallback uint64) uint64 {
 
 type ServerAdminService struct {
 	repo    serverRepo
+	client  *mcp.Client
 	timeout time.Duration
 }
 
@@ -352,12 +509,13 @@ type serverRepo interface {
 	ListServers(ctx context.Context, filter mcp.ServerFilter) ([]mcp.Upstream, int, error)
 	GetServerAny(ctx context.Context, name string) (mcp.Upstream, error)
 	UpsertServer(ctx context.Context, upstream mcp.Upstream) error
+	UpdateServerStatus(ctx context.Context, name string, status mcp.ServerStatus) error
 	DeleteServer(ctx context.Context, name string) error
 	DisableServer(ctx context.Context, name string) error
 }
 
-func NewServerAdminService(repo serverRepo, timeout time.Duration) *ServerAdminService {
-	return &ServerAdminService{repo: repo, timeout: timeout}
+func NewServerAdminService(repo serverRepo, client *mcp.Client, timeout time.Duration) *ServerAdminService {
+	return &ServerAdminService{repo: repo, client: client, timeout: timeout}
 }
 
 func (s *ServerAdminService) List(ctx context.Context, filter mcp.ServerFilter) (ServerListResponse, error) {
@@ -411,6 +569,7 @@ func (s *ServerAdminService) Upsert(ctx context.Context, name string, req AdminS
 		Env:       cloneEnv(req.Env),
 		Enabled:   enabled,
 	}
+	upstream.Status = inferServerStatus(upstream)
 	if err := validateUpstream(upstream); err != nil {
 		return AdminServer{}, err
 	}
@@ -432,45 +591,26 @@ func (s *ServerAdminService) Test(ctx context.Context, name string) (ServerTestR
 	if err != nil {
 		return ServerTestResponse{}, err
 	}
-	if !upstream.Enabled {
-		return ServerTestResponse{Ok: false, Message: "server is disabled"}, nil
-	}
 	testCtx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
-	switch upstream.Mode {
-	case mcp.UpstreamModeHTTP:
-		req, err := http.NewRequestWithContext(testCtx, http.MethodHead, upstream.BaseURL, nil)
-		if err != nil {
-			return ServerTestResponse{}, err
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return ServerTestResponse{Ok: false, Message: err.Error()}, nil
-		}
-		_ = resp.Body.Close()
-		return ServerTestResponse{Ok: true, Message: fmt.Sprintf("http %d", resp.StatusCode)}, nil
-	case mcp.UpstreamModeStdio:
-		if strings.TrimSpace(upstream.Command) == "" {
-			return ServerTestResponse{Ok: false, Message: "missing command"}, nil
-		}
-		return ServerTestResponse{Ok: true, Message: "stdio configuration looks valid"}, nil
-	default:
-		return ServerTestResponse{Ok: false, Message: "unsupported mode"}, nil
+	result := s.client.TestConnection(testCtx, upstream)
+	now := time.Now().UTC()
+	upstream.Status.AuthType = inferServerStatus(upstream).AuthType
+	upstream.Status.ConnectionStatus = result.ConnectionStatus
+	upstream.Status.AuthStatus = result.AuthStatus
+	upstream.Status.ReauthNeeded = result.ReauthNeeded
+	upstream.Status.LastCheckedAt = &now
+	upstream.Status.LastCheckOK = result.LastCheckOK
+	upstream.Status.LastErrorSummary = result.LastErrorSummary
+	upstream.Status.ActionRequired = result.ActionRequired
+	if err := s.repo.UpdateServerStatus(ctx, name, upstream.Status); err != nil {
+		return ServerTestResponse{}, err
 	}
+	return ServerTestResponse{Ok: result.Ok, Message: result.Message, ConnectionStatus: string(result.ConnectionStatus), AuthStatus: string(result.AuthStatus), ReauthNeeded: result.ReauthNeeded, LastCheckedAt: upstream.Status.LastCheckedAt, LastCheckOK: result.LastCheckOK, LastErrorSummary: result.LastErrorSummary, ActionRequired: result.ActionRequired}, nil
 }
 
 func toAdminServer(upstream mcp.Upstream) AdminServer {
-	return AdminServer{
-		Name:           upstream.Name,
-		Mode:           string(upstream.Mode),
-		BaseURL:        upstream.BaseURL,
-		AuthToken:      upstream.AuthToken,
-		TimeoutSeconds: int(upstream.Timeout / time.Second),
-		Command:        upstream.Command,
-		Args:           append([]string(nil), upstream.Args...),
-		Env:            cloneEnv(upstream.Env),
-		Enabled:        upstream.Enabled,
-	}
+	return AdminServer{Name: upstream.Name, Mode: string(upstream.Mode), BaseURL: upstream.BaseURL, AuthToken: upstream.AuthToken, TimeoutSeconds: int(upstream.Timeout / time.Second), Command: upstream.Command, Args: append([]string(nil), upstream.Args...), Env: cloneEnv(upstream.Env), Enabled: upstream.Enabled, AuthType: string(upstream.Status.AuthType), ConnectionStatus: string(upstream.Status.ConnectionStatus), AuthStatus: string(upstream.Status.AuthStatus), ReauthNeeded: upstream.Status.ReauthNeeded, LastCheckedAt: upstream.Status.LastCheckedAt, LastCheckOK: upstream.Status.LastCheckOK, LastErrorSummary: upstream.Status.LastErrorSummary, ActionRequired: upstream.Status.ActionRequired}
 }
 
 func validateUpstream(upstream mcp.Upstream) error {
@@ -512,4 +652,101 @@ func cloneEnv(in map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+func inferServerStatus(upstream mcp.Upstream) mcp.ServerStatus {
+	copyUpstream := upstream
+	if !copyUpstream.Enabled {
+		copyUpstream.Status.ConnectionStatus = mcp.ConnectionStatusDisabled
+	}
+	if copyUpstream.Mode == mcp.UpstreamModeHTTP {
+		if strings.TrimSpace(copyUpstream.AuthToken) != "" {
+			copyUpstream.Status.AuthType = mcp.AuthTypeBearer
+		} else {
+			copyUpstream.Status.AuthType = mcp.AuthTypeHosted
+		}
+		copyUpstream.Status.AuthStatus = mcp.AuthStatusUnknown
+	} else {
+		copyUpstream.Status.AuthType = mcp.AuthTypeNone
+		for key, value := range copyUpstream.Env {
+			upper := strings.ToUpper(key)
+			if value != "" && (strings.Contains(upper, "TOKEN") || strings.Contains(upper, "KEY") || strings.Contains(upper, "SECRET") || strings.Contains(upper, "PASSWORD")) {
+				copyUpstream.Status.AuthType = mcp.AuthTypeEnv
+				break
+			}
+		}
+		copyUpstream.Status.AuthStatus = mcp.AuthStatusUnknown
+	}
+	if !copyUpstream.Enabled {
+		copyUpstream.Status.ConnectionStatus = mcp.ConnectionStatusDisabled
+		message := "enable the server to use it"
+		copyUpstream.Status.ActionRequired = &message
+	}
+	return copyUpstream.Status
+}
+
+func (h *Handler) writeRPCResult(w http.ResponseWriter, id json.RawMessage, result any) {
+	body, _ := json.Marshal(result)
+	writeJSON(w, http.StatusOK, jsonRPCResponse{JSONRPC: "2.0", ID: id, Result: body})
+}
+
+func (h *Handler) writeRPCError(w http.ResponseWriter, id json.RawMessage, code int, message string) {
+	errBody, _ := json.Marshal(map[string]any{"code": code, "message": message})
+	writeJSON(w, http.StatusOK, jsonRPCResponse{JSONRPC: "2.0", ID: id, Error: errBody})
+}
+
+func normalizeToolCallResult(raw json.RawMessage, isError bool) any {
+	if len(raw) == 0 {
+		return map[string]any{"content": []map[string]any{{"type": "text", "text": "ok"}}, "isError": isError}
+	}
+	var existing map[string]any
+	if err := json.Unmarshal(raw, &existing); err == nil {
+		if _, ok := existing["content"]; ok {
+			if _, has := existing["isError"]; !has && isError {
+				existing["isError"] = true
+			}
+			return existing
+		}
+	}
+	return map[string]any{"content": []map[string]any{{"type": "text", "text": string(raw)}}, "isError": isError}
+}
+
+func compactRequestID(id json.RawMessage) string {
+	if len(id) == 0 {
+		return ""
+	}
+	return string(id)
+}
+
+func stringPtr(v string) *string { return &v }
+
+func invocationSignature(items []invocation.InvocationResponse) string {
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		completed := ""
+		if item.CompletedAt != nil {
+			completed = item.CompletedAt.UTC().Format(time.RFC3339Nano)
+		}
+		parts = append(parts, item.InvocationID+"|"+string(item.Status)+"|"+completed)
+	}
+	return strings.Join(parts, ",")
+}
+
+func mustJSONString(v any) string {
+	b, _ := json.Marshal(v)
+	return string(b)
+}
+
+func (h *Handler) emitTraceEvent(ctx context.Context, server string, eventType string, payload map[string]any) error {
+	if h.debug {
+		log.Printf("[mcp] trace server=%s event=%s payload=%v", server, eventType, payload)
+	}
+	return nil
+}
+
+func (h *Handler) debugf(format string, args ...any) {
+	if !h.debug {
+		return
+	}
+	log.Printf("[mcp] "+format, args...)
 }

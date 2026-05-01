@@ -31,6 +31,7 @@ type resolver interface {
 
 type upstreamClient interface {
 	Invoke(ctx context.Context, upstream mcp.Upstream, tool string, input map[string]any, requestID *string) (mcp.InvokeResult, error)
+	ListTools(ctx context.Context, upstream mcp.Upstream) ([]mcp.Tool, error)
 }
 
 type Service struct {
@@ -105,6 +106,23 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		return InvocationResponse{}, err
 	}
 	return s.toResponse(inv), nil
+}
+
+func (s *Service) ListTools(ctx context.Context, server string) ([]mcp.Tool, error) {
+	if server == "" {
+		return nil, fmt.Errorf("server is required")
+	}
+	upstream, err := s.resolver.ResolveContext(ctx, server)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, s.defaultTimeout)
+	defer cancel()
+	tools, err := s.client.ListTools(ctx, upstream)
+	if err != nil {
+		return nil, err
+	}
+	return tools, nil
 }
 
 func (s *Service) Get(ctx context.Context, id string) (InvocationResponse, error) {

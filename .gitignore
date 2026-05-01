@@ -4,3 +4,4 @@
 *.nix
 atryum.toml
 atryum.db
+.codex

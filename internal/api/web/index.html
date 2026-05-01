@@ -34,10 +34,32 @@
             </table>
           </div>
           <div>
-            <h2>Invocation detail</h2>
-            <pre id="invocation-detail">Select an invocation</pre>
-            <h3>Events</h3>
-            <pre id="invocation-events">[]</pre>
+            <div class="panel-header">
+              <h2>Invocation detail</h2>
+              <div id="invocation-live-status" class="subtle-text">Live updates on</div>
+            </div>
+            <section class="detail-section">
+              <div class="panel-header panel-header-tight">
+                <h3>Invocation payload</h3>
+                <div class="view-toggle" data-target="detail">
+                  <button type="button" class="toggle-button active" data-view="raw">Raw</button>
+                  <button type="button" class="toggle-button" data-view="friendly">Friendly</button>
+                </div>
+              </div>
+              <pre id="invocation-detail">Select an invocation</pre>
+              <div id="invocation-detail-text" class="text-render-box hidden"></div>
+            </section>
+            <section class="detail-section">
+              <div class="panel-header panel-header-tight">
+                <h3>Event payloads</h3>
+                <div class="view-toggle" data-target="events">
+                  <button type="button" class="toggle-button active" data-view="raw">Raw</button>
+                  <button type="button" class="toggle-button" data-view="friendly">Friendly</button>
+                </div>
+              </div>
+              <pre id="invocation-events">[]</pre>
+              <div id="invocation-events-text" class="text-render-box hidden"></div>
+            </section>
           </div>
         </div>
       </section>
@@ -46,14 +68,15 @@
         <div class="toolbar server-toolbar">
           <button id="new-server">New server</button>
           <button id="refresh-servers">Refresh</button>
-          <label class="checkbox-inline"><input id="show-disabled-servers" type="checkbox" /> Show disabled</label>
+          <label class="checkbox-inline"><input id="show-disabled-servers" type="checkbox" checked /> Show disabled servers</label>
+          <div class="subtle-text">Runtime servers come from the DB. TOML is bootstrap-only when the DB is empty.</div>
         </div>
         <div class="layout layout-servers">
           <div>
             <h2>Servers</h2>
             <table id="server-table">
               <thead>
-                <tr><th>Name</th><th>Mode</th><th>Enabled</th></tr>
+                <tr><th>Name</th><th>Status</th><th>Auth</th><th>Enabled</th></tr>
               </thead>
               <tbody></tbody>
             </table>
@@ -67,6 +90,8 @@
                 <button id="delete-server" class="danger">Delete</button>
               </div>
             </div>
+            <div id="server-badges" class="badge-row"></div>
+            <div id="server-detail-summary" class="status-message">Select a server or create a new one.</div>
             <form id="server-form" class="form-grid">
               <label>
                 <span>Name</span>

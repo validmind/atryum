@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
@@ -64,13 +65,35 @@ func InitDB(db *sql.DB) error {
 		args_json TEXT NOT NULL DEFAULT '[]',
 		env_json TEXT NOT NULL DEFAULT '{}',
 		enabled INTEGER NOT NULL DEFAULT 1,
+		auth_type TEXT NOT NULL DEFAULT 'none',
+		connection_status TEXT NOT NULL DEFAULT 'unknown',
+		auth_status TEXT NOT NULL DEFAULT 'unknown',
+		reauth_needed INTEGER NOT NULL DEFAULT 0,
+		last_checked_at TIMESTAMP,
+		last_check_ok INTEGER NOT NULL DEFAULT 0,
+		last_error_summary TEXT,
+		action_required TEXT,
 		created_at TIMESTAMP NOT NULL,
 		updated_at TIMESTAMP NOT NULL
 	);
 	CREATE INDEX IF NOT EXISTS idx_mcp_servers_enabled_name ON mcp_servers(enabled, name);
+	ALTER TABLE mcp_servers ADD COLUMN auth_type TEXT NOT NULL DEFAULT 'none';
+	ALTER TABLE mcp_servers ADD COLUMN connection_status TEXT NOT NULL DEFAULT 'unknown';
+	ALTER TABLE mcp_servers ADD COLUMN auth_status TEXT NOT NULL DEFAULT 'unknown';
+	ALTER TABLE mcp_servers ADD COLUMN reauth_needed INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE mcp_servers ADD COLUMN last_checked_at TIMESTAMP;
+	ALTER TABLE mcp_servers ADD COLUMN last_check_ok INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE mcp_servers ADD COLUMN last_error_summary TEXT;
+	ALTER TABLE mcp_servers ADD COLUMN action_required TEXT;
 	`
 	_, err := db.Exec(schema)
-	return err
+	if err != nil {
+		// SQLite may fail on duplicate ALTERs; apply best-effort compatibility migration.
+		if fixErr := ensureServerStatusColumns(db); fixErr != nil {
+			return fixErr
+		}
+	}
+	return nil
 }
 
 func (r *InvocationRepo) Create(ctx context.Context, inv invocation.Invocation) error {
@@ -220,9 +243,9 @@ func (r *ServerRepo) CreateServer(ctx context.Context, upstream mcp.Upstream) er
 		return err
 	}
 	query, args, err := psql.Insert("mcp_servers").Columns(
-		"name", "mode", "base_url", "auth_token", "timeout_seconds", "command", "args_json", "env_json", "enabled", "created_at", "updated_at",
+		"name", "mode", "base_url", "auth_token", "timeout_seconds", "command", "args_json", "env_json", "enabled", "auth_type", "connection_status", "auth_status", "reauth_needed", "last_checked_at", "last_check_ok", "last_error_summary", "action_required", "created_at", "updated_at",
 	).Values(
-		upstream.Name, string(upstream.Mode), emptyToNil(upstream.BaseURL), emptyToNil(upstream.AuthToken), int(upstream.Timeout/time.Second), emptyToNil(upstream.Command), argsJSON, envJSON, boolToInt(upstream.Enabled), now, now,
+		upstream.Name, string(upstream.Mode), emptyToNil(upstream.BaseURL), emptyToNil(upstream.AuthToken), int(upstream.Timeout/time.Second), emptyToNil(upstream.Command), argsJSON, envJSON, boolToInt(upstream.Enabled), string(upstream.Status.AuthType), string(upstream.Status.ConnectionStatus), string(upstream.Status.AuthStatus), boolToInt(upstream.Status.ReauthNeeded), upstream.Status.LastCheckedAt, boolToInt(upstream.Status.LastCheckOK), emptyToNil(derefString(upstream.Status.LastErrorSummary)), emptyToNil(derefString(upstream.Status.ActionRequired)), now, now,
 	).ToSql()
 	if err != nil {
 		return err
@@ -238,8 +261,8 @@ func (r *ServerRepo) UpsertServer(ctx context.Context, upstream mcp.Upstream) er
 	}
 	now := time.Now().UTC()
 	query := `
-	INSERT INTO mcp_servers (name, mode, base_url, auth_token, timeout_seconds, command, args_json, env_json, enabled, created_at, updated_at)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO mcp_servers (name, mode, base_url, auth_token, timeout_seconds, command, args_json, env_json, enabled, auth_type, connection_status, auth_status, reauth_needed, last_checked_at, last_check_ok, last_error_summary, action_required, created_at, updated_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(name) DO UPDATE SET
 		mode = excluded.mode,
 		base_url = excluded.base_url,
@@ -249,16 +272,50 @@ func (r *ServerRepo) UpsertServer(ctx context.Context, upstream mcp.Upstream) er
 		args_json = excluded.args_json,
 		env_json = excluded.env_json,
 		enabled = excluded.enabled,
+		auth_type = excluded.auth_type,
+		connection_status = excluded.connection_status,
+		auth_status = excluded.auth_status,
+		reauth_needed = excluded.reauth_needed,
+		last_checked_at = excluded.last_checked_at,
+		last_check_ok = excluded.last_check_ok,
+		last_error_summary = excluded.last_error_summary,
+		action_required = excluded.action_required,
 		updated_at = excluded.updated_at
 	`
 	_, err = r.db.ExecContext(ctx, query,
-		upstream.Name, string(upstream.Mode), emptyToNil(upstream.BaseURL), emptyToNil(upstream.AuthToken), int(upstream.Timeout/time.Second), emptyToNil(upstream.Command), argsJSON, envJSON, boolToInt(upstream.Enabled), now, now,
+		upstream.Name, string(upstream.Mode), emptyToNil(upstream.BaseURL), emptyToNil(upstream.AuthToken), int(upstream.Timeout/time.Second), emptyToNil(upstream.Command), argsJSON, envJSON, boolToInt(upstream.Enabled), string(upstream.Status.AuthType), string(upstream.Status.ConnectionStatus), string(upstream.Status.AuthStatus), boolToInt(upstream.Status.ReauthNeeded), upstream.Status.LastCheckedAt, boolToInt(upstream.Status.LastCheckOK), emptyToNil(derefString(upstream.Status.LastErrorSummary)), emptyToNil(derefString(upstream.Status.ActionRequired)), now, now,
 	)
 	return err
 }
 
+func (r *ServerRepo) UpdateServerStatus(ctx context.Context, name string, status mcp.ServerStatus) error {
+	query, args, err := psql.Update("mcp_servers").
+		Set("auth_type", string(status.AuthType)).
+		Set("connection_status", string(status.ConnectionStatus)).
+		Set("auth_status", string(status.AuthStatus)).
+		Set("reauth_needed", boolToInt(status.ReauthNeeded)).
+		Set("last_checked_at", status.LastCheckedAt).
+		Set("last_check_ok", boolToInt(status.LastCheckOK)).
+		Set("last_error_summary", emptyToNil(derefString(status.LastErrorSummary))).
+		Set("action_required", emptyToNil(derefString(status.ActionRequired))).
+		Set("updated_at", time.Now().UTC()).
+		Where(sq.Eq{"name": name}).ToSql()
+	if err != nil {
+		return err
+	}
+	result, err := r.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err == nil && rows == 0 {
+		return sql.ErrNoRows
+	}
+	return err
+}
+
 func (r *ServerRepo) GetServer(ctx context.Context, name string) (mcp.Upstream, error) {
-	query, args, err := psql.Select("name", "mode", "base_url", "auth_token", "timeout_seconds", "command", "args_json", "env_json", "enabled").From("mcp_servers").Where(sq.Eq{"name": name, "enabled": 1}).ToSql()
+	query, args, err := psql.Select("name", "mode", "base_url", "auth_token", "timeout_seconds", "command", "args_json", "env_json", "enabled", "auth_type", "connection_status", "auth_status", "reauth_needed", "last_checked_at", "last_check_ok", "last_error_summary", "action_required").From("mcp_servers").Where(sq.Eq{"name": name, "enabled": 1}).ToSql()
 	if err != nil {
 		return mcp.Upstream{}, err
 	}
@@ -267,7 +324,7 @@ func (r *ServerRepo) GetServer(ctx context.Context, name string) (mcp.Upstream, 
 }
 
 func (r *ServerRepo) GetServerAny(ctx context.Context, name string) (mcp.Upstream, error) {
-	query, args, err := psql.Select("name", "mode", "base_url", "auth_token", "timeout_seconds", "command", "args_json", "env_json", "enabled").From("mcp_servers").Where(sq.Eq{"name": name}).ToSql()
+	query, args, err := psql.Select("name", "mode", "base_url", "auth_token", "timeout_seconds", "command", "args_json", "env_json", "enabled", "auth_type", "connection_status", "auth_status", "reauth_needed", "last_checked_at", "last_check_ok", "last_error_summary", "action_required").From("mcp_servers").Where(sq.Eq{"name": name}).ToSql()
 	if err != nil {
 		return mcp.Upstream{}, err
 	}
@@ -279,7 +336,7 @@ func (r *ServerRepo) ListServers(ctx context.Context, filter mcp.ServerFilter) (
 	if filter.Limit == 0 {
 		filter.Limit = 50
 	}
-	builder := psql.Select("name", "mode", "base_url", "auth_token", "timeout_seconds", "command", "args_json", "env_json", "enabled").From("mcp_servers")
+	builder := psql.Select("name", "mode", "base_url", "auth_token", "timeout_seconds", "command", "args_json", "env_json", "enabled", "auth_type", "connection_status", "auth_status", "reauth_needed", "last_checked_at", "last_check_ok", "last_error_summary", "action_required").From("mcp_servers")
 	countBuilder := psql.Select("COUNT(*)").From("mcp_servers")
 	if filter.Enabled != nil {
 		value := boolToInt(*filter.Enabled)
@@ -330,7 +387,7 @@ func (r *ServerRepo) DeleteServer(ctx context.Context, name string) error {
 }
 
 func (r *ServerRepo) DisableServer(ctx context.Context, name string) error {
-	query, args, err := psql.Update("mcp_servers").Set("enabled", 0).Set("updated_at", time.Now().UTC()).Where(sq.Eq{"name": name}).ToSql()
+	query, args, err := psql.Update("mcp_servers").Set("enabled", 0).Set("connection_status", string(mcp.ConnectionStatusDisabled)).Set("updated_at", time.Now().UTC()).Where(sq.Eq{"name": name}).ToSql()
 	if err != nil {
 		return err
 	}
@@ -387,7 +444,11 @@ func scanServer(scanner interface{ Scan(dest ...any) error }) (mcp.Upstream, err
 	var timeoutSeconds int
 	var argsJSON, envJSON string
 	var enabled int
-	if err := scanner.Scan(&upstream.Name, &mode, &baseURL, &authToken, &timeoutSeconds, &command, &argsJSON, &envJSON, &enabled); err != nil {
+	var authType, connectionStatus, authStatus sql.NullString
+	var reauthNeeded, lastCheckOK int
+	var lastCheckedAt sql.NullTime
+	var lastErrorSummary, actionRequired sql.NullString
+	if err := scanner.Scan(&upstream.Name, &mode, &baseURL, &authToken, &timeoutSeconds, &command, &argsJSON, &envJSON, &enabled, &authType, &connectionStatus, &authStatus, &reauthNeeded, &lastCheckedAt, &lastCheckOK, &lastErrorSummary, &actionRequired); err != nil {
 		return mcp.Upstream{}, err
 	}
 	upstream.Mode = mcp.UpstreamMode(mode)
@@ -401,6 +462,23 @@ func scanServer(scanner interface{ Scan(dest ...any) error }) (mcp.Upstream, err
 	}
 	if err := json.Unmarshal([]byte(envJSON), &upstream.Env); err != nil {
 		return mcp.Upstream{}, fmt.Errorf("decode server env: %w", err)
+	}
+	upstream.Status = mcp.ServerStatus{
+		AuthType:         mcp.ServerAuthType(orDefault(authType.String, string(mcp.AuthTypeNone))),
+		ConnectionStatus: mcp.ServerConnectionStatus(orDefault(connectionStatus.String, string(mcp.ConnectionStatusUnknown))),
+		AuthStatus:       mcp.ServerAuthStatus(orDefault(authStatus.String, string(mcp.AuthStatusUnknown))),
+		ReauthNeeded:     reauthNeeded == 1,
+		LastCheckOK:      lastCheckOK == 1,
+	}
+	if lastCheckedAt.Valid {
+		t := lastCheckedAt.Time
+		upstream.Status.LastCheckedAt = &t
+	}
+	if lastErrorSummary.Valid {
+		upstream.Status.LastErrorSummary = &lastErrorSummary.String
+	}
+	if actionRequired.Valid {
+		upstream.Status.ActionRequired = &actionRequired.String
 	}
 	return upstream, nil
 }
@@ -464,4 +542,37 @@ func encodeServerConfig(upstream mcp.Upstream) (string, string, error) {
 		return "", "", err
 	}
 	return string(argsJSON), string(envJSON), nil
+}
+
+func ensureServerStatusColumns(db *sql.DB) error {
+	statements := []string{
+		`ALTER TABLE mcp_servers ADD COLUMN auth_type TEXT NOT NULL DEFAULT 'none'`,
+		`ALTER TABLE mcp_servers ADD COLUMN connection_status TEXT NOT NULL DEFAULT 'unknown'`,
+		`ALTER TABLE mcp_servers ADD COLUMN auth_status TEXT NOT NULL DEFAULT 'unknown'`,
+		`ALTER TABLE mcp_servers ADD COLUMN reauth_needed INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE mcp_servers ADD COLUMN last_checked_at TIMESTAMP`,
+		`ALTER TABLE mcp_servers ADD COLUMN last_check_ok INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE mcp_servers ADD COLUMN last_error_summary TEXT`,
+		`ALTER TABLE mcp_servers ADD COLUMN action_required TEXT`,
+	}
+	for _, stmt := range statements {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+			return err
+		}
+	}
+	return nil
+}
+
+func derefString(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
+}
+
+func orDefault(value string, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
 }

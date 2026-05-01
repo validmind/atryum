@@ -1,8 +1,13 @@
 const state = {
   invocationFilters: { offset: 0, limit: 50, server: '', tool: '', status: '' },
-  serverFilters: { offset: 0, limit: 100, enabled: true },
+  serverFilters: { offset: 0, limit: 100, enabled: null },
   selectedServerName: '',
   editingServerName: '',
+  selectedInvocationID: '',
+  invocationSource: null,
+  lastInvocationSignature: '',
+  invocationViews: { detail: 'raw', events: 'raw' },
+  friendlyExpanded: { detail: false, events: false },
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -14,6 +19,8 @@ $('#apply-filters').addEventListener('click', () => {
   state.invocationFilters.server = $('#filter-server').value.trim();
   state.invocationFilters.tool = $('#filter-tool').value.trim();
   state.invocationFilters.status = $('#filter-status').value.trim();
+  state.lastInvocationSignature = '';
+  connectInvocationStream();
   loadInvocations();
 });
 $('#new-server').addEventListener('click', () => startNewServer());
@@ -55,13 +62,33 @@ $('#delete-server').addEventListener('click', async () => {
   }
   await deleteServer(state.editingServerName);
 });
+$$('.view-toggle').forEach((toggle) => {
+  toggle.addEventListener('click', (event) => {
+    const button = event.target.closest('.toggle-button');
+    if (!button || button.disabled) return;
+    const target = toggle.dataset.target;
+    state.invocationViews[target] = button.dataset.view;
+    syncInvocationView(target);
+  });
+});
+
+document.addEventListener('toggle', (event) => {
+  if (event.target.matches('.friendly-details[data-target]')) {
+    state.friendlyExpanded[event.target.dataset.target] = event.target.open;
+  }
+}, true);
 
 function toggleView(view) {
   $('#invocations-view').classList.toggle('hidden', view !== 'invocations');
   $('#servers-view').classList.toggle('hidden', view !== 'servers');
   $('#show-invocations').classList.toggle('active', view === 'invocations');
   $('#show-servers').classList.toggle('active', view === 'servers');
-  if (view === 'servers') loadServers();
+  if (view === 'servers') {
+    disconnectInvocationStream();
+    loadServers();
+    return;
+  }
+  connectInvocationStream();
 }
 
 async function fetchJSON(url, options) {
@@ -77,21 +104,81 @@ async function loadInvocations() {
     if (v !== '' && v !== null && v !== undefined) params.set(k, String(v));
   });
   const data = await fetchJSON(`/api/v1/admin/invocations?${params.toString()}`);
+  applyInvocationStreamData(data.items);
+}
+
+function applyInvocationStreamData(items) {
+  const signature = JSON.stringify(items.map((item) => [item.invocation_id, item.status, item.completed_at || '']));
+  const changed = signature !== state.lastInvocationSignature;
+  state.lastInvocationSignature = signature;
+  if (!changed) {
+    return;
+  }
+
   const tbody = $('#invocation-table tbody');
   tbody.innerHTML = '';
-  for (const item of data.items) {
+  for (const item of items) {
     const tr = document.createElement('tr');
     tr.innerHTML = `<td>${escapeHTML(item.invocation_id)}</td><td>${escapeHTML(item.status)}</td><td>${escapeHTML(item.submitted_at)}</td>`;
     tr.addEventListener('click', () => loadInvocationDetail(item.invocation_id));
+    if (item.invocation_id === state.selectedInvocationID) tr.classList.add('selected-row');
     tbody.appendChild(tr);
   }
+
+  if (!state.selectedInvocationID && items.length > 0) {
+    loadInvocationDetail(items[0].invocation_id);
+  } else if (state.selectedInvocationID) {
+    const selected = items.find((item) => item.invocation_id === state.selectedInvocationID);
+    if (!selected && items.length > 0) {
+      loadInvocationDetail(items[0].invocation_id);
+    } else if (selected) {
+      loadInvocationDetail(state.selectedInvocationID);
+    }
+  }
+  loadInvocationSelectionOnly();
 }
 
 async function loadInvocationDetail(id) {
+  state.selectedInvocationID = id;
   const detail = await fetchJSON(`/api/v1/admin/invocations/${id}`);
-  $('#invocation-detail').textContent = JSON.stringify(detail, null, 2);
+  renderJSONWithText('#invocation-detail', '#invocation-detail-text', detail, 'Human-friendly text from invocation result/error', 'detail');
   const events = await fetchJSON(`/api/v1/admin/invocations/${id}/events?limit=200`);
-  $('#invocation-events').textContent = JSON.stringify(events.items, null, 2);
+  renderJSONWithText('#invocation-events', '#invocation-events-text', events.items, 'Human-friendly text from invocation events', 'events');
+  await loadInvocationSelectionOnly();
+}
+
+async function loadInvocationSelectionOnly() {
+  const rows = Array.from(document.querySelectorAll('#invocation-table tbody tr'));
+  rows.forEach((row) => {
+    row.classList.toggle('selected-row', row.firstElementChild?.textContent === state.selectedInvocationID);
+  });
+}
+
+function connectInvocationStream() {
+  disconnectInvocationStream();
+  const params = new URLSearchParams();
+  params.set('limit', String(state.invocationFilters.limit));
+  if (state.invocationFilters.server) params.set('server', state.invocationFilters.server);
+  if (state.invocationFilters.tool) params.set('tool', state.invocationFilters.tool);
+  if (state.invocationFilters.status) params.set('status', state.invocationFilters.status);
+  const source = new EventSource(`/api/v1/admin/invocations/stream?${params.toString()}`);
+  state.invocationSource = source;
+  $('#invocation-live-status').textContent = 'Live updates via SSE';
+  source.addEventListener('invocations', (event) => {
+    const payload = JSON.parse(event.data);
+    applyInvocationStreamData(payload.items || []);
+    $('#invocation-live-status').textContent = 'Live updates via SSE';
+  });
+  source.addEventListener('error', () => {
+    $('#invocation-live-status').textContent = 'Live updates reconnecting…';
+  });
+}
+
+function disconnectInvocationStream() {
+  if (state.invocationSource) {
+    state.invocationSource.close();
+    state.invocationSource = null;
+  }
 }
 
 async function loadServers() {
@@ -105,10 +192,16 @@ async function loadServers() {
   tbody.innerHTML = '';
   for (const item of data.items) {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${escapeHTML(item.name)}</td><td>${escapeHTML(item.mode)}</td><td>${item.enabled ? 'yes' : 'no'}</td>`;
+    tr.innerHTML = `<td>${escapeHTML(item.name)}</td><td>${renderBadge(item.connection_status)}</td><td>${renderBadge(item.auth_status)}</td><td>${item.enabled ? 'yes' : 'no'}</td>`;
     tr.addEventListener('click', () => loadServerDetail(item.name));
     if (item.name === state.selectedServerName) tr.classList.add('selected-row');
     tbody.appendChild(tr);
+  }
+  if (state.selectedServerName) {
+    const selected = data.items.find((item) => item.name === state.selectedServerName);
+    if (!selected) {
+      setServerStatus('Selected server is hidden by the current filter. Enable “Show disabled servers” to see disabled entries.', false);
+    }
   }
   if (!state.selectedServerName && data.items.length > 0) {
     await loadServerDetail(data.items[0].name);
@@ -120,6 +213,7 @@ async function loadServerDetail(name) {
   state.selectedServerName = detail.name;
   state.editingServerName = detail.name;
   fillServerForm(detail);
+  renderServerMeta(detail);
   setServerStatus(`Loaded server ${detail.name}.`, false);
   $('#toggle-server-enabled').textContent = detail.enabled ? 'Disable' : 'Enable';
   await loadServersSelectionOnly();
@@ -145,6 +239,32 @@ function fillServerForm(detail) {
   updateServerModeFields();
 }
 
+function renderServerMeta(detail) {
+  const badges = [];
+  badges.push(renderBadge(detail.connection_status));
+  badges.push(renderBadge(detail.auth_status));
+  if (detail.reauth_needed) badges.push(renderBadge('reauth_needed', 'warn'));
+  if (detail.auth_type) badges.push(renderBadge(detail.auth_type, 'neutral'));
+  if (!detail.enabled) badges.push(renderBadge('disabled', 'bad'));
+  $('#server-badges').innerHTML = badges.join('');
+
+  const parts = [
+    `<div><strong>Enabled:</strong> ${detail.enabled ? 'yes' : 'no'}</div>`,
+    `<div><strong>Connection:</strong> ${escapeHTML(detail.connection_status || 'unknown')}</div>`,
+    `<div><strong>Auth:</strong> ${escapeHTML(detail.auth_status || 'unknown')}</div>`,
+    `<div><strong>Auth type:</strong> ${escapeHTML(detail.auth_type || 'none')}</div>`,
+    `<div><strong>Last checked:</strong> ${escapeHTML(detail.last_checked_at || 'never')}</div>`,
+    `<div><strong>Last check ok:</strong> ${detail.last_check_ok ? 'yes' : 'no'}</div>`,
+  ];
+  if (detail.last_error_summary) {
+    parts.push(`<div><strong>Last error:</strong> ${escapeHTML(detail.last_error_summary)}</div>`);
+  }
+  if (detail.action_required) {
+    parts.push(`<div><strong>Action required:</strong> ${escapeHTML(detail.action_required)}</div>`);
+  }
+  $('#server-detail-summary').innerHTML = parts.join('');
+}
+
 function startNewServer() {
   state.selectedServerName = '';
   state.editingServerName = '';
@@ -155,8 +275,10 @@ function startNewServer() {
   $('#server-enabled').checked = true;
   $('#server-mode').value = 'http';
   $('#toggle-server-enabled').textContent = 'Disable';
+  $('#server-badges').innerHTML = [renderBadge('unknown'), renderBadge('unknown'), renderBadge('not_tested', 'neutral')].join('');
+  $('#server-detail-summary').innerHTML = '<div><strong>Status:</strong> Create and test a server to see readiness and auth state.</div>';
   updateServerModeFields();
-  setServerStatus('Creating a new server.', false);
+  setServerStatus('Creating a new server. Runtime servers are DB-backed; TOML is bootstrap-only when the DB is empty.', false);
   $('#server-name').focus();
   loadServersSelectionOnly();
 }
@@ -167,9 +289,9 @@ function updateServerModeFields() {
   $$('.field-stdio').forEach((el) => el.classList.toggle('hidden', mode !== 'stdio'));
 }
 
-async function saveServer() {
+async function saveServer(overrideEnabled) {
   try {
-    const payload = buildServerPayload();
+    const payload = buildServerPayload(overrideEnabled);
     const isUpdate = state.editingServerName !== '';
     const url = isUpdate
       ? `/api/v1/admin/servers/${encodeURIComponent(state.editingServerName)}`
@@ -183,26 +305,29 @@ async function saveServer() {
     state.selectedServerName = saved.name;
     state.editingServerName = saved.name;
     fillServerForm(saved);
+    renderServerMeta(saved);
     $('#toggle-server-enabled').textContent = saved.enabled ? 'Disable' : 'Enable';
     setServerStatus(`Saved server ${saved.name}.`, false);
     await loadServers();
+    return saved;
   } catch (err) {
     setServerStatus(err.message || String(err), true);
+    throw err;
   }
 }
 
-function buildServerPayload() {
-  const mode = $('#server-mode').value;
+function buildServerPayload(overrideEnabled) {
+  const enabled = typeof overrideEnabled === 'boolean' ? overrideEnabled : $('#server-enabled').checked;
   return {
     name: $('#server-name').value.trim(),
-    mode,
+    mode: $('#server-mode').value,
     base_url: $('#server-base-url').value.trim(),
     auth_token: $('#server-auth-token').value,
     timeout_seconds: Number.parseInt($('#server-timeout').value, 10) || 30,
     command: $('#server-command').value.trim(),
     args: parseJSONField('#server-args', 'Args JSON array', true),
     env: parseJSONField('#server-env', 'Env JSON object', false),
-    enabled: $('#server-enabled').checked,
+    enabled,
   };
 }
 
@@ -226,6 +351,9 @@ async function testServer(name) {
   try {
     const result = await fetchJSON(`/api/v1/admin/servers/${encodeURIComponent(name)}/test`, { method: 'POST' });
     setServerStatus(`Test ${result.ok ? 'passed' : 'failed'}: ${result.message}`, !result.ok);
+    const detail = await fetchJSON(`/api/v1/admin/servers/${encodeURIComponent(name)}`);
+    renderServerMeta(detail);
+    await loadServers();
   } catch (err) {
     setServerStatus(err.message || String(err), true);
   }
@@ -236,11 +364,14 @@ async function toggleServerEnabled() {
     const currentlyEnabled = $('#server-enabled').checked;
     if (currentlyEnabled) {
       await fetchJSON(`/api/v1/admin/servers/${encodeURIComponent(state.editingServerName)}?disable=true`, { method: 'DELETE' });
-      setServerStatus(`Disabled server ${state.editingServerName}.`, false);
+      $('#show-disabled-servers').checked = true;
+      state.serverFilters.enabled = null;
+      setServerStatus(`Disabled server ${state.editingServerName}. Disabled servers remain in the DB and are shown because “Show disabled servers” is enabled.`, false);
     } else {
-      await saveServer();
+      await saveServer(true);
       setServerStatus(`Enabled server ${state.editingServerName}.`, false);
     }
+    await loadServers();
     await loadServerDetail(state.editingServerName);
   } catch (err) {
     setServerStatus(err.message || String(err), true);
@@ -259,10 +390,87 @@ async function deleteServer(name) {
   }
 }
 
+function renderJSONWithText(rawSelector, textSelector, value, title, target) {
+  $(rawSelector).textContent = JSON.stringify(value, null, 2);
+  const textBlocks = extractHumanTextBlocks(value);
+  const box = $(textSelector);
+  if (textBlocks.length === 0) {
+    box.classList.add('hidden');
+    box.innerHTML = '';
+    state.invocationViews[target] = 'raw';
+    state.friendlyExpanded[target] = false;
+    syncInvocationView(target);
+    return;
+  }
+  const isOpen = state.friendlyExpanded[target];
+  box.innerHTML = `<details class="friendly-details" data-target="${escapeHTML(target)}" ${isOpen ? 'open' : ''}><summary>${escapeHTML(title)}</summary><div class="friendly-scroll">${textBlocks
+    .map((block, index) => `<div class="text-render-item"><div class="text-render-label">Text ${index + 1}</div><pre class="text-render-pre">${escapeHTML(block)}</pre></div>`)
+    .join('')}</div></details>`;
+  syncInvocationView(target);
+}
+
+function syncInvocationView(target) {
+  const rawEl = target === 'detail' ? $('#invocation-detail') : $('#invocation-events');
+  const friendlyEl = target === 'detail' ? $('#invocation-detail-text') : $('#invocation-events-text');
+  const desiredView = state.invocationViews[target];
+  const hasFriendly = friendlyEl.innerHTML.trim() !== '';
+  const showFriendly = desiredView === 'friendly' && hasFriendly;
+  rawEl.classList.toggle('hidden', showFriendly);
+  friendlyEl.classList.toggle('hidden', !showFriendly);
+  const toggle = document.querySelector(`.view-toggle[data-target="${target}"]`);
+  if (toggle) {
+    toggle.classList.toggle('hidden', !hasFriendly);
+    toggle.querySelectorAll('.toggle-button').forEach((button) => {
+      const active = button.dataset.view === (showFriendly ? 'friendly' : 'raw');
+      button.classList.toggle('active', active);
+      if (button.dataset.view === 'friendly') {
+        button.disabled = !hasFriendly;
+      }
+    });
+  }
+}
+
+function extractHumanTextBlocks(value) {
+  const out = [];
+  walkForText(value, out);
+  return dedupeStrings(out.filter((item) => typeof item === 'string' && item.trim() !== ''));
+}
+
+function walkForText(value, out) {
+  if (Array.isArray(value)) {
+    value.forEach((item) => walkForText(item, out));
+    return;
+  }
+  if (!value || typeof value !== 'object') {
+    return;
+  }
+  if (value.type === 'text' && typeof value.text === 'string') {
+    out.push(value.text);
+  }
+  Object.values(value).forEach((item) => walkForText(item, out));
+}
+
+function dedupeStrings(items) {
+  return Array.from(new Set(items));
+}
+
 function setServerStatus(message, isError) {
   const el = $('#server-status');
   el.textContent = message;
   el.classList.toggle('error-text', Boolean(isError));
+}
+
+function renderBadge(text, tone) {
+  const resolvedTone = tone || badgeTone(text);
+  return `<span class="badge badge-${escapeHTML(resolvedTone)}">${escapeHTML(text)}</span>`;
+}
+
+function badgeTone(text) {
+  const value = String(text || '').toLowerCase();
+  if (value.includes('ready')) return 'good';
+  if (value.includes('invalid') || value.includes('missing') || value.includes('unreachable') || value.includes('disabled')) return 'bad';
+  if (value.includes('reauth') || value.includes('attention') || value.includes('degraded')) return 'warn';
+  return 'neutral';
 }
 
 function escapeHTML(value) {
@@ -274,7 +482,13 @@ function escapeHTML(value) {
     .replaceAll("'", '&#39;');
 }
 
+$('#show-disabled-servers').checked = true;
 startNewServer();
+connectInvocationStream();
+syncInvocationView('detail');
+syncInvocationView('events');
 loadInvocations().catch((err) => {
   $('#invocation-detail').textContent = err.message;
+  $('#invocation-live-status').textContent = 'Live updates error';
 });
+window.addEventListener('beforeunload', disconnectInvocationStream);
