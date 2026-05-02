@@ -52,16 +52,16 @@ type Handler struct {
 }
 
 type AdminServer struct {
-	Name               string               `json:"name"`
-	Mode               string               `json:"mode"`
-	BaseURL            string               `json:"base_url,omitempty"`
-	AuthToken          string               `json:"auth_token,omitempty"`
-	AuthHeaders        []mcp.AuthHeader     `json:"auth_headers,omitempty"`
-	TimeoutSeconds     int                  `json:"timeout_seconds"`
-	Command            string               `json:"command,omitempty"`
-	Args               []string             `json:"args,omitempty"`
-	Env                map[string]string    `json:"env,omitempty"`
-	Enabled            bool                 `json:"enabled"`
+	Name               string            `json:"name"`
+	Mode               string            `json:"mode"`
+	BaseURL            string            `json:"base_url,omitempty"`
+	AuthToken          string            `json:"auth_token,omitempty"`
+	AuthHeaders        []mcp.AuthHeader  `json:"auth_headers,omitempty"`
+	TimeoutSeconds     int               `json:"timeout_seconds"`
+	Command            string            `json:"command,omitempty"`
+	Args               []string          `json:"args,omitempty"`
+	Env                map[string]string `json:"env,omitempty"`
+	Enabled            bool              `json:"enabled"`
 	AuthType           string            `json:"auth_type"`
 	ConnectionStatus   string            `json:"connection_status"`
 	AuthStatus         string            `json:"auth_status"`
