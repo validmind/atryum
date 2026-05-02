@@ -63,6 +63,7 @@ Public:
 
 Admin APIs:
 - `GET /api/v1/admin/invocations?offset=0&limit=50&server=&tool=&status=`
+- `GET /api/v1/admin/invocations/stream`
 - `GET /api/v1/admin/invocations/:id`
 - `GET /api/v1/admin/invocations/:id/events?offset=0&limit=200`
 - `GET /api/v1/admin/servers?offset=0&limit=50&enabled=`
@@ -72,6 +73,9 @@ Admin APIs:
 - `DELETE /api/v1/admin/servers/:name`
 - `DELETE /api/v1/admin/servers/:name?mode=disable`
 - `POST /api/v1/admin/servers/:name/test`
+- `POST /api/v1/admin/servers/:name/connect`
+- `GET /api/v1/admin/servers/:name/connect/status`
+- `GET /api/v1/admin/oauth/callback`
 
 UI:
 - `GET /ui/`
@@ -97,6 +101,27 @@ Manage MCP server connections through:
 Do not treat TOML as the normal place to add or edit runtime MCP servers.
 
 In the built-in UI, disabled servers are now shown by default so disabling a server does not make it appear to disappear.
+
+## OAuth-style connect/reconnect flow
+
+For HTTP-mode servers that use hosted OAuth, Atryum owns the browser connect flow.
+
+The normal UI path is now URL-first and provider-driven:
+- admins enter the server URL
+- Atryum detects or assigns an auth provider where practical
+- the UI shows provider/status plus `Connect` / `Reconnect`
+- the normal UI does not require admins to fill in raw authorize/token URLs or scopes
+
+Runtime behavior:
+- connection metadata lives in `mcp_servers`
+- OAuth tokens are stored separately in SQLite
+- `Connect` / `Reconnect` is launched from the built-in UI
+- callback completion updates server auth status fields in the DB
+- missing/expired OAuth auth fails fast with actionable `auth_status` / `reauth_needed` / `action_required`
+
+Current pragmatic provider support:
+- `github_hosted` for GitHub-style hosted HTTP servers detected from URL
+- a generic provider framework exists for future providers/discovery work
 
 ## Server auth and connection status semantics
 

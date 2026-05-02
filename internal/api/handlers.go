@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -16,6 +18,8 @@ import (
 
 	"atryum/internal/invocation"
 	"atryum/internal/mcp"
+	authprovider "atryum/internal/mcp/auth_provider"
+	"atryum/internal/store"
 )
 
 //go:embed web/*
@@ -35,6 +39,9 @@ type serverService interface {
 	Upsert(ctx context.Context, name string, req AdminServerUpsertRequest) (AdminServer, error)
 	Delete(ctx context.Context, name string, disable bool) error
 	Test(ctx context.Context, name string) (ServerTestResponse, error)
+	StartConnect(ctx context.Context, name string, baseURL string) (OAuthConnectStartResponse, error)
+	GetConnectStatus(ctx context.Context, name string) (OAuthConnectStatusResponse, error)
+	CompleteConnect(ctx context.Context, state string, code string, errorText string) (OAuthConnectStatusResponse, error)
 }
 
 type Handler struct {
@@ -45,23 +52,26 @@ type Handler struct {
 }
 
 type AdminServer struct {
-	Name             string            `json:"name"`
-	Mode             string            `json:"mode"`
-	BaseURL          string            `json:"base_url,omitempty"`
-	AuthToken        string            `json:"auth_token,omitempty"`
-	TimeoutSeconds   int               `json:"timeout_seconds"`
-	Command          string            `json:"command,omitempty"`
-	Args             []string          `json:"args,omitempty"`
-	Env              map[string]string `json:"env,omitempty"`
-	Enabled          bool              `json:"enabled"`
-	AuthType         string            `json:"auth_type"`
-	ConnectionStatus string            `json:"connection_status"`
-	AuthStatus       string            `json:"auth_status"`
-	ReauthNeeded     bool              `json:"reauth_needed"`
-	LastCheckedAt    *time.Time        `json:"last_checked_at,omitempty"`
-	LastCheckOK      bool              `json:"last_check_ok"`
-	LastErrorSummary *string           `json:"last_error_summary,omitempty"`
-	ActionRequired   *string           `json:"action_required,omitempty"`
+	Name               string               `json:"name"`
+	Mode               string               `json:"mode"`
+	BaseURL            string               `json:"base_url,omitempty"`
+	AuthToken          string               `json:"auth_token,omitempty"`
+	AuthHeaders        []mcp.AuthHeader     `json:"auth_headers,omitempty"`
+	TimeoutSeconds     int                  `json:"timeout_seconds"`
+	Command            string               `json:"command,omitempty"`
+	Args               []string             `json:"args,omitempty"`
+	Env                map[string]string    `json:"env,omitempty"`
+	Enabled            bool                 `json:"enabled"`
+	AuthType           string            `json:"auth_type"`
+	ConnectionStatus   string            `json:"connection_status"`
+	AuthStatus         string            `json:"auth_status"`
+	ReauthNeeded       bool              `json:"reauth_needed"`
+	LastCheckedAt      *time.Time        `json:"last_checked_at,omitempty"`
+	LastCheckOK        bool              `json:"last_check_ok"`
+	LastErrorSummary   *string           `json:"last_error_summary,omitempty"`
+	ActionRequired     *string           `json:"action_required,omitempty"`
+	OAuthProviderID    string            `json:"oauth_provider_id,omitempty"`
+	OAuthProviderLabel string            `json:"oauth_provider_label,omitempty"`
 }
 
 type AdminServerUpsertRequest struct {
@@ -69,6 +79,7 @@ type AdminServerUpsertRequest struct {
 	Mode           string            `json:"mode"`
 	BaseURL        string            `json:"base_url,omitempty"`
 	AuthToken      string            `json:"auth_token,omitempty"`
+	AuthHeaders    []mcp.AuthHeader  `json:"auth_headers,omitempty"`
 	TimeoutSeconds int               `json:"timeout_seconds,omitempty"`
 	Command        string            `json:"command,omitempty"`
 	Args           []string          `json:"args,omitempty"`
@@ -93,6 +104,18 @@ type ServerTestResponse struct {
 	LastCheckOK      bool       `json:"last_check_ok"`
 	LastErrorSummary *string    `json:"last_error_summary,omitempty"`
 	ActionRequired   *string    `json:"action_required,omitempty"`
+}
+
+type OAuthConnectStartResponse struct {
+	ConnectURL string `json:"connect_url"`
+	State      string `json:"state"`
+}
+
+type OAuthConnectStatusResponse struct {
+	Status      string     `json:"status"`
+	Message     *string    `json:"message,omitempty"`
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
 }
 
 type jsonRPCRequest struct {
@@ -132,6 +155,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/api/v1/admin/invocations/", h.adminInvocationDetail)
 	mux.HandleFunc("/api/v1/admin/servers", h.adminServers)
 	mux.HandleFunc("/api/v1/admin/servers/", h.adminServerDetail)
+	mux.HandleFunc("/api/v1/admin/oauth/callback", h.oauthCallback)
 	mux.HandleFunc("/ui", h.uiIndex)
 	mux.Handle("/ui/", http.StripPrefix("/ui/", h.staticHTTP))
 	mux.HandleFunc("/", h.root)
@@ -436,6 +460,36 @@ func (h *Handler) adminServerDetail(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
+	if strings.HasSuffix(trimmed, "/connect") {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		name := strings.TrimSuffix(trimmed, "/connect")
+		name = strings.TrimSuffix(name, "/")
+		resp, err := h.serverSvc.StartConnect(r.Context(), name, baseURL(r))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	if strings.HasSuffix(trimmed, "/connect/status") {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		name := strings.TrimSuffix(trimmed, "/connect/status")
+		name = strings.TrimSuffix(name, "/")
+		resp, err := h.serverSvc.GetConnectStatus(r.Context(), name)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
 	name := trimmed
 	switch r.Method {
 	case http.MethodGet:
@@ -477,6 +531,25 @@ func (h *Handler) adminServerDetail(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
+	state := strings.TrimSpace(r.URL.Query().Get("state"))
+	code := strings.TrimSpace(r.URL.Query().Get("code"))
+	errText := strings.TrimSpace(r.URL.Query().Get("error"))
+	resp, err := h.serverSvc.CompleteConnect(r.Context(), state, code, errText)
+	if err != nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`<html><body><h1>OAuth connect failed</h1><p>` + escapeHTMLString(err.Error()) + `</p><script>window.close && window.close()</script></body></html>`))
+		return
+	}
+	message := "OAuth connect completed. You can return to Atryum."
+	if resp.Message != nil {
+		message = *resp.Message
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(`<html><body><h1>OAuth connect complete</h1><p>` + escapeHTMLString(message) + `</p><script>window.close && window.close()</script></body></html>`))
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -500,9 +573,10 @@ func readUintQuery(r *http.Request, key string, fallback uint64) uint64 {
 }
 
 type ServerAdminService struct {
-	repo    serverRepo
-	client  *mcp.Client
-	timeout time.Duration
+	repo      serverRepo
+	oauthRepo *store.OAuthRepo
+	client    *mcp.Client
+	timeout   time.Duration
 }
 
 type serverRepo interface {
@@ -514,8 +588,8 @@ type serverRepo interface {
 	DisableServer(ctx context.Context, name string) error
 }
 
-func NewServerAdminService(repo serverRepo, client *mcp.Client, timeout time.Duration) *ServerAdminService {
-	return &ServerAdminService{repo: repo, client: client, timeout: timeout}
+func NewServerAdminService(repo serverRepo, oauthRepo *store.OAuthRepo, client *mcp.Client, timeout time.Duration) *ServerAdminService {
+	return &ServerAdminService{repo: repo, oauthRepo: oauthRepo, client: client, timeout: timeout}
 }
 
 func (s *ServerAdminService) List(ctx context.Context, filter mcp.ServerFilter) (ServerListResponse, error) {
@@ -559,15 +633,20 @@ func (s *ServerAdminService) Upsert(ctx context.Context, name string, req AdminS
 		enabled = *req.Enabled
 	}
 	upstream := mcp.Upstream{
-		Name:      serverName,
-		Mode:      mcp.UpstreamMode(mode),
-		BaseURL:   strings.TrimRight(strings.TrimSpace(req.BaseURL), "/"),
-		AuthToken: req.AuthToken,
-		Timeout:   time.Duration(defaultIfZero(req.TimeoutSeconds, 30)) * time.Second,
-		Command:   strings.TrimSpace(req.Command),
-		Args:      append([]string(nil), req.Args...),
-		Env:       cloneEnv(req.Env),
-		Enabled:   enabled,
+		Name:        serverName,
+		Mode:        mcp.UpstreamMode(mode),
+		BaseURL:     strings.TrimRight(strings.TrimSpace(req.BaseURL), "/"),
+		AuthToken:   req.AuthToken,
+		AuthHeaders: append([]mcp.AuthHeader(nil), req.AuthHeaders...),
+		Timeout:     time.Duration(defaultIfZero(req.TimeoutSeconds, 30)) * time.Second,
+		Command:     strings.TrimSpace(req.Command),
+		Args:        append([]string(nil), req.Args...),
+		Env:         cloneEnv(req.Env),
+		Enabled:     enabled,
+	}
+	prepared, prepareErr := authprovider.Prepare(ctx, authprovider.NewRegistry(), upstream)
+	if prepareErr == nil {
+		upstream = prepared
 	}
 	upstream.Status = inferServerStatus(upstream)
 	if err := validateUpstream(upstream); err != nil {
@@ -591,6 +670,9 @@ func (s *ServerAdminService) Test(ctx context.Context, name string) (ServerTestR
 	if err != nil {
 		return ServerTestResponse{}, err
 	}
+	if token, tokenErr := s.oauthRepo.GetCredential(ctx, name); tokenErr == nil {
+		upstream.AuthToken = token.AccessToken
+	}
 	testCtx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 	result := s.client.TestConnection(testCtx, upstream)
@@ -609,8 +691,122 @@ func (s *ServerAdminService) Test(ctx context.Context, name string) (ServerTestR
 	return ServerTestResponse{Ok: result.Ok, Message: result.Message, ConnectionStatus: string(result.ConnectionStatus), AuthStatus: string(result.AuthStatus), ReauthNeeded: result.ReauthNeeded, LastCheckedAt: upstream.Status.LastCheckedAt, LastCheckOK: result.LastCheckOK, LastErrorSummary: result.LastErrorSummary, ActionRequired: result.ActionRequired}, nil
 }
 
+func (s *ServerAdminService) StartConnect(ctx context.Context, name string, appBaseURL string) (OAuthConnectStartResponse, error) {
+	upstream, err := s.repo.GetServerAny(ctx, name)
+	if err != nil {
+		return OAuthConnectStartResponse{}, err
+	}
+	registry := authprovider.NewRegistry()
+	provider, err := registry.Get(upstream.OAuthProviderID)
+	if err != nil {
+		provider, err = registry.Detect(ctx, upstream)
+		if err != nil {
+			return OAuthConnectStartResponse{}, fmt.Errorf("no connectable auth provider detected for this server")
+		}
+	}
+	stateToken, err := randomToken(24)
+	if err != nil {
+		return OAuthConnectStartResponse{}, err
+	}
+	redirectURI := strings.TrimRight(appBaseURL, "/") + "/api/v1/admin/oauth/callback"
+	connectReq, err := provider.BuildConnectRequest(ctx, upstream, redirectURI, stateToken)
+	if err != nil {
+		return OAuthConnectStartResponse{}, err
+	}
+	if err := s.oauthRepo.UpsertConnectSession(ctx, store.OAuthConnectSession{State: stateToken, ServerName: name, Status: "pending", CodeVerifier: connectReq.CodeVerifier, RedirectURI: redirectURI, StartedAt: time.Now().UTC()}); err != nil {
+		return OAuthConnectStartResponse{}, err
+	}
+	return OAuthConnectStartResponse{ConnectURL: connectReq.URL, State: stateToken}, nil
+}
+
+func (s *ServerAdminService) GetConnectStatus(ctx context.Context, name string) (OAuthConnectStatusResponse, error) {
+	session, err := s.oauthRepo.GetLatestConnectSessionByServer(ctx, name)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return OAuthConnectStatusResponse{Status: "unknown"}, nil
+		}
+		return OAuthConnectStatusResponse{}, err
+	}
+	return OAuthConnectStatusResponse{Status: session.Status, Message: session.ErrorMessage, StartedAt: &session.StartedAt, CompletedAt: session.CompletedAt}, nil
+}
+
+func (s *ServerAdminService) CompleteConnect(ctx context.Context, state string, code string, errorText string) (OAuthConnectStatusResponse, error) {
+	if strings.TrimSpace(state) == "" {
+		return OAuthConnectStatusResponse{}, fmt.Errorf("missing oauth state")
+	}
+	session, err := s.oauthRepo.GetConnectSession(ctx, state)
+	if err != nil {
+		return OAuthConnectStatusResponse{}, err
+	}
+	if errorText != "" {
+		now := time.Now().UTC()
+		_ = s.oauthRepo.UpsertConnectSession(ctx, store.OAuthConnectSession{State: session.State, ServerName: session.ServerName, Status: "failed", RedirectURI: session.RedirectURI, StartedAt: session.StartedAt, CompletedAt: &now, ErrorMessage: &errorText})
+		upstream, getErr := s.repo.GetServerAny(ctx, session.ServerName)
+		if getErr == nil {
+			upstream.Status.AuthStatus = mcp.AuthStatusReauthNeeded
+			upstream.Status.ReauthNeeded = true
+			upstream.Status.ConnectionStatus = mcp.ConnectionStatusNeedsAttention
+			upstream.Status.LastErrorSummary = &errorText
+			action := "retry connect"
+			upstream.Status.ActionRequired = &action
+			_ = s.repo.UpdateServerStatus(ctx, session.ServerName, upstream.Status)
+		}
+		return OAuthConnectStatusResponse{Status: "failed", Message: &errorText, StartedAt: &session.StartedAt, CompletedAt: &now}, nil
+	}
+	if strings.TrimSpace(code) == "" {
+		return OAuthConnectStatusResponse{}, fmt.Errorf("missing oauth code")
+	}
+	upstream, err := s.repo.GetServerAny(ctx, session.ServerName)
+	if err != nil {
+		return OAuthConnectStatusResponse{}, err
+	}
+	registry := authprovider.NewRegistry()
+	provider, providerErr := registry.Get(upstream.OAuthProviderID)
+	if providerErr != nil {
+		provider, providerErr = registry.Detect(ctx, upstream)
+	}
+	if providerErr != nil {
+		return OAuthConnectStatusResponse{}, providerErr
+	}
+	token, err := provider.ExchangeAuthCode(ctx, s.client, upstream, code, session.RedirectURI, authprovider.ConnectSession{State: session.State, CodeVerifier: session.CodeVerifier})
+	if err != nil {
+		now := time.Now().UTC()
+		message := err.Error()
+		_ = s.oauthRepo.UpsertConnectSession(ctx, store.OAuthConnectSession{State: session.State, ServerName: session.ServerName, Status: "failed", RedirectURI: session.RedirectURI, StartedAt: session.StartedAt, CompletedAt: &now, ErrorMessage: &message})
+		upstream.Status.AuthStatus = mcp.AuthStatusInvalid
+		upstream.Status.ReauthNeeded = true
+		upstream.Status.ConnectionStatus = mcp.ConnectionStatusNeedsAttention
+		upstream.Status.LastErrorSummary = &message
+		action := "retry connect"
+		upstream.Status.ActionRequired = &action
+		_ = s.repo.UpdateServerStatus(ctx, session.ServerName, upstream.Status)
+		return OAuthConnectStatusResponse{Status: "failed", Message: &message, StartedAt: &session.StartedAt, CompletedAt: &now}, nil
+	}
+	if err := s.oauthRepo.UpsertCredential(ctx, store.OAuthCredential{ServerName: session.ServerName, AccessToken: token.AccessToken, RefreshToken: token.RefreshToken, TokenType: token.TokenType, Scope: token.Scope, ExpiresAt: token.ExpiresAt}); err != nil {
+		return OAuthConnectStatusResponse{}, err
+	}
+	upstream.AuthToken = token.AccessToken
+	upstream.Status.AuthType = mcp.AuthTypeHosted
+	upstream.Status.AuthStatus = mcp.AuthStatusReady
+	upstream.Status.ReauthNeeded = false
+	upstream.Status.ConnectionStatus = mcp.ConnectionStatusReady
+	upstream.Status.LastErrorSummary = nil
+	upstream.Status.ActionRequired = nil
+	now := time.Now().UTC()
+	upstream.Status.LastCheckedAt = &now
+	upstream.Status.LastCheckOK = true
+	if err := s.repo.UpdateServerStatus(ctx, session.ServerName, upstream.Status); err != nil {
+		return OAuthConnectStatusResponse{}, err
+	}
+	message := "connected successfully"
+	if err := s.oauthRepo.UpsertConnectSession(ctx, store.OAuthConnectSession{State: session.State, ServerName: session.ServerName, Status: "succeeded", RedirectURI: session.RedirectURI, StartedAt: session.StartedAt, CompletedAt: &now, ErrorMessage: nil}); err != nil {
+		return OAuthConnectStatusResponse{}, err
+	}
+	return OAuthConnectStatusResponse{Status: "succeeded", Message: &message, StartedAt: &session.StartedAt, CompletedAt: &now}, nil
+}
+
 func toAdminServer(upstream mcp.Upstream) AdminServer {
-	return AdminServer{Name: upstream.Name, Mode: string(upstream.Mode), BaseURL: upstream.BaseURL, AuthToken: upstream.AuthToken, TimeoutSeconds: int(upstream.Timeout / time.Second), Command: upstream.Command, Args: append([]string(nil), upstream.Args...), Env: cloneEnv(upstream.Env), Enabled: upstream.Enabled, AuthType: string(upstream.Status.AuthType), ConnectionStatus: string(upstream.Status.ConnectionStatus), AuthStatus: string(upstream.Status.AuthStatus), ReauthNeeded: upstream.Status.ReauthNeeded, LastCheckedAt: upstream.Status.LastCheckedAt, LastCheckOK: upstream.Status.LastCheckOK, LastErrorSummary: upstream.Status.LastErrorSummary, ActionRequired: upstream.Status.ActionRequired}
+	return AdminServer{Name: upstream.Name, Mode: string(upstream.Mode), BaseURL: upstream.BaseURL, AuthToken: upstream.AuthToken, AuthHeaders: append([]mcp.AuthHeader(nil), upstream.AuthHeaders...), TimeoutSeconds: int(upstream.Timeout / time.Second), Command: upstream.Command, Args: append([]string(nil), upstream.Args...), Env: cloneEnv(upstream.Env), Enabled: upstream.Enabled, AuthType: string(upstream.Status.AuthType), ConnectionStatus: string(upstream.Status.ConnectionStatus), AuthStatus: string(upstream.Status.AuthStatus), ReauthNeeded: upstream.Status.ReauthNeeded, LastCheckedAt: upstream.Status.LastCheckedAt, LastCheckOK: upstream.Status.LastCheckOK, LastErrorSummary: upstream.Status.LastErrorSummary, ActionRequired: upstream.Status.ActionRequired, OAuthProviderID: upstream.OAuthProviderID, OAuthProviderLabel: upstream.OAuthProviderLabel}
 }
 
 func validateUpstream(upstream mcp.Upstream) error {
@@ -656,16 +852,43 @@ func cloneEnv(in map[string]string) map[string]string {
 
 func inferServerStatus(upstream mcp.Upstream) mcp.ServerStatus {
 	copyUpstream := upstream
+	copyUpstream.Status.ConnectionStatus = mcp.ConnectionStatusUnknown
 	if !copyUpstream.Enabled {
 		copyUpstream.Status.ConnectionStatus = mcp.ConnectionStatusDisabled
 	}
 	if copyUpstream.Mode == mcp.UpstreamModeHTTP {
-		if strings.TrimSpace(copyUpstream.AuthToken) != "" {
+		if strings.TrimSpace(copyUpstream.OAuthProviderID) != "" {
+			switch copyUpstream.OAuthProviderID {
+			case "bearer_token":
+				copyUpstream.Status.AuthType = mcp.AuthTypeBearer
+				if strings.TrimSpace(copyUpstream.AuthToken) == "" {
+					copyUpstream.Status.AuthStatus = mcp.AuthStatusMissingCredentials
+					action := "add a bearer token"
+					copyUpstream.Status.ActionRequired = &action
+				} else {
+					copyUpstream.Status.AuthStatus = mcp.AuthStatusUnknown
+				}
+			case "custom_headers":
+				copyUpstream.Status.AuthType = mcp.AuthTypeEnv
+				copyUpstream.Status.AuthStatus = mcp.AuthStatusUnknown
+			case "oauth_dcr":
+				copyUpstream.Status.AuthType = mcp.AuthTypeHosted
+				copyUpstream.Status.AuthStatus = mcp.AuthStatusMissingCredentials
+				action := "dynamic client registration is not implemented yet"
+				copyUpstream.Status.ActionRequired = &action
+			default:
+				copyUpstream.Status.AuthType = mcp.AuthTypeHosted
+				copyUpstream.Status.AuthStatus = mcp.AuthStatusMissingCredentials
+				action := "connect this server"
+				copyUpstream.Status.ActionRequired = &action
+			}
+		} else if strings.TrimSpace(copyUpstream.AuthToken) != "" {
 			copyUpstream.Status.AuthType = mcp.AuthTypeBearer
+			copyUpstream.Status.AuthStatus = mcp.AuthStatusUnknown
 		} else {
 			copyUpstream.Status.AuthType = mcp.AuthTypeHosted
+			copyUpstream.Status.AuthStatus = mcp.AuthStatusUnknown
 		}
-		copyUpstream.Status.AuthStatus = mcp.AuthStatusUnknown
 	} else {
 		copyUpstream.Status.AuthType = mcp.AuthTypeNone
 		for key, value := range copyUpstream.Env {
@@ -735,6 +958,34 @@ func invocationSignature(items []invocation.InvocationResponse) string {
 func mustJSONString(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
+}
+
+func baseURL(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if proto := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); proto != "" {
+		scheme = proto
+	}
+	host := r.Host
+	if forwardedHost := strings.TrimSpace(r.Header.Get("X-Forwarded-Host")); forwardedHost != "" {
+		host = forwardedHost
+	}
+	return scheme + "://" + host
+}
+
+func randomToken(size int) (string, error) {
+	buf := make([]byte, size)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+func escapeHTMLString(value string) string {
+	replacer := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;", "'", "&#39;")
+	return replacer.Replace(value)
 }
 
 func (h *Handler) emitTraceEvent(ctx context.Context, server string, eventType string, payload map[string]any) error {

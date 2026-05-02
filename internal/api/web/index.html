@@ -86,6 +86,7 @@
               <h2>Server editor</h2>
               <div class="button-row">
                 <button id="test-server">Test</button>
+                <button id="connect-server">Connect</button>
                 <button id="toggle-server-enabled">Disable</button>
                 <button id="delete-server" class="danger">Delete</button>
               </div>
@@ -112,9 +113,9 @@
                 <span>Timeout seconds</span>
                 <input id="server-timeout" type="number" min="1" value="30" />
               </label>
-              <label class="field-http">
-                <span>Auth token</span>
-                <input id="server-auth-token" />
+              <label class="field-http full-width">
+                <span>Auth / provider</span>
+                <input id="server-auth-summary" disabled placeholder="Detected automatically from URL or current auth state" />
               </label>
               <label class="field-stdio">
                 <span>Command</span>

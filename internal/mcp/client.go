@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -67,17 +68,76 @@ type Tool struct {
 	InputSchema json.RawMessage `json:"inputSchema,omitempty"`
 }
 
+type OAuthToken struct {
+	AccessToken  string
+	RefreshToken string
+	TokenType    string
+	Scope        string
+	ExpiresAt    *time.Time
+}
+
+type AuthHeader struct {
+	Name  string
+	Value string
+}
+
 type Upstream struct {
-	Name      string
-	Mode      UpstreamMode
-	BaseURL   string
-	AuthToken string
-	Timeout   time.Duration
-	Command   string
-	Args      []string
-	Env       map[string]string
-	Enabled   bool
-	Status    ServerStatus
+	Name               string
+	Mode               UpstreamMode
+	BaseURL            string
+	AuthToken          string
+	AuthHeaders        []AuthHeader
+	Timeout            time.Duration
+	Command            string
+	Args               []string
+	Env                map[string]string
+	Enabled            bool
+	Status             ServerStatus
+	OAuthProviderID    string
+	OAuthProviderLabel string
+	OAuthAuthorizeURL  string
+	OAuthTokenURL      string
+	OAuthClientID      string
+	OAuthClientSecret  string
+	OAuthScopes        string
+}
+
+func EncodeAuthHeaders(headers []AuthHeader) map[string]string {
+	if len(headers) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(headers))
+	for _, header := range headers {
+		name := strings.TrimSpace(header.Name)
+		value := strings.TrimSpace(header.Value)
+		if name == "" || value == "" {
+			continue
+		}
+		out[name] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func DecodeAuthHeaders(env map[string]string) []AuthHeader {
+	if len(env) == 0 {
+		return nil
+	}
+	out := make([]AuthHeader, 0, len(env))
+	for name, value := range env {
+		name = strings.TrimSpace(name)
+		value = strings.TrimSpace(value)
+		if name == "" || value == "" {
+			continue
+		}
+		out = append(out, AuthHeader{Name: name, Value: value})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 type ServerStore interface {
@@ -222,6 +282,62 @@ func (c *Client) ListTools(ctx context.Context, upstream Upstream) ([]Tool, erro
 	}
 }
 
+func (c *Client) ExchangeOAuthCode(ctx context.Context, upstream Upstream, code string, redirectURI string, codeVerifier string) (OAuthToken, error) {
+	if strings.TrimSpace(upstream.OAuthTokenURL) == "" {
+		return OAuthToken{}, fmt.Errorf("oauth_token_url is required")
+	}
+	if strings.TrimSpace(upstream.OAuthClientID) == "" {
+		return OAuthToken{}, fmt.Errorf("oauth client id is required")
+	}
+	if strings.TrimSpace(upstream.OAuthClientSecret) == "" && strings.TrimSpace(codeVerifier) == "" {
+		return OAuthToken{}, fmt.Errorf("oauth client secret or pkce code verifier is required")
+	}
+	values := url.Values{}
+	values.Set("grant_type", "authorization_code")
+	values.Set("code", code)
+	values.Set("redirect_uri", redirectURI)
+	values.Set("client_id", upstream.OAuthClientID)
+	if strings.TrimSpace(upstream.OAuthClientSecret) != "" {
+		values.Set("client_secret", upstream.OAuthClientSecret)
+	}
+	if strings.TrimSpace(codeVerifier) != "" {
+		values.Set("code_verifier", codeVerifier)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstream.OAuthTokenURL, strings.NewReader(values.Encode()))
+	if err != nil {
+		return OAuthToken{}, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return OAuthToken{}, err
+	}
+	defer resp.Body.Close()
+	var payload struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		TokenType    string `json:"token_type"`
+		Scope        string `json:"scope"`
+		ExpiresIn    int    `json:"expires_in"`
+		Error        string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return OAuthToken{}, err
+	}
+	if resp.StatusCode >= http.StatusBadRequest || payload.Error != "" || payload.AccessToken == "" {
+		if payload.Error != "" {
+			return OAuthToken{}, fmt.Errorf("oauth token exchange failed: %s", payload.Error)
+		}
+		return OAuthToken{}, fmt.Errorf("oauth token exchange failed with status %d", resp.StatusCode)
+	}
+	var expiresAt *time.Time
+	if payload.ExpiresIn > 0 {
+		t := time.Now().UTC().Add(time.Duration(payload.ExpiresIn) * time.Second)
+		expiresAt = &t
+	}
+	return OAuthToken{AccessToken: payload.AccessToken, RefreshToken: payload.RefreshToken, TokenType: payload.TokenType, Scope: payload.Scope, ExpiresAt: expiresAt}, nil
+}
+
 func (c *Client) TestConnection(ctx context.Context, upstream Upstream) ConnectionTestResult {
 	if !upstream.Enabled {
 		message := "server is disabled"
@@ -258,9 +374,7 @@ func (c *Client) invokeHTTP(ctx context.Context, upstream Upstream, tool string,
 		return InvokeResult{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if upstream.AuthToken != "" {
-		req.Header.Set("Authorization", "Bearer "+upstream.AuthToken)
-	}
+	applyAuthHeaders(req, upstream)
 	resp, err := client.Do(req)
 	if err != nil {
 		return InvokeResult{}, err
@@ -294,9 +408,7 @@ func (c *Client) listToolsHTTP(ctx context.Context, upstream Upstream) ([]Tool, 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	if upstream.AuthToken != "" {
-		req.Header.Set("Authorization", "Bearer "+upstream.AuthToken)
-	}
+	applyAuthHeaders(req, upstream)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -477,6 +589,9 @@ func inferInitialStatus(upstream Upstream) ServerStatus {
 
 func inferAuthType(upstream Upstream) ServerAuthType {
 	if upstream.Mode == UpstreamModeHTTP {
+		if strings.TrimSpace(upstream.OAuthAuthorizeURL) != "" && strings.TrimSpace(upstream.OAuthTokenURL) != "" {
+			return AuthTypeHosted
+		}
 		if strings.TrimSpace(upstream.AuthToken) != "" {
 			return AuthTypeBearer
 		}
@@ -493,6 +608,9 @@ func inferAuthStatus(upstream Upstream, authType ServerAuthType) ServerAuthStatu
 	case UpstreamModeHTTP:
 		if strings.TrimSpace(upstream.BaseURL) == "" {
 			return AuthStatusUnknown
+		}
+		if strings.TrimSpace(upstream.OAuthAuthorizeURL) != "" && strings.TrimSpace(upstream.OAuthTokenURL) != "" {
+			return AuthStatusMissingCredentials
 		}
 		if authType == AuthTypeBearer && strings.TrimSpace(upstream.AuthToken) == "" {
 			return AuthStatusMissingCredentials
@@ -516,6 +634,10 @@ func inferActionRequired(upstream Upstream, authStatus ServerAuthStatus) *string
 		message := "enable the server to use it"
 		return &message
 	}
+	if strings.TrimSpace(upstream.OAuthAuthorizeURL) != "" && strings.TrimSpace(upstream.OAuthTokenURL) != "" && authStatus != AuthStatusReady {
+		message := "connect this server to complete OAuth"
+		return &message
+	}
 	if authStatus == AuthStatusMissingCredentials {
 		if upstream.Mode == UpstreamModeHTTP {
 			message := "add credentials or verify the hosted server auth flow"
@@ -533,11 +655,17 @@ func (c *Client) testHTTP(ctx context.Context, upstream Upstream) ConnectionTest
 		action := "set base_url for this server"
 		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusNeedsAttention, AuthStatus: AuthStatusUnknown, LastCheckOK: false, LastErrorSummary: &message, ActionRequired: &action}
 	}
+	if strings.TrimSpace(upstream.OAuthAuthorizeURL) != "" && strings.TrimSpace(upstream.AuthToken) == "" {
+		message := "oauth connection required"
+		action := "connect this server"
+		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusNeedsAttention, AuthStatus: AuthStatusMissingCredentials, ReauthNeeded: false, LastCheckOK: false, LastErrorSummary: &message, ActionRequired: &action}
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, upstream.BaseURL, nil)
 	if err != nil {
 		message := err.Error()
 		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusNeedsAttention, AuthStatus: AuthStatusUnknown, LastCheckOK: false, LastErrorSummary: &message}
 	}
+	applyAuthHeaders(req, upstream)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		message := err.Error()
@@ -546,7 +674,7 @@ func (c *Client) testHTTP(ctx context.Context, upstream Upstream) ConnectionTest
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		message := fmt.Sprintf("http %d", resp.StatusCode)
-		action := "refresh or update credentials"
+		action := "refresh or reconnect credentials"
 		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusNeedsAttention, AuthStatus: AuthStatusInvalid, ReauthNeeded: true, LastCheckOK: false, LastErrorSummary: &message, ActionRequired: &action}
 	}
 	if resp.StatusCode >= http.StatusBadRequest {
@@ -642,6 +770,20 @@ func classifyActionRequired(message string) *string {
 		return &action
 	default:
 		return nil
+	}
+}
+
+func applyAuthHeaders(req *http.Request, upstream Upstream) {
+	if strings.TrimSpace(upstream.AuthToken) != "" {
+		req.Header.Set("Authorization", "Bearer "+upstream.AuthToken)
+	}
+	for _, header := range upstream.AuthHeaders {
+		name := strings.TrimSpace(header.Name)
+		value := strings.TrimSpace(header.Value)
+		if name == "" || value == "" {
+			continue
+		}
+		req.Header.Set(name, value)
 	}
 }
 

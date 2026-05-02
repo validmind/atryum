@@ -8,6 +8,7 @@ const state = {
   lastInvocationSignature: '',
   invocationViews: { detail: 'raw', events: 'raw' },
   friendlyExpanded: { detail: false, events: false },
+  connectStatusPoll: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -47,6 +48,13 @@ $('#test-server').addEventListener('click', async () => {
     return;
   }
   await testServer(state.editingServerName);
+});
+$('#connect-server').addEventListener('click', async () => {
+  if (!state.editingServerName) {
+    setServerStatus('Select or save a server first.', true);
+    return;
+  }
+  await connectServer(state.editingServerName);
 });
 $('#toggle-server-enabled').addEventListener('click', async () => {
   if (!state.editingServerName) {
@@ -216,6 +224,8 @@ async function loadServerDetail(name) {
   renderServerMeta(detail);
   setServerStatus(`Loaded server ${detail.name}.`, false);
   $('#toggle-server-enabled').textContent = detail.enabled ? 'Disable' : 'Enable';
+  $('#connect-server').textContent = detail.reauth_needed || detail.auth_status === 'missing_credentials' ? 'Reconnect' : 'Connect';
+  $('#connect-server').disabled = !detail.oauth_provider_id;
   await loadServersSelectionOnly();
 }
 
@@ -231,7 +241,7 @@ function fillServerForm(detail) {
   $('#server-mode').value = detail.mode || 'http';
   $('#server-base-url').value = detail.base_url || '';
   $('#server-timeout').value = detail.timeout_seconds || 30;
-  $('#server-auth-token').value = detail.auth_token || '';
+  $('#server-auth-summary').value = detail.oauth_provider_label || detail.auth_type || 'none';
   $('#server-command').value = detail.command || '';
   $('#server-args').value = JSON.stringify(detail.args || [], null, 2);
   $('#server-env').value = JSON.stringify(detail.env || {}, null, 2);
@@ -275,6 +285,8 @@ function startNewServer() {
   $('#server-enabled').checked = true;
   $('#server-mode').value = 'http';
   $('#toggle-server-enabled').textContent = 'Disable';
+  $('#connect-server').textContent = 'Connect';
+  $('#connect-server').disabled = true;
   $('#server-badges').innerHTML = [renderBadge('unknown'), renderBadge('unknown'), renderBadge('not_tested', 'neutral')].join('');
   $('#server-detail-summary').innerHTML = '<div><strong>Status:</strong> Create and test a server to see readiness and auth state.</div>';
   updateServerModeFields();
@@ -307,6 +319,8 @@ async function saveServer(overrideEnabled) {
     fillServerForm(saved);
     renderServerMeta(saved);
     $('#toggle-server-enabled').textContent = saved.enabled ? 'Disable' : 'Enable';
+    $('#connect-server').textContent = saved.reauth_needed || saved.auth_status === 'missing_credentials' ? 'Reconnect' : 'Connect';
+  $('#connect-server').disabled = !saved.oauth_provider_id;
     setServerStatus(`Saved server ${saved.name}.`, false);
     await loadServers();
     return saved;
@@ -322,7 +336,6 @@ function buildServerPayload(overrideEnabled) {
     name: $('#server-name').value.trim(),
     mode: $('#server-mode').value,
     base_url: $('#server-base-url').value.trim(),
-    auth_token: $('#server-auth-token').value,
     timeout_seconds: Number.parseInt($('#server-timeout').value, 10) || 30,
     command: $('#server-command').value.trim(),
     args: parseJSONField('#server-args', 'Args JSON array', true),
@@ -356,6 +369,46 @@ async function testServer(name) {
     await loadServers();
   } catch (err) {
     setServerStatus(err.message || String(err), true);
+  }
+}
+
+async function connectServer(name) {
+  try {
+    const result = await fetchJSON(`/api/v1/admin/servers/${encodeURIComponent(name)}/connect`, { method: 'POST' });
+    setServerStatus('Opening OAuth connect flow…', false);
+    window.open(result.connect_url, '_blank', 'noopener,noreferrer');
+    startConnectStatusPolling(name);
+  } catch (err) {
+    setServerStatus(err.message || String(err), true);
+  }
+}
+
+function startConnectStatusPolling(name) {
+  stopConnectStatusPolling();
+  state.connectStatusPoll = window.setInterval(async () => {
+    try {
+      const status = await fetchJSON(`/api/v1/admin/servers/${encodeURIComponent(name)}/connect/status`);
+      if (status.status === 'succeeded') {
+        stopConnectStatusPolling();
+        setServerStatus(status.message || 'OAuth connect completed.', false);
+        await loadServerDetail(name);
+        return;
+      }
+      if (status.status === 'failed') {
+        stopConnectStatusPolling();
+        setServerStatus(status.message || 'OAuth connect failed.', true);
+        await loadServerDetail(name);
+      }
+    } catch {
+      // ignore temporary polling errors in UI
+    }
+  }, 2000);
+}
+
+function stopConnectStatusPolling() {
+  if (state.connectStatusPoll !== null) {
+    window.clearInterval(state.connectStatusPoll);
+    state.connectStatusPoll = null;
   }
 }
 
@@ -491,4 +544,7 @@ loadInvocations().catch((err) => {
   $('#invocation-detail').textContent = err.message;
   $('#invocation-live-status').textContent = 'Live updates error';
 });
-window.addEventListener('beforeunload', disconnectInvocationStream);
+window.addEventListener('beforeunload', () => {
+  disconnectInvocationStream();
+  stopConnectStatusPolling();
+});

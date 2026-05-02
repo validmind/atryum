@@ -42,13 +42,14 @@ func main() {
 	invRepo := store.NewInvocationRepo(db)
 	eventRepo := store.NewEventRepo(db)
 	serverRepo := store.NewServerRepo(db)
+	oauthRepo := store.NewOAuthRepo(db)
 	resolver := mcp.NewResolver(serverRepo, cfg)
 	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
 		log.Fatalf("bootstrap servers: %v", err)
 	}
 	client := mcp.NewHTTPClient()
 	service := invocation.NewService(invRepo, eventRepo, resolver, client, time.Duration(cfg.Defaults.RequestTimeoutSeconds)*time.Second)
-	serverAdmin := api.NewServerAdminService(serverRepo, client, 5*time.Second)
+	serverAdmin := api.NewServerAdminService(serverRepo, oauthRepo, client, 5*time.Second)
 	handler := api.NewHandler(service, serverAdmin)
 
 	srv := &http.Server{

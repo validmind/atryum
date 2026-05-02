@@ -19,10 +19,34 @@ var psql = sq.StatementBuilder.PlaceholderFormat(sq.Question)
 type InvocationRepo struct{ db *sql.DB }
 type EventRepo struct{ db *sql.DB }
 type ServerRepo struct{ db *sql.DB }
+type OAuthRepo struct{ db *sql.DB }
+
+type OAuthCredential struct {
+	ServerName   string
+	AccessToken  string
+	RefreshToken string
+	TokenType    string
+	Scope        string
+	ExpiresAt    *time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+type OAuthConnectSession struct {
+	State        string
+	ServerName   string
+	Status       string
+	CodeVerifier string
+	RedirectURI  string
+	StartedAt    time.Time
+	CompletedAt  *time.Time
+	ErrorMessage *string
+}
 
 func NewInvocationRepo(db *sql.DB) *InvocationRepo { return &InvocationRepo{db: db} }
 func NewEventRepo(db *sql.DB) *EventRepo           { return &EventRepo{db: db} }
 func NewServerRepo(db *sql.DB) *ServerRepo         { return &ServerRepo{db: db} }
+func NewOAuthRepo(db *sql.DB) *OAuthRepo           { return &OAuthRepo{db: db} }
 
 func InitDB(db *sql.DB) error {
 	if _, err := db.Exec(`PRAGMA foreign_keys = ON;`); err != nil {
@@ -73,10 +97,40 @@ func InitDB(db *sql.DB) error {
 		last_check_ok INTEGER NOT NULL DEFAULT 0,
 		last_error_summary TEXT,
 		action_required TEXT,
+		oauth_provider_id TEXT,
+		oauth_provider_label TEXT,
+		oauth_authorize_url TEXT,
+		oauth_token_url TEXT,
+		oauth_client_id TEXT,
+		oauth_client_secret TEXT,
+		oauth_scopes TEXT,
 		created_at TIMESTAMP NOT NULL,
 		updated_at TIMESTAMP NOT NULL
 	);
 	CREATE INDEX IF NOT EXISTS idx_mcp_servers_enabled_name ON mcp_servers(enabled, name);
+	CREATE TABLE IF NOT EXISTS oauth_credentials (
+		server_name TEXT PRIMARY KEY,
+		access_token TEXT NOT NULL,
+		refresh_token TEXT,
+		token_type TEXT,
+		scope TEXT,
+		expires_at TIMESTAMP,
+		created_at TIMESTAMP NOT NULL,
+		updated_at TIMESTAMP NOT NULL,
+		FOREIGN KEY(server_name) REFERENCES mcp_servers(name) ON DELETE CASCADE
+	);
+	CREATE TABLE IF NOT EXISTS oauth_connect_sessions (
+		state TEXT PRIMARY KEY,
+		server_name TEXT NOT NULL,
+		status TEXT NOT NULL,
+		code_verifier TEXT,
+		redirect_uri TEXT NOT NULL,
+		started_at TIMESTAMP NOT NULL,
+		completed_at TIMESTAMP,
+		error_message TEXT,
+		FOREIGN KEY(server_name) REFERENCES mcp_servers(name) ON DELETE CASCADE
+	);
+	CREATE INDEX IF NOT EXISTS idx_oauth_connect_sessions_server ON oauth_connect_sessions(server_name, started_at DESC);
 	ALTER TABLE mcp_servers ADD COLUMN auth_type TEXT NOT NULL DEFAULT 'none';
 	ALTER TABLE mcp_servers ADD COLUMN connection_status TEXT NOT NULL DEFAULT 'unknown';
 	ALTER TABLE mcp_servers ADD COLUMN auth_status TEXT NOT NULL DEFAULT 'unknown';
@@ -85,11 +139,17 @@ func InitDB(db *sql.DB) error {
 	ALTER TABLE mcp_servers ADD COLUMN last_check_ok INTEGER NOT NULL DEFAULT 0;
 	ALTER TABLE mcp_servers ADD COLUMN last_error_summary TEXT;
 	ALTER TABLE mcp_servers ADD COLUMN action_required TEXT;
+	ALTER TABLE mcp_servers ADD COLUMN oauth_provider_id TEXT;
+	ALTER TABLE mcp_servers ADD COLUMN oauth_provider_label TEXT;
+	ALTER TABLE mcp_servers ADD COLUMN oauth_authorize_url TEXT;
+	ALTER TABLE mcp_servers ADD COLUMN oauth_token_url TEXT;
+	ALTER TABLE mcp_servers ADD COLUMN oauth_client_id TEXT;
+	ALTER TABLE mcp_servers ADD COLUMN oauth_client_secret TEXT;
+	ALTER TABLE mcp_servers ADD COLUMN oauth_scopes TEXT;
 	`
 	_, err := db.Exec(schema)
 	if err != nil {
-		// SQLite may fail on duplicate ALTERs; apply best-effort compatibility migration.
-		if fixErr := ensureServerStatusColumns(db); fixErr != nil {
+		if fixErr := ensureServerColumns(db); fixErr != nil {
 			return fixErr
 		}
 	}
@@ -243,9 +303,9 @@ func (r *ServerRepo) CreateServer(ctx context.Context, upstream mcp.Upstream) er
 		return err
 	}
 	query, args, err := psql.Insert("mcp_servers").Columns(
-		"name", "mode", "base_url", "auth_token", "timeout_seconds", "command", "args_json", "env_json", "enabled", "auth_type", "connection_status", "auth_status", "reauth_needed", "last_checked_at", "last_check_ok", "last_error_summary", "action_required", "created_at", "updated_at",
+		"name", "mode", "base_url", "auth_token", "timeout_seconds", "command", "args_json", "env_json", "enabled", "auth_type", "connection_status", "auth_status", "reauth_needed", "last_checked_at", "last_check_ok", "last_error_summary", "action_required", "oauth_provider_id", "oauth_provider_label", "oauth_authorize_url", "oauth_token_url", "oauth_client_id", "oauth_client_secret", "oauth_scopes", "created_at", "updated_at",
 	).Values(
-		upstream.Name, string(upstream.Mode), emptyToNil(upstream.BaseURL), emptyToNil(upstream.AuthToken), int(upstream.Timeout/time.Second), emptyToNil(upstream.Command), argsJSON, envJSON, boolToInt(upstream.Enabled), string(upstream.Status.AuthType), string(upstream.Status.ConnectionStatus), string(upstream.Status.AuthStatus), boolToInt(upstream.Status.ReauthNeeded), upstream.Status.LastCheckedAt, boolToInt(upstream.Status.LastCheckOK), emptyToNil(derefString(upstream.Status.LastErrorSummary)), emptyToNil(derefString(upstream.Status.ActionRequired)), now, now,
+		upstream.Name, string(upstream.Mode), emptyToNil(upstream.BaseURL), emptyToNil(upstream.AuthToken), int(upstream.Timeout/time.Second), emptyToNil(upstream.Command), argsJSON, envJSON, boolToInt(upstream.Enabled), string(upstream.Status.AuthType), string(upstream.Status.ConnectionStatus), string(upstream.Status.AuthStatus), boolToInt(upstream.Status.ReauthNeeded), upstream.Status.LastCheckedAt, boolToInt(upstream.Status.LastCheckOK), emptyToNil(derefString(upstream.Status.LastErrorSummary)), emptyToNil(derefString(upstream.Status.ActionRequired)), emptyToNil(upstream.OAuthProviderID), emptyToNil(upstream.OAuthProviderLabel), emptyToNil(upstream.OAuthAuthorizeURL), emptyToNil(upstream.OAuthTokenURL), emptyToNil(upstream.OAuthClientID), emptyToNil(upstream.OAuthClientSecret), emptyToNil(upstream.OAuthScopes), now, now,
 	).ToSql()
 	if err != nil {
 		return err
@@ -261,8 +321,8 @@ func (r *ServerRepo) UpsertServer(ctx context.Context, upstream mcp.Upstream) er
 	}
 	now := time.Now().UTC()
 	query := `
-	INSERT INTO mcp_servers (name, mode, base_url, auth_token, timeout_seconds, command, args_json, env_json, enabled, auth_type, connection_status, auth_status, reauth_needed, last_checked_at, last_check_ok, last_error_summary, action_required, created_at, updated_at)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO mcp_servers (name, mode, base_url, auth_token, timeout_seconds, command, args_json, env_json, enabled, auth_type, connection_status, auth_status, reauth_needed, last_checked_at, last_check_ok, last_error_summary, action_required, oauth_provider_id, oauth_provider_label, oauth_authorize_url, oauth_token_url, oauth_client_id, oauth_client_secret, oauth_scopes, created_at, updated_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(name) DO UPDATE SET
 		mode = excluded.mode,
 		base_url = excluded.base_url,
@@ -280,10 +340,17 @@ func (r *ServerRepo) UpsertServer(ctx context.Context, upstream mcp.Upstream) er
 		last_check_ok = excluded.last_check_ok,
 		last_error_summary = excluded.last_error_summary,
 		action_required = excluded.action_required,
+		oauth_provider_id = excluded.oauth_provider_id,
+		oauth_provider_label = excluded.oauth_provider_label,
+		oauth_authorize_url = excluded.oauth_authorize_url,
+		oauth_token_url = excluded.oauth_token_url,
+		oauth_client_id = excluded.oauth_client_id,
+		oauth_client_secret = excluded.oauth_client_secret,
+		oauth_scopes = excluded.oauth_scopes,
 		updated_at = excluded.updated_at
 	`
 	_, err = r.db.ExecContext(ctx, query,
-		upstream.Name, string(upstream.Mode), emptyToNil(upstream.BaseURL), emptyToNil(upstream.AuthToken), int(upstream.Timeout/time.Second), emptyToNil(upstream.Command), argsJSON, envJSON, boolToInt(upstream.Enabled), string(upstream.Status.AuthType), string(upstream.Status.ConnectionStatus), string(upstream.Status.AuthStatus), boolToInt(upstream.Status.ReauthNeeded), upstream.Status.LastCheckedAt, boolToInt(upstream.Status.LastCheckOK), emptyToNil(derefString(upstream.Status.LastErrorSummary)), emptyToNil(derefString(upstream.Status.ActionRequired)), now, now,
+		upstream.Name, string(upstream.Mode), emptyToNil(upstream.BaseURL), emptyToNil(upstream.AuthToken), int(upstream.Timeout/time.Second), emptyToNil(upstream.Command), argsJSON, envJSON, boolToInt(upstream.Enabled), string(upstream.Status.AuthType), string(upstream.Status.ConnectionStatus), string(upstream.Status.AuthStatus), boolToInt(upstream.Status.ReauthNeeded), upstream.Status.LastCheckedAt, boolToInt(upstream.Status.LastCheckOK), emptyToNil(derefString(upstream.Status.LastErrorSummary)), emptyToNil(derefString(upstream.Status.ActionRequired)), emptyToNil(upstream.OAuthProviderID), emptyToNil(upstream.OAuthProviderLabel), emptyToNil(upstream.OAuthAuthorizeURL), emptyToNil(upstream.OAuthTokenURL), emptyToNil(upstream.OAuthClientID), emptyToNil(upstream.OAuthClientSecret), emptyToNil(upstream.OAuthScopes), now, now,
 	)
 	return err
 }
@@ -315,7 +382,7 @@ func (r *ServerRepo) UpdateServerStatus(ctx context.Context, name string, status
 }
 
 func (r *ServerRepo) GetServer(ctx context.Context, name string) (mcp.Upstream, error) {
-	query, args, err := psql.Select("name", "mode", "base_url", "auth_token", "timeout_seconds", "command", "args_json", "env_json", "enabled", "auth_type", "connection_status", "auth_status", "reauth_needed", "last_checked_at", "last_check_ok", "last_error_summary", "action_required").From("mcp_servers").Where(sq.Eq{"name": name, "enabled": 1}).ToSql()
+	query, args, err := psql.Select("name", "mode", "base_url", "auth_token", "timeout_seconds", "command", "args_json", "env_json", "enabled", "auth_type", "connection_status", "auth_status", "reauth_needed", "last_checked_at", "last_check_ok", "last_error_summary", "action_required", "oauth_provider_id", "oauth_provider_label", "oauth_authorize_url", "oauth_token_url", "oauth_client_id", "oauth_client_secret", "oauth_scopes").From("mcp_servers").Where(sq.Eq{"name": name, "enabled": 1}).ToSql()
 	if err != nil {
 		return mcp.Upstream{}, err
 	}
@@ -324,7 +391,7 @@ func (r *ServerRepo) GetServer(ctx context.Context, name string) (mcp.Upstream, 
 }
 
 func (r *ServerRepo) GetServerAny(ctx context.Context, name string) (mcp.Upstream, error) {
-	query, args, err := psql.Select("name", "mode", "base_url", "auth_token", "timeout_seconds", "command", "args_json", "env_json", "enabled", "auth_type", "connection_status", "auth_status", "reauth_needed", "last_checked_at", "last_check_ok", "last_error_summary", "action_required").From("mcp_servers").Where(sq.Eq{"name": name}).ToSql()
+	query, args, err := psql.Select("name", "mode", "base_url", "auth_token", "timeout_seconds", "command", "args_json", "env_json", "enabled", "auth_type", "connection_status", "auth_status", "reauth_needed", "last_checked_at", "last_check_ok", "last_error_summary", "action_required", "oauth_provider_id", "oauth_provider_label", "oauth_authorize_url", "oauth_token_url", "oauth_client_id", "oauth_client_secret", "oauth_scopes").From("mcp_servers").Where(sq.Eq{"name": name}).ToSql()
 	if err != nil {
 		return mcp.Upstream{}, err
 	}
@@ -336,7 +403,7 @@ func (r *ServerRepo) ListServers(ctx context.Context, filter mcp.ServerFilter) (
 	if filter.Limit == 0 {
 		filter.Limit = 50
 	}
-	builder := psql.Select("name", "mode", "base_url", "auth_token", "timeout_seconds", "command", "args_json", "env_json", "enabled", "auth_type", "connection_status", "auth_status", "reauth_needed", "last_checked_at", "last_check_ok", "last_error_summary", "action_required").From("mcp_servers")
+	builder := psql.Select("name", "mode", "base_url", "auth_token", "timeout_seconds", "command", "args_json", "env_json", "enabled", "auth_type", "connection_status", "auth_status", "reauth_needed", "last_checked_at", "last_check_ok", "last_error_summary", "action_required", "oauth_provider_id", "oauth_provider_label", "oauth_authorize_url", "oauth_token_url", "oauth_client_id", "oauth_client_secret", "oauth_scopes").From("mcp_servers")
 	countBuilder := psql.Select("COUNT(*)").From("mcp_servers")
 	if filter.Enabled != nil {
 		value := boolToInt(*filter.Enabled)
@@ -402,6 +469,103 @@ func (r *ServerRepo) DisableServer(ctx context.Context, name string) error {
 	return err
 }
 
+func (r *OAuthRepo) UpsertCredential(ctx context.Context, cred OAuthCredential) error {
+	now := time.Now().UTC()
+	if cred.CreatedAt.IsZero() {
+		cred.CreatedAt = now
+	}
+	cred.UpdatedAt = now
+	query := `
+	INSERT INTO oauth_credentials (server_name, access_token, refresh_token, token_type, scope, expires_at, created_at, updated_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(server_name) DO UPDATE SET
+		access_token = excluded.access_token,
+		refresh_token = excluded.refresh_token,
+		token_type = excluded.token_type,
+		scope = excluded.scope,
+		expires_at = excluded.expires_at,
+		updated_at = excluded.updated_at
+	`
+	_, err := r.db.ExecContext(ctx, query, cred.ServerName, cred.AccessToken, emptyToNil(cred.RefreshToken), emptyToNil(cred.TokenType), emptyToNil(cred.Scope), cred.ExpiresAt, cred.CreatedAt, cred.UpdatedAt)
+	return err
+}
+
+func (r *OAuthRepo) GetCredential(ctx context.Context, serverName string) (OAuthCredential, error) {
+	row := r.db.QueryRowContext(ctx, `SELECT server_name, access_token, refresh_token, token_type, scope, expires_at, created_at, updated_at FROM oauth_credentials WHERE server_name = ?`, serverName)
+	var cred OAuthCredential
+	var refreshToken, tokenType, scope sql.NullString
+	var expiresAt sql.NullTime
+	if err := row.Scan(&cred.ServerName, &cred.AccessToken, &refreshToken, &tokenType, &scope, &expiresAt, &cred.CreatedAt, &cred.UpdatedAt); err != nil {
+		return OAuthCredential{}, err
+	}
+	cred.RefreshToken = refreshToken.String
+	cred.TokenType = tokenType.String
+	cred.Scope = scope.String
+	if expiresAt.Valid {
+		t := expiresAt.Time
+		cred.ExpiresAt = &t
+	}
+	return cred, nil
+}
+
+func (r *OAuthRepo) DeleteCredential(ctx context.Context, serverName string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM oauth_credentials WHERE server_name = ?`, serverName)
+	return err
+}
+
+func (r *OAuthRepo) UpsertConnectSession(ctx context.Context, session OAuthConnectSession) error {
+	query := `
+	INSERT INTO oauth_connect_sessions (state, server_name, status, code_verifier, redirect_uri, started_at, completed_at, error_message)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(state) DO UPDATE SET
+		status = excluded.status,
+		code_verifier = excluded.code_verifier,
+		redirect_uri = excluded.redirect_uri,
+		completed_at = excluded.completed_at,
+		error_message = excluded.error_message
+	`
+	_, err := r.db.ExecContext(ctx, query, session.State, session.ServerName, session.Status, emptyToNil(session.CodeVerifier), session.RedirectURI, session.StartedAt, session.CompletedAt, emptyToNil(derefString(session.ErrorMessage)))
+	return err
+}
+
+func (r *OAuthRepo) GetConnectSession(ctx context.Context, state string) (OAuthConnectSession, error) {
+	row := r.db.QueryRowContext(ctx, `SELECT state, server_name, status, code_verifier, redirect_uri, started_at, completed_at, error_message FROM oauth_connect_sessions WHERE state = ?`, state)
+	var session OAuthConnectSession
+	var codeVerifier, errorMessage sql.NullString
+	var completedAt sql.NullTime
+	if err := row.Scan(&session.State, &session.ServerName, &session.Status, &codeVerifier, &session.RedirectURI, &session.StartedAt, &completedAt, &errorMessage); err != nil {
+		return OAuthConnectSession{}, err
+	}
+	session.CodeVerifier = codeVerifier.String
+	if completedAt.Valid {
+		t := completedAt.Time
+		session.CompletedAt = &t
+	}
+	if errorMessage.Valid {
+		session.ErrorMessage = &errorMessage.String
+	}
+	return session, nil
+}
+
+func (r *OAuthRepo) GetLatestConnectSessionByServer(ctx context.Context, serverName string) (OAuthConnectSession, error) {
+	row := r.db.QueryRowContext(ctx, `SELECT state, server_name, status, code_verifier, redirect_uri, started_at, completed_at, error_message FROM oauth_connect_sessions WHERE server_name = ? ORDER BY started_at DESC LIMIT 1`, serverName)
+	var session OAuthConnectSession
+	var codeVerifier, errorMessage sql.NullString
+	var completedAt sql.NullTime
+	if err := row.Scan(&session.State, &session.ServerName, &session.Status, &codeVerifier, &session.RedirectURI, &session.StartedAt, &completedAt, &errorMessage); err != nil {
+		return OAuthConnectSession{}, err
+	}
+	session.CodeVerifier = codeVerifier.String
+	if completedAt.Valid {
+		t := completedAt.Time
+		session.CompletedAt = &t
+	}
+	if errorMessage.Valid {
+		session.ErrorMessage = &errorMessage.String
+	}
+	return session, nil
+}
+
 func scanInvocation(scanner interface{ Scan(dest ...any) error }) (invocation.Invocation, error) {
 	var inv invocation.Invocation
 	var approval sql.NullString
@@ -448,7 +612,8 @@ func scanServer(scanner interface{ Scan(dest ...any) error }) (mcp.Upstream, err
 	var reauthNeeded, lastCheckOK int
 	var lastCheckedAt sql.NullTime
 	var lastErrorSummary, actionRequired sql.NullString
-	if err := scanner.Scan(&upstream.Name, &mode, &baseURL, &authToken, &timeoutSeconds, &command, &argsJSON, &envJSON, &enabled, &authType, &connectionStatus, &authStatus, &reauthNeeded, &lastCheckedAt, &lastCheckOK, &lastErrorSummary, &actionRequired); err != nil {
+	var oauthProviderID, oauthProviderLabel, oauthAuthorizeURL, oauthTokenURL, oauthClientID, oauthClientSecret, oauthScopes sql.NullString
+	if err := scanner.Scan(&upstream.Name, &mode, &baseURL, &authToken, &timeoutSeconds, &command, &argsJSON, &envJSON, &enabled, &authType, &connectionStatus, &authStatus, &reauthNeeded, &lastCheckedAt, &lastCheckOK, &lastErrorSummary, &actionRequired, &oauthProviderID, &oauthProviderLabel, &oauthAuthorizeURL, &oauthTokenURL, &oauthClientID, &oauthClientSecret, &oauthScopes); err != nil {
 		return mcp.Upstream{}, err
 	}
 	upstream.Mode = mcp.UpstreamMode(mode)
@@ -457,11 +622,21 @@ func scanServer(scanner interface{ Scan(dest ...any) error }) (mcp.Upstream, err
 	upstream.Timeout = time.Duration(timeoutSeconds) * time.Second
 	upstream.Command = command.String
 	upstream.Enabled = enabled == 1
+	upstream.OAuthProviderID = oauthProviderID.String
+	upstream.OAuthProviderLabel = oauthProviderLabel.String
+	upstream.OAuthAuthorizeURL = oauthAuthorizeURL.String
+	upstream.OAuthTokenURL = oauthTokenURL.String
+	upstream.OAuthClientID = oauthClientID.String
+	upstream.OAuthClientSecret = oauthClientSecret.String
+	upstream.OAuthScopes = oauthScopes.String
 	if err := json.Unmarshal([]byte(argsJSON), &upstream.Args); err != nil {
 		return mcp.Upstream{}, fmt.Errorf("decode server args: %w", err)
 	}
 	if err := json.Unmarshal([]byte(envJSON), &upstream.Env); err != nil {
 		return mcp.Upstream{}, fmt.Errorf("decode server env: %w", err)
+	}
+	if upstream.Mode == mcp.UpstreamModeHTTP {
+		upstream.AuthHeaders = mcp.DecodeAuthHeaders(upstream.Env)
 	}
 	upstream.Status = mcp.ServerStatus{
 		AuthType:         mcp.ServerAuthType(orDefault(authType.String, string(mcp.AuthTypeNone))),
@@ -537,14 +712,18 @@ func encodeServerConfig(upstream mcp.Upstream) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	envJSON, err := json.Marshal(upstream.Env)
+	envPayload := upstream.Env
+	if upstream.Mode == mcp.UpstreamModeHTTP && len(upstream.AuthHeaders) > 0 {
+		envPayload = mcp.EncodeAuthHeaders(upstream.AuthHeaders)
+	}
+	envJSON, err := json.Marshal(envPayload)
 	if err != nil {
 		return "", "", err
 	}
 	return string(argsJSON), string(envJSON), nil
 }
 
-func ensureServerStatusColumns(db *sql.DB) error {
+func ensureServerColumns(db *sql.DB) error {
 	statements := []string{
 		`ALTER TABLE mcp_servers ADD COLUMN auth_type TEXT NOT NULL DEFAULT 'none'`,
 		`ALTER TABLE mcp_servers ADD COLUMN connection_status TEXT NOT NULL DEFAULT 'unknown'`,
@@ -554,13 +733,45 @@ func ensureServerStatusColumns(db *sql.DB) error {
 		`ALTER TABLE mcp_servers ADD COLUMN last_check_ok INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE mcp_servers ADD COLUMN last_error_summary TEXT`,
 		`ALTER TABLE mcp_servers ADD COLUMN action_required TEXT`,
+		`ALTER TABLE mcp_servers ADD COLUMN oauth_provider_id TEXT`,
+		`ALTER TABLE mcp_servers ADD COLUMN oauth_provider_label TEXT`,
+		`ALTER TABLE mcp_servers ADD COLUMN oauth_authorize_url TEXT`,
+		`ALTER TABLE mcp_servers ADD COLUMN oauth_token_url TEXT`,
+		`ALTER TABLE mcp_servers ADD COLUMN oauth_client_id TEXT`,
+		`ALTER TABLE mcp_servers ADD COLUMN oauth_client_secret TEXT`,
+		`ALTER TABLE mcp_servers ADD COLUMN oauth_scopes TEXT`,
 	}
 	for _, stmt := range statements {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
 			return err
 		}
 	}
-	return nil
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS oauth_credentials (
+		server_name TEXT PRIMARY KEY,
+		access_token TEXT NOT NULL,
+		refresh_token TEXT,
+		token_type TEXT,
+		scope TEXT,
+		expires_at TIMESTAMP,
+		created_at TIMESTAMP NOT NULL,
+		updated_at TIMESTAMP NOT NULL,
+		FOREIGN KEY(server_name) REFERENCES mcp_servers(name) ON DELETE CASCADE
+	)`)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS oauth_connect_sessions (
+		state TEXT PRIMARY KEY,
+		server_name TEXT NOT NULL,
+		status TEXT NOT NULL,
+		code_verifier TEXT,
+		redirect_uri TEXT NOT NULL,
+		started_at TIMESTAMP NOT NULL,
+		completed_at TIMESTAMP,
+		error_message TEXT,
+		FOREIGN KEY(server_name) REFERENCES mcp_servers(name) ON DELETE CASCADE
+	)`)
+	return err
 }
 
 func derefString(v *string) string {
