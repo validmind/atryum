@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -470,12 +471,20 @@ func (c *Client) doHTTPEnvelope(ctx context.Context, upstream Upstream, body []b
 		return ForwardResult{}, err
 	}
 	defer resp.Body.Close()
+	contentType := resp.Header.Get("Content-Type")
+	if strings.Contains(contentType, "text/event-stream") {
+		data, sseErr := extractFirstSSEData(resp.Body)
+		if sseErr != nil {
+			return ForwardResult{}, sseErr
+		}
+		return ForwardResult{StatusCode: resp.StatusCode, Body: data, ContentType: "application/json", ProtocolVersion: resp.Header.Get("MCP-Protocol-Version")}, nil
+	}
 	respBody := new(bytes.Buffer)
 	_, err = respBody.ReadFrom(resp.Body)
 	if err != nil {
 		return ForwardResult{}, err
 	}
-	return ForwardResult{StatusCode: resp.StatusCode, Body: respBody.Bytes(), ContentType: resp.Header.Get("Content-Type"), ProtocolVersion: resp.Header.Get("MCP-Protocol-Version")}, nil
+	return ForwardResult{StatusCode: resp.StatusCode, Body: respBody.Bytes(), ContentType: contentType, ProtocolVersion: resp.Header.Get("MCP-Protocol-Version")}, nil
 }
 
 func (c *Client) invokeStdio(ctx context.Context, upstream Upstream, tool string, input map[string]any) (InvokeResult, error) {
@@ -797,6 +806,21 @@ func (c *Client) testStdio(ctx context.Context, upstream Upstream) ConnectionTes
 		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusNeedsAttention, AuthStatus: authStatus, ReauthNeeded: reauth, LastCheckOK: false, LastErrorSummary: &message, ActionRequired: action}
 	}
 	return ConnectionTestResult{Ok: true, Message: "stdio initialize ok", ConnectionStatus: ConnectionStatusReady, AuthStatus: AuthStatusReady, ReauthNeeded: false, LastCheckOK: true}
+}
+
+func extractFirstSSEData(r io.Reader) ([]byte, error) {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 1024*1024), 4*1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "data:") {
+			return []byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return nil, fmt.Errorf("no data in SSE stream")
 }
 
 func extractErrorDetail(body []byte) string {
