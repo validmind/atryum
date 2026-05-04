@@ -709,28 +709,36 @@ func (c *Client) testHTTP(ctx context.Context, upstream Upstream) ConnectionTest
 		action := "connect this server"
 		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusNeedsAttention, AuthStatus: AuthStatusMissingCredentials, ReauthNeeded: false, LastCheckOK: false, LastErrorSummary: &message, ActionRequired: &action}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, upstream.BaseURL, nil)
+	initBody, err := json.Marshal(Envelope{JSONRPC: "2.0", ID: json.RawMessage([]byte("1")), Method: "initialize", Params: mustRawJSON(map[string]any{
+		"protocolVersion": DefaultMCPProtocolVersion,
+		"clientInfo":      map[string]any{"name": "atryum", "version": "0.1.0"},
+		"capabilities":    map[string]any{},
+	})})
 	if err != nil {
 		message := err.Error()
 		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusNeedsAttention, AuthStatus: AuthStatusUnknown, LastCheckOK: false, LastErrorSummary: &message}
 	}
-	applyAuthHeaders(req, upstream)
-	resp, err := http.DefaultClient.Do(req)
+	result, err := c.doHTTPEnvelope(ctx, upstream, initBody, DefaultMCPProtocolVersion)
 	if err != nil {
 		message := err.Error()
 		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusUnreachable, AuthStatus: AuthStatusUnknown, LastCheckOK: false, LastErrorSummary: &message}
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		message := fmt.Sprintf("http %d", resp.StatusCode)
+	if result.StatusCode == http.StatusUnauthorized || result.StatusCode == http.StatusForbidden {
+		message := fmt.Sprintf("http %d", result.StatusCode)
+		if detail := extractErrorDetail(result.Body); detail != "" {
+			message = fmt.Sprintf("http %d: %s", result.StatusCode, detail)
+		}
 		action := "refresh or reconnect credentials"
 		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusNeedsAttention, AuthStatus: AuthStatusInvalid, ReauthNeeded: true, LastCheckOK: false, LastErrorSummary: &message, ActionRequired: &action}
 	}
-	if resp.StatusCode >= http.StatusBadRequest {
-		message := fmt.Sprintf("http %d", resp.StatusCode)
+	if result.StatusCode >= http.StatusBadRequest {
+		message := fmt.Sprintf("http %d", result.StatusCode)
+		if detail := extractErrorDetail(result.Body); detail != "" {
+			message = fmt.Sprintf("http %d: %s", result.StatusCode, detail)
+		}
 		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusDegraded, AuthStatus: AuthStatusUnknown, LastCheckOK: false, LastErrorSummary: &message}
 	}
-	message := fmt.Sprintf("http %d", resp.StatusCode)
+	message := fmt.Sprintf("http %d", result.StatusCode)
 	return ConnectionTestResult{Ok: true, Message: message, ConnectionStatus: ConnectionStatusReady, AuthStatus: AuthStatusReady, ReauthNeeded: false, LastCheckOK: true}
 }
 
@@ -789,6 +797,31 @@ func (c *Client) testStdio(ctx context.Context, upstream Upstream) ConnectionTes
 		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusNeedsAttention, AuthStatus: authStatus, ReauthNeeded: reauth, LastCheckOK: false, LastErrorSummary: &message, ActionRequired: action}
 	}
 	return ConnectionTestResult{Ok: true, Message: "stdio initialize ok", ConnectionStatus: ConnectionStatusReady, AuthStatus: AuthStatusReady, ReauthNeeded: false, LastCheckOK: true}
+}
+
+func extractErrorDetail(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var rpcResp struct {
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &rpcResp); err == nil && rpcResp.Error != nil && rpcResp.Error.Message != "" {
+		return rpcResp.Error.Message
+	}
+	var plain struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &plain); err == nil && plain.Message != "" {
+		return plain.Message
+	}
+	trimmed := strings.TrimSpace(string(body))
+	if len(trimmed) > 200 {
+		trimmed = trimmed[:200] + "..."
+	}
+	return trimmed
 }
 
 func classifyAuthFailure(message string) (ServerAuthStatus, bool) {
