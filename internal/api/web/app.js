@@ -7,7 +7,7 @@ const state = {
   invocationSource: null,
   lastInvocationSignature: '',
   invocationViews: { detail: 'raw', events: 'raw' },
-  friendlyExpanded: { detail: false, events: false },
+  friendlyExpanded: { detail: true, events: true },
   connectStatusPoll: null,
 };
 
@@ -69,6 +69,30 @@ $('#delete-server').addEventListener('click', async () => {
     return;
   }
   await deleteServer(state.editingServerName);
+});
+$('#approve-invocation').addEventListener('click', async () => {
+  if (!state.selectedInvocationID) return;
+  try {
+    await fetchJSON(`/api/v1/admin/invocations/${encodeURIComponent(state.selectedInvocationID)}/approve`, { method: 'POST' });
+    $('#approval-panel').classList.add('hidden');
+  } catch (err) {
+    alert('Approve failed: ' + (err.message || String(err)));
+  }
+});
+$('#deny-invocation').addEventListener('click', async () => {
+  if (!state.selectedInvocationID) return;
+  const message = $('#deny-message').value.trim();
+  try {
+    await fetchJSON(`/api/v1/admin/invocations/${encodeURIComponent(state.selectedInvocationID)}/deny`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message }),
+    });
+    $('#deny-message').value = '';
+    $('#approval-panel').classList.add('hidden');
+  } catch (err) {
+    alert('Deny failed: ' + (err.message || String(err)));
+  }
 });
 $$('.view-toggle').forEach((toggle) => {
   toggle.addEventListener('click', (event) => {
@@ -149,6 +173,9 @@ function applyInvocationStreamData(items) {
 async function loadInvocationDetail(id) {
   state.selectedInvocationID = id;
   const detail = await fetchJSON(`/api/v1/admin/invocations/${id}`);
+  const isPending = detail.status === 'pending_approval';
+  $('#approval-panel').classList.toggle('hidden', !isPending);
+  if (!isPending) $('#deny-message').value = '';
   renderJSONWithText('#invocation-detail', '#invocation-detail-text', detail, 'Human-friendly text from invocation result/error', 'detail');
   const events = await fetchJSON(`/api/v1/admin/invocations/${id}/events?limit=200`);
   renderJSONWithText('#invocation-events', '#invocation-events-text', events.items, 'Human-friendly text from invocation events', 'events');

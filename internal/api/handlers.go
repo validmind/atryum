@@ -31,6 +31,8 @@ type service interface {
 	Get(ctx context.Context, id string) (invocation.InvocationResponse, error)
 	List(ctx context.Context, filter invocation.InvocationListFilter) (invocation.InvocationListResponse, error)
 	Events(ctx context.Context, invocationID string, filter invocation.EventListFilter) (invocation.EventListResponse, error)
+	Approve(ctx context.Context, invocationID string) error
+	Deny(ctx context.Context, invocationID string, message string) error
 }
 
 type serverService interface {
@@ -369,10 +371,6 @@ func (h *Handler) adminInvocationStream(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
 	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/invocations/")
 	trimmed = strings.Trim(trimmed, "/")
 	if trimmed == "" {
@@ -380,6 +378,10 @@ func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if strings.HasSuffix(trimmed, "/events") {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
 		id := strings.TrimSuffix(trimmed, "/events")
 		id = strings.TrimSuffix(id, "/")
 		filter := invocation.EventListFilter{Offset: readUintQuery(r, "offset", 0), Limit: readUintQuery(r, "limit", 200)}
@@ -389,6 +391,42 @@ func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		writeJSON(w, http.StatusOK, events)
+		return
+	}
+	if strings.HasSuffix(trimmed, "/approve") {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id := strings.TrimSuffix(trimmed, "/approve")
+		id = strings.TrimSuffix(id, "/")
+		if err := h.svc.Approve(r.Context(), id); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+	if strings.HasSuffix(trimmed, "/deny") {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id := strings.TrimSuffix(trimmed, "/deny")
+		id = strings.TrimSuffix(id, "/")
+		var body struct {
+			Message string `json:"message"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if err := h.svc.Deny(r.Context(), id, body.Message); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	resp, err := h.svc.Get(r.Context(), trimmed)

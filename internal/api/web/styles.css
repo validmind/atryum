@@ -42,6 +42,16 @@ label { display: flex; flex-direction: column; gap: 6px; }
 .text-render-item + .text-render-item { margin-top: 12px; }
 .text-render-label { font-size: 12px; color: #9a3412; margin-bottom: 4px; }
 .text-render-pre { white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; margin: 0; min-height: 0; max-height: 220px; overflow: auto; background: #fff; }
+.approval-panel { background: #fefce8; border: 2px solid #eab308; border-radius: 6px; padding: 12px 16px; margin-bottom: 16px; }
+.approval-header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
+.approval-title { font-weight: 700; font-size: 15px; color: #92400e; }
+.approval-actions { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+.approve-btn { background: #16a34a; color: white; border: none; border-radius: 4px; padding: 8px 20px; font: inherit; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.approve-btn:hover { background: #15803d; }
+.deny-section { display: flex; gap: 8px; flex: 1; min-width: 200px; }
+.deny-section textarea { flex: 1; resize: vertical; min-height: 38px; }
+.deny-btn { background: #dc2626; color: white; border: none; border-radius: 4px; padding: 8px 16px; font: inherit; font-weight: 600; cursor: pointer; white-space: nowrap; align-self: flex-end; }
+.deny-btn:hover { background: #b91c1c; }
 @media (max-width: 960px) {
   .layout, .form-grid { grid-template-columns: 1fr; }
   .panel-header { flex-direction: column; align-items: stretch; }

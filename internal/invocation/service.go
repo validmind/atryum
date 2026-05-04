@@ -5,12 +5,18 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
 	"atryum/internal/mcp"
 )
+
+type approvalDecision struct {
+	approved bool
+	message  string
+}
 
 type invocationRepo interface {
 	Create(ctx context.Context, inv Invocation) error
@@ -35,15 +41,17 @@ type upstreamClient interface {
 }
 
 type Service struct {
-	invocations    invocationRepo
-	events         eventRepo
-	resolver       resolver
-	client         upstreamClient
-	defaultTimeout time.Duration
+	invocations      invocationRepo
+	events           eventRepo
+	resolver         resolver
+	client           upstreamClient
+	defaultTimeout   time.Duration
+	mu               sync.Mutex
+	pendingApprovals map[string]chan approvalDecision
 }
 
 func NewService(inv invocationRepo, evt eventRepo, resolver resolver, client upstreamClient, defaultTimeout time.Duration) *Service {
-	return &Service{invocations: inv, events: evt, resolver: resolver, client: client, defaultTimeout: defaultTimeout}
+	return &Service{invocations: inv, events: evt, resolver: resolver, client: client, defaultTimeout: defaultTimeout, pendingApprovals: make(map[string]chan approvalDecision)}
 }
 
 func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (InvocationResponse, error) {
@@ -76,14 +84,57 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		return InvocationResponse{}, err
 	}
 	_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(map[string]any{"tool": req.Tool, "upstream": upstream.Name}), CreatedAt: now})
+
+	// Register approval channel before updating status so the UI sees it as pending.
+	ch := make(chan approvalDecision, 1)
+	s.mu.Lock()
+	s.pendingApprovals[inv.InvocationID] = ch
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.pendingApprovals, inv.InvocationID)
+		s.mu.Unlock()
+	}()
+
+	inv.Status = StatusPendingApproval
+	if err := s.invocations.UpdateResult(ctx, inv); err != nil {
+		return InvocationResponse{}, err
+	}
+	_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.pending_approval", Payload: mustJSON(map[string]any{"tool": req.Tool, "upstream": upstream.Name}), CreatedAt: time.Now().UTC()})
+
+	select {
+	case decision := <-ch:
+		if !decision.approved {
+			completed := time.Now().UTC()
+			inv.Status = StatusDenied
+			inv.CompletedAt = &completed
+			msg := "Tool call denied by the MCP permissions system."
+			if decision.message != "" {
+				msg += "\n\nReason: " + decision.message
+			}
+			inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": msg}}, "isError": true})
+			_ = s.invocations.UpdateResult(context.Background(), inv)
+			_ = s.events.Create(context.Background(), Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"message": decision.message}), CreatedAt: completed})
+			return s.toResponse(inv), nil
+		}
+	case <-ctx.Done():
+		completed := time.Now().UTC()
+		inv.Status = StatusFailed
+		inv.CompletedAt = &completed
+		inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": "Tool call cancelled: approval timed out or connection closed."}}, "isError": true})
+		_ = s.invocations.UpdateResult(context.Background(), inv)
+		_ = s.events.Create(context.Background(), Event{InvocationID: inv.InvocationID, EventType: "invocation.failed", Payload: inv.Error, CreatedAt: completed})
+		return s.toResponse(inv), nil
+	}
+
 	inv.Status = StatusExecuting
 	if err := s.invocations.UpdateResult(ctx, inv); err != nil {
 		return InvocationResponse{}, err
 	}
 	_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.executing", Payload: mustJSON(map[string]any{"upstream": upstream.Name}), CreatedAt: time.Now().UTC()})
-	ctx, cancel := context.WithTimeout(ctx, s.defaultTimeout)
+	execCtx, cancel := context.WithTimeout(ctx, s.defaultTimeout)
 	defer cancel()
-	result, err := s.client.Invoke(ctx, upstream, req.Tool, req.Input, req.RequestID)
+	result, err := s.client.Invoke(execCtx, upstream, req.Tool, req.Input, req.RequestID)
 	completed := time.Now().UTC()
 	inv.CompletedAt = &completed
 	if err != nil {
@@ -106,6 +157,36 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		return InvocationResponse{}, err
 	}
 	return s.toResponse(inv), nil
+}
+
+func (s *Service) Approve(ctx context.Context, invocationID string) error {
+	s.mu.Lock()
+	ch, ok := s.pendingApprovals[invocationID]
+	s.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("invocation %s is not pending approval", invocationID)
+	}
+	select {
+	case ch <- approvalDecision{approved: true}:
+		return nil
+	default:
+		return fmt.Errorf("invocation %s approval already decided", invocationID)
+	}
+}
+
+func (s *Service) Deny(ctx context.Context, invocationID string, message string) error {
+	s.mu.Lock()
+	ch, ok := s.pendingApprovals[invocationID]
+	s.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("invocation %s is not pending approval", invocationID)
+	}
+	select {
+	case ch <- approvalDecision{approved: false, message: message}:
+		return nil
+	default:
+		return fmt.Errorf("invocation %s approval already decided", invocationID)
+	}
 }
 
 func (s *Service) ListTools(ctx context.Context, server string) ([]mcp.Tool, error) {

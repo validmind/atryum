@@ -38,6 +38,19 @@
               <h2>Invocation detail</h2>
               <div id="invocation-live-status" class="subtle-text">Live updates on</div>
             </div>
+            <section id="approval-panel" class="approval-panel hidden">
+              <div class="approval-header">
+                <span class="approval-title">Approval required</span>
+                <span class="subtle-text">This tool call is waiting for your decision</span>
+              </div>
+              <div class="approval-actions">
+                <button id="approve-invocation" class="approve-btn">Approve</button>
+                <div class="deny-section">
+                  <textarea id="deny-message" rows="2" placeholder="Reason for denial (optional)…"></textarea>
+                  <button id="deny-invocation" class="deny-btn">Deny</button>
+                </div>
+              </div>
+            </section>
             <section class="detail-section">
               <div class="panel-header panel-header-tight">
                 <h3>Invocation payload</h3>
