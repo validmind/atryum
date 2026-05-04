@@ -35,6 +35,10 @@ type service interface {
 	Deny(ctx context.Context, invocationID string, message string) error
 }
 
+type mcpEnvelopeForwarder interface {
+	ForwardEnvelope(ctx context.Context, upstream mcp.Upstream, envelope mcp.Envelope, protocolVersion string) (mcp.ForwardResult, error)
+}
+
 type serverService interface {
 	List(ctx context.Context, filter mcp.ServerFilter) (ServerListResponse, error)
 	Get(ctx context.Context, name string) (AdminServer, error)
@@ -49,6 +53,7 @@ type serverService interface {
 type Handler struct {
 	svc        service
 	serverSvc  serverService
+	forwarder  mcpEnvelopeForwarder
 	staticHTTP http.Handler
 	debug      bool
 }
@@ -144,7 +149,11 @@ func NewHandler(svc service, serverSvc serverService) *Handler {
 		panic(err)
 	}
 	debug := strings.EqualFold(os.Getenv("ATRYUM_MCP_DEBUG"), "1") || strings.EqualFold(os.Getenv("ATRYUM_MCP_DEBUG"), "true")
-	return &Handler{svc: svc, serverSvc: serverSvc, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug}
+	var forwarder mcpEnvelopeForwarder
+	if f, ok := svc.(mcpEnvelopeForwarder); ok {
+		forwarder = f
+	}
+	return &Handler{svc: svc, serverSvc: serverSvc, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug}
 }
 
 func (h *Handler) Routes() http.Handler {
@@ -185,6 +194,10 @@ func (h *Handler) uiIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) invokeUpstream(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet || r.Method == http.MethodDelete {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -246,21 +259,26 @@ func (h *Handler) handleInvocation(w http.ResponseWriter, r *http.Request, serve
 
 func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server string) {
 	started := time.Now()
-	var req jsonRPCRequest
+	var req mcp.Envelope
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeRPCError(w, nil, -32700, "parse error")
 		return
 	}
+	if strings.TrimSpace(req.JSONRPC) == "" {
+		req.JSONRPC = "2.0"
+	}
 	requestID := compactRequestID(req.ID)
+	protocolVersion := negotiateProtocolVersion(r.Header.Get("MCP-Protocol-Version"), req.Params)
 	h.debugf("server-side mcp request server=%s method=%s id=%s", server, req.Method, requestID)
 	defer func() {
 		h.debugf("server-side mcp complete server=%s method=%s id=%s duration_ms=%d", server, req.Method, requestID, time.Since(started).Milliseconds())
 	}()
+	setMCPProtocolVersionHeader(w, protocolVersion)
 
 	switch req.Method {
 	case "initialize":
 		result := map[string]any{
-			"protocolVersion": "2024-11-05",
+			"protocolVersion": protocolVersion,
 			"serverInfo": map[string]any{
 				"name":    "atryum",
 				"version": "0.1.0",
@@ -306,7 +324,29 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		}
 		h.writeRPCResult(w, req.ID, normalizeToolCallResult(resp.Result, false))
 	default:
-		h.writeRPCError(w, req.ID, -32601, "method not found")
+		forwarded, forwardedOK := h.forwardProxyEnvelope(r.Context(), server, req, protocolVersion)
+		if !forwardedOK {
+			if req.IsNotification() {
+				w.WriteHeader(http.StatusAccepted)
+				return
+			}
+			h.writeRPCError(w, req.ID, -32601, "method not found")
+			return
+		}
+		if forwarded.ProtocolVersion != "" {
+			setMCPProtocolVersionHeader(w, forwarded.ProtocolVersion)
+		}
+		if forwarded.ContentType != "" {
+			w.Header().Set("Content-Type", forwarded.ContentType)
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+		}
+		status := forwarded.StatusCode
+		if status == 0 {
+			status = http.StatusOK
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write(forwarded.Body)
 	}
 }
 
@@ -949,6 +989,60 @@ func inferServerStatus(upstream mcp.Upstream) mcp.ServerStatus {
 func (h *Handler) writeRPCResult(w http.ResponseWriter, id json.RawMessage, result any) {
 	body, _ := json.Marshal(result)
 	writeJSON(w, http.StatusOK, jsonRPCResponse{JSONRPC: "2.0", ID: id, Result: body})
+}
+
+func (h *Handler) forwardProxyEnvelope(ctx context.Context, server string, envelope mcp.Envelope, protocolVersion string) (mcp.ForwardResult, bool) {
+	if h.forwarder == nil {
+		return mcp.ForwardResult{}, false
+	}
+	resolver, ok := h.svc.(interface {
+		ResolveContext(context.Context, string) (mcp.Upstream, error)
+	})
+	if !ok {
+		return mcp.ForwardResult{}, false
+	}
+	upstream, err := resolver.ResolveContext(ctx, server)
+	if err != nil {
+		return mcp.ForwardResult{}, false
+	}
+	result, err := h.forwarder.ForwardEnvelope(ctx, upstream, envelope, protocolVersion)
+	if err != nil {
+		return mcp.ForwardResult{}, false
+	}
+	return result, true
+}
+
+func negotiateProtocolVersion(header string, params json.RawMessage) string {
+	if v := normalizeProtocolVersion(header); v != "" {
+		return v
+	}
+	var payload struct {
+		ProtocolVersion string `json:"protocolVersion"`
+	}
+	if err := json.Unmarshal(params, &payload); err == nil {
+		if v := normalizeProtocolVersion(payload.ProtocolVersion); v != "" {
+			return v
+		}
+	}
+	return mcp.DefaultMCPProtocolVersion
+}
+
+func normalizeProtocolVersion(value string) string {
+	switch strings.TrimSpace(value) {
+	case mcp.MCPProtocolVersion2025:
+		return mcp.MCPProtocolVersion2025
+	case mcp.MCPProtocolVersion2024:
+		return mcp.MCPProtocolVersion2024
+	default:
+		return ""
+	}
+}
+
+func setMCPProtocolVersionHeader(w http.ResponseWriter, version string) {
+	if strings.TrimSpace(version) == "" {
+		return
+	}
+	w.Header().Set("MCP-Protocol-Version", version)
 }
 
 func (h *Handler) writeRPCError(w http.ResponseWriter, id json.RawMessage, code int, message string) {

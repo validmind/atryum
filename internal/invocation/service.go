@@ -38,6 +38,7 @@ type resolver interface {
 type upstreamClient interface {
 	Invoke(ctx context.Context, upstream mcp.Upstream, tool string, input map[string]any, requestID *string) (mcp.InvokeResult, error)
 	ListTools(ctx context.Context, upstream mcp.Upstream) ([]mcp.Tool, error)
+	ForwardEnvelope(ctx context.Context, upstream mcp.Upstream, envelope mcp.Envelope, protocolVersion string) (mcp.ForwardResult, error)
 }
 
 type Service struct {
@@ -100,7 +101,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	if err := s.invocations.UpdateResult(ctx, inv); err != nil {
 		return InvocationResponse{}, err
 	}
-	_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.pending_approval", Payload: mustJSON(map[string]any{"tool": req.Tool, "upstream": upstream.Name}), CreatedAt: time.Now().UTC()})
+	_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.pending_approval", Payload: mustJSON(map[string]any{"tool": req.Tool, "upstream": upstream.Name, "request_id": req.RequestID}), CreatedAt: time.Now().UTC()})
 
 	select {
 	case decision := <-ch:
@@ -131,7 +132,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	if err := s.invocations.UpdateResult(ctx, inv); err != nil {
 		return InvocationResponse{}, err
 	}
-	_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.executing", Payload: mustJSON(map[string]any{"upstream": upstream.Name}), CreatedAt: time.Now().UTC()})
+	_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.executing", Payload: mustJSON(map[string]any{"upstream": upstream.Name, "request_id": req.RequestID}), CreatedAt: time.Now().UTC()})
 	execCtx, cancel := context.WithTimeout(ctx, s.defaultTimeout)
 	defer cancel()
 	result, err := s.client.Invoke(execCtx, upstream, req.Tool, req.Input, req.RequestID)
@@ -147,11 +148,11 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	if result.Failed {
 		inv.Status = StatusFailed
 		inv.Error = result.Body
-		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.failed", Payload: result.Body, CreatedAt: completed})
+		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.failed", Payload: mustJSON(map[string]any{"request_id": req.RequestID, "body": json.RawMessage(result.Body)}), CreatedAt: completed})
 	} else {
 		inv.Status = StatusSucceeded
 		inv.Response = result.Body
-		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.succeeded", Payload: result.Body, CreatedAt: completed})
+		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.succeeded", Payload: mustJSON(map[string]any{"request_id": req.RequestID, "body": json.RawMessage(result.Body)}), CreatedAt: completed})
 	}
 	if err := s.invocations.UpdateResult(ctx, inv); err != nil {
 		return InvocationResponse{}, err

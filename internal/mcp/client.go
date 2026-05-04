@@ -26,6 +26,12 @@ const (
 	UpstreamModeStdio UpstreamMode = "stdio"
 )
 
+const (
+	MCPProtocolVersion2024    = "2024-11-05"
+	MCPProtocolVersion2025    = "2025-11-25"
+	DefaultMCPProtocolVersion = MCPProtocolVersion2025
+)
+
 type ServerConnectionStatus string
 type ServerAuthStatus string
 type ServerAuthType string
@@ -102,6 +108,23 @@ type Upstream struct {
 	OAuthScopes        string
 }
 
+type Envelope struct {
+	JSONRPC string          `json:"jsonrpc,omitempty"`
+	ID      json.RawMessage `json:"id,omitempty"`
+	Method  string          `json:"method,omitempty"`
+	Params  json.RawMessage `json:"params,omitempty"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   json.RawMessage `json:"error,omitempty"`
+}
+
+func (e Envelope) IsNotification() bool {
+	return strings.TrimSpace(e.Method) != "" && len(e.ID) == 0
+}
+
+func (e Envelope) IsRequest() bool {
+	return strings.TrimSpace(e.Method) != "" && len(e.ID) > 0
+}
+
 func EncodeAuthHeaders(headers []AuthHeader) map[string]string {
 	if len(headers) == 0 {
 		return nil
@@ -170,6 +193,13 @@ type InvokeResult struct {
 	Failed     bool
 }
 
+type ForwardResult struct {
+	StatusCode      int
+	Body            []byte
+	ContentType     string
+	ProtocolVersion string
+}
+
 type ConnectionTestResult struct {
 	Ok               bool
 	Message          string
@@ -179,13 +209,6 @@ type ConnectionTestResult struct {
 	LastCheckOK      bool
 	LastErrorSummary *string
 	ActionRequired   *string
-}
-
-type rpcRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id,omitempty"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
 }
 
 type rpcResponse struct {
@@ -282,6 +305,21 @@ func (c *Client) ListTools(ctx context.Context, upstream Upstream) ([]Tool, erro
 	}
 }
 
+func (c *Client) ForwardEnvelope(ctx context.Context, upstream Upstream, envelope Envelope, protocolVersion string) (ForwardResult, error) {
+	started := time.Now()
+	defer func() {
+		c.debugf("upstream forward transport=%s server=%s method=%s duration_ms=%d", upstream.Mode, upstream.Name, envelope.Method, time.Since(started).Milliseconds())
+	}()
+	switch upstream.Mode {
+	case UpstreamModeHTTP, "":
+		return c.forwardEnvelopeHTTP(ctx, upstream, envelope, protocolVersion)
+	case UpstreamModeStdio:
+		return ForwardResult{}, fmt.Errorf("generic stdio forwarding is not implemented")
+	default:
+		return ForwardResult{}, fmt.Errorf("unsupported upstream mode %q", upstream.Mode)
+	}
+}
+
 func (c *Client) ExchangeOAuthCode(ctx context.Context, upstream Upstream, code string, redirectURI string, codeVerifier string) (OAuthToken, error) {
 	if strings.TrimSpace(upstream.OAuthTokenURL) == "" {
 		return OAuthToken{}, fmt.Errorf("oauth_token_url is required")
@@ -356,47 +394,62 @@ func (c *Client) TestConnection(ctx context.Context, upstream Upstream) Connecti
 }
 
 func (c *Client) invokeHTTP(ctx context.Context, upstream Upstream, tool string, input map[string]any, requestID *string) (InvokeResult, error) {
-	payload := map[string]any{"tool": tool, "input": input}
-	if requestID != nil {
-		payload["request_id"] = *requestID
+	params := map[string]any{"name": tool, "arguments": input}
+	if requestID != nil && *requestID != "" {
+		params["_meta"] = map[string]any{"atryumRequestId": *requestID}
 	}
-	body, err := json.Marshal(payload)
+	body, err := json.Marshal(Envelope{JSONRPC: "2.0", ID: json.RawMessage([]byte("1")), Method: "tools/call", Params: mustRawJSON(params)})
 	if err != nil {
 		return InvokeResult{}, err
 	}
-	endpoint := upstream.BaseURL + "/mcp/tools/call"
-	client := c.httpClient
-	if upstream.Timeout > 0 {
-		client = &http.Client{Timeout: upstream.Timeout}
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	result, err := c.doHTTPEnvelope(ctx, upstream, body, DefaultMCPProtocolVersion)
 	if err != nil {
 		return InvokeResult{}, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	applyAuthHeaders(req, upstream)
-	resp, err := client.Do(req)
-	if err != nil {
+	var rpcResp rpcResponse
+	if err := json.Unmarshal(result.Body, &rpcResp); err != nil {
 		return InvokeResult{}, err
 	}
-	defer resp.Body.Close()
-	respBody := new(bytes.Buffer)
-	_, err = respBody.ReadFrom(resp.Body)
-	if err != nil {
-		return InvokeResult{}, err
+	if len(rpcResp.Error) > 0 && string(rpcResp.Error) != "null" {
+		return InvokeResult{StatusCode: result.StatusCode, Body: rpcResp.Error, Failed: true}, nil
 	}
-	bodyBytes := respBody.Bytes()
-	failed := resp.StatusCode >= http.StatusBadRequest || looksLikeToolError(bodyBytes)
-	c.debugf("upstream http tools.call server=%s status=%d failed=%t", upstream.Name, resp.StatusCode, failed)
-	return InvokeResult{StatusCode: resp.StatusCode, Body: bodyBytes, Failed: failed}, nil
+	bodyBytes := rpcResp.Result
+	if len(bodyBytes) == 0 || string(bodyBytes) == "null" {
+		bodyBytes = []byte(`{"content":[{"type":"text","text":"ok"}]}`)
+	}
+	failed := result.StatusCode >= http.StatusBadRequest || looksLikeToolError(bodyBytes)
+	c.debugf("upstream http tools.call server=%s status=%d failed=%t", upstream.Name, result.StatusCode, failed)
+	return InvokeResult{StatusCode: result.StatusCode, Body: bodyBytes, Failed: failed}, nil
 }
 
 func (c *Client) listToolsHTTP(ctx context.Context, upstream Upstream) ([]Tool, error) {
-	payload := map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": map[string]any{}}
-	body, err := json.Marshal(payload)
+	body, err := json.Marshal(Envelope{JSONRPC: "2.0", ID: json.RawMessage([]byte("1")), Method: "tools/list", Params: mustRawJSON(map[string]any{})})
 	if err != nil {
 		return nil, err
 	}
+	result, err := c.doHTTPEnvelope(ctx, upstream, body, DefaultMCPProtocolVersion)
+	if err != nil {
+		return nil, err
+	}
+	var rpcResp rpcResponse
+	if err := json.Unmarshal(result.Body, &rpcResp); err != nil {
+		return nil, err
+	}
+	if len(rpcResp.Error) > 0 && string(rpcResp.Error) != "null" {
+		return nil, fmt.Errorf("upstream tools/list error: %s", string(rpcResp.Error))
+	}
+	return decodeToolsListResult(rpcResp.Result)
+}
+
+func (c *Client) forwardEnvelopeHTTP(ctx context.Context, upstream Upstream, envelope Envelope, protocolVersion string) (ForwardResult, error) {
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		return ForwardResult{}, err
+	}
+	return c.doHTTPEnvelope(ctx, upstream, body, protocolVersion)
+}
+
+func (c *Client) doHTTPEnvelope(ctx context.Context, upstream Upstream, body []byte, protocolVersion string) (ForwardResult, error) {
 	endpoint := strings.TrimRight(upstream.BaseURL, "/")
 	client := c.httpClient
 	if upstream.Timeout > 0 {
@@ -404,29 +457,25 @@ func (c *Client) listToolsHTTP(ctx context.Context, upstream Upstream) ([]Tool, 
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return ForwardResult{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	if strings.TrimSpace(protocolVersion) != "" {
+		req.Header.Set("MCP-Protocol-Version", protocolVersion)
+	}
 	applyAuthHeaders(req, upstream)
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return ForwardResult{}, err
 	}
 	defer resp.Body.Close()
 	respBody := new(bytes.Buffer)
 	_, err = respBody.ReadFrom(resp.Body)
 	if err != nil {
-		return nil, err
+		return ForwardResult{}, err
 	}
-	var rpcResp rpcResponse
-	if err := json.Unmarshal(respBody.Bytes(), &rpcResp); err != nil {
-		return nil, err
-	}
-	if len(rpcResp.Error) > 0 && string(rpcResp.Error) != "null" {
-		return nil, fmt.Errorf("upstream tools/list error: %s", string(rpcResp.Error))
-	}
-	return decodeToolsListResult(rpcResp.Result)
+	return ForwardResult{StatusCode: resp.StatusCode, Body: respBody.Bytes(), ContentType: resp.Header.Get("Content-Type"), ProtocolVersion: resp.Header.Get("MCP-Protocol-Version")}, nil
 }
 
 func (c *Client) invokeStdio(ctx context.Context, upstream Upstream, tool string, input map[string]any) (InvokeResult, error) {
@@ -458,7 +507,7 @@ func (c *Client) invokeStdio(ctx context.Context, upstream Upstream, tool string
 
 	reader := bufio.NewReader(stdout)
 	if err := writeRPC(stdin, c.nextRPCID(), "initialize", map[string]any{
-		"protocolVersion": "2024-11-05",
+		"protocolVersion": DefaultMCPProtocolVersion,
 		"clientInfo":      map[string]any{"name": "atryum", "version": "0.1.0"},
 		"capabilities":    map[string]any{},
 	}); err != nil {
@@ -519,7 +568,7 @@ func (c *Client) listToolsStdio(ctx context.Context, upstream Upstream) ([]Tool,
 	}()
 	reader := bufio.NewReader(stdout)
 	if err := writeRPC(stdin, c.nextRPCID(), "initialize", map[string]any{
-		"protocolVersion": "2024-11-05",
+		"protocolVersion": DefaultMCPProtocolVersion,
 		"clientInfo":      map[string]any{"name": "atryum", "version": "0.1.0"},
 		"capabilities":    map[string]any{},
 	}); err != nil {
@@ -723,7 +772,7 @@ func (c *Client) testStdio(ctx context.Context, upstream Upstream) ConnectionTes
 	}()
 	reader := bufio.NewReader(stdout)
 	if err := writeRPC(stdin, c.nextRPCID(), "initialize", map[string]any{
-		"protocolVersion": "2024-11-05",
+		"protocolVersion": DefaultMCPProtocolVersion,
 		"clientInfo":      map[string]any{"name": "atryum", "version": "0.1.0"},
 		"capabilities":    map[string]any{},
 	}); err != nil {
@@ -888,6 +937,11 @@ func cloneMap(in map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+func mustRawJSON(v any) json.RawMessage {
+	b, _ := json.Marshal(v)
+	return b
 }
 
 func (c *Client) debugf(format string, args ...any) {

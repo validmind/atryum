@@ -21,7 +21,7 @@ import (
 
 func TestInvokeAndInspectHTTP(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/mcp/tools/call" {
+		if r.URL.Path != "/" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -29,7 +29,10 @@ func TestInvokeAndInspectHTTP(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"echo_tool": body["tool"], "ok": true})
+		if body["method"] != "tools/call" {
+			t.Fatalf("expected tools/call, got %#v", body["method"])
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"content": []map[string]any{{"type": "text", "text": "ok"}}}})
 	}))
 	defer upstream.Close()
 
@@ -37,6 +40,7 @@ func TestInvokeAndInspectHTTP(t *testing.T) {
 		Defaults:  config.DefaultsConfig{RequestTimeoutSeconds: 5},
 		Upstreams: []config.UpstreamConfig{{Name: "github", Mode: "http", BaseURL: upstream.URL, Enabled: true, TimeoutSeconds: 5}},
 	})
+	go approveNextInvocation(t, service, 50*time.Millisecond)
 	assertInvokeLifecycle(t, service, "github", "github.issue.get")
 }
 
@@ -66,13 +70,18 @@ done
 		Defaults:  config.DefaultsConfig{RequestTimeoutSeconds: 5},
 		Upstreams: []config.UpstreamConfig{{Name: "shortcut", Mode: "stdio", Command: script, Enabled: true, TimeoutSeconds: 5}},
 	})
+	go approveNextInvocation(t, service, 50*time.Millisecond)
 	assertInvokeLifecycle(t, service, "shortcut", "stories-search")
 }
 
 func TestBusinessToolErrorMarksInvocationFailed(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"content": []map[string]any{{"type": "text", "text": "Tool stories-does-not-exist not found"}},
+			"jsonrpc": "2.0",
+			"id":      1,
+			"result": map[string]any{
+				"content": []map[string]any{{"type": "text", "text": "Tool stories-does-not-exist not found"}},
+			},
 		})
 	}))
 	defer upstream.Close()
@@ -81,6 +90,7 @@ func TestBusinessToolErrorMarksInvocationFailed(t *testing.T) {
 		Defaults:  config.DefaultsConfig{RequestTimeoutSeconds: 5},
 		Upstreams: []config.UpstreamConfig{{Name: "shortcut", Mode: "http", BaseURL: upstream.URL, Enabled: true, TimeoutSeconds: 5}},
 	})
+	go approveNextInvocation(t, service, 50*time.Millisecond)
 	resp, err := service.Invoke(context.Background(), invocation.CreateInvocationRequest{Server: "shortcut", Tool: "stories-does-not-exist", Input: map[string]any{}})
 	if err != nil {
 		t.Fatal(err)
@@ -183,6 +193,18 @@ func newTestService(t *testing.T, cfg config.Config) *invocation.Service {
 		t.Fatal(err)
 	}
 	return invocation.NewService(store.NewInvocationRepo(db), store.NewEventRepo(db), resolver, mcp.NewHTTPClient(), 5*time.Second)
+}
+
+func approveNextInvocation(t *testing.T, service *invocation.Service, delay time.Duration) {
+	t.Helper()
+	time.Sleep(delay)
+	list, err := service.List(context.Background(), invocation.InvocationListFilter{Limit: 10})
+	if err != nil || len(list.Items) == 0 {
+		t.Fatalf("list invocations: %v", err)
+	}
+	if err := service.Approve(context.Background(), list.Items[0].InvocationID); err != nil {
+		t.Fatalf("approve invocation: %v", err)
+	}
 }
 
 func assertInvokeLifecycle(t *testing.T, service *invocation.Service, server, tool string) {
