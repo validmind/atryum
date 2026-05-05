@@ -84,7 +84,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	if err := s.invocations.Create(ctx, inv); err != nil {
 		return InvocationResponse{}, err
 	}
-	_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(map[string]any{"tool": req.Tool, "upstream": upstream.Name}), CreatedAt: now})
+	_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(map[string]any{"tool": req.Tool, "upstream": upstream.Name, "request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input)}), CreatedAt: now})
 
 	// Register approval channel before updating status so the UI sees it as pending.
 	ch := make(chan approvalDecision, 1)
@@ -101,7 +101,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	if err := s.invocations.UpdateResult(ctx, inv); err != nil {
 		return InvocationResponse{}, err
 	}
-	_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.pending_approval", Payload: mustJSON(map[string]any{"tool": req.Tool, "upstream": upstream.Name, "request_id": req.RequestID}), CreatedAt: time.Now().UTC()})
+	_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.pending_approval", Payload: mustJSON(map[string]any{"tool": req.Tool, "upstream": upstream.Name, "request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input)}), CreatedAt: time.Now().UTC()})
 
 	select {
 	case decision := <-ch:
@@ -115,7 +115,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 			}
 			inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": msg}}, "isError": true})
 			_ = s.invocations.UpdateResult(context.Background(), inv)
-			_ = s.events.Create(context.Background(), Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"message": decision.message}), CreatedAt: completed})
+			_ = s.events.Create(context.Background(), Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"message": decision.message, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input)}), CreatedAt: completed})
 			return s.toResponse(inv), nil
 		}
 	case <-ctx.Done():
@@ -132,7 +132,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	if err := s.invocations.UpdateResult(ctx, inv); err != nil {
 		return InvocationResponse{}, err
 	}
-	_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.executing", Payload: mustJSON(map[string]any{"upstream": upstream.Name, "request_id": req.RequestID}), CreatedAt: time.Now().UTC()})
+	_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.executing", Payload: mustJSON(map[string]any{"upstream": upstream.Name, "request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input)}), CreatedAt: time.Now().UTC()})
 	execCtx, cancel := context.WithTimeout(ctx, s.defaultTimeout)
 	defer cancel()
 	result, err := s.client.Invoke(execCtx, upstream, req.Tool, req.Input, req.RequestID)
@@ -148,18 +148,17 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	if result.Failed {
 		inv.Status = StatusFailed
 		inv.Error = result.Body
-		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.failed", Payload: mustJSON(map[string]any{"request_id": req.RequestID, "body": json.RawMessage(result.Body)}), CreatedAt: completed})
+		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.failed", Payload: mustJSON(map[string]any{"request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "body": json.RawMessage(result.Body)}), CreatedAt: completed})
 	} else {
 		inv.Status = StatusSucceeded
 		inv.Response = result.Body
-		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.succeeded", Payload: mustJSON(map[string]any{"request_id": req.RequestID, "body": json.RawMessage(result.Body)}), CreatedAt: completed})
+		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.succeeded", Payload: mustJSON(map[string]any{"request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "body": json.RawMessage(result.Body)}), CreatedAt: completed})
 	}
 	if err := s.invocations.UpdateResult(ctx, inv); err != nil {
 		return InvocationResponse{}, err
 	}
 	return s.toResponse(inv), nil
 }
-
 
 func (s *Service) Approve(ctx context.Context, invocationID string) error {
 	s.mu.Lock()
@@ -242,6 +241,9 @@ func (s *Service) Events(ctx context.Context, invocationID string, filter EventL
 
 func (s *Service) toResponse(inv Invocation) InvocationResponse {
 	resp := InvocationResponse{InvocationID: inv.InvocationID, ServerName: inv.Upstream, ToolName: inv.Tool, Status: inv.Status, Approval: inv.Approval, RequestID: inv.RequestID, SubmittedAt: inv.SubmittedAt, CompletedAt: inv.CompletedAt}
+	if len(inv.Input) > 0 {
+		resp.Input = json.RawMessage(inv.Input)
+	}
 	if len(inv.Response) > 0 {
 		resp.Result = json.RawMessage(inv.Response)
 	}

@@ -85,6 +85,7 @@ type InvocationResponse struct {
 	Status       Status          `json:"status"`
 	Approval     *Approval       `json:"approval"`
 	RequestID    *string         `json:"request_id,omitempty"`
+	Input        json.RawMessage `json:"input,omitempty"`
 	SubmittedAt  time.Time       `json:"submitted_at"`
 	CompletedAt  *time.Time      `json:"completed_at,omitempty"`
 	Result       json.RawMessage `json:"result,omitempty"`

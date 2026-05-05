@@ -12,6 +12,7 @@ A local-first Go proof of concept for mediating MCP tool calls. Atryum accepts i
 - Generic connection/auth status surfaced for MCP servers, including reauth-needed state
 - Minimal built-in web UI served from the Go binary at `/ui/` for creating, editing, enabling/disabling, testing, and deleting server connections
 - Invocation UI renders MCP text content in a human-friendly view alongside raw JSON and refreshes live
+- Invocation APIs surface stored input arguments in invocation detail/list responses and invocation event payloads for approval inspection
 - SQLite-backed durable invocation state and lifecycle events
 - Request ID and idempotency key support
 - Supports both HTTP upstreams and stdio-launched MCP servers
@@ -86,6 +87,7 @@ The invocations page now:
 - subscribes to a simple SSE stream for live invocation updates
 - updates the invocation list live without a manual refresh
 - refreshes selected invocation detail/events on incoming updates
+- surfaces stored invocation input arguments in the invocation payload and event payload views
 - renders human-friendly text boxes when invocation result/error/event JSON contains MCP-style text content such as `{ "type": "text", "text": "..." }`
 - preserves line breaks in those extracted text blocks while still showing the raw JSON below
 - keeps raw/friendly selection and friendly expand/collapse state stable across live updates

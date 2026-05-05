@@ -108,6 +108,9 @@ func TestInvocationRepo_CRUD(t *testing.T) {
 	if got.InvocationID != "inv-1" || got.Tool != "read_file" {
 		t.Errorf("Get mismatch: %+v", got)
 	}
+	if string(got.Input) != `{"path": "/tmp/test"}` {
+		t.Errorf("expected request_json to round-trip as input, got %s", string(got.Input))
+	}
 	if got.Upstream != "github" {
 		t.Errorf("expected upstream github, got %s", got.Upstream)
 	}

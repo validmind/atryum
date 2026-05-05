@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -207,6 +208,10 @@ func approveNextInvocation(t *testing.T, service *invocation.Service, delay time
 	}
 }
 
+func jsonContains(raw json.RawMessage, needle string) bool {
+	return string(raw) != "" && strings.Contains(string(raw), needle)
+}
+
 func assertInvokeLifecycle(t *testing.T, service *invocation.Service, server, tool string) {
 	t.Helper()
 	key := "demo-key-" + server + "-" + tool
@@ -228,6 +233,9 @@ func assertInvokeLifecycle(t *testing.T, service *invocation.Service, server, to
 	}
 	if resp.Approval != nil {
 		t.Fatal("expected nil approval")
+	}
+	if string(resp.Input) != `{"n":1}` {
+		t.Fatalf("expected input to be surfaced, got %s", string(resp.Input))
 	}
 	if resp.SubmittedAt.IsZero() {
 		t.Fatal("expected submitted_at")
@@ -253,6 +261,9 @@ func assertInvokeLifecycle(t *testing.T, service *invocation.Service, server, to
 	}
 	if len(events.Items) < 2 {
 		t.Fatalf("expected events, got %d", len(events.Items))
+	}
+	if !jsonContains(events.Items[0].Data, `"input":{"n":1}`) || !jsonContains(events.Items[0].Data, `"arguments":{"n":1}`) {
+		t.Fatalf("expected surfaced input/arguments in event payload, got %s", string(events.Items[0].Data))
 	}
 	if events.Items[0].Type == "" {
 		t.Fatal("expected event type")

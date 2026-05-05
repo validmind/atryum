@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -29,19 +28,6 @@ type stubService struct {
 func (s *stubService) Invoke(_ context.Context, req invocation.CreateInvocationRequest) (invocation.InvocationResponse, error) {
 	s.invokedReq = &req
 	return s.invoke, s.invErr
-}
-func (s *stubService) InvokeStream(_ context.Context, req invocation.CreateInvocationRequest, _ json.RawMessage) (invocation.StreamHandle, error) {
-	s.invokedReq = &req
-	if s.invErr != nil {
-		return invocation.StreamHandle{}, s.invErr
-	}
-	return invocation.StreamHandle{
-		InvocationID: s.invoke.InvocationID,
-		StatusCode:   http.StatusOK,
-		ContentType:  "application/json",
-		Body:         io.NopCloser(strings.NewReader(`{"result":{"content":[{"type":"text","text":"ok"}]}}`)),
-		Done:         func(bool) {},
-	}, nil
 }
 func (s *stubService) ListTools(context.Context, string) ([]mcp.Tool, error) {
 	return s.tools, s.listErr
@@ -191,7 +177,7 @@ func TestMCPToolsList(t *testing.T) {
 
 func TestMCPToolsCallInterceptsInvocation(t *testing.T) {
 	now := time.Now().UTC()
-	svc := &stubService{invoke: invocation.InvocationResponse{InvocationID: "inv_123", ServerName: "demo", ToolName: "demo_tool", Status: invocation.StatusSucceeded, SubmittedAt: now, CompletedAt: &now, Result: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`)}}
+	svc := &stubService{invoke: invocation.InvocationResponse{InvocationID: "inv_123", ServerName: "demo", ToolName: "demo_tool", Status: invocation.StatusSucceeded, Input: json.RawMessage(`{"a":1}`), SubmittedAt: now, CompletedAt: &now, Result: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`)}}
 	h := NewHandler(svc, stubServerService{})
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"demo_tool","arguments":{"a":1}}}`))
 	w := httptest.NewRecorder()
@@ -212,9 +198,9 @@ func TestMCPToolsCallInterceptsInvocation(t *testing.T) {
 	}
 }
 
-func TestAdminInvocationsResponsesIncludeServerAndToolNames(t *testing.T) {
+func TestAdminInvocationsResponsesIncludeServerToolAndInput(t *testing.T) {
 	now := time.Now().UTC()
-	svc := &stubService{invoke: invocation.InvocationResponse{InvocationID: "inv_123", ServerName: "demo-server", ToolName: "demo_tool", Status: invocation.StatusSucceeded, SubmittedAt: now, CompletedAt: &now}}
+	svc := &stubService{invoke: invocation.InvocationResponse{InvocationID: "inv_123", ServerName: "demo-server", ToolName: "demo_tool", Status: invocation.StatusSucceeded, Input: json.RawMessage(`{"issue":123,"verbose":true}`), SubmittedAt: now, CompletedAt: &now}}
 	h := NewHandler(svc, stubServerService{})
 
 	t.Run("list", func(t *testing.T) {
@@ -227,6 +213,9 @@ func TestAdminInvocationsResponsesIncludeServerAndToolNames(t *testing.T) {
 		if !strings.Contains(w.Body.String(), `"tool_name":"demo_tool"`) {
 			t.Fatalf("expected tool_name in list response, got %s", w.Body.String())
 		}
+		if !strings.Contains(w.Body.String(), `"input":{"issue":123,"verbose":true}`) {
+			t.Fatalf("expected input in list response, got %s", w.Body.String())
+		}
 	})
 
 	t.Run("detail", func(t *testing.T) {
@@ -238,6 +227,9 @@ func TestAdminInvocationsResponsesIncludeServerAndToolNames(t *testing.T) {
 		}
 		if !strings.Contains(w.Body.String(), `"tool_name":"demo_tool"`) {
 			t.Fatalf("expected tool_name in detail response, got %s", w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), `"input":{"issue":123,"verbose":true}`) {
+			t.Fatalf("expected input in detail response, got %s", w.Body.String())
 		}
 	})
 }
