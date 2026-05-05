@@ -491,26 +491,6 @@ func (c *Client) doHTTPEnvelope(ctx context.Context, upstream Upstream, body []b
 	return ForwardResult{StatusCode: resp.StatusCode, Body: respBody.Bytes(), ContentType: contentType, ProtocolVersion: resp.Header.Get("MCP-Protocol-Version")}, nil
 }
 
-// InvokeStream initiates a streaming tool call and returns the raw HTTP response.
-// Unlike Invoke, the response body is not buffered — the caller must close it.
-// jsonrpcID is forwarded to the upstream so the response ID matches the client's request.
-func (c *Client) InvokeStream(ctx context.Context, upstream Upstream, tool string, input map[string]any, requestID *string, jsonrpcID json.RawMessage) (*http.Response, error) {
-	if upstream.Mode != UpstreamModeHTTP && upstream.Mode != "" {
-		return nil, fmt.Errorf("InvokeStream only supports HTTP upstreams, got %q", upstream.Mode)
-	}
-	params := map[string]any{"name": tool, "arguments": input}
-	if requestID != nil && *requestID != "" {
-		params["_meta"] = map[string]any{"atryumRequestId": *requestID}
-	}
-	if len(jsonrpcID) == 0 {
-		jsonrpcID = json.RawMessage("1")
-	}
-	body, err := json.Marshal(Envelope{JSONRPC: "2.0", ID: jsonrpcID, Method: "tools/call", Params: mustRawJSON(params)})
-	if err != nil {
-		return nil, err
-	}
-	return c.doHTTPEnvelopeRaw(ctx, upstream, body, DefaultMCPProtocolVersion)
-}
 
 func (c *Client) invokeStdio(ctx context.Context, upstream Upstream, tool string, input map[string]any) (InvokeResult, error) {
 	if upstream.Command == "" {

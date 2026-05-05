@@ -8,8 +8,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"bufio"
-	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -29,7 +27,6 @@ var webFS embed.FS
 
 type service interface {
 	Invoke(ctx context.Context, req invocation.CreateInvocationRequest) (invocation.InvocationResponse, error)
-	InvokeStream(ctx context.Context, req invocation.CreateInvocationRequest, jsonrpcID json.RawMessage) (invocation.StreamHandle, error)
 	ListTools(ctx context.Context, server string) ([]mcp.Tool, error)
 	Get(ctx context.Context, id string) (invocation.InvocationResponse, error)
 	List(ctx context.Context, filter invocation.InvocationListFilter) (invocation.InvocationListResponse, error)
@@ -314,38 +311,18 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		if requestID != "" {
 			toolReq.RequestID = stringPtr(requestID)
 		}
-		handle, err := h.svc.InvokeStream(r.Context(), toolReq, req.ID)
+		resp, err := h.svc.Invoke(r.Context(), toolReq)
 		if err != nil {
 			h.writeRPCError(w, req.ID, -32000, err.Error())
 			return
 		}
-		defer handle.Body.Close()
-		failed := handle.StatusCode >= http.StatusBadRequest
-		defer handle.Done(failed)
-		_ = h.emitTraceEvent(r.Context(), server, "mcp.tools.call", map[string]any{"request_id": requestID, "invocation_id": handle.InvocationID, "tool": params.Name})
-		if strings.Contains(handle.ContentType, "text/event-stream") {
-			h.proxySSE(w, handle.Body)
-		} else {
-			// Non-SSE upstream: buffer and wrap as before.
-			body, _ := io.ReadAll(handle.Body)
-			if handle.StatusCode >= http.StatusBadRequest {
-				h.writeRPCError(w, req.ID, -32000, extractUpstreamError(body, handle.StatusCode))
-				return
-			}
-			var rpcResp struct {
-				Result json.RawMessage `json:"result"`
-				Error  json.RawMessage `json:"error"`
-			}
-			if jsonErr := json.Unmarshal(body, &rpcResp); jsonErr == nil && len(rpcResp.Error) > 0 && string(rpcResp.Error) != "null" {
-				h.writeRPCResult(w, req.ID, normalizeToolCallResult(rpcResp.Error, true))
-				return
-			}
-			result := body
-			if jsonErr := json.Unmarshal(body, &rpcResp); jsonErr == nil && len(rpcResp.Result) > 0 {
-				result = rpcResp.Result
-			}
-			h.writeRPCResult(w, req.ID, normalizeToolCallResult(result, false))
+		tracePayload := map[string]any{"request_id": requestID, "status": resp.Status, "invocation_id": resp.InvocationID, "tool": params.Name}
+		_ = h.emitTraceEvent(r.Context(), server, "mcp.tools.call", tracePayload)
+		if len(resp.Error) > 0 {
+			h.writeRPCResult(w, req.ID, normalizeToolCallResult(resp.Error, true))
+			return
 		}
+		h.writeRPCResult(w, req.ID, normalizeToolCallResult(resp.Result, false))
 	default:
 		forwarded, forwardedOK := h.forwardProxyEnvelope(r.Context(), server, req, protocolVersion)
 		if !forwardedOK {
@@ -1148,38 +1125,6 @@ func (h *Handler) emitTraceEvent(ctx context.Context, server string, eventType s
 		log.Printf("[mcp] trace server=%s event=%s payload=%v", server, eventType, payload)
 	}
 	return nil
-}
-
-// proxySSE copies an SSE stream from src to w, flushing after each event boundary (blank line).
-func (h *Handler) proxySSE(w http.ResponseWriter, src io.Reader) {
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	flusher, canFlush := w.(http.Flusher)
-	scanner := bufio.NewScanner(src)
-	scanner.Buffer(make([]byte, 1024*1024), 4*1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		fmt.Fprintf(w, "%s\n", line)
-		if line == "" && canFlush {
-			flusher.Flush()
-		}
-	}
-	if canFlush {
-		flusher.Flush()
-	}
-}
-
-func extractUpstreamError(body []byte, statusCode int) string {
-	if len(body) > 0 {
-		var plain struct {
-			Message string `json:"message"`
-		}
-		if err := json.Unmarshal(body, &plain); err == nil && plain.Message != "" {
-			return fmt.Sprintf("http %d: %s", statusCode, plain.Message)
-		}
-	}
-	return fmt.Sprintf("http %d", statusCode)
 }
 
 func (h *Handler) debugf(format string, args ...any) {
