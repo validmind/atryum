@@ -220,6 +220,12 @@ func assertInvokeLifecycle(t *testing.T, service *invocation.Service, server, to
 	if resp.InvocationID == "" {
 		t.Fatal("expected invocation id")
 	}
+	if resp.ServerName != server {
+		t.Fatalf("expected server name %q, got %q", server, resp.ServerName)
+	}
+	if resp.ToolName != tool {
+		t.Fatalf("expected tool name %q, got %q", tool, resp.ToolName)
+	}
 	if resp.Approval != nil {
 		t.Fatal("expected nil approval")
 	}

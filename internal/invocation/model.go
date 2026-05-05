@@ -80,6 +80,8 @@ type CreateInvocationRequest struct {
 
 type InvocationResponse struct {
 	InvocationID string          `json:"invocation_id"`
+	ServerName   string          `json:"server_name"`
+	ToolName     string          `json:"tool_name"`
 	Status       Status          `json:"status"`
 	Approval     *Approval       `json:"approval"`
 	RequestID    *string         `json:"request_id,omitempty"`

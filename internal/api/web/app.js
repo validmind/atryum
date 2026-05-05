@@ -151,7 +151,8 @@ function applyInvocationStreamData(items) {
   tbody.innerHTML = '';
   for (const item of items) {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${escapeHTML(item.invocation_id)}</td><td>${escapeHTML(item.status)}</td><td>${escapeHTML(item.submitted_at)}</td>`;
+    tr.dataset.invocationId = item.invocation_id;
+    tr.innerHTML = `<td>${escapeHTML(item.invocation_id)}</td><td>${escapeHTML(item.server_name || '')}</td><td>${escapeHTML(item.tool_name || '')}</td><td>${escapeHTML(item.status)}</td><td>${escapeHTML(item.submitted_at)}</td>`;
     tr.addEventListener('click', () => loadInvocationDetail(item.invocation_id));
     if (item.invocation_id === state.selectedInvocationID) tr.classList.add('selected-row');
     tbody.appendChild(tr);
@@ -185,7 +186,7 @@ async function loadInvocationDetail(id) {
 async function loadInvocationSelectionOnly() {
   const rows = Array.from(document.querySelectorAll('#invocation-table tbody tr'));
   rows.forEach((row) => {
-    row.classList.toggle('selected-row', row.firstElementChild?.textContent === state.selectedInvocationID);
+    row.classList.toggle('selected-row', row.dataset.invocationId === state.selectedInvocationID);
   });
 }
 

@@ -108,6 +108,9 @@ func TestInvocationRepo_CRUD(t *testing.T) {
 	if got.InvocationID != "inv-1" || got.Tool != "read_file" {
 		t.Errorf("Get mismatch: %+v", got)
 	}
+	if got.Upstream != "github" {
+		t.Errorf("expected upstream github, got %s", got.Upstream)
+	}
 
 	// Update
 	inv.Status = "completed"

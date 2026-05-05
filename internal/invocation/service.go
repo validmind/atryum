@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"sync"
 	"time"
 
@@ -37,8 +39,18 @@ type resolver interface {
 
 type upstreamClient interface {
 	Invoke(ctx context.Context, upstream mcp.Upstream, tool string, input map[string]any, requestID *string) (mcp.InvokeResult, error)
+	InvokeStream(ctx context.Context, upstream mcp.Upstream, tool string, input map[string]any, requestID *string, jsonrpcID json.RawMessage) (*http.Response, error)
 	ListTools(ctx context.Context, upstream mcp.Upstream) ([]mcp.Tool, error)
 	ForwardEnvelope(ctx context.Context, upstream mcp.Upstream, envelope mcp.Envelope, protocolVersion string) (mcp.ForwardResult, error)
+}
+
+// StreamHandle is returned by InvokeStream. The caller must close Body and call Done when finished.
+type StreamHandle struct {
+	InvocationID string
+	StatusCode   int
+	ContentType  string
+	Body         io.ReadCloser
+	Done         func(failed bool)
 }
 
 type Service struct {
@@ -160,6 +172,106 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	return s.toResponse(inv), nil
 }
 
+// InvokeStream runs the same approval gate as Invoke, but after approval returns a
+// StreamHandle whose Body can be piped directly to the caller. The result body is not
+// stored in the DB; only the final status is recorded via the Done callback.
+func (s *Service) InvokeStream(ctx context.Context, req CreateInvocationRequest, jsonrpcID json.RawMessage) (StreamHandle, error) {
+	if req.Server == "" {
+		return StreamHandle{}, fmt.Errorf("server is required")
+	}
+	if req.Tool == "" {
+		return StreamHandle{}, fmt.Errorf("tool is required")
+	}
+	upstream, err := s.resolver.ResolveContext(ctx, req.Server)
+	if err != nil {
+		return StreamHandle{}, err
+	}
+	inputJSON, err := json.Marshal(req.Input)
+	if err != nil {
+		return StreamHandle{}, err
+	}
+	now := time.Now().UTC()
+	inv := Invocation{InvocationID: "inv_" + uuid.NewString(), RequestID: req.RequestID, IdempotencyKey: req.IdempotencyKey, Tool: req.Tool, Upstream: upstream.Name, Status: StatusReceived, Input: inputJSON, SubmittedAt: now}
+	if err := s.invocations.Create(ctx, inv); err != nil {
+		return StreamHandle{}, err
+	}
+	_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(map[string]any{"tool": req.Tool, "upstream": upstream.Name}), CreatedAt: now})
+
+	ch := make(chan approvalDecision, 1)
+	s.mu.Lock()
+	s.pendingApprovals[inv.InvocationID] = ch
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.pendingApprovals, inv.InvocationID)
+		s.mu.Unlock()
+	}()
+
+	inv.Status = StatusPendingApproval
+	if err := s.invocations.UpdateResult(ctx, inv); err != nil {
+		return StreamHandle{}, err
+	}
+	_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.pending_approval", Payload: mustJSON(map[string]any{"tool": req.Tool, "upstream": upstream.Name, "request_id": req.RequestID}), CreatedAt: time.Now().UTC()})
+
+	select {
+	case decision := <-ch:
+		if !decision.approved {
+			completed := time.Now().UTC()
+			inv.Status = StatusDenied
+			inv.CompletedAt = &completed
+			msg := "Tool call denied by the MCP permissions system."
+			if decision.message != "" {
+				msg += "\n\nReason: " + decision.message
+			}
+			inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": msg}}, "isError": true})
+			_ = s.invocations.UpdateResult(context.Background(), inv)
+			_ = s.events.Create(context.Background(), Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"message": decision.message}), CreatedAt: completed})
+			return StreamHandle{}, fmt.Errorf("%s", msg)
+		}
+	case <-ctx.Done():
+		completed := time.Now().UTC()
+		inv.Status = StatusFailed
+		inv.CompletedAt = &completed
+		inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": "Tool call cancelled: approval timed out or connection closed."}}, "isError": true})
+		_ = s.invocations.UpdateResult(context.Background(), inv)
+		_ = s.events.Create(context.Background(), Event{InvocationID: inv.InvocationID, EventType: "invocation.failed", Payload: inv.Error, CreatedAt: completed})
+		return StreamHandle{}, ctx.Err()
+	}
+
+	inv.Status = StatusExecuting
+	if err := s.invocations.UpdateResult(ctx, inv); err != nil {
+		return StreamHandle{}, err
+	}
+	_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.executing", Payload: mustJSON(map[string]any{"upstream": upstream.Name, "request_id": req.RequestID}), CreatedAt: time.Now().UTC()})
+
+	resp, err := s.client.InvokeStream(ctx, upstream, req.Tool, req.Input, req.RequestID, jsonrpcID)
+	if err != nil {
+		completed := time.Now().UTC()
+		inv.Status = StatusFailed
+		inv.CompletedAt = &completed
+		inv.Error = mustJSON(map[string]any{"message": err.Error()})
+		_ = s.invocations.UpdateResult(context.Background(), inv)
+		_ = s.events.Create(context.Background(), Event{InvocationID: inv.InvocationID, EventType: "invocation.failed", Payload: inv.Error, CreatedAt: completed})
+		return StreamHandle{}, err
+	}
+
+	done := func(failed bool) {
+		completed := time.Now().UTC()
+		inv.CompletedAt = &completed
+		eventType := "invocation.succeeded"
+		if failed {
+			inv.Status = StatusFailed
+			eventType = "invocation.failed"
+		} else {
+			inv.Status = StatusSucceeded
+		}
+		_ = s.invocations.UpdateResult(context.Background(), inv)
+		_ = s.events.Create(context.Background(), Event{InvocationID: inv.InvocationID, EventType: eventType, Payload: mustJSON(map[string]any{"request_id": req.RequestID, "streamed": true}), CreatedAt: completed})
+	}
+
+	return StreamHandle{InvocationID: inv.InvocationID, StatusCode: resp.StatusCode, ContentType: resp.Header.Get("Content-Type"), Body: resp.Body, Done: done}, nil
+}
+
 func (s *Service) Approve(ctx context.Context, invocationID string) error {
 	s.mu.Lock()
 	ch, ok := s.pendingApprovals[invocationID]
@@ -240,7 +352,7 @@ func (s *Service) Events(ctx context.Context, invocationID string, filter EventL
 }
 
 func (s *Service) toResponse(inv Invocation) InvocationResponse {
-	resp := InvocationResponse{InvocationID: inv.InvocationID, Status: inv.Status, Approval: inv.Approval, RequestID: inv.RequestID, SubmittedAt: inv.SubmittedAt, CompletedAt: inv.CompletedAt}
+	resp := InvocationResponse{InvocationID: inv.InvocationID, ServerName: inv.Upstream, ToolName: inv.Tool, Status: inv.Status, Approval: inv.Approval, RequestID: inv.RequestID, SubmittedAt: inv.SubmittedAt, CompletedAt: inv.CompletedAt}
 	if len(inv.Response) > 0 {
 		resp.Result = json.RawMessage(inv.Response)
 	}

@@ -450,7 +450,7 @@ func (c *Client) forwardEnvelopeHTTP(ctx context.Context, upstream Upstream, env
 	return c.doHTTPEnvelope(ctx, upstream, body, protocolVersion)
 }
 
-func (c *Client) doHTTPEnvelope(ctx context.Context, upstream Upstream, body []byte, protocolVersion string) (ForwardResult, error) {
+func (c *Client) doHTTPEnvelopeRaw(ctx context.Context, upstream Upstream, body []byte, protocolVersion string) (*http.Response, error) {
 	endpoint := strings.TrimRight(upstream.BaseURL, "/")
 	client := c.httpClient
 	if upstream.Timeout > 0 {
@@ -458,7 +458,7 @@ func (c *Client) doHTTPEnvelope(ctx context.Context, upstream Upstream, body []b
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return ForwardResult{}, err
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
@@ -466,7 +466,11 @@ func (c *Client) doHTTPEnvelope(ctx context.Context, upstream Upstream, body []b
 		req.Header.Set("MCP-Protocol-Version", protocolVersion)
 	}
 	applyAuthHeaders(req, upstream)
-	resp, err := client.Do(req)
+	return client.Do(req)
+}
+
+func (c *Client) doHTTPEnvelope(ctx context.Context, upstream Upstream, body []byte, protocolVersion string) (ForwardResult, error) {
+	resp, err := c.doHTTPEnvelopeRaw(ctx, upstream, body, protocolVersion)
 	if err != nil {
 		return ForwardResult{}, err
 	}
@@ -485,6 +489,27 @@ func (c *Client) doHTTPEnvelope(ctx context.Context, upstream Upstream, body []b
 		return ForwardResult{}, err
 	}
 	return ForwardResult{StatusCode: resp.StatusCode, Body: respBody.Bytes(), ContentType: contentType, ProtocolVersion: resp.Header.Get("MCP-Protocol-Version")}, nil
+}
+
+// InvokeStream initiates a streaming tool call and returns the raw HTTP response.
+// Unlike Invoke, the response body is not buffered — the caller must close it.
+// jsonrpcID is forwarded to the upstream so the response ID matches the client's request.
+func (c *Client) InvokeStream(ctx context.Context, upstream Upstream, tool string, input map[string]any, requestID *string, jsonrpcID json.RawMessage) (*http.Response, error) {
+	if upstream.Mode != UpstreamModeHTTP && upstream.Mode != "" {
+		return nil, fmt.Errorf("InvokeStream only supports HTTP upstreams, got %q", upstream.Mode)
+	}
+	params := map[string]any{"name": tool, "arguments": input}
+	if requestID != nil && *requestID != "" {
+		params["_meta"] = map[string]any{"atryumRequestId": *requestID}
+	}
+	if len(jsonrpcID) == 0 {
+		jsonrpcID = json.RawMessage("1")
+	}
+	body, err := json.Marshal(Envelope{JSONRPC: "2.0", ID: jsonrpcID, Method: "tools/call", Params: mustRawJSON(params)})
+	if err != nil {
+		return nil, err
+	}
+	return c.doHTTPEnvelopeRaw(ctx, upstream, body, DefaultMCPProtocolVersion)
 }
 
 func (c *Client) invokeStdio(ctx context.Context, upstream Upstream, tool string, input map[string]any) (InvokeResult, error) {
