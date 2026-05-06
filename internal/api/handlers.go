@@ -36,6 +36,8 @@ type service interface {
 	Events(ctx context.Context, invocationID string, filter invocation.EventListFilter) (invocation.EventListResponse, error)
 	Approve(ctx context.Context, invocationID string) error
 	Deny(ctx context.Context, invocationID string, message string) error
+	Submit(ctx context.Context, req invocation.ExternalSubmitRequest) (invocation.InvocationResponse, error)
+	RecordExecution(ctx context.Context, invocationID string, update invocation.ExternalExecutionUpdate) (invocation.InvocationResponse, error)
 }
 
 type mcpEnvelopeForwarder interface {
@@ -234,6 +236,8 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/api/v1/admin/rules/", h.adminRuleDetail)
 	mux.HandleFunc("/api/v1/admin/oauth/callback", h.oauthCallback)
 	mux.HandleFunc("/api/v1/admin/policy", h.adminPolicy)
+	mux.HandleFunc("/api/v1/external/invocations", h.externalInvocations)
+	mux.HandleFunc("/api/v1/external/invocations/", h.externalInvocationDetail)
 	mux.HandleFunc("/ui", h.uiIndex)
 	mux.Handle("/ui/", http.StripPrefix("/ui/", h.staticHTTP))
 	mux.HandleFunc("/", h.root)
@@ -1298,6 +1302,73 @@ func (s *ServerAdminService) CompleteConnect(ctx context.Context, state string, 
 		return OAuthConnectStatusResponse{}, err
 	}
 	return OAuthConnectStatusResponse{Status: "succeeded", Message: &message, StartedAt: &session.StartedAt, CompletedAt: &now}, nil
+}
+
+func (h *Handler) externalInvocations(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req invocation.ExternalSubmitRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.RequestID == nil {
+		if rid := strings.TrimSpace(r.Header.Get("X-Request-Id")); rid != "" {
+			req.RequestID = &rid
+		}
+	}
+	if req.IdempotencyKey == nil {
+		if key := strings.TrimSpace(r.Header.Get("Idempotency-Key")); key != "" {
+			req.IdempotencyKey = &key
+		}
+	}
+	resp, err := h.svc.Submit(r.Context(), req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) externalInvocationDetail(w http.ResponseWriter, r *http.Request) {
+	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/external/invocations/"), "/")
+	if id == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		resp, err := h.svc.Get(r.Context(), id)
+		if err != nil {
+			status := http.StatusInternalServerError
+			if err == sql.ErrNoRows {
+				status = http.StatusNotFound
+			}
+			writeError(w, status, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+	case http.MethodPatch:
+		var update invocation.ExternalExecutionUpdate
+		if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+		resp, err := h.svc.RecordExecution(r.Context(), id, update)
+		if err != nil {
+			status := http.StatusBadRequest
+			if err == sql.ErrNoRows {
+				status = http.StatusNotFound
+			}
+			writeError(w, status, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
 }
 
 func toAdminServer(upstream mcp.Upstream) AdminServer {

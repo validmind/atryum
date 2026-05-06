@@ -316,30 +316,191 @@ func (s *Service) Approve(ctx context.Context, invocationID string) error {
 	s.mu.Lock()
 	ch, ok := s.pendingApprovals[invocationID]
 	s.mu.Unlock()
-	if !ok {
-		return fmt.Errorf("invocation %s is not pending approval", invocationID)
+	if ok {
+		select {
+		case ch <- approvalDecision{approved: true}:
+			return nil
+		default:
+			return fmt.Errorf("invocation %s approval already decided", invocationID)
+		}
 	}
-	select {
-	case ch <- approvalDecision{approved: true}:
-		return nil
-	default:
-		return fmt.Errorf("invocation %s approval already decided", invocationID)
-	}
+	// External (mediated) invocation: no in-memory waiter. Update DB directly
+	// so the polling external executor can pick up the decision.
+	return s.recordExternalDecision(ctx, invocationID, true, "")
 }
 
 func (s *Service) Deny(ctx context.Context, invocationID string, message string) error {
 	s.mu.Lock()
 	ch, ok := s.pendingApprovals[invocationID]
 	s.mu.Unlock()
-	if !ok {
-		return fmt.Errorf("invocation %s is not pending approval", invocationID)
+	if ok {
+		select {
+		case ch <- approvalDecision{approved: false, message: message}:
+			return nil
+		default:
+			return fmt.Errorf("invocation %s approval already decided", invocationID)
+		}
 	}
-	select {
-	case ch <- approvalDecision{approved: false, message: message}:
+	return s.recordExternalDecision(ctx, invocationID, false, message)
+}
+
+func (s *Service) recordExternalDecision(ctx context.Context, invocationID string, approved bool, message string) error {
+	inv, err := s.invocations.Get(ctx, invocationID)
+	if err != nil {
+		return err
+	}
+	if inv.Status != StatusPendingApproval {
+		return fmt.Errorf("invocation %s is not pending approval (status=%s)", invocationID, inv.Status)
+	}
+	now := time.Now().UTC()
+	if approved {
+		inv.Status = StatusApproved
+		if err := s.invocations.UpdateResult(ctx, inv); err != nil {
+			return err
+		}
+		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.approved", Payload: mustJSON(map[string]any{"input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input)}), CreatedAt: now})
 		return nil
-	default:
-		return fmt.Errorf("invocation %s approval already decided", invocationID)
 	}
+	inv.Status = StatusDenied
+	inv.CompletedAt = &now
+	msg := "Tool call denied by the MCP permissions system."
+	if message != "" {
+		msg += "\n\nReason: " + message
+	}
+	inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": msg}}, "isError": true})
+	if err := s.invocations.UpdateResult(ctx, inv); err != nil {
+		return err
+	}
+	_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"message": message, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input)}), CreatedAt: now})
+	return nil
+}
+
+// Submit creates an invocation in the pending_approval state on behalf of an
+// external executor (e.g. an amp coding harness plugin). It does NOT execute
+// the tool — the caller is expected to poll Get() until status is approved or
+// denied, run the tool itself, and then RecordExecution() with the outcome.
+func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (InvocationResponse, error) {
+	if req.Tool == "" {
+		return InvocationResponse{}, fmt.Errorf("tool is required")
+	}
+	source := req.Source
+	if source == "" {
+		source = "external"
+	}
+	if req.IdempotencyKey != nil && *req.IdempotencyKey != "" {
+		existing, err := s.invocations.GetByIdempotencyKey(ctx, *req.IdempotencyKey)
+		if err == nil {
+			return s.toResponse(existing), nil
+		}
+		if err != nil && err != sql.ErrNoRows {
+			return InvocationResponse{}, err
+		}
+	}
+	inputJSON, err := json.Marshal(req.Input)
+	if err != nil {
+		return InvocationResponse{}, err
+	}
+	now := time.Now().UTC()
+	inv := Invocation{
+		InvocationID:   "inv_" + uuid.NewString(),
+		RequestID:      req.RequestID,
+		IdempotencyKey: req.IdempotencyKey,
+		Tool:           req.Tool,
+		Upstream:       source,
+		Status:         StatusReceived,
+		Input:          inputJSON,
+		SubmittedAt:    now,
+	}
+	if err := s.invocations.Create(ctx, inv); err != nil {
+		return InvocationResponse{}, err
+	}
+	receivedPayload := map[string]any{"tool": req.Tool, "upstream": source, "request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "external": true}
+	if req.Description != "" {
+		receivedPayload["description"] = req.Description
+	}
+	if req.ThreadID != "" {
+		receivedPayload["thread_id"] = req.ThreadID
+	}
+	_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(receivedPayload), CreatedAt: now})
+	inv.Status = StatusPendingApproval
+	if err := s.invocations.UpdateResult(ctx, inv); err != nil {
+		return InvocationResponse{}, err
+	}
+	_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.pending_approval", Payload: mustJSON(receivedPayload), CreatedAt: time.Now().UTC()})
+	return s.toResponse(inv), nil
+}
+
+// RecordExecution updates an externally-executed invocation with the outcome
+// reported by the executor. Valid execStatus values:
+//
+//	running | completed | failed | cancelled
+func (s *Service) RecordExecution(ctx context.Context, invocationID string, update ExternalExecutionUpdate) (InvocationResponse, error) {
+	inv, err := s.invocations.Get(ctx, invocationID)
+	if err != nil {
+		return InvocationResponse{}, err
+	}
+	now := time.Now().UTC()
+	switch update.ExecutionStatus {
+	case "running":
+		if inv.Status != StatusApproved && inv.Status != StatusExecuting {
+			return InvocationResponse{}, fmt.Errorf("invocation %s cannot move to running from %s", invocationID, inv.Status)
+		}
+		inv.Status = StatusExecuting
+		if err := s.invocations.UpdateResult(ctx, inv); err != nil {
+			return InvocationResponse{}, err
+		}
+		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.executing", Payload: mustJSON(map[string]any{"upstream": inv.Upstream, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "external": true}), CreatedAt: now})
+	case "completed":
+		inv.Status = StatusSucceeded
+		inv.CompletedAt = &now
+		if len(update.Result) > 0 {
+			inv.Response = []byte(update.Result)
+		}
+		if err := s.invocations.UpdateResult(ctx, inv); err != nil {
+			return InvocationResponse{}, err
+		}
+		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.succeeded", Payload: mustJSON(map[string]any{"upstream": inv.Upstream, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "body": json.RawMessage(nullableRaw(inv.Response)), "external": true}), CreatedAt: now})
+	case "failed":
+		inv.Status = StatusFailed
+		inv.CompletedAt = &now
+		if len(update.Error) > 0 {
+			inv.Error = []byte(update.Error)
+		} else if update.Message != "" {
+			inv.Error = mustJSON(map[string]any{"message": update.Message})
+		} else {
+			inv.Error = mustJSON(map[string]any{"message": "tool execution failed"})
+		}
+		if err := s.invocations.UpdateResult(ctx, inv); err != nil {
+			return InvocationResponse{}, err
+		}
+		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.failed", Payload: mustJSON(map[string]any{"upstream": inv.Upstream, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "body": json.RawMessage(inv.Error), "external": true}), CreatedAt: now})
+	case "cancelled":
+		inv.Status = StatusCancelled
+		inv.CompletedAt = &now
+		if len(update.Error) > 0 {
+			inv.Error = []byte(update.Error)
+		} else {
+			msg := "Tool execution cancelled."
+			if update.Message != "" {
+				msg = update.Message
+			}
+			inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": msg}}, "isError": true})
+		}
+		if err := s.invocations.UpdateResult(ctx, inv); err != nil {
+			return InvocationResponse{}, err
+		}
+		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.cancelled", Payload: mustJSON(map[string]any{"upstream": inv.Upstream, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "body": json.RawMessage(inv.Error), "external": true}), CreatedAt: now})
+	default:
+		return InvocationResponse{}, fmt.Errorf("invalid execution_status %q (expected running|completed|failed|cancelled)", update.ExecutionStatus)
+	}
+	return s.toResponse(inv), nil
+}
+
+func nullableRaw(b []byte) []byte {
+	if len(b) == 0 {
+		return []byte("null")
+	}
+	return b
 }
 
 func (s *Service) ListTools(ctx context.Context, server string) ([]mcp.Tool, error) {

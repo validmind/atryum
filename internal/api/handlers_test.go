@@ -49,6 +49,12 @@ func (s *stubService) Events(context.Context, string, invocation.EventListFilter
 }
 func (s *stubService) Approve(context.Context, string) error      { return nil }
 func (s *stubService) Deny(context.Context, string, string) error { return nil }
+func (s *stubService) Submit(context.Context, invocation.ExternalSubmitRequest) (invocation.InvocationResponse, error) {
+	return invocation.InvocationResponse{}, nil
+}
+func (s *stubService) RecordExecution(context.Context, string, invocation.ExternalExecutionUpdate) (invocation.InvocationResponse, error) {
+	return invocation.InvocationResponse{}, nil
+}
 func (s *stubService) ForwardEnvelope(context.Context, mcp.Upstream, mcp.Envelope, string) (mcp.ForwardResult, error) {
 	return s.forward, s.fwdErr
 }
