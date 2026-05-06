@@ -2,6 +2,9 @@ set shell := ["bash", "-cu"]
 
 config := "./atryum.toml"
 
+default:
+    just --list
+
 setup:
 	go mod tidy
 

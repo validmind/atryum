@@ -78,6 +78,30 @@ type CreateInvocationRequest struct {
 	IdempotencyKey *string        `json:"idempotency_key,omitempty"`
 }
 
+// ExternalSubmitRequest is used by callers that execute the tool themselves
+// (e.g. an amp coding harness via a plugin) and only want Atryum to gate the
+// call for human approval and record audit events. Atryum will NOT execute
+// the tool when this path is used.
+type ExternalSubmitRequest struct {
+	Source         string         `json:"source"`
+	Tool           string         `json:"tool"`
+	Description    string         `json:"description,omitempty"`
+	Input          map[string]any `json:"input"`
+	RequestID      *string        `json:"request_id,omitempty"`
+	IdempotencyKey *string        `json:"idempotency_key,omitempty"`
+	ThreadID       string         `json:"thread_id,omitempty"`
+}
+
+// ExternalExecutionUpdate is sent by the external executor to report on a
+// pending or completed run. ExecutionStatus is one of:
+//   running | completed | failed | cancelled
+type ExternalExecutionUpdate struct {
+	ExecutionStatus string          `json:"execution_status"`
+	Result          json.RawMessage `json:"result,omitempty"`
+	Error           json.RawMessage `json:"error,omitempty"`
+	Message         string          `json:"message,omitempty"`
+}
+
 type InvocationResponse struct {
 	InvocationID string          `json:"invocation_id"`
 	ServerName   string          `json:"server_name"`
