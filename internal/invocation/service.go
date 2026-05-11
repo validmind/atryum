@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"atryum/internal/invocation/policy"
 	"atryum/internal/mcp"
 )
 
@@ -46,13 +47,22 @@ type Service struct {
 	events           eventRepo
 	resolver         resolver
 	client           upstreamClient
+	policy           policy.Provider
 	defaultTimeout   time.Duration
 	mu               sync.Mutex
 	pendingApprovals map[string]chan approvalDecision
 }
 
-func NewService(inv invocationRepo, evt eventRepo, resolver resolver, client upstreamClient, defaultTimeout time.Duration) *Service {
-	return &Service{invocations: inv, events: evt, resolver: resolver, client: client, defaultTimeout: defaultTimeout, pendingApprovals: make(map[string]chan approvalDecision)}
+func NewService(inv invocationRepo, evt eventRepo, resolver resolver, client upstreamClient, policyProvider policy.Provider, defaultTimeout time.Duration) *Service {
+	return &Service{
+		invocations:      inv,
+		events:           evt,
+		resolver:         resolver,
+		client:           client,
+		policy:           policyProvider,
+		defaultTimeout:   defaultTimeout,
+		pendingApprovals: make(map[string]chan approvalDecision),
+	}
 }
 
 func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (InvocationResponse, error) {
@@ -79,14 +89,98 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	if err != nil {
 		return InvocationResponse{}, err
 	}
+
 	now := time.Now().UTC()
-	inv := Invocation{InvocationID: "inv_" + uuid.NewString(), RequestID: req.RequestID, IdempotencyKey: req.IdempotencyKey, Tool: req.Tool, Upstream: upstream.Name, Status: StatusReceived, Approval: nil, Input: inputJSON, SubmittedAt: now}
+	inv := Invocation{
+		InvocationID:   "inv_" + uuid.NewString(),
+		RequestID:      req.RequestID,
+		IdempotencyKey: req.IdempotencyKey,
+		Tool:           req.Tool,
+		Upstream:       upstream.Name,
+		Status:         StatusReceived,
+		Input:          inputJSON,
+		SubmittedAt:    now,
+	}
 	if err := s.invocations.Create(ctx, inv); err != nil {
 		return InvocationResponse{}, err
 	}
-	_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(map[string]any{"tool": req.Tool, "upstream": upstream.Name, "request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input)}), CreatedAt: now})
 
-	// Register approval channel before updating status so the UI sees it as pending.
+	// Evaluate policy before taking any action so the disposition is in the
+	// received event. Errors fail closed (fall back to human approval).
+	callCtx := policy.CallContext{Server: upstream.Name, Tool: req.Tool, Input: req.Input}
+	decision, policyErr := s.policy.Evaluate(ctx, callCtx)
+	if policyErr != nil {
+		decision = policy.Decision{Disposition: policy.DispositionHuman, Reason: "policy error: " + policyErr.Error()}
+	}
+
+	_ = s.events.Create(ctx, Event{
+		InvocationID: inv.InvocationID,
+		EventType:    "invocation.received",
+		Payload: mustJSON(map[string]any{
+			"tool": req.Tool, "upstream": upstream.Name,
+			"request_id": req.RequestID,
+			"input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input),
+			"disposition": string(decision.Disposition), "disposition_reason": decision.Reason,
+		}),
+		CreatedAt: now,
+	})
+
+	switch decision.Disposition {
+	case policy.DispositionNever:
+		return s.denyByPolicy(ctx, inv, decision.Reason)
+	case policy.DispositionAuto:
+		return s.executeNow(ctx, inv, upstream, req, decision.Reason)
+	default:
+		// DispositionWorkflow falls through to human until ValidMind integration (US-15).
+		return s.waitForHumanApproval(ctx, inv, upstream, req)
+	}
+}
+
+// denyByPolicy hard-denies the call without execution. The invocation record is
+// persisted for audit (US-3 requires denied attempts to appear in the audit trail).
+func (s *Service) denyByPolicy(ctx context.Context, inv Invocation, reason string) (InvocationResponse, error) {
+	completed := time.Now().UTC()
+	inv.Status = StatusDenied
+	inv.CompletedAt = &completed
+	msg := "Tool call hard-denied by policy."
+	if reason != "" {
+		msg += " Reason: " + reason
+	}
+	inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": msg}}, "isError": true})
+	_ = s.invocations.UpdateResult(context.Background(), inv)
+	_ = s.events.Create(context.Background(), Event{
+		InvocationID: inv.InvocationID,
+		EventType:    "invocation.denied",
+		Payload:      mustJSON(map[string]any{"reason": reason, "disposition": "never"}),
+		CreatedAt:    completed,
+	})
+	return s.toResponse(inv), nil
+}
+
+// executeNow runs the tool call immediately without waiting for human approval.
+func (s *Service) executeNow(ctx context.Context, inv Invocation, upstream mcp.Upstream, req CreateInvocationRequest, reason string) (InvocationResponse, error) {
+	inv.Status = StatusExecuting
+	if err := s.invocations.UpdateResult(ctx, inv); err != nil {
+		return InvocationResponse{}, err
+	}
+	_ = s.events.Create(ctx, Event{
+		InvocationID: inv.InvocationID,
+		EventType:    "invocation.executing",
+		Payload: mustJSON(map[string]any{
+			"upstream": upstream.Name, "request_id": req.RequestID,
+			"input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input),
+			"auto_approved": true, "auto_reason": reason,
+		}),
+		CreatedAt: time.Now().UTC(),
+	})
+	return s.finishExecution(ctx, inv, upstream, req)
+}
+
+// waitForHumanApproval blocks the caller's goroutine until an operator posts to
+// /approve or /deny, or the request context is cancelled.
+func (s *Service) waitForHumanApproval(ctx context.Context, inv Invocation, upstream mcp.Upstream, req CreateInvocationRequest) (InvocationResponse, error) {
+	// Register the channel before updating status so the UI sees the invocation
+	// as pending_approval as soon as it polls/streams.
 	ch := make(chan approvalDecision, 1)
 	s.mu.Lock()
 	s.pendingApprovals[inv.InvocationID] = ch
@@ -101,7 +195,16 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	if err := s.invocations.UpdateResult(ctx, inv); err != nil {
 		return InvocationResponse{}, err
 	}
-	_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.pending_approval", Payload: mustJSON(map[string]any{"tool": req.Tool, "upstream": upstream.Name, "request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input)}), CreatedAt: time.Now().UTC()})
+	_ = s.events.Create(ctx, Event{
+		InvocationID: inv.InvocationID,
+		EventType:    "invocation.pending_approval",
+		Payload: mustJSON(map[string]any{
+			"tool": req.Tool, "upstream": upstream.Name,
+			"request_id": req.RequestID,
+			"input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input),
+		}),
+		CreatedAt: time.Now().UTC(),
+	})
 
 	select {
 	case decision := <-ch:
@@ -115,7 +218,12 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 			}
 			inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": msg}}, "isError": true})
 			_ = s.invocations.UpdateResult(context.Background(), inv)
-			_ = s.events.Create(context.Background(), Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"message": decision.message, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input)}), CreatedAt: completed})
+			_ = s.events.Create(context.Background(), Event{
+				InvocationID: inv.InvocationID,
+				EventType:    "invocation.denied",
+				Payload:      mustJSON(map[string]any{"message": decision.message, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input)}),
+				CreatedAt:    completed,
+			})
 			return s.toResponse(inv), nil
 		}
 	case <-ctx.Done():
@@ -132,7 +240,20 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	if err := s.invocations.UpdateResult(ctx, inv); err != nil {
 		return InvocationResponse{}, err
 	}
-	_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.executing", Payload: mustJSON(map[string]any{"upstream": upstream.Name, "request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input)}), CreatedAt: time.Now().UTC()})
+	_ = s.events.Create(ctx, Event{
+		InvocationID: inv.InvocationID,
+		EventType:    "invocation.executing",
+		Payload: mustJSON(map[string]any{
+			"upstream": upstream.Name, "request_id": req.RequestID,
+			"input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input),
+		}),
+		CreatedAt: time.Now().UTC(),
+	})
+	return s.finishExecution(ctx, inv, upstream, req)
+}
+
+// finishExecution calls the upstream client and persists the outcome.
+func (s *Service) finishExecution(ctx context.Context, inv Invocation, upstream mcp.Upstream, req CreateInvocationRequest) (InvocationResponse, error) {
 	execCtx, cancel := context.WithTimeout(ctx, s.defaultTimeout)
 	defer cancel()
 	result, err := s.client.Invoke(execCtx, upstream, req.Tool, req.Input, req.RequestID)
@@ -148,11 +269,19 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	if result.Failed {
 		inv.Status = StatusFailed
 		inv.Error = result.Body
-		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.failed", Payload: mustJSON(map[string]any{"request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "body": json.RawMessage(result.Body)}), CreatedAt: completed})
+		_ = s.events.Create(ctx, Event{
+			InvocationID: inv.InvocationID, EventType: "invocation.failed",
+			Payload:   mustJSON(map[string]any{"request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "body": json.RawMessage(result.Body)}),
+			CreatedAt: completed,
+		})
 	} else {
 		inv.Status = StatusSucceeded
 		inv.Response = result.Body
-		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.succeeded", Payload: mustJSON(map[string]any{"request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "body": json.RawMessage(result.Body)}), CreatedAt: completed})
+		_ = s.events.Create(ctx, Event{
+			InvocationID: inv.InvocationID, EventType: "invocation.succeeded",
+			Payload:   mustJSON(map[string]any{"request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "body": json.RawMessage(result.Body)}),
+			CreatedAt: completed,
+		})
 	}
 	if err := s.invocations.UpdateResult(ctx, inv); err != nil {
 		return InvocationResponse{}, err

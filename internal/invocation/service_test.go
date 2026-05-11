@@ -14,6 +14,7 @@ import (
 
 	"atryum/internal/config"
 	"atryum/internal/invocation"
+	"atryum/internal/invocation/policy"
 	"atryum/internal/mcp"
 	"atryum/internal/store"
 
@@ -193,7 +194,7 @@ func newTestService(t *testing.T, cfg config.Config) *invocation.Service {
 	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	return invocation.NewService(store.NewInvocationRepo(db), store.NewEventRepo(db), resolver, mcp.NewHTTPClient(), 5*time.Second)
+	return invocation.NewService(store.NewInvocationRepo(db), store.NewEventRepo(db), resolver, mcp.NewHTTPClient(), policy.AlwaysApproveProvider{}, 5*time.Second)
 }
 
 func approveNextInvocation(t *testing.T, service *invocation.Service, delay time.Duration) {

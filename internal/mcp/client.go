@@ -491,7 +491,6 @@ func (c *Client) doHTTPEnvelope(ctx context.Context, upstream Upstream, body []b
 	return ForwardResult{StatusCode: resp.StatusCode, Body: respBody.Bytes(), ContentType: contentType, ProtocolVersion: resp.Header.Get("MCP-Protocol-Version")}, nil
 }
 
-
 func (c *Client) invokeStdio(ctx context.Context, upstream Upstream, tool string, input map[string]any) (InvokeResult, error) {
 	if upstream.Command == "" {
 		return InvokeResult{}, fmt.Errorf("stdio upstream %q missing command", upstream.Name)

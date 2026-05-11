@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"atryum/internal/invocation"
+	"atryum/internal/invocation/policy"
 	"atryum/internal/mcp"
 	authprovider "atryum/internal/mcp/auth_provider"
 	"atryum/internal/store"
@@ -51,11 +52,29 @@ type serverService interface {
 }
 
 type Handler struct {
-	svc        service
-	serverSvc  serverService
-	forwarder  mcpEnvelopeForwarder
-	staticHTTP http.Handler
-	debug      bool
+	svc            service
+	serverSvc      serverService
+	policyRegistry *policy.Registry
+	forwarder      mcpEnvelopeForwarder
+	staticHTTP     http.Handler
+	debug          bool
+}
+
+type PolicyStatusResponse struct {
+	ActiveProvider string               `json:"active_provider"`
+	DisplayName    string               `json:"display_name"`
+	WindowExpiresAt *time.Time          `json:"window_expires_at,omitempty"`
+	Providers      []PolicyProviderInfo `json:"providers"`
+}
+
+type PolicyProviderInfo struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+}
+
+type PolicyUpdateRequest struct {
+	Provider        string `json:"provider"`
+	DurationMinutes int    `json:"duration_minutes,omitempty"`
 }
 
 type AdminServer struct {
@@ -143,7 +162,7 @@ type invocationStreamEnvelope struct {
 	Items []invocation.InvocationResponse `json:"items"`
 }
 
-func NewHandler(svc service, serverSvc serverService) *Handler {
+func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Registry) *Handler {
 	staticSub, err := fs.Sub(webFS, "web")
 	if err != nil {
 		panic(err)
@@ -153,7 +172,7 @@ func NewHandler(svc service, serverSvc serverService) *Handler {
 	if f, ok := svc.(mcpEnvelopeForwarder); ok {
 		forwarder = f
 	}
-	return &Handler{svc: svc, serverSvc: serverSvc, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug}
+	return &Handler{svc: svc, serverSvc: serverSvc, policyRegistry: policyRegistry, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug}
 }
 
 func (h *Handler) Routes() http.Handler {
@@ -167,6 +186,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/api/v1/admin/servers", h.adminServers)
 	mux.HandleFunc("/api/v1/admin/servers/", h.adminServerDetail)
 	mux.HandleFunc("/api/v1/admin/oauth/callback", h.oauthCallback)
+	mux.HandleFunc("/api/v1/admin/policy", h.adminPolicy)
 	mux.HandleFunc("/ui", h.uiIndex)
 	mux.Handle("/ui/", http.StripPrefix("/ui/", h.staticHTTP))
 	mux.HandleFunc("/", h.root)
@@ -626,6 +646,68 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(`<html><body><h1>OAuth connect complete</h1><p>` + escapeHTMLString(message) + `</p><script>window.close && window.close()</script></body></html>`))
+}
+
+func (h *Handler) adminPolicy(w http.ResponseWriter, r *http.Request) {
+	if h.policyRegistry == nil {
+		writeError(w, http.StatusServiceUnavailable, "policy registry not configured")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		active := h.policyRegistry.Active()
+		if active == nil {
+			writeError(w, http.StatusInternalServerError, "no active policy provider")
+			return
+		}
+		resp := PolicyStatusResponse{
+			ActiveProvider: active.ID(),
+			DisplayName:    active.DisplayName(),
+		}
+		if ws, ok := active.(policy.WindowSetter); ok {
+			resp.WindowExpiresAt = ws.WindowExpiresAt()
+		}
+		for _, p := range h.policyRegistry.Providers() {
+			resp.Providers = append(resp.Providers, PolicyProviderInfo{ID: p.ID(), DisplayName: p.DisplayName()})
+		}
+		writeJSON(w, http.StatusOK, resp)
+
+	case http.MethodPut:
+		var req PolicyUpdateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+		if strings.TrimSpace(req.Provider) == "" {
+			writeError(w, http.StatusBadRequest, "provider is required")
+			return
+		}
+		if err := h.policyRegistry.SetActive(req.Provider); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		// If duration was specified and the new provider supports windowed approval, set it.
+		if req.DurationMinutes > 0 {
+			if ws, ok := h.policyRegistry.Active().(policy.WindowSetter); ok {
+				ws.SetWindow(time.Now().UTC().Add(time.Duration(req.DurationMinutes) * time.Minute))
+			}
+		}
+		active := h.policyRegistry.Active()
+		resp := PolicyStatusResponse{
+			ActiveProvider: active.ID(),
+			DisplayName:    active.DisplayName(),
+		}
+		if ws, ok := active.(policy.WindowSetter); ok {
+			resp.WindowExpiresAt = ws.WindowExpiresAt()
+		}
+		for _, p := range h.policyRegistry.Providers() {
+			resp.Providers = append(resp.Providers, PolicyProviderInfo{ID: p.ID(), DisplayName: p.DisplayName()})
+		}
+		writeJSON(w, http.StatusOK, resp)
+
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

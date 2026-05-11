@@ -1,6 +1,13 @@
 [server]
 listen_addr = ":8080"
+# SQLite remains the default. database_path is used when database_url is empty.
 database_path = "./atryum.db"
+# Optional: select storage provider by URL scheme.
+# postgres/postgresql uses PostgreSQL via pgx stdlib.
+# sqlite/file/no scheme/empty uses SQLite.
+# Local optional test/dev PostgreSQL DSN:
+# database_url = "postgresql://postgres:password@127.0.0.1:5432/postgres"
+database_url = ""
 log_level = "info"
 
 [defaults]

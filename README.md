@@ -1,19 +1,19 @@
 # Atryum
 
-A local-first Go proof of concept for mediating MCP tool calls. Atryum accepts invocation requests, forwards arbitrary tool names to configured upstream MCP servers, and records durable invocation state plus lifecycle events in SQLite.
+A local-first Go proof of concept for mediating MCP tool calls. Atryum accepts invocation requests, forwards arbitrary tool names to configured upstream MCP servers, and records durable invocation state plus lifecycle events in SQLite by default, with optional PostgreSQL support.
 
 ## Features
 
 - Go binary configured by TOML for process/bootstrap settings only
 - Main public endpoint preserved: `POST /mcp/{server}`
 - `/mcp/{server}` now supports a minimal MCP-over-HTTP JSON-RPC surface for Claude/MCP clients
-- SQLite-backed runtime MCP server registry via `mcp_servers`
+- SQLite-backed runtime MCP server registry via `mcp_servers` by default; PostgreSQL is selectable with `server.database_url`
 - Admin APIs for servers, invocations, and invocation events
 - Generic connection/auth status surfaced for MCP servers, including reauth-needed state
 - Minimal built-in web UI served from the Go binary at `/ui/` for creating, editing, enabling/disabling, testing, and deleting server connections
 - Invocation UI renders MCP text content in a human-friendly view alongside raw JSON and refreshes live
 - Invocation APIs surface stored input arguments in invocation detail/list responses and invocation event payloads for approval inspection
-- SQLite-backed durable invocation state and lifecycle events
+- SQLite-backed durable invocation state and lifecycle events by default; PostgreSQL is supported via pgx stdlib
 - Request ID and idempotency key support
 - Supports both HTTP upstreams and stdio-launched MCP servers
 - Business-level tool failures are recorded as failed invocations
@@ -54,6 +54,35 @@ to log concise MCP proxy activity in local run output. Current debug logging inc
 - concise result/error info
 
 Secrets are not intentionally logged.
+
+## Database configuration
+
+SQLite remains the default storage provider:
+
+```toml
+[server]
+database_path = "./atryum.db"
+database_url = ""
+```
+
+Set `server.database_url` to select a provider by URL scheme:
+- `postgres://` or `postgresql://` uses PostgreSQL via pgx stdlib
+- `sqlite://`, `file:`, no scheme, or an empty URL uses SQLite
+
+Optional local PostgreSQL test/dev DSN:
+
+```toml
+[server]
+database_url = "postgresql://postgres:password@127.0.0.1:5432/postgres"
+```
+
+Normal tests do not require PostgreSQL. To run the optional PostgreSQL integration test locally:
+
+```bash
+ATRYUM_POSTGRES_TESTS=1 go test ./internal/store
+# optionally override the DSN:
+ATRYUM_POSTGRES_TESTS=1 ATRYUM_POSTGRES_TEST_DSN="postgresql://postgres:password@127.0.0.1:5432/postgres" go test ./internal/store
+```
 
 ## Endpoints
 

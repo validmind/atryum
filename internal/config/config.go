@@ -5,12 +5,23 @@ import "github.com/BurntSushi/toml"
 type Config struct {
 	Server    ServerConfig     `toml:"server"`
 	Defaults  DefaultsConfig   `toml:"defaults"`
+	Policy    PolicyConfig     `toml:"policy"`
 	Upstreams []UpstreamConfig `toml:"upstreams"`
+}
+
+// PolicyConfig selects the active approval policy provider at startup.
+// Valid provider values: "always_approve", "always_deny", "timed_approve".
+// DurationMinutes is only used by "timed_approve" and sets an initial approval
+// window from server start; the window can be updated at runtime via the admin API.
+type PolicyConfig struct {
+	Provider        string `toml:"provider"`
+	DurationMinutes int    `toml:"duration_minutes"`
 }
 
 type ServerConfig struct {
 	ListenAddr   string `toml:"listen_addr"`
 	DatabasePath string `toml:"database_path"`
+	DatabaseURL  string `toml:"database_url"`
 	LogLevel     string `toml:"log_level"`
 }
 
