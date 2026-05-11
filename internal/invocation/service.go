@@ -34,6 +34,7 @@ type eventRepo interface {
 
 type resolver interface {
 	ResolveContext(ctx context.Context, name string) (mcp.Upstream, error)
+	ListAll(ctx context.Context) ([]mcp.Upstream, error)
 }
 
 type upstreamClient interface {
@@ -48,18 +49,20 @@ type Service struct {
 	resolver         resolver
 	client           upstreamClient
 	policy           policy.Provider
+	rules            rulesStore // nil = no rule evaluation
 	defaultTimeout   time.Duration
 	mu               sync.Mutex
 	pendingApprovals map[string]chan approvalDecision
 }
 
-func NewService(inv invocationRepo, evt eventRepo, resolver resolver, client upstreamClient, policyProvider policy.Provider, defaultTimeout time.Duration) *Service {
+func NewService(inv invocationRepo, evt eventRepo, resolver resolver, client upstreamClient, policyProvider policy.Provider, defaultTimeout time.Duration, rules rulesStore) *Service {
 	return &Service{
 		invocations:      inv,
 		events:           evt,
 		resolver:         resolver,
 		client:           client,
 		policy:           policyProvider,
+		rules:            rules,
 		defaultTimeout:   defaultTimeout,
 		pendingApprovals: make(map[string]chan approvalDecision),
 	}
@@ -105,12 +108,36 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		return InvocationResponse{}, err
 	}
 
-	// Evaluate policy before taking any action so the disposition is in the
-	// received event. Errors fail closed (fall back to human approval).
-	callCtx := policy.CallContext{Server: upstream.Name, Tool: req.Tool, Input: req.Input}
-	decision, policyErr := s.policy.Evaluate(ctx, callCtx)
-	if policyErr != nil {
-		decision = policy.Decision{Disposition: policy.DispositionHuman, Reason: "policy error: " + policyErr.Error()}
+	// Determine disposition: check rules first (fine-grained), then fall back to policy (global).
+	// Both resolve to a policy.Decision so the rest of the flow is uniform.
+	var decision policy.Decision
+	ruleMatched := false
+	if s.rules != nil {
+		if approvalRules, err := s.rules.ListApprovalRules(ctx); err == nil {
+			user := ""
+			if req.RequestID != nil {
+				user = *req.RequestID
+			}
+			if matched := matchRule(approvalRules, upstream.Name, req.Tool, user); matched != nil {
+				ruleMatched = true
+				switch matched.Action {
+				case RuleActionAutoDeny:
+					decision = policy.Decision{Disposition: policy.DispositionNever, Reason: "matched approval rule (auto_deny)"}
+				case RuleActionAutoApprove:
+					decision = policy.Decision{Disposition: policy.DispositionAuto, Reason: "matched approval rule (auto_approve)"}
+				default:
+					decision = policy.Decision{Disposition: policy.DispositionHuman, Reason: "matched approval rule (human_approval)"}
+				}
+			}
+		}
+	}
+	if !ruleMatched && s.policy != nil {
+		callCtx := policy.CallContext{Server: upstream.Name, Tool: req.Tool, Input: req.Input}
+		var policyErr error
+		decision, policyErr = s.policy.Evaluate(ctx, callCtx)
+		if policyErr != nil {
+			decision = policy.Decision{Disposition: policy.DispositionHuman, Reason: "policy error: " + policyErr.Error()}
+		}
 	}
 
 	_ = s.events.Create(ctx, Event{
@@ -131,13 +158,12 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	case policy.DispositionAuto:
 		return s.executeNow(ctx, inv, upstream, req, decision.Reason)
 	default:
-		// DispositionWorkflow falls through to human until ValidMind integration (US-15).
+		// DispositionHuman and DispositionWorkflow both gate on a human decision.
 		return s.waitForHumanApproval(ctx, inv, upstream, req)
 	}
 }
 
-// denyByPolicy hard-denies the call without execution. The invocation record is
-// persisted for audit (US-3 requires denied attempts to appear in the audit trail).
+// denyByPolicy hard-denies the call without execution.
 func (s *Service) denyByPolicy(ctx context.Context, inv Invocation, reason string) (InvocationResponse, error) {
 	completed := time.Now().UTC()
 	inv.Status = StatusDenied
@@ -176,11 +202,8 @@ func (s *Service) executeNow(ctx context.Context, inv Invocation, upstream mcp.U
 	return s.finishExecution(ctx, inv, upstream, req)
 }
 
-// waitForHumanApproval blocks the caller's goroutine until an operator posts to
-// /approve or /deny, or the request context is cancelled.
+// waitForHumanApproval blocks until an operator approves or denies, or the context is cancelled.
 func (s *Service) waitForHumanApproval(ctx context.Context, inv Invocation, upstream mcp.Upstream, req CreateInvocationRequest) (InvocationResponse, error) {
-	// Register the channel before updating status so the UI sees the invocation
-	// as pending_approval as soon as it polls/streams.
 	ch := make(chan approvalDecision, 1)
 	s.mu.Lock()
 	s.pendingApprovals[inv.InvocationID] = ch
@@ -207,21 +230,21 @@ func (s *Service) waitForHumanApproval(ctx context.Context, inv Invocation, upst
 	})
 
 	select {
-	case decision := <-ch:
-		if !decision.approved {
+	case d := <-ch:
+		if !d.approved {
 			completed := time.Now().UTC()
 			inv.Status = StatusDenied
 			inv.CompletedAt = &completed
 			msg := "Tool call denied by the MCP permissions system."
-			if decision.message != "" {
-				msg += "\n\nReason: " + decision.message
+			if d.message != "" {
+				msg += "\n\nReason: " + d.message
 			}
 			inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": msg}}, "isError": true})
 			_ = s.invocations.UpdateResult(context.Background(), inv)
 			_ = s.events.Create(context.Background(), Event{
 				InvocationID: inv.InvocationID,
 				EventType:    "invocation.denied",
-				Payload:      mustJSON(map[string]any{"message": decision.message, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input)}),
+				Payload:      mustJSON(map[string]any{"message": d.message, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input)}),
 				CreatedAt:    completed,
 			})
 			return s.toResponse(inv), nil
@@ -334,6 +357,49 @@ func (s *Service) ListTools(ctx context.Context, server string) ([]mcp.Tool, err
 		return nil, err
 	}
 	return tools, nil
+}
+
+// ResolveToolServer finds which upstream server provides the named tool.
+// Used in aggregate mode (no server in URL) to route tools/call correctly.
+func (s *Service) ResolveToolServer(ctx context.Context, toolName string) (string, error) {
+	upstreams, err := s.resolver.ListAll(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, upstream := range upstreams {
+		tctx, cancel := context.WithTimeout(ctx, s.defaultTimeout)
+		tools, err := s.client.ListTools(tctx, upstream)
+		cancel()
+		if err != nil {
+			continue
+		}
+		for _, t := range tools {
+			if t.Name == toolName {
+				return upstream.Name, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("no server found for tool %q", toolName)
+}
+
+// ListAllTools aggregates tools from every enabled upstream. Used when the MCP
+// client connects to the root /mcp endpoint without specifying a server name.
+func (s *Service) ListAllTools(ctx context.Context) ([]mcp.Tool, error) {
+	upstreams, err := s.resolver.ListAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var all []mcp.Tool
+	for _, upstream := range upstreams {
+		tctx, cancel := context.WithTimeout(ctx, s.defaultTimeout)
+		tools, err := s.client.ListTools(tctx, upstream)
+		cancel()
+		if err != nil {
+			continue // skip unreachable servers rather than failing the whole list
+		}
+		all = append(all, tools...)
+	}
+	return all, nil
 }
 
 func (s *Service) Get(ctx context.Context, id string) (InvocationResponse, error) {

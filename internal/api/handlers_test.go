@@ -32,6 +32,12 @@ func (s *stubService) Invoke(_ context.Context, req invocation.CreateInvocationR
 func (s *stubService) ListTools(context.Context, string) ([]mcp.Tool, error) {
 	return s.tools, s.listErr
 }
+func (s *stubService) ListAllTools(context.Context) ([]mcp.Tool, error) {
+	return s.tools, s.listErr
+}
+func (s *stubService) ResolveToolServer(_ context.Context, _ string) (string, error) {
+	return s.upstream.Name, nil
+}
 func (s *stubService) Get(context.Context, string) (invocation.InvocationResponse, error) {
 	return s.invoke, nil
 }
@@ -74,7 +80,7 @@ func (stubServerService) CompleteConnect(context.Context, string, string, string
 }
 
 func TestMCPInitializeNegotiatesProtocolVersion(t *testing.T) {
-	h := NewHandler(&stubService{}, stubServerService{}, nil)
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("MCP-Protocol-Version", "2025-11-25")
@@ -99,7 +105,7 @@ func TestMCPInitializeNegotiatesProtocolVersion(t *testing.T) {
 }
 
 func TestMCPInitializedNotificationReturnsAccepted(t *testing.T) {
-	h := NewHandler(&stubService{}, stubServerService{}, nil)
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`))
 	w := httptest.NewRecorder()
 
@@ -112,7 +118,7 @@ func TestMCPInitializedNotificationReturnsAccepted(t *testing.T) {
 
 func TestMCPPingPassThrough(t *testing.T) {
 	svc := &stubService{upstream: mcp.Upstream{Name: "demo", Mode: mcp.UpstreamModeHTTP}, forward: mcp.ForwardResult{StatusCode: http.StatusOK, Body: []byte(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`), ContentType: "application/json", ProtocolVersion: "2025-11-25"}}
-	h := NewHandler(svc, stubServerService{}, nil)
+	h := NewHandler(svc, stubServerService{}, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}`))
 	w := httptest.NewRecorder()
 
@@ -128,7 +134,7 @@ func TestMCPPingPassThrough(t *testing.T) {
 
 func TestMCPUnknownNotificationPassThroughFallbackAccepted(t *testing.T) {
 	svc := &stubService{fwdErr: context.Canceled}
-	h := NewHandler(svc, stubServerService{}, nil)
+	h := NewHandler(svc, stubServerService{}, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/custom","params":{"x":1}}`))
 	w := httptest.NewRecorder()
 
@@ -140,7 +146,7 @@ func TestMCPUnknownNotificationPassThroughFallbackAccepted(t *testing.T) {
 }
 
 func TestMCPMalformedJSONReturnsParseError(t *testing.T) {
-	h := NewHandler(&stubService{}, stubServerService{}, nil)
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":`))
 	w := httptest.NewRecorder()
 
@@ -151,20 +157,39 @@ func TestMCPMalformedJSONReturnsParseError(t *testing.T) {
 	}
 }
 
-func TestMCPGetDeleteReturn405(t *testing.T) {
-	h := NewHandler(&stubService{}, stubServerService{}, nil)
-	for _, method := range []string{http.MethodGet, http.MethodDelete} {
-		req := httptest.NewRequest(method, "/mcp/demo", nil)
-		w := httptest.NewRecorder()
+func TestMCPGetOpenSSEStream(t *testing.T) {
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/mcp/demo", nil).WithContext(ctx)
+	w := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
 		h.Routes().ServeHTTP(w, req)
-		if w.Code != http.StatusMethodNotAllowed {
-			t.Fatalf("method %s expected 405, got %d", method, w.Code)
-		}
+		close(done)
+	}()
+	// Cancel immediately — the SSE handler should exit once the context is done
+	cancel()
+	<-done
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /mcp expected 200 SSE, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
+		t.Fatalf("expected text/event-stream, got %s", ct)
+	}
+}
+
+func TestMCPDeleteReturn405(t *testing.T) {
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil)
+	req := httptest.NewRequest(http.MethodDelete, "/mcp/demo", nil)
+	w := httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("DELETE expected 405, got %d", w.Code)
 	}
 }
 
 func TestMCPToolsList(t *testing.T) {
-	h := NewHandler(&stubService{tools: []mcp.Tool{{Name: "demo_tool"}}}, stubServerService{}, nil)
+	h := NewHandler(&stubService{tools: []mcp.Tool{{Name: "demo_tool"}}}, stubServerService{}, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
 	w := httptest.NewRecorder()
 
@@ -178,7 +203,7 @@ func TestMCPToolsList(t *testing.T) {
 func TestMCPToolsCallInterceptsInvocation(t *testing.T) {
 	now := time.Now().UTC()
 	svc := &stubService{invoke: invocation.InvocationResponse{InvocationID: "inv_123", ServerName: "demo", ToolName: "demo_tool", Status: invocation.StatusSucceeded, Input: json.RawMessage(`{"a":1}`), SubmittedAt: now, CompletedAt: &now, Result: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`)}}
-	h := NewHandler(svc, stubServerService{}, nil)
+	h := NewHandler(svc, stubServerService{}, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"demo_tool","arguments":{"a":1}}}`))
 	w := httptest.NewRecorder()
 
@@ -201,7 +226,7 @@ func TestMCPToolsCallInterceptsInvocation(t *testing.T) {
 func TestAdminInvocationsResponsesIncludeServerToolAndInput(t *testing.T) {
 	now := time.Now().UTC()
 	svc := &stubService{invoke: invocation.InvocationResponse{InvocationID: "inv_123", ServerName: "demo-server", ToolName: "demo_tool", Status: invocation.StatusSucceeded, Input: json.RawMessage(`{"issue":123,"verbose":true}`), SubmittedAt: now, CompletedAt: &now}}
-	h := NewHandler(svc, stubServerService{}, nil)
+	h := NewHandler(svc, stubServerService{}, nil, nil)
 
 	t.Run("list", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)

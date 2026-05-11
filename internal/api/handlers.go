@@ -29,6 +29,8 @@ var webFS embed.FS
 type service interface {
 	Invoke(ctx context.Context, req invocation.CreateInvocationRequest) (invocation.InvocationResponse, error)
 	ListTools(ctx context.Context, server string) ([]mcp.Tool, error)
+	ListAllTools(ctx context.Context) ([]mcp.Tool, error)
+	ResolveToolServer(ctx context.Context, toolName string) (string, error)
 	Get(ctx context.Context, id string) (invocation.InvocationResponse, error)
 	List(ctx context.Context, filter invocation.InvocationListFilter) (invocation.InvocationListResponse, error)
 	Events(ctx context.Context, invocationID string, filter invocation.EventListFilter) (invocation.EventListResponse, error)
@@ -51,10 +53,21 @@ type serverService interface {
 	CompleteConnect(ctx context.Context, state string, code string, errorText string) (OAuthConnectStatusResponse, error)
 }
 
+type rulesRepo interface {
+	Create(ctx context.Context, rule store.Rule) error
+	Get(ctx context.Context, id string) (store.Rule, error)
+	List(ctx context.Context) ([]store.Rule, error)
+	NextOrder(ctx context.Context) (int, error)
+	Update(ctx context.Context, rule store.Rule) error
+	Delete(ctx context.Context, id string) error
+	Move(ctx context.Context, id string, direction string) ([]store.Rule, error)
+}
+
 type Handler struct {
 	svc            service
 	serverSvc      serverService
 	policyRegistry *policy.Registry
+	rulesRepo      rulesRepo
 	forwarder      mcpEnvelopeForwarder
 	staticHTTP     http.Handler
 	debug          bool
@@ -146,6 +159,36 @@ type OAuthConnectStatusResponse struct {
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
 }
 
+// ─── Rules ───────────────────────────────────────────────────────────────────
+
+type AdminRule struct {
+	ID             string    `json:"id"`
+	Action         string    `json:"action"`
+	ServerPatterns []string  `json:"server_patterns"`
+	ToolPatterns   []string  `json:"tool_patterns"`
+	UserPattern    string    `json:"user_pattern"`
+	Description    string    `json:"description,omitempty"`
+	Enabled        bool      `json:"enabled"`
+	Order          int       `json:"order"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+type AdminRuleInput struct {
+	Action         string   `json:"action"`
+	ServerPatterns []string `json:"server_patterns"`
+	ToolPatterns   []string `json:"tool_patterns"`
+	UserPattern    string   `json:"user_pattern"`
+	Description    string   `json:"description,omitempty"`
+	Enabled        *bool    `json:"enabled,omitempty"`
+}
+
+type RuleListResponse struct {
+	Items []AdminRule `json:"items"`
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 type jsonRPCRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id,omitempty"`
@@ -164,7 +207,7 @@ type invocationStreamEnvelope struct {
 	Items []invocation.InvocationResponse `json:"items"`
 }
 
-func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Registry) *Handler {
+func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Registry, rules rulesRepo) *Handler {
 	staticSub, err := fs.Sub(webFS, "web")
 	if err != nil {
 		panic(err)
@@ -174,7 +217,7 @@ func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Reg
 	if f, ok := svc.(mcpEnvelopeForwarder); ok {
 		forwarder = f
 	}
-	return &Handler{svc: svc, serverSvc: serverSvc, policyRegistry: policyRegistry, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug}
+	return &Handler{svc: svc, serverSvc: serverSvc, policyRegistry: policyRegistry, rulesRepo: rules, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug}
 }
 
 func (h *Handler) Routes() http.Handler {
@@ -187,6 +230,8 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/api/v1/admin/invocations/", h.adminInvocationDetail)
 	mux.HandleFunc("/api/v1/admin/servers", h.adminServers)
 	mux.HandleFunc("/api/v1/admin/servers/", h.adminServerDetail)
+	mux.HandleFunc("/api/v1/admin/rules", h.adminRules)
+	mux.HandleFunc("/api/v1/admin/rules/", h.adminRuleDetail)
 	mux.HandleFunc("/api/v1/admin/oauth/callback", h.oauthCallback)
 	mux.HandleFunc("/api/v1/admin/policy", h.adminPolicy)
 	mux.HandleFunc("/ui", h.uiIndex)
@@ -216,7 +261,15 @@ func (h *Handler) uiIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) invokeUpstream(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet || r.Method == http.MethodDelete {
+	server := strings.TrimPrefix(r.URL.Path, "/mcp/")
+	server = strings.Trim(server, "/")
+
+	// GET: open an SSE keepalive stream (Streamable HTTP transport and legacy SSE clients both try GET)
+	if r.Method == http.MethodGet {
+		h.handleMCPSSE(w, r)
+		return
+	}
+	if r.Method == http.MethodDelete {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
@@ -224,17 +277,46 @@ func (h *Handler) invokeUpstream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	server := strings.TrimPrefix(r.URL.Path, "/mcp/")
-	server = strings.Trim(server, "/")
+	if isJSONRPCRequest(r) {
+		// server may be "" — handleMCPProxy handles the aggregate (no-server) case
+		h.handleMCPProxy(w, r, server)
+		return
+	}
 	if server == "" {
 		writeError(w, http.StatusNotFound, "server not found")
 		return
 	}
-	if isJSONRPCRequest(r) {
-		h.handleMCPProxy(w, r, server)
+	h.handleInvocation(w, r, server)
+}
+
+// handleMCPSSE opens a long-lived SSE stream so Cursor's MCP client can establish
+// a connection. Actual JSON-RPC exchanges still travel over POST; this stream
+// exists purely to satisfy the SSE handshake and sends periodic keepalive pings.
+func (h *Handler) handleMCPSSE(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
-	h.handleInvocation(w, r, server)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, ": atryum mcp ready\n\n")
+	flusher.Flush()
+
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+			fmt.Fprintf(w, ": ping\n\n")
+			flusher.Flush()
+		}
+	}
 }
 
 func isJSONRPCRequest(r *http.Request) bool {
@@ -313,7 +395,13 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 	case "notifications/initialized":
 		w.WriteHeader(http.StatusAccepted)
 	case "tools/list":
-		tools, err := h.svc.ListTools(r.Context(), server)
+		var tools []mcp.Tool
+		var err error
+		if server == "" {
+			tools, err = h.svc.ListAllTools(r.Context())
+		} else {
+			tools, err = h.svc.ListTools(r.Context(), server)
+		}
 		if err != nil {
 			h.writeRPCError(w, req.ID, -32000, err.Error())
 			return
@@ -329,7 +417,16 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			h.writeRPCError(w, req.ID, -32602, "invalid params")
 			return
 		}
-		toolReq := invocation.CreateInvocationRequest{Server: server, Tool: params.Name, Input: params.Arguments}
+		callServer := server
+		if callServer == "" {
+			resolved, err := h.svc.ResolveToolServer(r.Context(), params.Name)
+			if err != nil {
+				h.writeRPCError(w, req.ID, -32000, err.Error())
+				return
+			}
+			callServer = resolved
+		}
+		toolReq := invocation.CreateInvocationRequest{Server: callServer, Tool: params.Name, Input: params.Arguments}
 		if requestID != "" {
 			toolReq.RequestID = stringPtr(requestID)
 		}
@@ -545,6 +642,24 @@ func (h *Handler) adminServerDetail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
+	if strings.HasSuffix(trimmed, "/tools") {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		name := strings.TrimSuffix(trimmed, "/tools")
+		name = strings.TrimSuffix(name, "/")
+		tools, err := h.svc.ListTools(r.Context(), name)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if tools == nil {
+			tools = []mcp.Tool{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": tools})
+		return
+	}
 	if strings.HasSuffix(trimmed, "/test") {
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -719,6 +834,225 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]any{"error": map[string]string{"message": message}})
+}
+
+func (h *Handler) adminRules(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		rules, err := h.rulesRepo.List(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		items := make([]AdminRule, 0, len(rules))
+		for _, rule := range rules {
+			items = append(items, toAdminRule(rule))
+		}
+		writeJSON(w, http.StatusOK, RuleListResponse{Items: items})
+	case http.MethodPost:
+		var req AdminRuleInput
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+		if err := validateRuleInput(req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		order, err := h.rulesRepo.NextOrder(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		enabled := true
+		if req.Enabled != nil {
+			enabled = *req.Enabled
+		}
+		rule := store.Rule{
+			ID:             "rule_" + newUUID(),
+			Action:         req.Action,
+			ServerPatterns: normalizePatternSlice(req.ServerPatterns),
+			ToolPatterns:   normalizePatternSlice(req.ToolPatterns),
+			UserPattern:    defaultPattern(req.UserPattern),
+			Description:    req.Description,
+			Enabled:        enabled,
+			Order:          order,
+		}
+		if err := h.rulesRepo.Create(r.Context(), rule); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		created, err := h.rulesRepo.Get(r.Context(), rule.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, toAdminRule(created))
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (h *Handler) adminRuleDetail(w http.ResponseWriter, r *http.Request) {
+	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/rules/")
+	trimmed = strings.Trim(trimmed, "/")
+	if trimmed == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	if strings.HasSuffix(trimmed, "/move") {
+		if r.Method != http.MethodPut {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id := strings.TrimSuffix(trimmed, "/move")
+		id = strings.TrimSuffix(id, "/")
+		var body struct {
+			Direction string `json:"direction"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+		rules, err := h.rulesRepo.Move(r.Context(), id, body.Direction)
+		if err != nil {
+			status := http.StatusBadRequest
+			if err == sql.ErrNoRows {
+				status = http.StatusNotFound
+			}
+			writeError(w, status, err.Error())
+			return
+		}
+		items := make([]AdminRule, 0, len(rules))
+		for _, rule := range rules {
+			items = append(items, toAdminRule(rule))
+		}
+		writeJSON(w, http.StatusOK, RuleListResponse{Items: items})
+		return
+	}
+
+	id := trimmed
+	switch r.Method {
+	case http.MethodGet:
+		rule, err := h.rulesRepo.Get(r.Context(), id)
+		if err != nil {
+			status := http.StatusInternalServerError
+			if err == sql.ErrNoRows {
+				status = http.StatusNotFound
+			}
+			writeError(w, status, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, toAdminRule(rule))
+	case http.MethodPut:
+		var req AdminRuleInput
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+		if err := validateRuleInput(req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		existing, err := h.rulesRepo.Get(r.Context(), id)
+		if err != nil {
+			status := http.StatusInternalServerError
+			if err == sql.ErrNoRows {
+				status = http.StatusNotFound
+			}
+			writeError(w, status, err.Error())
+			return
+		}
+		enabled := existing.Enabled
+		if req.Enabled != nil {
+			enabled = *req.Enabled
+		}
+		existing.Action = req.Action
+		existing.ServerPatterns = normalizePatternSlice(req.ServerPatterns)
+		existing.ToolPatterns = normalizePatternSlice(req.ToolPatterns)
+		existing.UserPattern = defaultPattern(req.UserPattern)
+		existing.Description = req.Description
+		existing.Enabled = enabled
+		if err := h.rulesRepo.Update(r.Context(), existing); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		updated, err := h.rulesRepo.Get(r.Context(), id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, toAdminRule(updated))
+	case http.MethodDelete:
+		if err := h.rulesRepo.Delete(r.Context(), id); err != nil {
+			status := http.StatusInternalServerError
+			if err == sql.ErrNoRows {
+				status = http.StatusNotFound
+			}
+			writeError(w, status, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func toAdminRule(r store.Rule) AdminRule {
+	sp := r.ServerPatterns
+	if sp == nil {
+		sp = []string{}
+	}
+	tp := r.ToolPatterns
+	if tp == nil {
+		tp = []string{}
+	}
+	return AdminRule{
+		ID:             r.ID,
+		Action:         r.Action,
+		ServerPatterns: sp,
+		ToolPatterns:   tp,
+		UserPattern:    r.UserPattern,
+		Description:    r.Description,
+		Enabled:        r.Enabled,
+		Order:          r.Order,
+		CreatedAt:      r.CreatedAt,
+		UpdatedAt:      r.UpdatedAt,
+	}
+}
+
+func normalizePatternSlice(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
+}
+
+func validateRuleInput(req AdminRuleInput) error {
+	switch req.Action {
+	case "auto_approve", "auto_deny", "human_approval":
+	default:
+		return fmt.Errorf("action must be one of: auto_approve, auto_deny, human_approval")
+	}
+	return nil
+}
+
+func defaultPattern(p string) string {
+	if strings.TrimSpace(p) == "" {
+		return "*"
+	}
+	return p
+}
+
+func newUUID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		panic("uuid generation failed: " + err.Error())
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
 func readUintQuery(r *http.Request, key string, fallback uint64) uint64 {
