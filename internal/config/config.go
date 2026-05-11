@@ -9,9 +9,11 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	ListenAddr   string `toml:"listen_addr"`
-	DatabasePath string `toml:"database_path"`
-	LogLevel     string `toml:"log_level"`
+	ListenAddr     string `toml:"listen_addr"`
+	DatabasePath   string `toml:"database_path"`
+	DatabaseDriver string `toml:"database_driver"`
+	DatabaseDSN    string `toml:"database_dsn"`
+	LogLevel       string `toml:"log_level"`
 }
 
 type DefaultsConfig struct {

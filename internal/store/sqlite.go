@@ -13,7 +13,13 @@ import (
 	"atryum/internal/mcp"
 )
 
-var psql = sq.StatementBuilder.PlaceholderFormat(sq.Question)
+// Dialect holds the placeholder format for the active database driver.
+// Defaults to sq.Question (SQLite); set to sq.Dollar for PostgreSQL.
+var Dialect sq.PlaceholderFormat = sq.Question
+
+func qb() sq.StatementBuilderType {
+	return sq.StatementBuilder.PlaceholderFormat(Dialect)
+}
 
 type InvocationRepo struct{ db *sql.DB }
 type EventRepo struct{ db *sql.DB }
@@ -56,7 +62,7 @@ func (r *InvocationRepo) Create(ctx context.Context, inv invocation.Invocation) 
 		b, _ := json.Marshal(inv.Approval)
 		approval = string(b)
 	}
-	query, args, err := psql.Insert("invocations").Columns(
+	query, args, err := qb().Insert("invocations").Columns(
 		"invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at",
 	).Values(
 		inv.InvocationID, inv.RequestID, inv.IdempotencyKey, inv.Tool, inv.Upstream, inv.Status, approval, string(inv.Input), nullableString(inv.Response), nullableString(inv.Error), inv.SubmittedAt, inv.CompletedAt,
@@ -74,7 +80,7 @@ func (r *InvocationRepo) UpdateResult(ctx context.Context, inv invocation.Invoca
 		b, _ := json.Marshal(inv.Approval)
 		approval = string(b)
 	}
-	query, args, err := psql.Update("invocations").Set("status", inv.Status).Set("approval_json", approval).Set("response_json", nullableString(inv.Response)).Set("error_json", nullableString(inv.Error)).Set("completed_at", inv.CompletedAt).Where(sq.Eq{"invocation_id": inv.InvocationID}).ToSql()
+	query, args, err := qb().Update("invocations").Set("status", inv.Status).Set("approval_json", approval).Set("response_json", nullableString(inv.Response)).Set("error_json", nullableString(inv.Error)).Set("completed_at", inv.CompletedAt).Where(sq.Eq{"invocation_id": inv.InvocationID}).ToSql()
 	if err != nil {
 		return err
 	}
@@ -83,7 +89,7 @@ func (r *InvocationRepo) UpdateResult(ctx context.Context, inv invocation.Invoca
 }
 
 func (r *InvocationRepo) Get(ctx context.Context, id string) (invocation.Invocation, error) {
-	query, args, err := psql.Select("invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at").From("invocations").Where(sq.Eq{"invocation_id": id}).ToSql()
+	query, args, err := qb().Select("invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at").From("invocations").Where(sq.Eq{"invocation_id": id}).ToSql()
 	if err != nil {
 		return invocation.Invocation{}, err
 	}
@@ -92,7 +98,7 @@ func (r *InvocationRepo) Get(ctx context.Context, id string) (invocation.Invocat
 }
 
 func (r *InvocationRepo) GetByIdempotencyKey(ctx context.Context, key string) (invocation.Invocation, error) {
-	query, args, err := psql.Select("invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at").From("invocations").Where(sq.Eq{"idempotency_key": key}).ToSql()
+	query, args, err := qb().Select("invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at").From("invocations").Where(sq.Eq{"idempotency_key": key}).ToSql()
 	if err != nil {
 		return invocation.Invocation{}, err
 	}
@@ -104,8 +110,8 @@ func (r *InvocationRepo) List(ctx context.Context, filter invocation.InvocationL
 	if filter.Limit == 0 {
 		filter.Limit = 50
 	}
-	builder := psql.Select("invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at").From("invocations")
-	countBuilder := psql.Select("COUNT(*)").From("invocations")
+	builder := qb().Select("invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at").From("invocations")
+	countBuilder := qb().Select("COUNT(*)").From("invocations")
 	builder, countBuilder = applyInvocationFilter(builder, countBuilder, filter)
 	query, args, err := builder.OrderBy("submitted_at DESC").Limit(filter.Limit).Offset(filter.Offset).ToSql()
 	if err != nil {
@@ -135,7 +141,7 @@ func (r *InvocationRepo) List(ctx context.Context, filter invocation.InvocationL
 }
 
 func (r *EventRepo) Create(ctx context.Context, evt invocation.Event) error {
-	query, args, err := psql.Insert("invocation_events").Columns("invocation_id", "event_type", "payload_json", "created_at").Values(evt.InvocationID, evt.EventType, string(evt.Payload), evt.CreatedAt).ToSql()
+	query, args, err := qb().Insert("invocation_events").Columns("invocation_id", "event_type", "payload_json", "created_at").Values(evt.InvocationID, evt.EventType, string(evt.Payload), evt.CreatedAt).ToSql()
 	if err != nil {
 		return err
 	}
@@ -147,7 +153,7 @@ func (r *EventRepo) ListByInvocation(ctx context.Context, invocationID string, f
 	if filter.Limit == 0 {
 		filter.Limit = 200
 	}
-	builder := psql.Select("id", "invocation_id", "event_type", "payload_json", "created_at").From("invocation_events").Where(sq.Eq{"invocation_id": invocationID})
+	builder := qb().Select("id", "invocation_id", "event_type", "payload_json", "created_at").From("invocation_events").Where(sq.Eq{"invocation_id": invocationID})
 	query, args, err := builder.OrderBy("id ASC").Limit(filter.Limit).Offset(filter.Offset).ToSql()
 	if err != nil {
 		return nil, 0, err
@@ -170,7 +176,7 @@ func (r *EventRepo) ListByInvocation(ctx context.Context, invocationID string, f
 	if err := rows.Err(); err != nil {
 		return nil, 0, err
 	}
-	countBuilder := psql.Select("COUNT(*)").From("invocation_events").Where(sq.Eq{"invocation_id": invocationID})
+	countBuilder := qb().Select("COUNT(*)").From("invocation_events").Where(sq.Eq{"invocation_id": invocationID})
 	total, err := countRows(ctx, r.db, countBuilder)
 	if err != nil {
 		return nil, 0, err
@@ -179,7 +185,7 @@ func (r *EventRepo) ListByInvocation(ctx context.Context, invocationID string, f
 }
 
 func (r *ServerRepo) CountServers(ctx context.Context) (int, error) {
-	query, args, err := psql.Select("COUNT(*)").From("mcp_servers").ToSql()
+	query, args, err := qb().Select("COUNT(*)").From("mcp_servers").ToSql()
 	if err != nil {
 		return 0, err
 	}
@@ -196,7 +202,7 @@ func (r *ServerRepo) CreateServer(ctx context.Context, upstream mcp.Upstream) er
 	if err != nil {
 		return err
 	}
-	query, args, err := psql.Insert("mcp_servers").Columns(
+	query, args, err := qb().Insert("mcp_servers").Columns(
 		"name", "mode", "base_url", "auth_token", "timeout_seconds", "command", "args_json", "env_json", "enabled", "auth_type", "connection_status", "auth_status", "reauth_needed", "last_checked_at", "last_check_ok", "last_error_summary", "action_required", "oauth_provider_id", "oauth_provider_label", "oauth_authorize_url", "oauth_token_url", "oauth_client_id", "oauth_client_secret", "oauth_scopes", "created_at", "updated_at",
 	).Values(
 		upstream.Name, string(upstream.Mode), emptyToNil(upstream.BaseURL), emptyToNil(upstream.AuthToken), int(upstream.Timeout/time.Second), emptyToNil(upstream.Command), argsJSON, envJSON, boolToInt(upstream.Enabled), string(upstream.Status.AuthType), string(upstream.Status.ConnectionStatus), string(upstream.Status.AuthStatus), boolToInt(upstream.Status.ReauthNeeded), upstream.Status.LastCheckedAt, boolToInt(upstream.Status.LastCheckOK), emptyToNil(derefString(upstream.Status.LastErrorSummary)), emptyToNil(derefString(upstream.Status.ActionRequired)), emptyToNil(upstream.OAuthProviderID), emptyToNil(upstream.OAuthProviderLabel), emptyToNil(upstream.OAuthAuthorizeURL), emptyToNil(upstream.OAuthTokenURL), emptyToNil(upstream.OAuthClientID), emptyToNil(upstream.OAuthClientSecret), emptyToNil(upstream.OAuthScopes), now, now,
@@ -242,7 +248,7 @@ func (r *ServerRepo) UpsertServer(ctx context.Context, upstream mcp.Upstream) er
 		"updated_at":           now,
 	}
 
-	query, args, err := psql.Insert("mcp_servers").
+	query, args, err := qb().Insert("mcp_servers").
 		Columns(
 			"name", "mode", "base_url", "auth_token", "timeout_seconds", "command", "args_json", "env_json", "enabled",
 			"auth_type", "connection_status", "auth_status", "reauth_needed", "last_checked_at", "last_check_ok", "last_error_summary", "action_required",
@@ -268,7 +274,7 @@ func (r *ServerRepo) UpsertServer(ctx context.Context, upstream mcp.Upstream) er
 }
 
 func (r *ServerRepo) UpdateServerStatus(ctx context.Context, name string, status mcp.ServerStatus) error {
-	query, args, err := psql.Update("mcp_servers").
+	query, args, err := qb().Update("mcp_servers").
 		Set("auth_type", string(status.AuthType)).
 		Set("connection_status", string(status.ConnectionStatus)).
 		Set("auth_status", string(status.AuthStatus)).
@@ -294,7 +300,7 @@ func (r *ServerRepo) UpdateServerStatus(ctx context.Context, name string, status
 }
 
 func (r *ServerRepo) GetServer(ctx context.Context, name string) (mcp.Upstream, error) {
-	query, args, err := psql.Select("name", "mode", "base_url", "auth_token", "timeout_seconds", "command", "args_json", "env_json", "enabled", "auth_type", "connection_status", "auth_status", "reauth_needed", "last_checked_at", "last_check_ok", "last_error_summary", "action_required", "oauth_provider_id", "oauth_provider_label", "oauth_authorize_url", "oauth_token_url", "oauth_client_id", "oauth_client_secret", "oauth_scopes").From("mcp_servers").Where(sq.Eq{"name": name, "enabled": 1}).ToSql()
+	query, args, err := qb().Select("name", "mode", "base_url", "auth_token", "timeout_seconds", "command", "args_json", "env_json", "enabled", "auth_type", "connection_status", "auth_status", "reauth_needed", "last_checked_at", "last_check_ok", "last_error_summary", "action_required", "oauth_provider_id", "oauth_provider_label", "oauth_authorize_url", "oauth_token_url", "oauth_client_id", "oauth_client_secret", "oauth_scopes").From("mcp_servers").Where(sq.Eq{"name": name, "enabled": 1}).ToSql()
 	if err != nil {
 		return mcp.Upstream{}, err
 	}
@@ -303,7 +309,7 @@ func (r *ServerRepo) GetServer(ctx context.Context, name string) (mcp.Upstream, 
 }
 
 func (r *ServerRepo) GetServerAny(ctx context.Context, name string) (mcp.Upstream, error) {
-	query, args, err := psql.Select("name", "mode", "base_url", "auth_token", "timeout_seconds", "command", "args_json", "env_json", "enabled", "auth_type", "connection_status", "auth_status", "reauth_needed", "last_checked_at", "last_check_ok", "last_error_summary", "action_required", "oauth_provider_id", "oauth_provider_label", "oauth_authorize_url", "oauth_token_url", "oauth_client_id", "oauth_client_secret", "oauth_scopes").From("mcp_servers").Where(sq.Eq{"name": name}).ToSql()
+	query, args, err := qb().Select("name", "mode", "base_url", "auth_token", "timeout_seconds", "command", "args_json", "env_json", "enabled", "auth_type", "connection_status", "auth_status", "reauth_needed", "last_checked_at", "last_check_ok", "last_error_summary", "action_required", "oauth_provider_id", "oauth_provider_label", "oauth_authorize_url", "oauth_token_url", "oauth_client_id", "oauth_client_secret", "oauth_scopes").From("mcp_servers").Where(sq.Eq{"name": name}).ToSql()
 	if err != nil {
 		return mcp.Upstream{}, err
 	}
@@ -315,8 +321,8 @@ func (r *ServerRepo) ListServers(ctx context.Context, filter mcp.ServerFilter) (
 	if filter.Limit == 0 {
 		filter.Limit = 50
 	}
-	builder := psql.Select("name", "mode", "base_url", "auth_token", "timeout_seconds", "command", "args_json", "env_json", "enabled", "auth_type", "connection_status", "auth_status", "reauth_needed", "last_checked_at", "last_check_ok", "last_error_summary", "action_required", "oauth_provider_id", "oauth_provider_label", "oauth_authorize_url", "oauth_token_url", "oauth_client_id", "oauth_client_secret", "oauth_scopes").From("mcp_servers")
-	countBuilder := psql.Select("COUNT(*)").From("mcp_servers")
+	builder := qb().Select("name", "mode", "base_url", "auth_token", "timeout_seconds", "command", "args_json", "env_json", "enabled", "auth_type", "connection_status", "auth_status", "reauth_needed", "last_checked_at", "last_check_ok", "last_error_summary", "action_required", "oauth_provider_id", "oauth_provider_label", "oauth_authorize_url", "oauth_token_url", "oauth_client_id", "oauth_client_secret", "oauth_scopes").From("mcp_servers")
+	countBuilder := qb().Select("COUNT(*)").From("mcp_servers")
 	if filter.Enabled != nil {
 		value := boolToInt(*filter.Enabled)
 		builder = builder.Where(sq.Eq{"enabled": value})
@@ -350,7 +356,7 @@ func (r *ServerRepo) ListServers(ctx context.Context, filter mcp.ServerFilter) (
 }
 
 func (r *ServerRepo) DeleteServer(ctx context.Context, name string) error {
-	query, args, err := psql.Delete("mcp_servers").Where(sq.Eq{"name": name}).ToSql()
+	query, args, err := qb().Delete("mcp_servers").Where(sq.Eq{"name": name}).ToSql()
 	if err != nil {
 		return err
 	}
@@ -366,7 +372,7 @@ func (r *ServerRepo) DeleteServer(ctx context.Context, name string) error {
 }
 
 func (r *ServerRepo) DisableServer(ctx context.Context, name string) error {
-	query, args, err := psql.Update("mcp_servers").Set("enabled", 0).Set("connection_status", string(mcp.ConnectionStatusDisabled)).Set("updated_at", time.Now().UTC()).Where(sq.Eq{"name": name}).ToSql()
+	query, args, err := qb().Update("mcp_servers").Set("enabled", 0).Set("connection_status", string(mcp.ConnectionStatusDisabled)).Set("updated_at", time.Now().UTC()).Where(sq.Eq{"name": name}).ToSql()
 	if err != nil {
 		return err
 	}
@@ -387,7 +393,7 @@ func (r *OAuthRepo) UpsertCredential(ctx context.Context, cred OAuthCredential) 
 		cred.CreatedAt = now
 	}
 	cred.UpdatedAt = now
-	query, args, err := psql.Insert("oauth_credentials").
+	query, args, err := qb().Insert("oauth_credentials").
 		Columns("server_name", "access_token", "refresh_token", "token_type", "scope", "expires_at", "created_at", "updated_at").
 		Values(cred.ServerName, cred.AccessToken, emptyToNil(cred.RefreshToken), emptyToNil(cred.TokenType), emptyToNil(cred.Scope), cred.ExpiresAt, cred.CreatedAt, cred.UpdatedAt).
 		Suffix("ON CONFLICT(server_name) DO UPDATE SET access_token = excluded.access_token, refresh_token = excluded.refresh_token, token_type = excluded.token_type, scope = excluded.scope, expires_at = excluded.expires_at, updated_at = excluded.updated_at").
@@ -400,7 +406,7 @@ func (r *OAuthRepo) UpsertCredential(ctx context.Context, cred OAuthCredential) 
 }
 
 func (r *OAuthRepo) GetCredential(ctx context.Context, serverName string) (OAuthCredential, error) {
-	query, args, err := psql.Select("server_name", "access_token", "refresh_token", "token_type", "scope", "expires_at", "created_at", "updated_at").
+	query, args, err := qb().Select("server_name", "access_token", "refresh_token", "token_type", "scope", "expires_at", "created_at", "updated_at").
 		From("oauth_credentials").Where(sq.Eq{"server_name": serverName}).ToSql()
 	if err != nil {
 		return OAuthCredential{}, err
@@ -423,7 +429,7 @@ func (r *OAuthRepo) GetCredential(ctx context.Context, serverName string) (OAuth
 }
 
 func (r *OAuthRepo) DeleteCredential(ctx context.Context, serverName string) error {
-	query, args, err := psql.Delete("oauth_credentials").Where(sq.Eq{"server_name": serverName}).ToSql()
+	query, args, err := qb().Delete("oauth_credentials").Where(sq.Eq{"server_name": serverName}).ToSql()
 	if err != nil {
 		return err
 	}
@@ -432,7 +438,7 @@ func (r *OAuthRepo) DeleteCredential(ctx context.Context, serverName string) err
 }
 
 func (r *OAuthRepo) UpsertConnectSession(ctx context.Context, session OAuthConnectSession) error {
-	query, args, err := psql.Insert("oauth_connect_sessions").
+	query, args, err := qb().Insert("oauth_connect_sessions").
 		Columns("state", "server_name", "status", "code_verifier", "redirect_uri", "started_at", "completed_at", "error_message").
 		Values(session.State, session.ServerName, session.Status, emptyToNil(session.CodeVerifier), session.RedirectURI, session.StartedAt, session.CompletedAt, emptyToNil(derefString(session.ErrorMessage))).
 		Suffix("ON CONFLICT(state) DO UPDATE SET status = excluded.status, code_verifier = excluded.code_verifier, redirect_uri = excluded.redirect_uri, completed_at = excluded.completed_at, error_message = excluded.error_message").
@@ -445,7 +451,7 @@ func (r *OAuthRepo) UpsertConnectSession(ctx context.Context, session OAuthConne
 }
 
 func (r *OAuthRepo) GetConnectSession(ctx context.Context, state string) (OAuthConnectSession, error) {
-	query, args, err := psql.Select("state", "server_name", "status", "code_verifier", "redirect_uri", "started_at", "completed_at", "error_message").
+	query, args, err := qb().Select("state", "server_name", "status", "code_verifier", "redirect_uri", "started_at", "completed_at", "error_message").
 		From("oauth_connect_sessions").Where(sq.Eq{"state": state}).ToSql()
 	if err != nil {
 		return OAuthConnectSession{}, err
@@ -469,7 +475,7 @@ func (r *OAuthRepo) GetConnectSession(ctx context.Context, state string) (OAuthC
 }
 
 func (r *OAuthRepo) GetLatestConnectSessionByServer(ctx context.Context, serverName string) (OAuthConnectSession, error) {
-	query, args, err := psql.Select("state", "server_name", "status", "code_verifier", "redirect_uri", "started_at", "completed_at", "error_message").
+	query, args, err := qb().Select("state", "server_name", "status", "code_verifier", "redirect_uri", "started_at", "completed_at", "error_message").
 		From("oauth_connect_sessions").Where(sq.Eq{"server_name": serverName}).OrderBy("started_at DESC").Limit(1).ToSql()
 	if err != nil {
 		return OAuthConnectSession{}, err

@@ -11,12 +11,15 @@ import (
 	"syscall"
 	"time"
 
+	sq "github.com/Masterminds/squirrel"
+
 	"atryum/internal/api"
 	"atryum/internal/config"
 	"atryum/internal/invocation"
 	"atryum/internal/mcp"
 	"atryum/internal/store"
 
+	_ "github.com/lib/pq"
 	_ "modernc.org/sqlite"
 )
 
@@ -29,13 +32,13 @@ func main() {
 		log.Fatalf("load config: %v", err)
 	}
 
-	db, err := sql.Open("sqlite", cfg.Server.DatabasePath)
+	db, err := openDB(cfg)
 	if err != nil {
-		log.Fatalf("open sqlite: %v", err)
+		log.Fatalf("open database: %v", err)
 	}
 	defer db.Close()
 
-	if err := store.InitDB(db); err != nil {
+	if err := initDB(cfg, db); err != nil {
 		log.Fatalf("init db: %v", err)
 	}
 
@@ -72,4 +75,21 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
+}
+
+func openDB(cfg config.Config) (*sql.DB, error) {
+	driver := cfg.Server.DatabaseDriver
+	if driver == "" || driver == "sqlite" {
+		return sql.Open("sqlite", cfg.Server.DatabasePath)
+	}
+	store.Dialect = sq.Dollar
+	return sql.Open("postgres", cfg.Server.DatabaseDSN)
+}
+
+func initDB(cfg config.Config, db *sql.DB) error {
+	driver := cfg.Server.DatabaseDriver
+	if driver == "" || driver == "sqlite" {
+		return store.InitDB(db)
+	}
+	return store.InitPostgresDB(db)
 }

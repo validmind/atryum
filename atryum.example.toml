@@ -1,7 +1,14 @@
 [server]
 listen_addr = ":8080"
-database_path = "./atryum.db"
 log_level = "info"
+
+# SQLite (default):
+database_driver = "sqlite"
+database_path = "./atryum.db"
+
+# PostgreSQL (optional – uncomment and remove sqlite lines above):
+# database_driver = "postgres"
+# database_dsn = "postgres://atryum:atryum@localhost:5432/atryum?sslmode=disable"
 
 [defaults]
 request_timeout_seconds = 30

@@ -8,8 +8,11 @@ import (
 	"strings"
 )
 
-//go:embed migrations/*.sql
-var migrationFS embed.FS
+//go:embed migrations/sqlite/*.sql
+var sqliteMigrationFS embed.FS
+
+//go:embed migrations/postgres/*.sql
+var postgresMigrationFS embed.FS
 
 // migrationRecord tracks applied migrations.
 type migrationRecord struct {
@@ -17,13 +20,25 @@ type migrationRecord struct {
 	Name    string
 }
 
-// InitDB runs all pending migrations in order. It creates a schema_migrations
-// table to track which migrations have been applied.
+// InitDB runs all pending SQLite migrations in order. It creates a
+// schema_migrations table to track which migrations have been applied.
 func InitDB(db *sql.DB) error {
 	if _, err := db.Exec(`PRAGMA foreign_keys = ON;`); err != nil {
 		return fmt.Errorf("enable foreign keys: %w", err)
 	}
 
+	return runMigrations(db, sqliteMigrationFS, "migrations/sqlite",
+		`INSERT INTO schema_migrations (version, name) VALUES (?, ?)`)
+}
+
+// InitPostgresDB runs all pending PostgreSQL migrations in order. It creates a
+// schema_migrations table to track which migrations have been applied.
+func InitPostgresDB(db *sql.DB) error {
+	return runMigrations(db, postgresMigrationFS, "migrations/postgres",
+		`INSERT INTO schema_migrations (version, name) VALUES ($1, $2)`)
+}
+
+func runMigrations(db *sql.DB, fs embed.FS, dir string, insertSQL string) error {
 	if err := ensureMigrationsTable(db); err != nil {
 		return fmt.Errorf("ensure migrations table: %w", err)
 	}
@@ -33,13 +48,13 @@ func InitDB(db *sql.DB) error {
 		return fmt.Errorf("get applied migrations: %w", err)
 	}
 
-	pending, err := getPendingMigrations(applied)
+	pending, err := getPendingMigrations(fs, dir, applied)
 	if err != nil {
 		return fmt.Errorf("get pending migrations: %w", err)
 	}
 
 	for _, m := range pending {
-		if err := applyMigration(db, m); err != nil {
+		if err := applyMigration(db, m, insertSQL); err != nil {
 			return fmt.Errorf("apply migration %s: %w", m.Name, err)
 		}
 	}
@@ -82,8 +97,8 @@ type migrationFile struct {
 	Content string
 }
 
-func getPendingMigrations(applied map[int]bool) ([]migrationFile, error) {
-	entries, err := migrationFS.ReadDir("migrations")
+func getPendingMigrations(fs embed.FS, dir string, applied map[int]bool) ([]migrationFile, error) {
+	entries, err := fs.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +124,7 @@ func getPendingMigrations(applied map[int]bool) ([]migrationFile, error) {
 			continue
 		}
 
-		content, err := migrationFS.ReadFile("migrations/" + entry.Name())
+		content, err := fs.ReadFile(dir + "/" + entry.Name())
 		if err != nil {
 			return nil, fmt.Errorf("read migration %s: %w", entry.Name(), err)
 		}
@@ -128,7 +143,7 @@ func getPendingMigrations(applied map[int]bool) ([]migrationFile, error) {
 	return pending, nil
 }
 
-func applyMigration(db *sql.DB, m migrationFile) error {
+func applyMigration(db *sql.DB, m migrationFile, insertSQL string) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -139,10 +154,7 @@ func applyMigration(db *sql.DB, m migrationFile) error {
 		return fmt.Errorf("exec migration: %w", err)
 	}
 
-	if _, err := tx.Exec(
-		`INSERT INTO schema_migrations (version, name) VALUES (?, ?)`,
-		m.Version, m.Name,
-	); err != nil {
+	if _, err := tx.Exec(insertSQL, m.Version, m.Name); err != nil {
 		return fmt.Errorf("record migration: %w", err)
 	}
 
