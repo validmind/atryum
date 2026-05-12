@@ -110,11 +110,19 @@ export default function (amp: PluginAPI) {
     try {
       const submitted = await submit(event.tool, event.toolUseID, event.input);
       invocationMap.set(event.toolUseID, submitted.invocation_id);
-      ctx.logger.log(
-        `atryum: submitted ${event.tool} as ${submitted.invocation_id} — awaiting approval`
-      );
 
-      const decided = await poll(submitted.invocation_id);
+      // If rules already decided (auto_approve / auto_deny), skip polling.
+      let decided = submitted;
+      if (
+        submitted.status === "pending_approval" ||
+        submitted.status === "received"
+      ) {
+        ctx.logger.log(
+          `atryum: submitted ${event.tool} as ${submitted.invocation_id} — awaiting approval`
+        );
+        decided = await poll(submitted.invocation_id);
+      }
+
       if (decided.status === "approved") {
         await patchExecution(submitted.invocation_id, {
           execution_status: "running",

@@ -168,6 +168,7 @@ func (s *Service) denyByPolicy(ctx context.Context, inv Invocation, reason strin
 	completed := time.Now().UTC()
 	inv.Status = StatusDenied
 	inv.CompletedAt = &completed
+	inv.Approval = &Approval{Status: "auto_denied", Reason: stringPtr(reason)}
 	msg := "Tool call hard-denied by policy."
 	if reason != "" {
 		msg += " Reason: " + reason
@@ -186,6 +187,7 @@ func (s *Service) denyByPolicy(ctx context.Context, inv Invocation, reason strin
 // executeNow runs the tool call immediately without waiting for human approval.
 func (s *Service) executeNow(ctx context.Context, inv Invocation, upstream mcp.Upstream, req CreateInvocationRequest, reason string) (InvocationResponse, error) {
 	inv.Status = StatusExecuting
+	inv.Approval = &Approval{Status: "auto_approved", Reason: stringPtr(reason)}
 	if err := s.invocations.UpdateResult(ctx, inv); err != nil {
 		return InvocationResponse{}, err
 	}
@@ -235,6 +237,7 @@ func (s *Service) waitForHumanApproval(ctx context.Context, inv Invocation, upst
 			completed := time.Now().UTC()
 			inv.Status = StatusDenied
 			inv.CompletedAt = &completed
+			inv.Approval = &Approval{Status: "denied", Reason: stringPtr("human")}
 			msg := "Tool call denied by the MCP permissions system."
 			if d.message != "" {
 				msg += "\n\nReason: " + d.message
@@ -260,6 +263,7 @@ func (s *Service) waitForHumanApproval(ctx context.Context, inv Invocation, upst
 	}
 
 	inv.Status = StatusExecuting
+	inv.Approval = &Approval{Status: "approved", Reason: stringPtr("human")}
 	if err := s.invocations.UpdateResult(ctx, inv); err != nil {
 		return InvocationResponse{}, err
 	}
@@ -355,6 +359,7 @@ func (s *Service) recordExternalDecision(ctx context.Context, invocationID strin
 	now := time.Now().UTC()
 	if approved {
 		inv.Status = StatusApproved
+		inv.Approval = &Approval{Status: "approved", Reason: stringPtr("human")}
 		if err := s.invocations.UpdateResult(ctx, inv); err != nil {
 			return err
 		}
@@ -363,6 +368,7 @@ func (s *Service) recordExternalDecision(ctx context.Context, invocationID strin
 	}
 	inv.Status = StatusDenied
 	inv.CompletedAt = &now
+	inv.Approval = &Approval{Status: "denied", Reason: stringPtr("human")}
 	msg := "Tool call denied by the MCP permissions system."
 	if message != "" {
 		msg += "\n\nReason: " + message
@@ -375,10 +381,15 @@ func (s *Service) recordExternalDecision(ctx context.Context, invocationID strin
 	return nil
 }
 
-// Submit creates an invocation in the pending_approval state on behalf of an
-// external executor (e.g. an amp coding harness plugin). It does NOT execute
-// the tool — the caller is expected to poll Get() until status is approved or
-// denied, run the tool itself, and then RecordExecution() with the outcome.
+// Submit creates an invocation on behalf of an external executor (e.g. an amp
+// coding harness plugin). It does NOT execute the tool — the caller is expected
+// to poll Get() until status is approved or denied, run the tool itself, and
+// then RecordExecution() with the outcome.
+//
+// Rules are evaluated against the source (as the "server") and tool name.
+// If a rule matches auto_approve, the invocation is immediately approved.
+// If a rule matches auto_deny, it is immediately denied.
+// Otherwise, the invocation enters pending_approval for human review.
 func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (InvocationResponse, error) {
 	if req.Tool == "" {
 		return InvocationResponse{}, fmt.Errorf("tool is required")
@@ -414,6 +425,21 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	if err := s.invocations.Create(ctx, inv); err != nil {
 		return InvocationResponse{}, err
 	}
+
+	// Evaluate rules against (source, tool, user) — same logic as Invoke.
+	ruleAction := ""
+	if s.rules != nil {
+		if approvalRules, err := s.rules.ListApprovalRules(ctx); err == nil {
+			user := ""
+			if req.RequestID != nil {
+				user = *req.RequestID
+			}
+			if matched := matchRule(approvalRules, source, req.Tool, user); matched != nil {
+				ruleAction = matched.Action
+			}
+		}
+	}
+
 	receivedPayload := map[string]any{"tool": req.Tool, "upstream": source, "request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "external": true}
 	if req.Description != "" {
 		receivedPayload["description"] = req.Description
@@ -421,7 +447,33 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	if req.ThreadID != "" {
 		receivedPayload["thread_id"] = req.ThreadID
 	}
+	if ruleAction != "" {
+		receivedPayload["disposition"] = ruleAction
+	}
 	_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(receivedPayload), CreatedAt: now})
+
+	switch ruleAction {
+	case RuleActionAutoDeny:
+		completed := time.Now().UTC()
+		inv.Status = StatusDenied
+		inv.CompletedAt = &completed
+		inv.Approval = &Approval{Status: "auto_denied", Reason: stringPtr("matched approval rule (auto_deny)")}
+		inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": "Tool call denied by approval rule (auto_deny)."}}, "isError": true})
+		_ = s.invocations.UpdateResult(context.Background(), inv)
+		_ = s.events.Create(context.Background(), Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"reason": "matched approval rule (auto_deny)", "disposition": "never"}), CreatedAt: completed})
+		return s.toResponse(inv), nil
+
+	case RuleActionAutoApprove:
+		inv.Status = StatusApproved
+		inv.Approval = &Approval{Status: "auto_approved", Reason: stringPtr("matched approval rule (auto_approve)")}
+		if err := s.invocations.UpdateResult(ctx, inv); err != nil {
+			return InvocationResponse{}, err
+		}
+		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.approved", Payload: mustJSON(map[string]any{"auto_approved": true, "auto_reason": "matched approval rule (auto_approve)"}), CreatedAt: time.Now().UTC()})
+		return s.toResponse(inv), nil
+	}
+
+	// Default: human approval required.
 	inv.Status = StatusPendingApproval
 	if err := s.invocations.UpdateResult(ctx, inv); err != nil {
 		return InvocationResponse{}, err
@@ -613,6 +665,8 @@ func mustJSON(v any) []byte {
 	b, _ := json.Marshal(v)
 	return b
 }
+
+func stringPtr(v string) *string { return &v }
 
 func normalizedLimit(limit uint64, fallback uint64) uint64 {
 	if limit == 0 {
