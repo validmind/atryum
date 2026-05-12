@@ -12,6 +12,7 @@ const (
 // ApprovalRule is the invocation-layer view of a configured rule.
 // It is intentionally decoupled from the store layer to avoid import cycles.
 type ApprovalRule struct {
+	ID             string   // unique rule identifier
 	Action         string   // one of the RuleAction* constants
 	ServerPatterns []string // empty slice = match any server
 	ToolPatterns   []string // empty slice = match any tool

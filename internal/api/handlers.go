@@ -63,6 +63,7 @@ type rulesRepo interface {
 	Update(ctx context.Context, rule store.Rule) error
 	Delete(ctx context.Context, id string) error
 	Move(ctx context.Context, id string, direction string) ([]store.Rule, error)
+	InsertBefore(ctx context.Context, anchorID string, rule store.Rule) error
 }
 
 type Handler struct {
@@ -76,11 +77,9 @@ type Handler struct {
 }
 
 type PolicyStatusResponse struct {
-	ActiveProvider       string               `json:"active_provider"`
-	DisplayName          string               `json:"display_name"`
-	WindowExpiresAt      *time.Time           `json:"window_expires_at,omitempty"`
-	TimedApproveFallback string               `json:"timed_approve_fallback,omitempty"`
-	Providers            []PolicyProviderInfo `json:"providers"`
+	ActiveProvider string               `json:"active_provider"`
+	DisplayName    string               `json:"display_name"`
+	Providers      []PolicyProviderInfo `json:"providers"`
 }
 
 type PolicyProviderInfo struct {
@@ -89,9 +88,16 @@ type PolicyProviderInfo struct {
 }
 
 type PolicyUpdateRequest struct {
-	Provider             string `json:"provider"`
-	DurationMinutes      int    `json:"duration_minutes,omitempty"`
-	TimedApproveFallback string `json:"timed_approve_fallback,omitempty"`
+	Provider string `json:"provider"`
+}
+
+type ApproveRequest struct {
+	CreateRule *AdminRuleInput `json:"create_rule,omitempty"`
+}
+
+type DenyRequest struct {
+	Message    string          `json:"message,omitempty"`
+	CreateRule *AdminRuleInput `json:"create_rule,omitempty"`
 }
 
 type AdminServer struct {
@@ -563,6 +569,40 @@ func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) 
 		}
 		id := strings.TrimSuffix(trimmed, "/approve")
 		id = strings.TrimSuffix(id, "/")
+		var req ApproveRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.CreateRule != nil {
+			if err := validateRuleInput(*req.CreateRule); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			inv, err := h.svc.Get(r.Context(), id)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			anchorID := ""
+			if inv.MatchedRuleID != nil {
+				anchorID = *inv.MatchedRuleID
+			}
+			enabled := true
+			if req.CreateRule.Enabled != nil {
+				enabled = *req.CreateRule.Enabled
+			}
+			newRule := store.Rule{
+				ID:             "rule_" + newUUID(),
+				Action:         req.CreateRule.Action,
+				ServerPatterns: normalizePatternSlice(req.CreateRule.ServerPatterns),
+				ToolPatterns:   normalizePatternSlice(req.CreateRule.ToolPatterns),
+				UserPattern:    defaultPattern(req.CreateRule.UserPattern),
+				Description:    req.CreateRule.Description,
+				Enabled:        enabled,
+			}
+			if err := h.rulesRepo.InsertBefore(r.Context(), anchorID, newRule); err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+		}
 		if err := h.svc.Approve(r.Context(), id); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -577,11 +617,41 @@ func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) 
 		}
 		id := strings.TrimSuffix(trimmed, "/deny")
 		id = strings.TrimSuffix(id, "/")
-		var body struct {
-			Message string `json:"message"`
+		var req DenyRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.CreateRule != nil {
+			if err := validateRuleInput(*req.CreateRule); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			inv, err := h.svc.Get(r.Context(), id)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			anchorID := ""
+			if inv.MatchedRuleID != nil {
+				anchorID = *inv.MatchedRuleID
+			}
+			enabled := true
+			if req.CreateRule.Enabled != nil {
+				enabled = *req.CreateRule.Enabled
+			}
+			newRule := store.Rule{
+				ID:             "rule_" + newUUID(),
+				Action:         req.CreateRule.Action,
+				ServerPatterns: normalizePatternSlice(req.CreateRule.ServerPatterns),
+				ToolPatterns:   normalizePatternSlice(req.CreateRule.ToolPatterns),
+				UserPattern:    defaultPattern(req.CreateRule.UserPattern),
+				Description:    req.CreateRule.Description,
+				Enabled:        enabled,
+			}
+			if err := h.rulesRepo.InsertBefore(r.Context(), anchorID, newRule); err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
 		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		if err := h.svc.Deny(r.Context(), id, body.Message); err != nil {
+		if err := h.svc.Deny(r.Context(), id, req.Message); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -797,15 +867,6 @@ func (h *Handler) adminPolicy(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if req.DurationMinutes > 0 {
-			if ws, ok := h.policyRegistry.Active().(policy.WindowSetter); ok {
-				var fallback policy.Provider
-				if req.TimedApproveFallback != "" {
-					fallback, _ = h.policyRegistry.Get(req.TimedApproveFallback)
-				}
-				ws.SetWindow(time.Now().UTC().Add(time.Duration(req.DurationMinutes)*time.Minute), fallback)
-			}
-		}
 		writeJSON(w, http.StatusOK, h.buildPolicyStatus(h.policyRegistry.Active()))
 
 	default:
@@ -817,12 +878,6 @@ func (h *Handler) buildPolicyStatus(active policy.Provider) PolicyStatusResponse
 	resp := PolicyStatusResponse{
 		ActiveProvider: active.ID(),
 		DisplayName:    active.DisplayName(),
-	}
-	if ws, ok := active.(policy.WindowSetter); ok {
-		resp.WindowExpiresAt = ws.WindowExpiresAt()
-		if fb := ws.FallbackProvider(); fb != nil {
-			resp.TimedApproveFallback = fb.ID()
-		}
 	}
 	for _, p := range h.policyRegistry.Providers() {
 		resp.Providers = append(resp.Providers, PolicyProviderInfo{ID: p.ID(), DisplayName: p.DisplayName()})
