@@ -36,6 +36,7 @@ type Invocation struct {
 	Upstream       string     `json:"upstream"`
 	Status         Status     `json:"status"`
 	Approval       *Approval  `json:"approval"`
+	MatchedRuleID  *string    `json:"matched_rule_id,omitempty"`
 	Input          []byte     `json:"-"`
 	Response       []byte     `json:"-"`
 	Error          []byte     `json:"-"`
@@ -103,17 +104,18 @@ type ExternalExecutionUpdate struct {
 }
 
 type InvocationResponse struct {
-	InvocationID string          `json:"invocation_id"`
-	ServerName   string          `json:"server_name"`
-	ToolName     string          `json:"tool_name"`
-	Status       Status          `json:"status"`
-	Approval     *Approval       `json:"approval"`
-	RequestID    *string         `json:"request_id,omitempty"`
-	Input        json.RawMessage `json:"input,omitempty"`
-	SubmittedAt  time.Time       `json:"submitted_at"`
-	CompletedAt  *time.Time      `json:"completed_at,omitempty"`
-	Result       json.RawMessage `json:"result,omitempty"`
-	Error        json.RawMessage `json:"error,omitempty"`
+	InvocationID  string          `json:"invocation_id"`
+	ServerName    string          `json:"server_name"`
+	ToolName      string          `json:"tool_name"`
+	Status        Status          `json:"status"`
+	Approval      *Approval       `json:"approval"`
+	MatchedRuleID *string         `json:"matched_rule_id,omitempty"`
+	RequestID     *string         `json:"request_id,omitempty"`
+	Input         json.RawMessage `json:"input,omitempty"`
+	SubmittedAt   time.Time       `json:"submitted_at"`
+	CompletedAt   *time.Time      `json:"completed_at,omitempty"`
+	Result        json.RawMessage `json:"result,omitempty"`
+	Error         json.RawMessage `json:"error,omitempty"`
 }
 
 type InvocationListResponse struct {

@@ -4,13 +4,13 @@ const state = {
   selectedServerName: '',
   editingServerName: '',
   selectedInvocationID: '',
+  currentInvocationDetail: null,
   invocationSource: null,
   lastInvocationSignature: '',
   invocationViews: { detail: 'raw', events: 'raw' },
   friendlyExpanded: { detail: true, events: true },
   connectStatusPoll: null,
   policyData: null,
-  policyCountdown: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -77,8 +77,15 @@ $('#delete-server').addEventListener('click', async () => {
 $('#approve-invocation').addEventListener('click', async () => {
   if (!state.selectedInvocationID) return;
   try {
-    await fetchJSON(`/api/v1/admin/invocations/${encodeURIComponent(state.selectedInvocationID)}/approve`, { method: 'POST' });
-    $('#approval-panel').classList.add('hidden');
+    await doApprove(state.selectedInvocationID, null);
+  } catch (err) {
+    alert('Approve failed: ' + (err.message || String(err)));
+  }
+});
+$('#always-approve').addEventListener('click', async () => {
+  if (!state.selectedInvocationID) return;
+  try {
+    await doApprove(state.selectedInvocationID, buildPendingRule('auto_approve'));
   } catch (err) {
     alert('Approve failed: ' + (err.message || String(err)));
   }
@@ -87,17 +94,100 @@ $('#deny-invocation').addEventListener('click', async () => {
   if (!state.selectedInvocationID) return;
   const message = $('#deny-message').value.trim();
   try {
-    await fetchJSON(`/api/v1/admin/invocations/${encodeURIComponent(state.selectedInvocationID)}/deny`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message }),
-    });
+    await doDeny(state.selectedInvocationID, message, null);
     $('#deny-message').value = '';
-    $('#approval-panel').classList.add('hidden');
   } catch (err) {
     alert('Deny failed: ' + (err.message || String(err)));
   }
 });
+$('#always-deny').addEventListener('click', async () => {
+  if (!state.selectedInvocationID) return;
+  const message = $('#deny-message').value.trim();
+  try {
+    await doDeny(state.selectedInvocationID, message, buildPendingRule('auto_deny'));
+    $('#deny-message').value = '';
+  } catch (err) {
+    alert('Deny failed: ' + (err.message || String(err)));
+  }
+});
+$('#save-invocation-rule').addEventListener('click', async () => {
+  const statusEl = $('#invocation-rule-status');
+  try {
+    statusEl.textContent = 'Saving…';
+    statusEl.classList.remove('error-text');
+    await createRuleOnly();
+    statusEl.textContent = 'Rule saved.';
+    $('#invocation-rule-details').removeAttribute('open');
+  } catch (err) {
+    statusEl.classList.add('error-text');
+    statusEl.textContent = err.message || String(err);
+  }
+});
+$('#invocation-rule-details').addEventListener('toggle', () => {
+  if ($('#invocation-rule-details').open && state.currentInvocationDetail) {
+    const d = state.currentInvocationDetail;
+    $('#inv-rule-servers').value = d.server_name || '';
+    $('#inv-rule-tools').value = d.tool_name || '';
+    $('#inv-rule-user').value = '*';
+    $('#inv-rule-desc').value = '';
+    $('#inv-rule-action').value = 'auto_approve';
+    $('#invocation-rule-status').textContent = '';
+  }
+});
+
+async function doApprove(id, createRule) {
+  const body = createRule ? { create_rule: createRule } : undefined;
+  await fetchJSON(`/api/v1/admin/invocations/${encodeURIComponent(id)}/approve`, {
+    method: 'POST',
+    ...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),
+  });
+  closeApprovalPanel();
+}
+
+async function doDeny(id, message, createRule) {
+  const body = { message, ...(createRule ? { create_rule: createRule } : {}) };
+  await fetchJSON(`/api/v1/admin/invocations/${encodeURIComponent(id)}/deny`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  closeApprovalPanel();
+}
+
+function closeApprovalPanel() {
+  $('#approval-panel').classList.add('hidden');
+  $('#rule-creation-details').removeAttribute('open');
+}
+
+function buildPendingRule(action) {
+  const servers = $('#rule-servers').value.trim().split(',').map((s) => s.trim()).filter(Boolean);
+  const tools = $('#rule-tools').value.trim().split(',').map((s) => s.trim()).filter(Boolean);
+  return {
+    action,
+    server_patterns: servers.length ? servers : (state.currentInvocationDetail ? [state.currentInvocationDetail.server_name] : []),
+    tool_patterns: tools.length ? tools : (state.currentInvocationDetail ? [state.currentInvocationDetail.tool_name] : []),
+    user_pattern: $('#rule-user').value.trim() || '*',
+    description: $('#rule-desc').value.trim(),
+  };
+}
+
+async function createRuleOnly() {
+  const servers = $('#inv-rule-servers').value.trim().split(',').map((s) => s.trim()).filter(Boolean);
+  const tools = $('#inv-rule-tools').value.trim().split(',').map((s) => s.trim()).filter(Boolean);
+  const rule = {
+    action: $('#inv-rule-action').value,
+    server_patterns: servers,
+    tool_patterns: tools,
+    user_pattern: $('#inv-rule-user').value.trim() || '*',
+    description: $('#inv-rule-desc').value.trim(),
+    enabled: true,
+  };
+  await fetchJSON('/api/v1/admin/rules', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(rule),
+  });
+}
 $$('.view-toggle').forEach((toggle) => {
   toggle.addEventListener('click', (event) => {
     const button = event.target.closest('.toggle-button');
@@ -132,7 +222,6 @@ function toggleView(view) {
     loadPolicy();
     return;
   }
-  stopPolicyCountdown();
   connectInvocationStream();
 }
 
@@ -187,9 +276,21 @@ function applyInvocationStreamData(items) {
 async function loadInvocationDetail(id) {
   state.selectedInvocationID = id;
   const detail = await fetchJSON(`/api/v1/admin/invocations/${id}`);
+  state.currentInvocationDetail = detail;
   const isPending = detail.status === 'pending_approval';
   $('#approval-panel').classList.toggle('hidden', !isPending);
-  if (!isPending) $('#deny-message').value = '';
+  if (!isPending) {
+    $('#deny-message').value = '';
+    $('#rule-creation-details').removeAttribute('open');
+  } else {
+    $('#rule-servers').value = detail.server_name || '';
+    $('#rule-tools').value = detail.tool_name || '';
+    $('#rule-user').value = '*';
+    $('#rule-desc').value = '';
+  }
+  $('#invocation-rule-details').classList.remove('hidden');
+  $('#invocation-rule-details').removeAttribute('open');
+  $('#invocation-rule-status').textContent = '';
   renderJSONWithText('#invocation-detail', '#invocation-detail-text', detail, 'Human-friendly text from invocation result/error', 'detail');
   const events = await fetchJSON(`/api/v1/admin/invocations/${id}/events?limit=200`);
   renderJSONWithText('#invocation-events', '#invocation-events-text', events.items, 'Human-friendly text from invocation events', 'events');
@@ -579,70 +680,20 @@ async function loadPolicy() {
 }
 
 function renderPolicyStatus(data) {
-  stopPolicyCountdown();
   const toneMap = { always_deny: 'bad', always_approve: 'good', manual_approval: 'neutral' };
-  const tone = toneMap[data.active_provider] || 'warn';
+  const tone = toneMap[data.active_provider] || 'neutral';
   let html = `<div class="badge-row">${renderBadge(data.display_name, tone)}</div>`;
   html += `<div><strong>Provider:</strong> ${escapeHTML(data.active_provider)}</div>`;
-  if (data.window_expires_at) {
-    const exp = new Date(data.window_expires_at);
-    html += `<div><strong>Window expires:</strong> ${escapeHTML(exp.toUTCString())}</div>`;
-    html += `<div><strong>Remaining:</strong> <span id="policy-countdown"></span></div>`;
-    if (data.timed_approve_fallback) {
-      html += `<div><strong>Reverts to:</strong> ${escapeHTML(data.timed_approve_fallback)}</div>`;
-    }
-    $('#policy-current').innerHTML = html;
-    startPolicyCountdown(exp);
-  } else if (data.active_provider === 'timed_approve') {
-    if (data.timed_approve_fallback) {
-      html += `<div><strong>Reverts to:</strong> ${escapeHTML(data.timed_approve_fallback)}</div>`;
-    }
-    html += `<div class="subtle-text" style="margin-top:8px">No active window — delegating to fallback policy now.</div>`;
-    $('#policy-current').innerHTML = html;
-  } else {
-    $('#policy-current').innerHTML = html;
-  }
-}
-
-function startPolicyCountdown(expiresAt) {
-  stopPolicyCountdown();
-  function tick() {
-    const el = $('#policy-countdown');
-    if (!el) return;
-    const remaining = expiresAt - Date.now();
-    if (remaining <= 0) {
-      el.textContent = 'expired';
-      stopPolicyCountdown();
-      loadPolicy();
-      return;
-    }
-    const totalSeconds = Math.floor(remaining / 1000);
-    const minutes = Math.floor(totalSeconds / 60);
-    const seconds = totalSeconds % 60;
-    el.textContent = `${minutes}m ${seconds}s`;
-  }
-  tick();
-  state.policyCountdown = window.setInterval(tick, 1000);
-}
-
-function stopPolicyCountdown() {
-  if (state.policyCountdown !== null) {
-    window.clearInterval(state.policyCountdown);
-    state.policyCountdown = null;
-  }
+  $('#policy-current').innerHTML = html;
 }
 
 const POLICY_DESCRIPTIONS = {
   always_approve: 'Auto-approve every tool call immediately.',
   manual_approval: 'Queue every tool call for a single human approver.',
   always_deny: 'Hard-deny every tool call — no execution path.',
-  timed_approve: 'Auto-approve calls within a time window, then revert to a chosen policy.',
 };
 
 function renderPolicyCards(data) {
-  // Providers eligible as a timed_approve fallback (everything except timed_approve itself).
-  const fallbackOptions = data.providers.filter((p) => p.id !== 'timed_approve');
-
   const container = $('#policy-cards');
   container.innerHTML = '';
   for (const provider of data.providers) {
@@ -660,44 +711,12 @@ function renderPolicyCards(data) {
     desc.textContent = POLICY_DESCRIPTIONS[provider.id] || provider.display_name;
     card.appendChild(desc);
 
-    if (provider.id === 'timed_approve') {
-      // Duration row
-      const durationRow = document.createElement('div');
-      durationRow.className = 'policy-card-row';
-      const durationInput = document.createElement('input');
-      durationInput.type = 'number';
-      durationInput.min = '1';
-      durationInput.value = '30';
-      durationInput.style.width = '72px';
-      const durationLabel = document.createElement('label');
-      durationLabel.className = 'checkbox-inline';
-      durationLabel.appendChild(durationInput);
-      durationLabel.appendChild(Object.assign(document.createElement('span'), { textContent: 'minutes, then revert to' }));
-      durationRow.appendChild(durationLabel);
-
-      // Fallback selector
-      const select = document.createElement('select');
-      for (const opt of fallbackOptions) {
-        const option = document.createElement('option');
-        option.value = opt.id;
-        option.textContent = opt.display_name;
-        if (opt.id === (data.timed_approve_fallback || 'manual_approval')) option.selected = true;
-        select.appendChild(option);
-      }
-      durationRow.appendChild(select);
-      card.appendChild(durationRow);
-
-      const btn = document.createElement('button');
-      btn.textContent = isActive ? 'Set window' : 'Activate';
-      btn.style.marginTop = '4px';
-      btn.addEventListener('click', () => applyPolicy(provider.id, Number(durationInput.value) || 30, select.value));
-      card.appendChild(btn);
-    } else if (!isActive) {
+    if (!isActive) {
       const btn = document.createElement('button');
       btn.textContent = 'Activate';
       btn.className = provider.id === 'always_deny' ? 'danger' : '';
       btn.style.marginTop = '4px';
-      btn.addEventListener('click', () => applyPolicy(provider.id, 0, ''));
+      btn.addEventListener('click', () => applyPolicy(provider.id));
       card.appendChild(btn);
     }
 
@@ -705,19 +724,16 @@ function renderPolicyCards(data) {
   }
 }
 
-async function applyPolicy(providerID, durationMinutes, fallbackProviderID) {
+async function applyPolicy(providerID) {
   const statusEl = $('#policy-action-status');
   statusEl.style.display = '';
   statusEl.classList.remove('error-text');
   statusEl.textContent = 'Applying…';
   try {
-    const body = { provider: providerID };
-    if (durationMinutes > 0) body.duration_minutes = durationMinutes;
-    if (fallbackProviderID) body.timed_approve_fallback = fallbackProviderID;
     const data = await fetchJSON('/api/v1/admin/policy', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ provider: providerID }),
     });
     state.policyData = data;
     renderPolicyStatus(data);

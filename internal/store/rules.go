@@ -300,6 +300,7 @@ func (r *RulesRepo) ListApprovalRules(ctx context.Context) ([]invocation.Approva
 	out := make([]invocation.ApprovalRule, 0, len(rules))
 	for _, rule := range rules {
 		out = append(out, invocation.ApprovalRule{
+			ID:             rule.ID,
 			Action:         rule.Action,
 			ServerPatterns: rule.ServerPatterns,
 			ToolPatterns:   rule.ToolPatterns,
@@ -308,6 +309,65 @@ func (r *RulesRepo) ListApprovalRules(ctx context.Context) ([]invocation.Approva
 		})
 	}
 	return out, nil
+}
+
+// InsertBefore inserts rule into the priority list just above the rule with anchorID.
+// If anchorID is empty, the rule is inserted at position 0 (highest priority).
+// All rules at or after the anchor's position have their order incremented by 1.
+func (r *RulesRepo) InsertBefore(ctx context.Context, anchorID string, rule Rule) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	var insertOrder int
+	if anchorID == "" {
+		insertOrder = 0
+	} else {
+		q, args, err := r.sb.Select("rule_order").From("approval_rules").Where(sq.Eq{"id": anchorID}).ToSql()
+		if err != nil {
+			return err
+		}
+		if err := tx.QueryRowContext(ctx, q, args...).Scan(&insertOrder); err != nil {
+			return err
+		}
+	}
+
+	// Shift all rules at or after insertOrder up by 1.
+	shiftQ, shiftArgs, err := r.sb.Update("approval_rules").
+		Set("rule_order", sq.Expr("rule_order + 1")).
+		Set("updated_at", time.Now().UTC()).
+		Where(sq.GtOrEq{"rule_order": insertOrder}).
+		ToSql()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, shiftQ, shiftArgs...); err != nil {
+		return err
+	}
+
+	// Insert the new rule at insertOrder.
+	rule.Order = insertOrder
+	now := time.Now().UTC()
+	serverJSON, toolJSON, err := encodeRulePatterns(rule)
+	if err != nil {
+		return err
+	}
+	insQ, insArgs, err := r.sb.Insert("approval_rules").
+		Columns(ruleColumns...).
+		Values(
+			rule.ID, rule.Action, serverJSON, toolJSON, rule.UserPattern,
+			emptyToNil(rule.Description), boolToInt(rule.Enabled), rule.Order, now, now,
+		).ToSql()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, insQ, insArgs...); err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 func encodeRulePatterns(rule Rule) (serverJSON string, toolJSON string, err error) {

@@ -111,6 +111,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	// Determine disposition: check rules first (fine-grained), then fall back to policy (global).
 	// Both resolve to a policy.Decision so the rest of the flow is uniform.
 	var decision policy.Decision
+	var matchedRuleID *string
 	ruleMatched := false
 	if s.rules != nil {
 		if approvalRules, err := s.rules.ListApprovalRules(ctx); err == nil {
@@ -120,6 +121,9 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 			}
 			if matched := matchRule(approvalRules, upstream.Name, req.Tool, user); matched != nil {
 				ruleMatched = true
+				if matched.ID != "" {
+					matchedRuleID = &matched.ID
+				}
 				switch matched.Action {
 				case RuleActionAutoDeny:
 					decision = policy.Decision{Disposition: policy.DispositionNever, Reason: "matched approval rule (auto_deny)"}
@@ -138,6 +142,11 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		if policyErr != nil {
 			decision = policy.Decision{Disposition: policy.DispositionHuman, Reason: "policy error: " + policyErr.Error()}
 		}
+	}
+	// Persist matched_rule_id for human-approval invocations so approve/deny handlers can reference it.
+	if decision.Disposition == policy.DispositionHuman || decision.Disposition == policy.DispositionWorkflow {
+		inv.MatchedRuleID = matchedRuleID
+		_ = s.invocations.UpdateResult(ctx, inv)
 	}
 
 	_ = s.events.Create(ctx, Event{
@@ -648,7 +657,7 @@ func (s *Service) Events(ctx context.Context, invocationID string, filter EventL
 }
 
 func (s *Service) toResponse(inv Invocation) InvocationResponse {
-	resp := InvocationResponse{InvocationID: inv.InvocationID, ServerName: inv.Upstream, ToolName: inv.Tool, Status: inv.Status, Approval: inv.Approval, RequestID: inv.RequestID, SubmittedAt: inv.SubmittedAt, CompletedAt: inv.CompletedAt}
+	resp := InvocationResponse{InvocationID: inv.InvocationID, ServerName: inv.Upstream, ToolName: inv.Tool, Status: inv.Status, Approval: inv.Approval, MatchedRuleID: inv.MatchedRuleID, RequestID: inv.RequestID, SubmittedAt: inv.SubmittedAt, CompletedAt: inv.CompletedAt}
 	if len(inv.Input) > 0 {
 		resp.Input = json.RawMessage(inv.Input)
 	}
