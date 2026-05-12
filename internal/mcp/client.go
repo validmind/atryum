@@ -257,6 +257,26 @@ func (r *Resolver) ResolveContext(ctx context.Context, name string) (Upstream, e
 	return upstream, nil
 }
 
+func (r *Resolver) ListAll(ctx context.Context) ([]Upstream, error) {
+	if r.store != nil {
+		enabled := true
+		upstreams, _, err := r.store.ListServers(ctx, ServerFilter{Enabled: &enabled})
+		if err != nil {
+			return nil, err
+		}
+		if len(upstreams) > 0 {
+			return upstreams, nil
+		}
+	}
+	var result []Upstream
+	for _, u := range r.bootstrap {
+		if u.Enabled {
+			result = append(result, u)
+		}
+	}
+	return result, nil
+}
+
 func (r *Resolver) BootstrapIfEmpty(ctx context.Context) error {
 	if r.store == nil {
 		return nil

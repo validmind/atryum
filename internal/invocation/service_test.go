@@ -194,18 +194,20 @@ func newTestService(t *testing.T, cfg config.Config) *invocation.Service {
 	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	return invocation.NewService(store.NewInvocationRepo(db), store.NewEventRepo(db), resolver, mcp.NewHTTPClient(), policy.AlwaysApproveProvider{}, 5*time.Second)
+	return invocation.NewService(store.NewInvocationRepo(db), store.NewEventRepo(db), resolver, mcp.NewHTTPClient(), policy.AlwaysApproveProvider{}, 5*time.Second, nil)
 }
 
 func approveNextInvocation(t *testing.T, service *invocation.Service, delay time.Duration) {
-	t.Helper()
 	time.Sleep(delay)
 	list, err := service.List(context.Background(), invocation.InvocationListFilter{Limit: 10})
 	if err != nil || len(list.Items) == 0 {
-		t.Fatalf("list invocations: %v", err)
+		// Log instead of Fatalf — this runs in a goroutine and the parent test
+		// may have already finished, which would cause a panic.
+		t.Errorf("list invocations: %v", err)
+		return
 	}
 	if err := service.Approve(context.Background(), list.Items[0].InvocationID); err != nil {
-		t.Fatalf("approve invocation: %v", err)
+		t.Errorf("approve invocation: %v", err)
 	}
 }
 
@@ -232,8 +234,11 @@ func assertInvokeLifecycle(t *testing.T, service *invocation.Service, server, to
 	if resp.ToolName != tool {
 		t.Fatalf("expected tool name %q, got %q", tool, resp.ToolName)
 	}
-	if resp.Approval != nil {
-		t.Fatal("expected nil approval")
+	if resp.Approval == nil {
+		t.Fatal("expected approval to be set")
+	}
+	if resp.Approval.Status != "auto_approved" {
+		t.Fatalf("expected auto_approved status, got %q", resp.Approval.Status)
 	}
 	if string(resp.Input) != `{"n":1}` {
 		t.Fatalf("expected input to be surfaced, got %s", string(resp.Input))

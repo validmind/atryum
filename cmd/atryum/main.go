@@ -44,6 +44,7 @@ func main() {
 	eventRepo := store.NewEventRepoWithDialect(db, dialect)
 	serverRepo := store.NewServerRepoWithDialect(db, dialect)
 	oauthRepo := store.NewOAuthRepoWithDialect(db, dialect)
+	rulesRepo := store.NewRulesRepoWithDialect(db, dialect)
 	resolver := mcp.NewResolver(serverRepo, cfg)
 	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
 		log.Fatalf("bootstrap servers: %v", err)
@@ -78,9 +79,9 @@ func main() {
 	}
 	log.Printf("policy provider: %s", policyRegistry.Active().DisplayName())
 
-	service := invocation.NewService(invRepo, eventRepo, resolver, client, policyRegistry, time.Duration(cfg.Defaults.RequestTimeoutSeconds)*time.Second)
+	service := invocation.NewService(invRepo, eventRepo, resolver, client, policyRegistry, time.Duration(cfg.Defaults.RequestTimeoutSeconds)*time.Second, rulesRepo)
 	serverAdmin := api.NewServerAdminService(serverRepo, oauthRepo, client, 5*time.Second)
-	handler := api.NewHandler(service, serverAdmin, policyRegistry)
+	handler := api.NewHandler(service, serverAdmin, policyRegistry, rulesRepo)
 
 	srv := &http.Server{
 		Addr:              cfg.Server.ListenAddr,
