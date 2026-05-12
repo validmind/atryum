@@ -50,15 +50,28 @@ func main() {
 	}
 	client := mcp.NewHTTPClient()
 
-	timedApprove := policy.NewTimedApproveProvider(time.Duration(cfg.Policy.DurationMinutes) * time.Minute)
+	manualApproval := policy.ManualApprovalProvider{}
+	timedApprove := policy.NewTimedApproveProvider(0, manualApproval) // fallback resolved below
 	policyRegistry := policy.NewRegistry(
 		policy.AlwaysApproveProvider{},
+		manualApproval,
 		policy.AlwaysDenyProvider{},
 		timedApprove,
 	)
+	if cfg.Policy.DurationMinutes > 0 {
+		fallbackID := cfg.Policy.TimedApproveFallback
+		if fallbackID == "" {
+			fallbackID = "manual_approval"
+		}
+		fallback, err := policyRegistry.Get(fallbackID)
+		if err != nil {
+			log.Fatalf("timed_approve fallback: %v", err)
+		}
+		timedApprove.SetWindow(time.Now().Add(time.Duration(cfg.Policy.DurationMinutes)*time.Minute), fallback)
+	}
 	providerID := cfg.Policy.Provider
 	if providerID == "" {
-		providerID = "always_approve"
+		providerID = "manual_approval"
 	}
 	if err := policyRegistry.SetActive(providerID); err != nil {
 		log.Fatalf("policy provider: %v", err)

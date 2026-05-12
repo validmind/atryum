@@ -12,6 +12,7 @@
       <nav>
         <button id="show-invocations" class="active">Invocations</button>
         <button id="show-servers">Servers</button>
+        <button id="show-policy">Policy</button>
       </nav>
     </header>
 
@@ -152,6 +153,23 @@
               </div>
             </form>
             <div id="server-status" class="status-message">Select a server or create a new one.</div>
+          </div>
+        </div>
+      </section>
+      <section id="policy-view" class="hidden">
+        <div class="toolbar">
+          <button id="refresh-policy">Refresh</button>
+          <div class="subtle-text">Controls how tool calls are approved before execution.</div>
+        </div>
+        <div class="layout">
+          <div>
+            <h2>Active policy</h2>
+            <div id="policy-current" class="status-message">Loading…</div>
+          </div>
+          <div>
+            <h2>Switch policy</h2>
+            <div id="policy-cards"></div>
+            <div id="policy-action-status" class="status-message" style="display:none"></div>
           </div>
         </div>
       </section>

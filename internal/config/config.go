@@ -10,12 +10,13 @@ type Config struct {
 }
 
 // PolicyConfig selects the active approval policy provider at startup.
-// Valid provider values: "always_approve", "always_deny", "timed_approve".
-// DurationMinutes is only used by "timed_approve" and sets an initial approval
-// window from server start; the window can be updated at runtime via the admin API.
+// Valid provider values: "always_approve", "manual_approval", "always_deny", "timed_approve".
+// DurationMinutes and TimedApproveFallback are only used by "timed_approve".
+// TimedApproveFallback defaults to "manual_approval" when empty.
 type PolicyConfig struct {
-	Provider        string `toml:"provider"`
-	DurationMinutes int    `toml:"duration_minutes"`
+	Provider             string `toml:"provider"`
+	DurationMinutes      int    `toml:"duration_minutes"`
+	TimedApproveFallback string `toml:"timed_approve_fallback"`
 }
 
 type ServerConfig struct {

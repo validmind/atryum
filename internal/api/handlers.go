@@ -61,10 +61,11 @@ type Handler struct {
 }
 
 type PolicyStatusResponse struct {
-	ActiveProvider string               `json:"active_provider"`
-	DisplayName    string               `json:"display_name"`
-	WindowExpiresAt *time.Time          `json:"window_expires_at,omitempty"`
-	Providers      []PolicyProviderInfo `json:"providers"`
+	ActiveProvider       string               `json:"active_provider"`
+	DisplayName          string               `json:"display_name"`
+	WindowExpiresAt      *time.Time           `json:"window_expires_at,omitempty"`
+	TimedApproveFallback string               `json:"timed_approve_fallback,omitempty"`
+	Providers            []PolicyProviderInfo `json:"providers"`
 }
 
 type PolicyProviderInfo struct {
@@ -73,8 +74,9 @@ type PolicyProviderInfo struct {
 }
 
 type PolicyUpdateRequest struct {
-	Provider        string `json:"provider"`
-	DurationMinutes int    `json:"duration_minutes,omitempty"`
+	Provider             string `json:"provider"`
+	DurationMinutes      int    `json:"duration_minutes,omitempty"`
+	TimedApproveFallback string `json:"timed_approve_fallback,omitempty"`
 }
 
 type AdminServer struct {
@@ -660,17 +662,7 @@ func (h *Handler) adminPolicy(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "no active policy provider")
 			return
 		}
-		resp := PolicyStatusResponse{
-			ActiveProvider: active.ID(),
-			DisplayName:    active.DisplayName(),
-		}
-		if ws, ok := active.(policy.WindowSetter); ok {
-			resp.WindowExpiresAt = ws.WindowExpiresAt()
-		}
-		for _, p := range h.policyRegistry.Providers() {
-			resp.Providers = append(resp.Providers, PolicyProviderInfo{ID: p.ID(), DisplayName: p.DisplayName()})
-		}
-		writeJSON(w, http.StatusOK, resp)
+		writeJSON(w, http.StatusOK, h.buildPolicyStatus(active))
 
 	case http.MethodPut:
 		var req PolicyUpdateRequest
@@ -686,28 +678,37 @@ func (h *Handler) adminPolicy(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		// If duration was specified and the new provider supports windowed approval, set it.
 		if req.DurationMinutes > 0 {
 			if ws, ok := h.policyRegistry.Active().(policy.WindowSetter); ok {
-				ws.SetWindow(time.Now().UTC().Add(time.Duration(req.DurationMinutes) * time.Minute))
+				var fallback policy.Provider
+				if req.TimedApproveFallback != "" {
+					fallback, _ = h.policyRegistry.Get(req.TimedApproveFallback)
+				}
+				ws.SetWindow(time.Now().UTC().Add(time.Duration(req.DurationMinutes)*time.Minute), fallback)
 			}
 		}
-		active := h.policyRegistry.Active()
-		resp := PolicyStatusResponse{
-			ActiveProvider: active.ID(),
-			DisplayName:    active.DisplayName(),
-		}
-		if ws, ok := active.(policy.WindowSetter); ok {
-			resp.WindowExpiresAt = ws.WindowExpiresAt()
-		}
-		for _, p := range h.policyRegistry.Providers() {
-			resp.Providers = append(resp.Providers, PolicyProviderInfo{ID: p.ID(), DisplayName: p.DisplayName()})
-		}
-		writeJSON(w, http.StatusOK, resp)
+		writeJSON(w, http.StatusOK, h.buildPolicyStatus(h.policyRegistry.Active()))
 
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+func (h *Handler) buildPolicyStatus(active policy.Provider) PolicyStatusResponse {
+	resp := PolicyStatusResponse{
+		ActiveProvider: active.ID(),
+		DisplayName:    active.DisplayName(),
+	}
+	if ws, ok := active.(policy.WindowSetter); ok {
+		resp.WindowExpiresAt = ws.WindowExpiresAt()
+		if fb := ws.FallbackProvider(); fb != nil {
+			resp.TimedApproveFallback = fb.ID()
+		}
+	}
+	for _, p := range h.policyRegistry.Providers() {
+		resp.Providers = append(resp.Providers, PolicyProviderInfo{ID: p.ID(), DisplayName: p.DisplayName()})
+	}
+	return resp
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

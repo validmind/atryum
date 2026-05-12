@@ -49,7 +49,10 @@ type Provider interface {
 
 // WindowSetter is an optional interface for providers that support a dynamic
 // approval window settable at runtime (e.g. TimedApproveProvider).
+// fallback is the provider to delegate to once the window expires; passing nil
+// keeps the existing fallback.
 type WindowSetter interface {
-	SetWindow(expiresAt time.Time)
+	SetWindow(expiresAt time.Time, fallback Provider)
 	WindowExpiresAt() *time.Time
+	FallbackProvider() Provider
 }

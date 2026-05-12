@@ -52,6 +52,11 @@ label { display: flex; flex-direction: column; gap: 6px; }
 .deny-section textarea { flex: 1; resize: vertical; min-height: 38px; }
 .deny-btn { background: #dc2626; color: white; border: none; border-radius: 4px; padding: 8px 16px; font: inherit; font-weight: 600; cursor: pointer; white-space: nowrap; align-self: flex-end; }
 .deny-btn:hover { background: #b91c1c; }
+.policy-card { background: white; border: 1px solid #ddd; border-radius: 6px; padding: 12px 16px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 8px; }
+.policy-card-active { border-color: #3b82f6; background: #eff6ff; }
+.policy-card-header { display: flex; align-items: center; gap: 8px; }
+.policy-card-name { font-weight: 600; font-size: 15px; }
+.policy-card-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 @media (max-width: 960px) {
   .layout, .form-grid { grid-template-columns: 1fr; }
   .panel-header { flex-direction: column; align-items: stretch; }
