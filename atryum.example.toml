@@ -94,6 +94,12 @@ secret = ""
 [auth_debug]
 skip_verify = false
 
+[kv]
+# Empty or memory:// uses an in-process store. Use redis:// or rediss:// for a
+# shared store across load-balanced Atryum pods.
+url = ""
+default_ttl_seconds = 3600
+
 # Bootstrap-only upstream definitions.
 # On startup, Atryum seeds mcp_servers from these entries only when the DB is empty.
 # After bootstrap, runtime resolution uses SQLite as the source of truth.

@@ -15,6 +15,7 @@ import (
 	"atryum/internal/auth"
 	backendclient "atryum/internal/backend"
 	"atryum/internal/invocation"
+	"atryum/internal/invocation/policy"
 	"atryum/internal/managedagents"
 	"atryum/internal/mcp"
 	"atryum/internal/store"
@@ -142,6 +143,20 @@ func (s *stubRulesRepo) Get(_ context.Context, id string) (store.Rule, error) {
 }
 func (s *stubRulesRepo) List(context.Context) ([]store.Rule, error) {
 	return s.rules, s.err
+}
+func (s *stubRulesRepo) ListApprovalRules(context.Context) ([]invocation.ApprovalRule, error) {
+	out := make([]invocation.ApprovalRule, 0, len(s.rules))
+	for _, rule := range s.rules {
+		out = append(out, invocation.ApprovalRule{
+			ID:             rule.ID,
+			ServerPatterns: rule.ServerPatterns,
+			ToolPatterns:   rule.ToolPatterns,
+			AgentIDPattern: rule.AgentIDPattern,
+			Action:         rule.Action,
+			Enabled:        rule.Enabled,
+		})
+	}
+	return out, s.err
 }
 func (s *stubRulesRepo) NextOrder(context.Context) (int, error)   { return len(s.rules), nil }
 func (s *stubRulesRepo) Update(context.Context, store.Rule) error { return nil }
@@ -605,6 +620,50 @@ func TestMCPToolsList(t *testing.T) {
 	}
 }
 
+func TestMCPToolsListMarksApprovalToolsRequiredFor2025Session(t *testing.T) {
+	registry := policy.NewRegistry(policy.ManualApprovalProvider{})
+	if err := registry.SetActive("manual_approval"); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(&stubService{tools: []mcp.Tool{{Name: "demo_tool"}}}, stubServerService{}, registry, nil, nil, nil, nil, nil, nil, nil)
+
+	initReq := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{"tasks":{}}}}`))
+	initReq.Header.Set("MCP-Session-Id", "session-required")
+	h.Routes().ServeHTTP(httptest.NewRecorder(), initReq)
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`))
+	req.Header.Set("MCP-Session-Id", "session-required")
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if !strings.Contains(w.Body.String(), `"taskSupport":"required"`) {
+		t.Fatalf("expected required task support, got %s", w.Body.String())
+	}
+}
+
+func TestMCPToolsListKeepsApprovalToolsOptionalForLegacySession(t *testing.T) {
+	registry := policy.NewRegistry(policy.ManualApprovalProvider{})
+	if err := registry.SetActive("manual_approval"); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(&stubService{tools: []mcp.Tool{{Name: "demo_tool"}}}, stubServerService{}, registry, nil, nil, nil, nil, nil, nil, nil)
+
+	initReq := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}`))
+	initReq.Header.Set("MCP-Session-Id", "session-legacy")
+	h.Routes().ServeHTTP(httptest.NewRecorder(), initReq)
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`))
+	req.Header.Set("MCP-Session-Id", "session-legacy")
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if !strings.Contains(w.Body.String(), `"taskSupport":"optional"`) {
+		t.Fatalf("expected optional task support, got %s", w.Body.String())
+	}
+}
+
 func TestMCPToolsCallInterceptsInvocation(t *testing.T) {
 	now := time.Now().UTC()
 	svc := &stubService{invoke: invocation.InvocationResponse{InvocationID: "inv_123", ServerName: "demo", ToolName: "demo_tool", Status: invocation.StatusSucceeded, Input: json.RawMessage(`{"a":1}`), SubmittedAt: now, CompletedAt: &now, Result: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`)}}
@@ -625,6 +684,36 @@ func TestMCPToolsCallInterceptsInvocation(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), `"text":"ok"`) {
 		t.Fatalf("expected tool result, got %s", w.Body.String())
+	}
+}
+
+func TestMCPToolsCallRejectsSyncCallToRequiredTaskTool(t *testing.T) {
+	registry := policy.NewRegistry(policy.ManualApprovalProvider{})
+	if err := registry.SetActive("manual_approval"); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	svc := &stubService{invoke: invocation.InvocationResponse{InvocationID: "inv_123", ServerName: "demo", ToolName: "demo_tool", Status: invocation.StatusSucceeded, SubmittedAt: now, CompletedAt: &now, Result: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`)}}
+	h := NewHandler(svc, stubServerService{}, registry, nil, nil, nil, nil, nil, nil, nil)
+
+	initReq := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{}}}`))
+	initReq.Header.Set("MCP-Session-Id", "session-sync-reject")
+	h.Routes().ServeHTTP(httptest.NewRecorder(), initReq)
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"demo_tool","arguments":{"a":1}}}`))
+	req.Header.Set("MCP-Session-Id", "session-sync-reject")
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if svc.invokedReq != nil {
+		t.Fatal("expected sync required-task call to be rejected before invocation")
+	}
+	if !strings.Contains(w.Body.String(), `"code":-32601`) {
+		t.Fatalf("expected method-not-found error, got %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `requires task-augmented tools/call`) {
+		t.Fatalf("expected task-required message, got %s", w.Body.String())
 	}
 }
 

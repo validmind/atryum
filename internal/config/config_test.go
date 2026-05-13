@@ -73,3 +73,44 @@ func TestLoadMissingConfigUsesDefaultsAndEnv(t *testing.T) {
 		t.Fatalf("Backend.APISecret = %q", cfg.Backend.APISecret)
 	}
 }
+
+func TestLoadKVConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "atryum.toml")
+	if err := os.WriteFile(path, []byte(`[kv]
+url = "memory://"
+default_ttl_seconds = 120
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.KV.URL != "memory://" {
+		t.Fatalf("KV.URL = %q", cfg.KV.URL)
+	}
+	if cfg.KV.DefaultTTLSeconds != 120 {
+		t.Fatalf("KV.DefaultTTLSeconds = %d", cfg.KV.DefaultTTLSeconds)
+	}
+}
+
+func TestLoadKVConfigDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "atryum.toml")
+	if err := os.WriteFile(path, []byte(``), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.KV.URL != "" {
+		t.Fatalf("KV.URL default = %q", cfg.KV.URL)
+	}
+	if cfg.KV.DefaultTTLSeconds != 3600 {
+		t.Fatalf("KV.DefaultTTLSeconds default = %d", cfg.KV.DefaultTTLSeconds)
+	}
+}

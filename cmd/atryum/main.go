@@ -22,6 +22,7 @@ import (
 	"atryum/internal/config"
 	"atryum/internal/invocation"
 	"atryum/internal/invocation/policy"
+	"atryum/internal/kv"
 	"atryum/internal/managedagents"
 	"atryum/internal/mcp"
 	"atryum/internal/store"
@@ -218,7 +219,15 @@ func runServer(args []string) error {
 	if backendClient != nil {
 		syncAgentsFn = syncAgents
 	}
-	handler := api.NewHandler(service, serverAdmin, policyRegistry, rulesRepo, agentsRepo, agentSyncSettingsRepo, llmConfigsRepo, syncAgentsFn, backendClient, localEvaluator)
+	kvStore, err := kv.NewStore(cfg.KV.URL)
+	if err != nil {
+		return fmt.Errorf("kv store: %w", err)
+	}
+	kvTTL := time.Duration(cfg.KV.DefaultTTLSeconds) * time.Second
+	if kvTTL <= 0 {
+		kvTTL = time.Hour
+	}
+	handler := api.NewHandler(service, serverAdmin, policyRegistry, rulesRepo, agentsRepo, agentSyncSettingsRepo, llmConfigsRepo, syncAgentsFn, backendClient, localEvaluator, api.WithKVStore(kvStore, kvTTL))
 
 	authValidator, err := auth.NewValidator(cfg.Auth, nil)
 	if err != nil {

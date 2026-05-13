@@ -21,6 +21,13 @@ MCP task support is available for clients that opt into async tool calls:
 - `tasks/get` maps the durable invocation row to MCP task state.
 - `tasks/result` waits for completion and can respond as JSON or as `text/event-stream` when the client asks for SSE.
 
+Task negotiation behavior:
+- Atryum records a lightweight MCP session profile from `initialize`, keyed by `MCP-Session-Id` when present
+- sessions negotiated as `2025-11-25` see approval-gated tools as `execution.taskSupport: "required"`
+- older sessions keep `execution.taskSupport: "optional"` for compatibility
+- if a `2025-11-25` session calls a required tool without `params.task`, Atryum returns JSON-RPC `-32601` immediately instead of waiting for approval
+- successful task-augmented calls are recorded on the session profile as evidence that the harness actually supports tasks
+
 Task status mapping:
 
 - `pending_approval` -> `input_required`
@@ -149,6 +156,16 @@ enabled      = true
 After first-run bootstrap, edit MCP servers through the UI/API; TOML `[[upstreams]]` is ignored once `mcp_servers` has rows. Disabled servers remain visible in the UI so disabling a server does not make it disappear.
 
 `server.database_url` selects the storage provider by URL scheme. `postgres://` and `postgresql://` use PostgreSQL via pgx stdlib; `sqlite://`, `file:`, an empty URL, or a bare path use SQLite. Normal tests do not require PostgreSQL; run the optional store integration test with `ATRYUM_POSTGRES_TESTS=1 go test ./internal/store`.
+
+Transient MCP session/profile state uses a separate KV store configuration:
+
+```toml
+[kv]
+url = ""
+default_ttl_seconds = 3600
+```
+
+Empty or `memory://` uses the in-process memory store. Use `redis://` or `rediss://` for a shared KV store across load-balanced Atryum pods.
 
 When `backend.base_url` is empty, the ValidMind backend connection check is skipped for local standalone runs. When it is set, startup fails if credentials are missing or `GET /api/atryum/unstable/connection` is rejected. Environment variables override TOML: `VM_BASE_URL`, `VM_MACHINE_KEY`, `VM_MACHINE_SECRET`, and `VM_CONNECTION_TIMEOUT_SECONDS`.
 
