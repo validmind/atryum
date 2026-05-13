@@ -242,6 +242,21 @@ func TestValidatorUnknownKid(t *testing.T) {
 	}
 }
 
+func TestRSAPublicKeyFromJWKRejectsOversizedExponent(t *testing.T) {
+	_, err := rsaPublicKeyFromJWK(jwk{
+		Kty: "RSA",
+		Kid: "bad-exp",
+		N:   base64.RawURLEncoding.EncodeToString([]byte{1}),
+		E:   base64.RawURLEncoding.EncodeToString([]byte{1, 2, 3, 4, 5, 6, 7, 8, 9}),
+	})
+	if err == nil {
+		t.Fatal("expected oversized exponent to be rejected")
+	}
+	if !strings.Contains(err.Error(), "invalid exponent") {
+		t.Fatalf("expected invalid exponent error, got %v", err)
+	}
+}
+
 func TestMiddlewareBlocksMissingToken(t *testing.T) {
 	idp := newTestIdP(t)
 	v := newValidatorForIdP(t, idp)

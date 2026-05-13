@@ -1,4 +1,5 @@
 .pi
+.DS_Store
 .direnv
 .envrc
 *.nix

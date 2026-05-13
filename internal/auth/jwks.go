@@ -130,6 +130,9 @@ func rsaPublicKeyFromJWK(k jwk) (*rsa.PublicKey, error) {
 	if len(eBytes) == 0 {
 		return nil, fmt.Errorf("empty exponent")
 	}
+	if len(eBytes) > 8 {
+		return nil, fmt.Errorf("invalid exponent")
+	}
 	// Pad eBytes to 8 bytes for binary.BigEndian.Uint64.
 	padded := make([]byte, 8)
 	copy(padded[8-len(eBytes):], eBytes)
