@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"atryum/internal/api"
+	"atryum/internal/auth"
 	"atryum/internal/config"
 	"atryum/internal/invocation"
 	"atryum/internal/invocation/policy"
@@ -69,6 +70,17 @@ func main() {
 	service := invocation.NewService(invRepo, eventRepo, resolver, client, policyRegistry, time.Duration(cfg.Defaults.RequestTimeoutSeconds)*time.Second, rulesRepo)
 	serverAdmin := api.NewServerAdminService(serverRepo, oauthRepo, client, 5*time.Second)
 	handler := api.NewHandler(service, serverAdmin, policyRegistry, rulesRepo)
+
+	authValidator, err := auth.NewValidator(cfg.Auth, nil)
+	if err != nil {
+		log.Fatalf("auth: %v", err)
+	}
+	if authValidator != nil {
+		handler.SetAuthValidator(authValidator)
+		log.Printf("inbound auth enabled (%d issuer(s))", len(authValidator.Configs()))
+	} else {
+		log.Printf("inbound auth disabled (no [[auth]] section configured)")
+	}
 
 	srv := &http.Server{
 		Addr:              cfg.Server.ListenAddr,

@@ -36,3 +36,25 @@ SHORTCUT_READONLY = "true"
 # timeout_seconds = 30
 # enabled = true
 # auth_token = ""
+
+# Inbound OAuth bearer-token authentication for /mcp/. Multiple [[auth]]
+# sections are supported; the validator picks the matching one based on
+# the token's `iss` claim. Other routes (/ui, /api/v1/admin/*,
+# /api/v1/external/*, /healthz) are NOT affected.
+#
+# [[auth]]
+# enabled        = true
+# issuer         = "https://keycloak.example/realms/atryum"
+# audience       = "atryum"
+# # jwks_url is optional. When omitted, OIDC discovery
+# # (issuer + /.well-known/openid-configuration) is used.
+# # jwks_url     = "https://keycloak.example/realms/atryum/protocol/openid-connect/certs"
+# required_scope = "atryum:mcp"
+# agent_id_claim = "client_id"
+#
+# [[auth]]
+# enabled        = true
+# issuer         = "https://your-tenant.us.auth0.com/"
+# audience       = "https://atryum.example/mcp"
+# required_scope = "atryum:mcp"
+# agent_id_claim = "client_id"
