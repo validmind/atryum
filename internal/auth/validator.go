@@ -36,10 +36,10 @@ type Identity struct {
 type Result int
 
 const (
-	ResultOK              Result = iota
-	ResultMissing                // No Authorization header
-	ResultInvalid                // Bad signature, malformed, wrong issuer/audience, expired, etc.
-	ResultMissingScope           // Token is otherwise valid but lacks required scope
+	ResultOK           Result = iota
+	ResultMissing             // No Authorization header
+	ResultInvalid             // Bad signature, malformed, wrong issuer/audience, expired, etc.
+	ResultMissingScope        // Token is otherwise valid but lacks required scope
 )
 
 // ValidationError carries a Result plus a human-readable description that
@@ -110,9 +110,9 @@ func (v *Validator) Validate(ctx context.Context, bearer string) (Identity, erro
 	}
 	iss, _ := claims["iss"].(string)
 	iss = strings.TrimRight(strings.TrimSpace(iss), "/")
-	cfg, ok := v.matchConfig(iss)
+	cfg, ok := v.matchConfig(iss, claims["aud"])
 	if !ok {
-		return Identity{}, &ValidationError{Result: ResultInvalid, Description: "issuer not allowed"}
+		return Identity{}, &ValidationError{Result: ResultInvalid, Description: "issuer/audience not allowed"}
 	}
 
 	cache, err := v.cacheFor(ctx, cfg)
@@ -170,13 +170,33 @@ func (v *Validator) Validate(ctx context.Context, bearer string) (Identity, erro
 	return identity, nil
 }
 
-func (v *Validator) matchConfig(issuer string) (Config, bool) {
+func (v *Validator) matchConfig(issuer string, audienceClaim any) (Config, bool) {
 	for _, c := range v.configs {
-		if c.Issuer == issuer {
+		if c.Issuer == issuer && audienceMatches(audienceClaim, c.Audience) {
 			return c, true
 		}
 	}
 	return Config{}, false
+}
+
+func audienceMatches(claim any, audience string) bool {
+	switch v := claim.(type) {
+	case string:
+		return v == audience
+	case []string:
+		for _, item := range v {
+			if item == audience {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range v {
+			if s, ok := item.(string); ok && s == audience {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (v *Validator) cacheFor(ctx context.Context, cfg Config) (*keyCache, error) {
@@ -280,4 +300,3 @@ func stringClaim(claims jwt.MapClaims, name string) string {
 	}
 	return ""
 }
-

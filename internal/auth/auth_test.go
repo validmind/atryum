@@ -171,6 +171,40 @@ func TestValidatorWrongAudience(t *testing.T) {
 	}
 }
 
+func TestValidatorSelectsConfigByIssuerAndAudience(t *testing.T) {
+	idp := newTestIdP(t)
+	configs := []Config{
+		{
+			Enabled:       true,
+			Issuer:        "https://idp.example/",
+			Audience:      "other-api",
+			JWKSURL:       idp.jwksURL(),
+			RequiredScope: "other:scope",
+			AgentIDClaim:  "sub",
+		},
+		{
+			Enabled:       true,
+			Issuer:        "https://idp.example/",
+			Audience:      "atryum",
+			JWKSURL:       idp.jwksURL(),
+			RequiredScope: "atryum:mcp",
+			AgentIDClaim:  "client_id",
+		},
+	}
+	v, err := NewValidator(configs, nil)
+	if err != nil {
+		t.Fatalf("NewValidator: %v", err)
+	}
+	tok := idp.sign(t, validClaims())
+	id, err := v.Validate(context.Background(), tok)
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if id.AgentID != "agent-1" {
+		t.Fatalf("expected config matching atryum audience, got agent id %q", id.AgentID)
+	}
+}
+
 func TestValidatorMissingScope(t *testing.T) {
 	idp := newTestIdP(t)
 	v := newValidatorForIdP(t, idp)
