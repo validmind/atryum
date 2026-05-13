@@ -14,6 +14,21 @@ Atryum mediates three kinds of tool calls:
 
 These paths converge on a single service so rules, audit, and the UI work identically regardless of how the call arrived.
 
+MCP task support is available for clients that opt into async tool calls:
+
+- `tools/list` annotates tool metadata with `execution.taskSupport: "optional"`.
+- task-augmented `tools/call` requests return an MCP task handle immediately instead of blocking on manual approval.
+- `tasks/get` maps the durable invocation row to MCP task state.
+- `tasks/result` waits for completion and can respond as JSON or as `text/event-stream` when the client asks for SSE.
+
+Task status mapping:
+
+- `pending_approval` -> `input_required`
+- `executing` / `approved` / `received` -> `working`
+- `succeeded` -> `completed`
+- `denied` / `failed` -> `failed`
+- `cancelled` / `expired` -> `cancelled`
+
 ## The rule engine
 
 Rules live in the `approval_rules` table and are evaluated in priority order (lowest `rule_order` first). Each rule has:

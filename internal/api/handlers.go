@@ -36,10 +36,12 @@ var webFS embed.FS
 
 type service interface {
 	Invoke(ctx context.Context, req invocation.CreateInvocationRequest) (invocation.InvocationResponse, error)
+	InvokeAsync(ctx context.Context, req invocation.CreateInvocationRequest, opts invocation.TaskCreateOptions) (invocation.InvocationResponse, error)
 	ListTools(ctx context.Context, server string) ([]mcp.Tool, error)
 	ListAllTools(ctx context.Context) ([]mcp.Tool, error)
 	ResolveToolServer(ctx context.Context, toolName string) (string, error)
 	Get(ctx context.Context, id string) (invocation.InvocationResponse, error)
+	WaitForCompletion(ctx context.Context, id string) (invocation.InvocationResponse, error)
 	List(ctx context.Context, filter invocation.InvocationListFilter) (invocation.InvocationListResponse, error)
 	ListAgentIDs(ctx context.Context) ([]string, error)
 	Events(ctx context.Context, invocationID string, filter invocation.EventListFilter) (invocation.EventListResponse, error)
@@ -905,6 +907,13 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			},
 			"capabilities": map[string]any{
 				"tools": map[string]any{},
+				"tasks": map[string]any{
+					"requests": map[string]any{
+						"tools": map[string]any{
+							"call": map[string]any{},
+						},
+					},
+				},
 			},
 			"instructions": atryumInitializeInstructions,
 		}
@@ -931,6 +940,9 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		var params struct {
 			Name      string         `json:"name"`
 			Arguments map[string]any `json:"arguments"`
+			Task      *struct {
+				TTL *int64 `json:"ttl,omitempty"`
+			} `json:"task,omitempty"`
 		}
 		if err := json.Unmarshal(req.Params, &params); err != nil {
 			h.writeRPCError(w, req.ID, -32602, "invalid params")
@@ -966,6 +978,17 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			toolReq.ClientName = snap.Name
 			toolReq.ClientVersion = snap.Version
 		}
+		if params.Task != nil {
+			resp, err := h.svc.InvokeAsync(r.Context(), toolReq, invocation.TaskCreateOptions{TTLMillis: params.Task.TTL})
+			if err != nil {
+				h.writeRPCError(w, req.ID, -32000, err.Error())
+				return
+			}
+			tracePayload := map[string]any{"request_id": requestID, "status": resp.Status, "invocation_id": resp.InvocationID, "tool": params.Name, "task": true}
+			_ = h.emitTraceEvent(r.Context(), server, "mcp.tools.call", tracePayload)
+			h.writeRPCResult(w, req.ID, createTaskResult(resp, params.Task.TTL))
+			return
+		}
 		resp, err := h.svc.Invoke(r.Context(), toolReq)
 		if err != nil {
 			h.writeRPCError(w, req.ID, -32000, err.Error())
@@ -982,6 +1005,42 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			return
 		}
 		h.writeRPCResult(w, req.ID, normalizeToolCallResult(resp.Result, false))
+	case "tasks/get":
+		var params struct {
+			TaskID string `json:"taskId"`
+		}
+		if err := json.Unmarshal(req.Params, &params); err != nil || strings.TrimSpace(params.TaskID) == "" {
+			h.writeRPCError(w, req.ID, -32602, "invalid params")
+			return
+		}
+		resp, err := h.svc.Get(r.Context(), params.TaskID)
+		if err != nil {
+			h.writeRPCError(w, req.ID, -32000, err.Error())
+			return
+		}
+		h.writeRPCResult(w, req.ID, taskFromInvocation(resp, nil))
+	case "tasks/result":
+		var params struct {
+			TaskID string `json:"taskId"`
+		}
+		if err := json.Unmarshal(req.Params, &params); err != nil || strings.TrimSpace(params.TaskID) == "" {
+			h.writeRPCError(w, req.ID, -32602, "invalid params")
+			return
+		}
+		resp, err := h.svc.WaitForCompletion(r.Context(), params.TaskID)
+		if err != nil {
+			if r.Context().Err() != nil {
+				return
+			}
+			h.writeRPCError(w, req.ID, -32000, err.Error())
+			return
+		}
+		result := taskResultFromInvocation(resp)
+		if acceptsEventStream(r) {
+			h.writeRPCResultSSE(w, req.ID, result)
+			return
+		}
+		h.writeRPCResult(w, req.ID, result)
 	default:
 		forwarded, forwardedOK := h.forwardProxyEnvelope(r.Context(), server, req, protocolVersion)
 		if !forwardedOK {
@@ -1199,6 +1258,7 @@ type annotatedTool struct {
 	Description string             `json:"description,omitempty"`
 	InputSchema json.RawMessage    `json:"inputSchema,omitempty"`
 	Annotations *atryumAnnotations `json:"annotations,omitempty"`
+	Execution   map[string]any     `json:"execution,omitempty"`
 }
 
 type atryumAnnotations struct {
@@ -1219,14 +1279,14 @@ func (h *Handler) annotateToolsWithPolicy(ctx context.Context, server string, to
 	out := make([]any, len(tools))
 	if h.rulesRepo == nil || strings.TrimSpace(server) == "" {
 		for i, t := range tools {
-			out[i] = t
+			out[i] = toolListEntry(t, "", "")
 		}
 		return out
 	}
 	rules, err := h.rulesRepo.List(ctx)
 	if err != nil {
 		for i, t := range tools {
-			out[i] = t
+			out[i] = toolListEntry(t, "", "")
 		}
 		return out
 	}
@@ -1234,7 +1294,7 @@ func (h *Handler) annotateToolsWithPolicy(ctx context.Context, server string, to
 	agentCUID := h.resolveAgentRecordForRules(ctx, agentID)
 	for i, t := range tools {
 		if t.Name == agentRulesToolName {
-			out[i] = t
+			out[i] = toolListEntry(t, "", "")
 			continue
 		}
 		action, matched := effectiveActionForTool(rules, server, t.Name, agentID, agentCUID)
@@ -1247,17 +1307,32 @@ func (h *Handler) annotateToolsWithPolicy(ctx context.Context, server string, to
 				desc = prefix + desc
 			}
 		}
-		out[i] = annotatedTool{
-			Name:        t.Name,
-			Description: desc,
-			InputSchema: t.InputSchema,
-			Annotations: &atryumAnnotations{Atryum: atryumToolPolicy{
-				EffectiveAction: action,
-				MatchedRuleID:   matched,
-			}},
-		}
+		out[i] = toolListEntry(t, desc, action, matched)
 	}
 	return out
+}
+
+func toolListEntry(tool mcp.Tool, description string, policyParts ...string) annotatedTool {
+	if description == "" {
+		description = tool.Description
+	}
+	entry := annotatedTool{
+		Name:        tool.Name,
+		Description: description,
+		InputSchema: tool.InputSchema,
+		Execution:   map[string]any{"taskSupport": "optional"},
+	}
+	if len(policyParts) > 0 && policyParts[0] != "" {
+		matched := ""
+		if len(policyParts) > 1 {
+			matched = policyParts[1]
+		}
+		entry.Annotations = &atryumAnnotations{Atryum: atryumToolPolicy{
+			EffectiveAction: policyParts[0],
+			MatchedRuleID:   matched,
+		}}
+	}
+	return entry
 }
 
 // effectiveActionForTool returns the action of the first enabled rule that
@@ -3321,6 +3396,18 @@ func (h *Handler) writeRPCResult(w http.ResponseWriter, id json.RawMessage, resu
 	writeJSON(w, http.StatusOK, jsonRPCResponse{JSONRPC: "2.0", ID: id, Result: body})
 }
 
+func (h *Handler) writeRPCResultSSE(w http.ResponseWriter, id json.RawMessage, result any) {
+	body, _ := json.Marshal(jsonRPCResponse{JSONRPC: "2.0", ID: id, Result: mustRawJSON(result)})
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", body)
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
 func (h *Handler) forwardProxyEnvelope(ctx context.Context, server string, envelope mcp.Envelope, protocolVersion string) (mcp.ForwardResult, bool) {
 	if h.forwarder == nil {
 		return mcp.ForwardResult{}, false
@@ -3490,6 +3577,140 @@ func sessionKeyFromRequest(r *http.Request) string {
 		return ""
 	}
 	return "addr:" + host + "|ua:" + ua
+}
+
+func mustRawJSON(v any) json.RawMessage {
+	b, _ := json.Marshal(v)
+	return b
+}
+
+func createTaskResult(resp invocation.InvocationResponse, ttlMillis *int64) map[string]any {
+	result := map[string]any{
+		"task": taskFromInvocation(resp, ttlMillis),
+	}
+	result["_meta"] = map[string]any{
+		"io.modelcontextprotocol/model-immediate-response": taskImmediateResponse(resp),
+	}
+	return result
+}
+
+func taskFromInvocation(resp invocation.InvocationResponse, ttlMillis *int64) map[string]any {
+	lastUpdated := resp.SubmittedAt
+	if resp.CompletedAt != nil {
+		lastUpdated = *resp.CompletedAt
+	}
+	task := map[string]any{
+		"taskId":        resp.InvocationID,
+		"status":        taskStatusFromInvocation(resp.Status),
+		"statusMessage": taskStatusMessage(resp),
+		"createdAt":     resp.SubmittedAt.UTC().Format(time.RFC3339),
+		"lastUpdatedAt": lastUpdated.UTC().Format(time.RFC3339),
+		"pollInterval":  2000,
+		"ttl":           nil,
+	}
+	if ttlMillis != nil {
+		task["ttl"] = *ttlMillis
+	}
+	return task
+}
+
+func taskResultFromInvocation(resp invocation.InvocationResponse) any {
+	var raw json.RawMessage
+	isError := false
+	if len(resp.Error) > 0 {
+		raw = resp.Error
+		isError = true
+	} else {
+		raw = resp.Result
+	}
+	normalized := normalizeToolCallResult(raw, isError)
+	body, ok := normalized.(map[string]any)
+	if !ok {
+		return normalized
+	}
+	meta, _ := body["_meta"].(map[string]any)
+	if meta == nil {
+		meta = map[string]any{}
+	}
+	meta["io.modelcontextprotocol/related-task"] = map[string]any{"taskId": resp.InvocationID}
+	body["_meta"] = meta
+	return body
+}
+
+func taskStatusFromInvocation(status invocation.Status) string {
+	switch status {
+	case invocation.StatusSucceeded:
+		return "completed"
+	case invocation.StatusCancelled, invocation.StatusExpired:
+		return "cancelled"
+	case invocation.StatusDenied, invocation.StatusFailed:
+		return "failed"
+	case invocation.StatusPendingApproval:
+		return "input_required"
+	default:
+		return "working"
+	}
+}
+
+func taskStatusMessage(resp invocation.InvocationResponse) string {
+	switch resp.Status {
+	case invocation.StatusPendingApproval:
+		return "Awaiting approval."
+	case invocation.StatusApproved:
+		return "Approved. Execution will begin shortly."
+	case invocation.StatusExecuting:
+		return "The operation is now in progress."
+	case invocation.StatusSucceeded:
+		return "The operation completed successfully."
+	case invocation.StatusDenied:
+		return "The operation was denied by policy or a reviewer."
+	case invocation.StatusCancelled:
+		return "The operation was cancelled."
+	case invocation.StatusExpired:
+		return "The operation expired before completion."
+	case invocation.StatusFailed:
+		return "The operation failed."
+	default:
+		return "The operation is now in progress."
+	}
+}
+
+func taskImmediateResponse(resp invocation.InvocationResponse) string {
+	switch resp.Status {
+	case invocation.StatusPendingApproval:
+		return "Tool call submitted and awaiting approval. Continue with other work while the task is pending."
+	case invocation.StatusExecuting, invocation.StatusApproved:
+		return "Tool call accepted as a task and is running asynchronously."
+	case invocation.StatusDenied, invocation.StatusFailed:
+		return "Tool call completed with an error. Retrieve the task result for details."
+	default:
+		return "Tool call accepted as a task."
+	}
+}
+
+func withTaskSupport(tools []mcp.Tool) []map[string]any {
+	out := make([]map[string]any, 0, len(tools))
+	for _, tool := range tools {
+		entry := map[string]any{
+			"name":        tool.Name,
+			"description": tool.Description,
+			"execution": map[string]any{
+				"taskSupport": "optional",
+			},
+		}
+		if len(tool.InputSchema) > 0 {
+			var schema any
+			if err := json.Unmarshal(tool.InputSchema, &schema); err == nil {
+				entry["inputSchema"] = schema
+			}
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func acceptsEventStream(r *http.Request) bool {
+	return strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/event-stream")
 }
 
 func compactRequestID(id json.RawMessage) string {

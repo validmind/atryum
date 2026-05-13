@@ -21,17 +21,19 @@ import (
 )
 
 type stubService struct {
-	tools    []mcp.Tool
-	invoke   invocation.InvocationResponse
-	invErr   error
-	getErr   error
-	setResp  invocation.InvocationResponse
-	setID    string
-	setText  string
-	listErr  error
-	upstream mcp.Upstream
-	forward  mcp.ForwardResult
-	fwdErr   error
+	tools             []mcp.Tool
+	invoke            invocation.InvocationResponse
+	invokeAsync       invocation.InvocationResponse
+	waitForCompletion invocation.InvocationResponse
+	invErr            error
+	getErr            error
+	setResp           invocation.InvocationResponse
+	setID             string
+	setText           string
+	listErr           error
+	upstream          mcp.Upstream
+	forward           mcp.ForwardResult
+	fwdErr            error
 
 	invokedReq *invocation.CreateInvocationRequest
 	invokedCtx context.Context
@@ -40,6 +42,13 @@ type stubService struct {
 func (s *stubService) Invoke(ctx context.Context, req invocation.CreateInvocationRequest) (invocation.InvocationResponse, error) {
 	s.invokedReq = &req
 	s.invokedCtx = ctx
+	return s.invoke, s.invErr
+}
+func (s *stubService) InvokeAsync(_ context.Context, req invocation.CreateInvocationRequest, _ invocation.TaskCreateOptions) (invocation.InvocationResponse, error) {
+	s.invokedReq = &req
+	if s.invokeAsync.InvocationID != "" {
+		return s.invokeAsync, s.invErr
+	}
 	return s.invoke, s.invErr
 }
 func (s *stubService) ListTools(context.Context, string) ([]mcp.Tool, error) {
@@ -53,6 +62,12 @@ func (s *stubService) ResolveToolServer(_ context.Context, _ string) (string, er
 }
 func (s *stubService) Get(_ context.Context, _ string) (invocation.InvocationResponse, error) {
 	return s.invoke, s.getErr
+}
+func (s *stubService) WaitForCompletion(context.Context, string) (invocation.InvocationResponse, error) {
+	if s.waitForCompletion.InvocationID != "" {
+		return s.waitForCompletion, nil
+	}
+	return s.invoke, nil
 }
 func (s *stubService) List(context.Context, invocation.InvocationListFilter) (invocation.InvocationListResponse, error) {
 	return invocation.InvocationListResponse{Items: []invocation.InvocationResponse{s.invoke}, Total: 1, Limit: 50}, nil
@@ -932,6 +947,66 @@ func TestMCPToolsCallDenialIncludesRulesContext(t *testing.T) {
 	last := rpcResp.Result.Content[len(rpcResp.Result.Content)-1].Text
 	if !strings.Contains(last, "Atryum approval rules") || !strings.Contains(last, "bash-deny") {
 		t.Fatalf("expected rules context in denial result, got %q", last)
+	}
+}
+
+func TestMCPToolsCallWithTaskReturnsCreateTaskResult(t *testing.T) {
+	now := time.Now().UTC()
+	svc := &stubService{invokeAsync: invocation.InvocationResponse{
+		InvocationID: "inv_task_123",
+		ServerName:   "github",
+		ToolName:     "list_commits",
+		Status:       invocation.StatusPendingApproval,
+		Input:        json.RawMessage(`{"repo":"openai/openai"}`),
+		SubmittedAt:  now,
+	}}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/github", strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"list_commits","arguments":{"repo":"openai/openai"},"task":{"ttl":60000}}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), `"taskId":"inv_task_123"`) {
+		t.Fatalf("expected task id in response, got %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"status":"input_required"`) {
+		t.Fatalf("expected input_required task status, got %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `model-immediate-response`) {
+		t.Fatalf("expected model immediate response meta, got %s", w.Body.String())
+	}
+}
+
+func TestMCPTasksResultCanReturnSSE(t *testing.T) {
+	now := time.Now().UTC()
+	svc := &stubService{waitForCompletion: invocation.InvocationResponse{
+		InvocationID: "inv_task_456",
+		ServerName:   "github",
+		ToolName:     "list_commits",
+		Status:       invocation.StatusSucceeded,
+		Input:        json.RawMessage(`{"repo":"openai/openai"}`),
+		SubmittedAt:  now,
+		CompletedAt:  &now,
+		Result:       json.RawMessage(`{"content":[{"type":"text","text":"done"}]}`),
+	}}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/github", strings.NewReader(`{"jsonrpc":"2.0","id":10,"method":"tasks/result","params":{"taskId":"inv_task_456"}}`))
+	req.Header.Set("Accept", "text/event-stream")
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
+		t.Fatalf("expected text/event-stream, got %s", ct)
+	}
+	if !strings.Contains(w.Body.String(), `"io.modelcontextprotocol/related-task":{"taskId":"inv_task_456"}`) {
+		t.Fatalf("expected related-task meta, got %s", w.Body.String())
 	}
 }
 
