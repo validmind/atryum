@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
@@ -17,7 +16,6 @@ import (
 
 	"atryum/internal/auth"
 	"atryum/internal/invocation"
-	"atryum/internal/mcp"
 )
 
 // jwksHandler serves a minimal JWKS document for the given RSA public key so
@@ -248,7 +246,3 @@ func TestMCPNoValidatorPreservesAnonymousAccess(t *testing.T) {
 		t.Fatalf("expected 200 anonymous, got %d", w.Code)
 	}
 }
-
-// satisfy unused import in some build configurations
-var _ = context.Background
-var _ = mcp.ConnectionStatusReady
