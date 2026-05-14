@@ -218,6 +218,25 @@ func TestValidatorMissingScope(t *testing.T) {
 	}
 }
 
+func TestValidatorAllowsMissingTokenScopeWhenRequiredScopeEmpty(t *testing.T) {
+	idp := newTestIdP(t)
+	v := newValidatorForIdP(t, idp, func(c *Config) { c.RequiredScope = "" })
+	claims := validClaims()
+	delete(claims, "scope")
+	delete(claims, "scp")
+	tok := idp.sign(t, claims)
+	id, err := v.Validate(context.Background(), tok)
+	if err != nil {
+		t.Fatalf("expected ok without token scope, got %v", err)
+	}
+	if id.AgentID != "agent-1" {
+		t.Fatalf("agent id = %q", id.AgentID)
+	}
+	if id.Scope != "" {
+		t.Fatalf("scope = %q", id.Scope)
+	}
+}
+
 func TestValidatorScpClaimArrayAccepted(t *testing.T) {
 	idp := newTestIdP(t)
 	v := newValidatorForIdP(t, idp)

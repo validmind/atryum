@@ -81,7 +81,7 @@ func requiredScope(v *Validator) string {
 			return c.RequiredScope
 		}
 	}
-	return DefaultRequiredScope
+	return ""
 }
 
 func writeChallenge(w http.ResponseWriter, status int, description string, errorCode string, resourceMetadataURL string, scope string) {

@@ -6,10 +6,6 @@ package auth
 
 import "strings"
 
-// DefaultRequiredScope is the OAuth scope required on incoming MCP requests
-// when [auth].required_scope is not configured.
-const DefaultRequiredScope = "atryum:mcp"
-
 // DefaultAgentIDClaim is the JWT claim consulted first when extracting the
 // agent identity. Falls back to client_id, then azp, then sub.
 const DefaultAgentIDClaim = "client_id"
@@ -26,15 +22,13 @@ type Config struct {
 }
 
 // Normalized returns a copy with whitespace trimmed and defaults applied.
+// Empty RequiredScope intentionally means no scope claim is required.
 func (c Config) Normalized() Config {
 	c.Issuer = strings.TrimRight(strings.TrimSpace(c.Issuer), "/")
 	c.Audience = strings.TrimSpace(c.Audience)
 	c.JWKSURL = strings.TrimSpace(c.JWKSURL)
 	c.RequiredScope = strings.TrimSpace(c.RequiredScope)
 	c.AgentIDClaim = strings.TrimSpace(c.AgentIDClaim)
-	if c.RequiredScope == "" {
-		c.RequiredScope = DefaultRequiredScope
-	}
 	if c.AgentIDClaim == "" {
 		c.AgentIDClaim = DefaultAgentIDClaim
 	}

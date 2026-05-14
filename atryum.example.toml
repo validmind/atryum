@@ -49,6 +49,7 @@ SHORTCUT_READONLY = "true"
 # # jwks_url is optional. When omitted, OIDC discovery
 # # (issuer + /.well-known/openid-configuration) is used.
 # # jwks_url     = "https://keycloak.example/realms/atryum/protocol/openid-connect/certs"
+# # Leave required_scope empty or omit it to allow tokens without a scope claim.
 # required_scope = "atryum:mcp"
 # agent_id_claim = "client_id"
 #
@@ -56,5 +57,6 @@ SHORTCUT_READONLY = "true"
 # enabled        = true
 # issuer         = "https://your-tenant.us.auth0.com/"
 # audience       = "https://atryum.example/mcp"
+# # Leave required_scope empty or omit it to allow tokens without a scope claim.
 # required_scope = "atryum:mcp"
 # agent_id_claim = "client_id"
