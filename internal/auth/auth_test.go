@@ -1,12 +1,14 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -348,6 +350,55 @@ func TestMiddlewareReturns403ForMissingScope(t *testing.T) {
 	}
 	if !strings.Contains(w.Header().Get("WWW-Authenticate"), "insufficient_scope") {
 		t.Fatalf("expected insufficient_scope challenge, got %q", w.Header().Get("WWW-Authenticate"))
+	}
+}
+
+func TestMiddlewareLogsMissingScope(t *testing.T) {
+	idp := newTestIdP(t)
+	v := newValidatorForIdP(t, idp)
+	claims := validClaims()
+	claims["scope"] = "wrong"
+	tok := idp.sign(t, claims)
+	var logs bytes.Buffer
+	origWriter := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(origWriter) })
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	h := Middleware(v, "/.well-known/oauth-protected-resource")(next)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/x", strings.NewReader("{}"))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	got := logs.String()
+	if !strings.Contains(got, "[auth] insufficient_scope") || !strings.Contains(got, `scope="atryum:mcp"`) {
+		t.Fatalf("expected insufficient scope auth log, got %q", got)
+	}
+	if strings.Contains(got, tok) {
+		t.Fatal("auth log should not include bearer token")
+	}
+}
+
+func TestMiddlewareLogsInvalidToken(t *testing.T) {
+	idp := newTestIdP(t)
+	v := newValidatorForIdP(t, idp)
+	var logs bytes.Buffer
+	origWriter := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(origWriter) })
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	h := Middleware(v, "/.well-known/oauth-protected-resource")(next)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/x", strings.NewReader("{}"))
+	req.Header.Set("Authorization", "Bearer not-a-jwt")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	got := logs.String()
+	if !strings.Contains(got, "[auth] invalid_token") || !strings.Contains(got, `description="malformed token"`) {
+		t.Fatalf("expected invalid token auth log, got %q", got)
+	}
+	if strings.Contains(got, "not-a-jwt") {
+		t.Fatal("auth log should not include bearer token")
 	}
 }
 

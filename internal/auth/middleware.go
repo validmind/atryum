@@ -3,6 +3,7 @@ package auth
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 )
@@ -35,10 +36,13 @@ func Middleware(v *Validator, resourceMetadataPath string) func(http.Handler) ht
 				ve, _ := err.(*ValidationError)
 				switch {
 				case ve != nil && ve.Result == ResultMissingScope:
+					logAuthFailure(r, "insufficient_scope", ve.Description, requiredScope(v))
 					writeChallenge(w, http.StatusForbidden, ve.Description, "insufficient_scope", metadataURL, requiredScope(v))
 				case ve != nil:
+					logAuthFailure(r, "invalid_token", ve.Description, requiredScope(v))
 					writeChallenge(w, http.StatusUnauthorized, ve.Description, "invalid_token", metadataURL, requiredScope(v))
 				default:
+					logAuthFailure(r, "invalid_token", "invalid token", requiredScope(v))
 					writeChallenge(w, http.StatusUnauthorized, "invalid token", "invalid_token", metadataURL, requiredScope(v))
 				}
 				return
@@ -46,6 +50,14 @@ func Middleware(v *Validator, resourceMetadataPath string) func(http.Handler) ht
 			next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), identity)))
 		})
 	}
+}
+
+func logAuthFailure(r *http.Request, code string, description string, scope string) {
+	if scope != "" {
+		log.Printf("[auth] %s method=%s path=%s remote=%s scope=%q description=%q", code, r.Method, r.URL.Path, r.RemoteAddr, scope, description)
+		return
+	}
+	log.Printf("[auth] %s method=%s path=%s remote=%s description=%q", code, r.Method, r.URL.Path, r.RemoteAddr, description)
 }
 
 func absoluteURL(r *http.Request, path string) string {
