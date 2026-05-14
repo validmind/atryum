@@ -36,27 +36,28 @@ func MiddlewareWithOptions(v *Validator, resourceMetadataPath string, opts Middl
 			metadataURL := absoluteURL(r, resourceMetadataPath)
 			header := strings.TrimSpace(r.Header.Get("Authorization"))
 			if header == "" {
-				writeChallenge(w, http.StatusUnauthorized, "missing bearer token", "", metadataURL, requiredScope(v))
+				writeChallenge(w, http.StatusUnauthorized, "missing bearer token", "", metadataURL, challengeScope(v, nil))
 				return
 			}
 			if !strings.HasPrefix(strings.ToLower(header), "bearer ") {
-				writeChallenge(w, http.StatusUnauthorized, "invalid Authorization scheme", "invalid_request", metadataURL, requiredScope(v))
+				writeChallenge(w, http.StatusUnauthorized, "invalid Authorization scheme", "invalid_request", metadataURL, challengeScope(v, nil))
 				return
 			}
 			token := strings.TrimSpace(header[len("Bearer "):])
 			identity, err := validateBearer(r.Context(), v, token, opts)
 			if err != nil {
 				ve, _ := err.(*ValidationError)
+				scope := challengeScope(v, ve)
 				switch {
 				case ve != nil && ve.Result == ResultMissingScope:
-					logAuthFailure(r, "insufficient_scope", ve.Description, requiredScope(v))
-					writeChallenge(w, http.StatusForbidden, ve.Description, "insufficient_scope", metadataURL, requiredScope(v))
+					logAuthFailure(r, "insufficient_scope", ve.Description, scope)
+					writeChallenge(w, http.StatusForbidden, ve.Description, "insufficient_scope", metadataURL, scope)
 				case ve != nil:
-					logAuthFailure(r, "invalid_token", ve.Description, requiredScope(v))
-					writeChallenge(w, http.StatusUnauthorized, ve.Description, "invalid_token", metadataURL, requiredScope(v))
+					logAuthFailure(r, "invalid_token", ve.Description, scope)
+					writeChallenge(w, http.StatusUnauthorized, ve.Description, "invalid_token", metadataURL, scope)
 				default:
-					logAuthFailure(r, "invalid_token", "invalid token", requiredScope(v))
-					writeChallenge(w, http.StatusUnauthorized, "invalid token", "invalid_token", metadataURL, requiredScope(v))
+					logAuthFailure(r, "invalid_token", "invalid token", scope)
+					writeChallenge(w, http.StatusUnauthorized, "invalid token", "invalid_token", metadataURL, scope)
 				}
 				return
 			}
@@ -114,13 +115,35 @@ func absoluteURL(r *http.Request, path string) string {
 	return scheme + "://" + host + path
 }
 
-func requiredScope(v *Validator) string {
-	for _, c := range v.Configs() {
-		if c.RequiredScope != "" {
-			return c.RequiredScope
+// challengeScope returns the scope to advertise in the WWW-Authenticate
+// `scope=` parameter. When the validator already matched a specific config
+// (i.e. the ValidationError carries a RequiredScope), that scope is used.
+// Otherwise the function only returns a scope when every configured
+// authorization server agrees on the same non-empty required_scope; if any
+// configured issuer has no required scope (or scopes disagree), we omit
+// `scope=` rather than mislead the client into requesting a scope that is
+// not required for one of the configured issuers.
+func challengeScope(v *Validator, ve *ValidationError) string {
+	if ve != nil && ve.RequiredScope != "" {
+		return ve.RequiredScope
+	}
+	if v == nil {
+		return ""
+	}
+	configs := v.Configs()
+	if len(configs) == 0 {
+		return ""
+	}
+	common := configs[0].RequiredScope
+	if common == "" {
+		return ""
+	}
+	for _, c := range configs[1:] {
+		if c.RequiredScope != common {
+			return ""
 		}
 	}
-	return ""
+	return common
 }
 
 func writeChallenge(w http.ResponseWriter, status int, description string, errorCode string, resourceMetadataURL string, scope string) {

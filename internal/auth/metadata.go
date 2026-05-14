@@ -10,9 +10,9 @@ import (
 // document defined by RFC 9728. MCP clients use it to discover which
 // authorization server to use.
 type ProtectedResourceMetadata struct {
-	Resource             string   `json:"resource"`
-	AuthorizationServers []string `json:"authorization_servers"`
-	ScopesSupported      []string `json:"scopes_supported,omitempty"`
+	Resource               string   `json:"resource"`
+	AuthorizationServers   []string `json:"authorization_servers"`
+	ScopesSupported        []string `json:"scopes_supported,omitempty"`
 	BearerMethodsSupported []string `json:"bearer_methods_supported,omitempty"`
 }
 

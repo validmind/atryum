@@ -43,10 +43,14 @@ const (
 )
 
 // ValidationError carries a Result plus a human-readable description that
-// callers may include in WWW-Authenticate / response bodies.
+// callers may include in WWW-Authenticate / response bodies. RequiredScope
+// is set when the validator matched the token to a specific [[auth]] config
+// and that config has a required_scope; middleware advertises it in the
+// WWW-Authenticate `scope=` parameter.
 type ValidationError struct {
-	Result      Result
-	Description string
+	Result        Result
+	Description   string
+	RequiredScope string
 }
 
 func (e *ValidationError) Error() string { return e.Description }
@@ -192,7 +196,7 @@ func (v *Validator) Validate(ctx context.Context, bearer string) (Identity, erro
 
 	scope := tokenScope(verifiedClaims)
 	if !scopeContains(scope, cfg.RequiredScope) {
-		return Identity{}, &ValidationError{Result: ResultMissingScope, Description: "missing required scope"}
+		return Identity{}, &ValidationError{Result: ResultMissingScope, Description: "missing required scope", RequiredScope: cfg.RequiredScope}
 	}
 
 	identity := Identity{
