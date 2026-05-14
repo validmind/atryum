@@ -13,6 +13,12 @@ log_level = "info"
 [defaults]
 request_timeout_seconds = 30
 
+# Local-only auth debug mode. When true, /mcp/ still requires a bearer JWT but
+# Atryum parses its claims without verifying signature, issuer, audience,
+# expiry, or scope. Never enable outside local debugging.
+[auth_debug]
+skip_verify = false
+
 # Bootstrap-only upstream definitions.
 # On startup, Atryum seeds mcp_servers from these entries only when the DB is empty.
 # After bootstrap, runtime resolution uses SQLite as the source of truth.

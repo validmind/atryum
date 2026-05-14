@@ -81,6 +81,11 @@ func main() {
 	} else {
 		log.Printf("inbound auth disabled (no [[auth]] section configured)")
 	}
+	authDebugSkipVerify := cfg.AuthDebug.SkipVerify || truthyEnv("ATRYUM_AUTH_DEBUG_SKIP_VERIFY")
+	if authDebugSkipVerify {
+		handler.SetAuthDebugSkipVerify(true)
+		log.Printf("WARNING: inbound auth debug skip_verify enabled; bearer JWTs are parsed but not verified")
+	}
 
 	srv := &http.Server{
 		Addr:              cfg.Server.ListenAddr,
@@ -102,4 +107,9 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
+}
+
+func truthyEnv(name string) bool {
+	value := os.Getenv(name)
+	return value == "1" || value == "true" || value == "TRUE" || value == "yes" || value == "YES"
 }

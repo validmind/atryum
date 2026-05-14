@@ -402,6 +402,39 @@ func TestMiddlewareLogsInvalidToken(t *testing.T) {
 	}
 }
 
+func TestMiddlewareDebugSkipVerifyAcceptsUnverifiedJWT(t *testing.T) {
+	idp := newTestIdP(t)
+	v := newValidatorForIdP(t, idp)
+	claims := validClaims()
+	claims["aud"] = "wrong-audience"
+	claims["scope"] = "wrong-scope"
+	claims["exp"] = time.Now().Add(-1 * time.Hour).Unix()
+	tok := idp.signWithKid(t, claims, "unknown-key")
+
+	var got Identity
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := IdentityFromContext(r.Context())
+		if !ok {
+			t.Fatal("identity not on context")
+		}
+		got = id
+	})
+	h := MiddlewareWithOptions(v, "/.well-known/oauth-protected-resource", MiddlewareOptions{SkipVerify: true})(next)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/x", strings.NewReader("{}"))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if got.AgentID != "agent-1" {
+		t.Fatalf("expected debug identity from unverified claims, got %q", got.AgentID)
+	}
+	if got.Scope != "wrong-scope" {
+		t.Fatalf("scope = %q", got.Scope)
+	}
+}
+
 func TestMiddlewareSetsIdentityOnContext(t *testing.T) {
 	idp := newTestIdP(t)
 	v := newValidatorForIdP(t, idp)

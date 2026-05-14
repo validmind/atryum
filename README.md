@@ -55,6 +55,30 @@ to log concise MCP proxy activity in local run output. Current debug logging inc
 
 Secrets are not intentionally logged.
 
+## Auth debug mode
+
+For local OAuth troubleshooting, Atryum can require a bearer JWT while skipping
+JWT verification:
+
+```toml
+[auth_debug]
+skip_verify = true
+```
+
+or:
+
+```bash
+ATRYUM_AUTH_DEBUG_SKIP_VERIFY=1 go run ./cmd/atryum -config atryum.auth0.toml
+```
+
+When enabled, `/mcp/` still requires `Authorization: Bearer ...`, but Atryum
+parses the JWT claims without verifying signature, issuer, audience, expiry, or
+scope. It extracts the agent identity from the configured `agent_id_claim`
+fallback chain and then continues handling the MCP request.
+
+This is only for local debugging. Do not enable it in shared or production
+environments.
+
 ## Database configuration
 
 SQLite remains the default storage provider:

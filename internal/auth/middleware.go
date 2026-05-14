@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -15,6 +16,16 @@ import (
 // authorization server. When v is nil, the middleware is a no-op (auth
 // disabled).
 func Middleware(v *Validator, resourceMetadataPath string) func(http.Handler) http.Handler {
+	return MiddlewareWithOptions(v, resourceMetadataPath, MiddlewareOptions{})
+}
+
+type MiddlewareOptions struct {
+	// SkipVerify is a local-only debug mode. It parses bearer JWT claims without
+	// verifying signature, issuer, audience, expiry, or required scope.
+	SkipVerify bool
+}
+
+func MiddlewareWithOptions(v *Validator, resourceMetadataPath string, opts MiddlewareOptions) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		if v == nil {
 			return next
@@ -31,7 +42,7 @@ func Middleware(v *Validator, resourceMetadataPath string) func(http.Handler) ht
 				return
 			}
 			token := strings.TrimSpace(header[len("Bearer "):])
-			identity, err := v.Validate(r.Context(), token)
+			identity, err := validateBearer(r.Context(), v, token, opts)
 			if err != nil {
 				ve, _ := err.(*ValidationError)
 				switch {
@@ -50,6 +61,13 @@ func Middleware(v *Validator, resourceMetadataPath string) func(http.Handler) ht
 			next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), identity)))
 		})
 	}
+}
+
+func validateBearer(ctx context.Context, v *Validator, token string, opts MiddlewareOptions) (Identity, error) {
+	if opts.SkipVerify {
+		return v.DebugIdentity(token)
+	}
+	return v.Validate(ctx, token)
 }
 
 func logAuthFailure(r *http.Request, code string, description string, scope string) {
