@@ -1,0 +1,27 @@
+# ── Stage 1: Build Vite frontend ──────────────────────────────────────
+FROM node:22-alpine AS frontend
+WORKDIR /build
+COPY frontend/package.json frontend/package-lock.json frontend/.npmrc ./
+RUN npm ci
+COPY frontend/ .
+RUN npm run build:atryum
+
+# ── Stage 2: Build Go binary with embedded frontend ──────────────────
+FROM golang:1.25-alpine AS builder
+WORKDIR /src
+COPY atryum/go.mod atryum/go.sum ./
+RUN go mod download
+COPY atryum/ .
+# Replace the dev web UI with the production Vite build
+RUN rm -rf internal/api/web
+COPY --from=frontend /build/build-atryum internal/api/web
+# Rename the Vite entry point so the Go embed serves it as index.html
+RUN mv internal/api/web/atryum.html internal/api/web/index.html
+RUN CGO_ENABLED=0 go build -o /atryum ./cmd/atryum
+
+# ── Stage 3: Minimal runtime ─────────────────────────────────────────
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates
+COPY --from=builder /atryum /usr/local/bin/atryum
+WORKDIR /app
+ENTRYPOINT ["atryum", "-config", "/app/atryum.toml"]
