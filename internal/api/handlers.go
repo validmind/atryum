@@ -245,7 +245,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/api/v1/external/invocations", h.externalInvocations)
 	mux.HandleFunc("/api/v1/external/invocations/", h.externalInvocationDetail)
 	mux.HandleFunc("/ui", h.uiIndex)
-	mux.Handle("/ui/", http.StripPrefix("/ui/", h.staticHTTP))
+	mux.Handle("/ui/", http.StripPrefix("/ui/", h.spaFileServer()))
 	mux.HandleFunc("/", h.root)
 	return mux
 }
@@ -268,6 +268,24 @@ func (h *Handler) uiIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/ui/", http.StatusFound)
+}
+
+// spaFileServer returns a handler that serves static files from the embedded
+// web/ directory. If the requested path doesn't match a real file it falls back
+// to index.html so the React SPA router can handle the route.
+func (h *Handler) spaFileServer() http.Handler {
+	staticSub, _ := fs.Sub(webFS, "web")
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		if path == "" || path == "/" {
+			path = "index.html"
+		}
+		// Try to open the requested file; if it doesn't exist, serve index.html.
+		if _, err := fs.Stat(staticSub, path); err != nil {
+			r.URL.Path = "/"
+		}
+		h.staticHTTP.ServeHTTP(w, r)
+	})
 }
 
 func (h *Handler) invokeUpstream(w http.ResponseWriter, r *http.Request) {

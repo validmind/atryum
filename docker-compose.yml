@@ -15,5 +15,77 @@ services:
       timeout: 5s
       retries: 10
 
+  atryum:
+    profiles: ["dev"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./atryum.toml:/app/atryum.toml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Production: single binary with embedded Vite frontend (off by default)
+  # Usage: docker compose --profile prod up atryum-prod
+  atryum-prod:
+    profiles: ["prod"]
+    build:
+      context: ..
+      dockerfile: atryum/Dockerfile.prod
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./atryum.toml:/app/atryum.toml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend-init:
+    profiles: ["dev"]
+    image: busybox
+    command: ["chown", "-R", "1000:1000", "/app/node_modules"]
+    volumes:
+      - ../frontend:/app
+      - frontend_node_modules:/app/node_modules
+
+  frontend:
+    profiles: ["dev"]
+    image: node:22-alpine
+    user: "1000:1000"
+    working_dir: /app
+    command: sh -c "npm install && npm run dev:atryum"
+    ports:
+      - "5175:5175"
+    volumes:
+      - ../frontend:/app
+      - frontend_node_modules:/app/node_modules
+    environment:
+      - ATRYUM_BACKEND_URL=http://atryum:8080
+    depends_on:
+      atryum:
+        condition: service_healthy
+      frontend-init:
+        condition: service_completed_successfully
+
 volumes:
   pgdata:
+  frontend_node_modules:
+
+networks:
+  default:
+    name: atryum-net
