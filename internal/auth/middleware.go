@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -20,8 +19,9 @@ func Middleware(v *Validator, resourceMetadataPath string) func(http.Handler) ht
 }
 
 type MiddlewareOptions struct {
-	// SkipVerify is a local-only debug mode. It parses bearer JWT claims without
-	// verifying signature, issuer, audience, expiry, or required scope.
+	// SkipVerify is a local-only debug mode. When true, the middleware is a
+	// complete pass-through: the Authorization header is ignored, no token is
+	// required, and no identity is set on the request context.
 	SkipVerify bool
 	// DebugLogIdentity logs the extracted identity after successful validation.
 	DebugLogIdentity bool
@@ -29,7 +29,7 @@ type MiddlewareOptions struct {
 
 func MiddlewareWithOptions(v *Validator, resourceMetadataPath string, opts MiddlewareOptions) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		if v == nil {
+		if v == nil || opts.SkipVerify {
 			return next
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -44,7 +44,7 @@ func MiddlewareWithOptions(v *Validator, resourceMetadataPath string, opts Middl
 				return
 			}
 			token := strings.TrimSpace(header[len("Bearer "):])
-			identity, err := validateBearer(r.Context(), v, token, opts)
+			identity, err := v.Validate(r.Context(), token)
 			if err != nil {
 				ve, _ := err.(*ValidationError)
 				scope := challengeScope(v, ve)
@@ -67,13 +67,6 @@ func MiddlewareWithOptions(v *Validator, resourceMetadataPath string, opts Middl
 			next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), identity)))
 		})
 	}
-}
-
-func validateBearer(ctx context.Context, v *Validator, token string, opts MiddlewareOptions) (Identity, error) {
-	if opts.SkipVerify {
-		return v.DebugIdentity(token)
-	}
-	return v.Validate(ctx, token)
 }
 
 func logAuthFailure(r *http.Request, code string, description string, scope string) {

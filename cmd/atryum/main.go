@@ -84,7 +84,7 @@ func main() {
 	authDebugSkipVerify := cfg.AuthDebug.SkipVerify || truthyEnv("ATRYUM_AUTH_DEBUG_SKIP_VERIFY")
 	if authDebugSkipVerify {
 		handler.SetAuthDebugSkipVerify(true)
-		log.Printf("WARNING: inbound auth debug skip_verify enabled; bearer JWTs are parsed but not verified")
+		log.Printf("WARNING: inbound auth debug skip_verify enabled; /mcp/ Authorization header is ignored entirely")
 	}
 
 	srv := &http.Server{

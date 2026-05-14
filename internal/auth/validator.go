@@ -92,43 +92,6 @@ func (v *Validator) Configs() []Config {
 	return out
 }
 
-// DebugIdentity parses a bearer JWT without verifying signature, issuer,
-// audience, expiry, or scope. It exists only for explicit local debugging.
-func (v *Validator) DebugIdentity(bearer string) (Identity, error) {
-	bearer = strings.TrimSpace(bearer)
-	if bearer == "" {
-		return Identity{}, &ValidationError{Result: ResultMissing, Description: "missing bearer token"}
-	}
-	parser := jwt.NewParser(jwt.WithoutClaimsValidation())
-	unverified, _, err := parser.ParseUnverified(bearer, jwt.MapClaims{})
-	if err != nil {
-		return Identity{}, &ValidationError{Result: ResultInvalid, Description: "malformed token"}
-	}
-	claims, ok := unverified.Claims.(jwt.MapClaims)
-	if !ok {
-		return Identity{}, &ValidationError{Result: ResultInvalid, Description: "malformed claims"}
-	}
-	agentIDClaim := DefaultAgentIDClaim
-	if v != nil {
-		for _, c := range v.configs {
-			if c.AgentIDClaim != "" {
-				agentIDClaim = c.AgentIDClaim
-				break
-			}
-		}
-	}
-	identity := Identity{
-		AgentID: extractAgentID(claims, agentIDClaim),
-		Issuer:  strings.TrimRight(strings.TrimSpace(stringClaim(claims, "iss")), "/"),
-		Subject: stringClaim(claims, "sub"),
-		Scope:   tokenScope(claims),
-	}
-	if identity.AgentID == "" {
-		return Identity{}, &ValidationError{Result: ResultInvalid, Description: "no usable agent identity claim"}
-	}
-	return identity, nil
-}
-
 // Validate parses, verifies, and inspects the supplied bearer token. It
 // returns the extracted Identity on success. On failure the returned error is
 // always a *ValidationError so middleware can map it to 401/403.

@@ -436,36 +436,48 @@ func TestMiddlewareLogsInvalidToken(t *testing.T) {
 	}
 }
 
-func TestMiddlewareDebugSkipVerifyAcceptsUnverifiedJWT(t *testing.T) {
+func TestMiddlewareDebugSkipVerifyIgnoresAuthorizationHeader(t *testing.T) {
 	idp := newTestIdP(t)
 	v := newValidatorForIdP(t, idp)
-	claims := validClaims()
-	claims["aud"] = "wrong-audience"
-	claims["scope"] = "wrong-scope"
-	claims["exp"] = time.Now().Add(-1 * time.Hour).Unix()
-	tok := idp.signWithKid(t, claims, "unknown-key")
 
-	var got Identity
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, ok := IdentityFromContext(r.Context())
-		if !ok {
-			t.Fatal("identity not on context")
-		}
-		got = id
-	})
-	h := MiddlewareWithOptions(v, "/.well-known/oauth-protected-resource", MiddlewareOptions{SkipVerify: true})(next)
-	req := httptest.NewRequest(http.MethodPost, "/mcp/x", strings.NewReader("{}"))
-	req.Header.Set("Authorization", "Bearer "+tok)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	cases := []struct {
+		name       string
+		setHeader  bool
+		authHeader string
+	}{
+		{name: "no header", setHeader: false},
+		{name: "invalid scheme", setHeader: true, authHeader: "Basic abc"},
+		{name: "malformed bearer", setHeader: true, authHeader: "Bearer not-a-jwt"},
+		{name: "expired token", setHeader: true, authHeader: "Bearer " + idp.sign(t, jwt.MapClaims{
+			"iss": "https://idp.example/", "aud": "atryum", "sub": "x", "exp": time.Now().Add(-time.Hour).Unix(),
+		})},
 	}
-	if got.AgentID != "agent-1" {
-		t.Fatalf("expected debug identity from unverified claims, got %q", got.AgentID)
-	}
-	if got.Scope != "wrong-scope" {
-		t.Fatalf("scope = %q", got.Scope)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			called := false
+			next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				if _, ok := IdentityFromContext(r.Context()); ok {
+					t.Fatal("expected no identity on context when skip_verify is true")
+				}
+			})
+			h := MiddlewareWithOptions(v, "/.well-known/oauth-protected-resource", MiddlewareOptions{SkipVerify: true})(next)
+			req := httptest.NewRequest(http.MethodPost, "/mcp/x", strings.NewReader("{}"))
+			if c.setHeader {
+				req.Header.Set("Authorization", c.authHeader)
+			}
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+			}
+			if !called {
+				t.Fatal("expected next handler to be called")
+			}
+			if got := w.Header().Get("WWW-Authenticate"); got != "" {
+				t.Fatalf("did not expect WWW-Authenticate, got %q", got)
+			}
+		})
 	}
 }
 
