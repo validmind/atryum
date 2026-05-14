@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"atryum/internal/api"
+	"atryum/internal/auth"
 	"atryum/internal/config"
 	"atryum/internal/invocation"
 	"atryum/internal/invocation/policy"
@@ -70,6 +71,22 @@ func main() {
 	serverAdmin := api.NewServerAdminService(serverRepo, oauthRepo, client, 5*time.Second)
 	handler := api.NewHandler(service, serverAdmin, policyRegistry, rulesRepo)
 
+	authValidator, err := auth.NewValidator(cfg.Auth, nil)
+	if err != nil {
+		log.Fatalf("auth: %v", err)
+	}
+	if authValidator != nil {
+		handler.SetAuthValidator(authValidator)
+		log.Printf("inbound auth enabled (%d issuer(s))", len(authValidator.Configs()))
+	} else {
+		log.Printf("inbound auth disabled (no [[auth]] section configured)")
+	}
+	authDebugSkipVerify := cfg.AuthDebug.SkipVerify || truthyEnv("ATRYUM_AUTH_DEBUG_SKIP_VERIFY")
+	if authDebugSkipVerify {
+		handler.SetAuthDebugSkipVerify(true)
+		log.Printf("WARNING: inbound auth debug skip_verify enabled; /mcp/ Authorization header is ignored entirely")
+	}
+
 	srv := &http.Server{
 		Addr:              cfg.Server.ListenAddr,
 		Handler:           handler.Routes(),
@@ -90,4 +107,9 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
+}
+
+func truthyEnv(name string) bool {
+	value := os.Getenv(name)
+	return value == "1" || value == "true" || value == "TRUE" || value == "yes" || value == "YES"
 }

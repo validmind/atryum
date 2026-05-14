@@ -13,6 +13,12 @@ log_level = "info"
 [defaults]
 request_timeout_seconds = 30
 
+# Local-only auth debug mode. When true, the Authorization header is ignored
+# entirely on /mcp/: no bearer token is required and no identity is set on
+# the request context. Never enable outside local debugging.
+[auth_debug]
+skip_verify = false
+
 # Bootstrap-only upstream definitions.
 # On startup, Atryum seeds mcp_servers from these entries only when the DB is empty.
 # After bootstrap, runtime resolution uses SQLite as the source of truth.
@@ -36,3 +42,27 @@ SHORTCUT_READONLY = "true"
 # timeout_seconds = 30
 # enabled = true
 # auth_token = ""
+
+# Inbound OAuth bearer-token authentication for /mcp/. Multiple [[auth]]
+# sections are supported; the validator picks the matching one based on
+# the token's `iss` claim. Other routes (/ui, /api/v1/admin/*,
+# /api/v1/external/*, /healthz) are NOT affected.
+#
+# [[auth]]
+# enabled        = true
+# issuer         = "https://keycloak.example/realms/atryum"
+# audience       = "atryum"
+# # jwks_url is optional. When omitted, OIDC discovery
+# # (issuer + /.well-known/openid-configuration) is used.
+# # jwks_url     = "https://keycloak.example/realms/atryum/protocol/openid-connect/certs"
+# # Leave required_scope empty or omit it to allow tokens without a scope claim.
+# required_scope = "atryum:mcp"
+# agent_id_claim = "client_id"
+#
+# [[auth]]
+# enabled        = true
+# issuer         = "https://your-tenant.us.auth0.com/"
+# audience       = "https://atryum.example/mcp"
+# # Leave required_scope empty or omit it to allow tokens without a scope claim.
+# required_scope = "atryum:mcp"
+# agent_id_claim = "client_id"
