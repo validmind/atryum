@@ -55,6 +55,20 @@ to log concise MCP proxy activity in local run output. Current debug logging inc
 
 Secrets are not intentionally logged.
 
+## Docker Compose
+
+Two profiles, mutually exclusive (postgres always runs):
+
+```bash
+docker compose --profile dev up    # Go server + Vite dev frontend (HMR on :5175)
+docker compose --profile prod up   # Single Go binary with embedded prod UI (:8080)
+```
+
+- **dev** (`Dockerfile`): backend at `:8080`, separate Vite dev server at `:5175`, source bind-mounted from `../frontend`. Use this for active development.
+- **prod** (`Dockerfile.prod`): multi-stage build — Vite builds the React app, Go embeds the output via `//go:embed` and serves the SPA from `/ui/` (with router fallback). One binary, one port. `atryum.toml` is baked into the image.
+
+Bare `docker compose up` only starts postgres. Run `docker compose down -v` between profile switches if you hit port or network weirdness.
+
 ## Database configuration
 
 SQLite remains the default storage provider:
