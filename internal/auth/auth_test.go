@@ -435,6 +435,54 @@ func TestMiddlewareDebugSkipVerifyAcceptsUnverifiedJWT(t *testing.T) {
 	}
 }
 
+func TestMiddlewareDoesNotLogValidIdentityByDefault(t *testing.T) {
+	idp := newTestIdP(t)
+	v := newValidatorForIdP(t, idp)
+	tok := idp.sign(t, validClaims())
+	var logs bytes.Buffer
+	origWriter := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(origWriter) })
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	h := Middleware(v, "/.well-known/oauth-protected-resource")(next)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/x", strings.NewReader("{}"))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	got := logs.String()
+	if strings.Contains(got, "[auth] valid_token") {
+		t.Fatalf("expected no valid token identity log by default, got %q", got)
+	}
+}
+
+func TestMiddlewareLogsValidIdentityInDebugMode(t *testing.T) {
+	idp := newTestIdP(t)
+	v := newValidatorForIdP(t, idp)
+	tok := idp.sign(t, validClaims())
+	var logs bytes.Buffer
+	origWriter := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(origWriter) })
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	h := MiddlewareWithOptions(v, "/.well-known/oauth-protected-resource", MiddlewareOptions{DebugLogIdentity: true})(next)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/x", strings.NewReader("{}"))
+	req.Header.Set("Authorization", "Bearer "+tok)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	got := logs.String()
+	if !strings.Contains(got, "[auth] valid_token") ||
+		!strings.Contains(got, `agent_id="agent-1"`) ||
+		!strings.Contains(got, `issuer="https://idp.example"`) ||
+		!strings.Contains(got, `subject="agent-subject"`) {
+		t.Fatalf("expected valid token identity log, got %q", got)
+	}
+	if strings.Contains(got, tok) {
+		t.Fatal("auth log should not include bearer token")
+	}
+}
+
 func TestMiddlewareSetsIdentityOnContext(t *testing.T) {
 	idp := newTestIdP(t)
 	v := newValidatorForIdP(t, idp)

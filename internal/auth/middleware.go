@@ -23,6 +23,8 @@ type MiddlewareOptions struct {
 	// SkipVerify is a local-only debug mode. It parses bearer JWT claims without
 	// verifying signature, issuer, audience, expiry, or required scope.
 	SkipVerify bool
+	// DebugLogIdentity logs the extracted identity after successful validation.
+	DebugLogIdentity bool
 }
 
 func MiddlewareWithOptions(v *Validator, resourceMetadataPath string, opts MiddlewareOptions) func(http.Handler) http.Handler {
@@ -58,6 +60,9 @@ func MiddlewareWithOptions(v *Validator, resourceMetadataPath string, opts Middl
 				}
 				return
 			}
+			if opts.DebugLogIdentity {
+				logAuthSuccess(r, identity)
+			}
 			next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), identity)))
 		})
 	}
@@ -76,6 +81,10 @@ func logAuthFailure(r *http.Request, code string, description string, scope stri
 		return
 	}
 	log.Printf("[auth] %s method=%s path=%s remote=%s description=%q", code, r.Method, r.URL.Path, r.RemoteAddr, description)
+}
+
+func logAuthSuccess(r *http.Request, identity Identity) {
+	log.Printf("[auth] valid_token method=%s path=%s remote=%s agent_id=%q issuer=%q subject=%q scope=%q", r.Method, r.URL.Path, r.RemoteAddr, identity.AgentID, identity.Issuer, identity.Subject, identity.Scope)
 }
 
 func absoluteURL(r *http.Request, path string) string {
