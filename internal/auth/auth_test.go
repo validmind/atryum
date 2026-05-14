@@ -333,6 +333,40 @@ func TestMiddlewareBlocksMissingToken(t *testing.T) {
 	}
 }
 
+func TestMiddlewareOmitsChallengeScopeForMixedEmptyRequiredScopes(t *testing.T) {
+	idp := newTestIdP(t)
+	v, err := NewValidator([]Config{
+		{
+			Enabled:       true,
+			Issuer:        "https://idp.example/",
+			Audience:      "atryum",
+			JWKSURL:       idp.jwksURL(),
+			RequiredScope: "",
+			AgentIDClaim:  "client_id",
+		},
+		{
+			Enabled:       true,
+			Issuer:        "https://other-idp.example/",
+			Audience:      "other-api",
+			JWKSURL:       idp.jwksURL(),
+			RequiredScope: "atryum:mcp",
+			AgentIDClaim:  "client_id",
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewValidator: %v", err)
+	}
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	h := Middleware(v, "/.well-known/oauth-protected-resource")(next)
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/mcp/x", strings.NewReader("{}")))
+	chal := w.Header().Get("WWW-Authenticate")
+	if strings.Contains(chal, "scope=") {
+		t.Fatalf("expected challenge to omit scope for mixed empty/non-empty required scopes, got %q", chal)
+	}
+}
+
 func TestMiddlewareReturns403ForMissingScope(t *testing.T) {
 	idp := newTestIdP(t)
 	v := newValidatorForIdP(t, idp)
