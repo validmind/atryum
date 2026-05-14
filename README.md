@@ -69,6 +69,31 @@ docker compose --profile prod up   # Single Go binary with embedded prod UI (:80
 
 Bare `docker compose up` only starts postgres. Run `docker compose down -v` between profile switches if you hit port or network weirdness.
 
+
+## Auth debug mode
+
+For local OAuth troubleshooting, Atryum can completely bypass inbound auth on
+`/mcp/`:
+
+```toml
+[auth_debug]
+skip_verify = true
+```
+
+or:
+
+```bash
+ATRYUM_AUTH_DEBUG_SKIP_VERIFY=1 go run ./cmd/atryum -config atryum.auth0.toml
+```
+
+When enabled, the `Authorization` header is ignored entirely on `/mcp/`: no
+bearer token is required, no claims are parsed, and no agent identity is set
+on the request context. Requests reach the upstream MCP server as if no
+`[[auth]]` section had been configured.
+
+This is only for local debugging. Do not enable it in shared or production
+environments.
+
 ## Database configuration
 
 SQLite remains the default storage provider:

@@ -23,10 +23,12 @@ type stubService struct {
 	fwdErr   error
 
 	invokedReq *invocation.CreateInvocationRequest
+	invokedCtx context.Context
 }
 
-func (s *stubService) Invoke(_ context.Context, req invocation.CreateInvocationRequest) (invocation.InvocationResponse, error) {
+func (s *stubService) Invoke(ctx context.Context, req invocation.CreateInvocationRequest) (invocation.InvocationResponse, error) {
 	s.invokedReq = &req
+	s.invokedCtx = ctx
 	return s.invoke, s.invErr
 }
 func (s *stubService) ListTools(context.Context, string) ([]mcp.Tool, error) {

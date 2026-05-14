@@ -1,12 +1,26 @@
 package config
 
-import "github.com/BurntSushi/toml"
+import (
+	"github.com/BurntSushi/toml"
+
+	"atryum/internal/auth"
+)
 
 type Config struct {
 	Server    ServerConfig     `toml:"server"`
 	Defaults  DefaultsConfig   `toml:"defaults"`
 	Policy    PolicyConfig     `toml:"policy"`
 	Upstreams []UpstreamConfig `toml:"upstreams"`
+	// Auth holds zero or more inbound OAuth bearer-token validators
+	// (e.g. one entry for Keycloak, one for Auth0). When empty, the agent-
+	// facing /mcp/ routes remain anonymous.
+	Auth      []auth.Config   `toml:"auth"`
+	AuthDebug AuthDebugConfig `toml:"auth_debug"`
+}
+
+// AuthDebugConfig contains local-only auth debugging switches.
+type AuthDebugConfig struct {
+	SkipVerify bool `toml:"skip_verify"`
 }
 
 // PolicyConfig selects the active approval policy provider at startup.

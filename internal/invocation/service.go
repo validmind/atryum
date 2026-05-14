@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"atryum/internal/auth"
 	"atryum/internal/invocation/policy"
 	"atryum/internal/mcp"
 )
@@ -108,6 +109,11 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		return InvocationResponse{}, err
 	}
 
+	// agentID is the authenticated agent identity from middleware. When auth
+	// is disabled the field is empty and we fall back to request_id for rule
+	// matching to preserve pre-auth behavior.
+	agentID := auth.AgentIDFromContext(ctx)
+
 	// Determine disposition: check rules first (fine-grained), then fall back to policy (global).
 	// Both resolve to a policy.Decision so the rest of the flow is uniform.
 	var decision policy.Decision
@@ -115,8 +121,8 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	ruleMatched := false
 	if s.rules != nil {
 		if approvalRules, err := s.rules.ListApprovalRules(ctx); err == nil {
-			user := ""
-			if req.RequestID != nil {
+			user := agentID
+			if user == "" && req.RequestID != nil {
 				user = *req.RequestID
 			}
 			if matched := matchRule(approvalRules, upstream.Name, req.Tool, user); matched != nil {
@@ -136,7 +142,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		}
 	}
 	if !ruleMatched && s.policy != nil {
-		callCtx := policy.CallContext{Server: upstream.Name, Tool: req.Tool, Input: req.Input}
+		callCtx := policy.CallContext{AgentID: agentID, Server: upstream.Name, Tool: req.Tool, Input: req.Input}
 		var policyErr error
 		decision, policyErr = s.policy.Evaluate(ctx, callCtx)
 		if policyErr != nil {
@@ -149,16 +155,20 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		_ = s.invocations.UpdateResult(ctx, inv)
 	}
 
+	receivedPayload := map[string]any{
+		"tool": req.Tool, "upstream": upstream.Name,
+		"request_id": req.RequestID,
+		"input":      json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input),
+		"disposition": string(decision.Disposition), "disposition_reason": decision.Reason,
+	}
+	if agentID != "" {
+		receivedPayload["agent_id"] = agentID
+	}
 	_ = s.events.Create(ctx, Event{
 		InvocationID: inv.InvocationID,
 		EventType:    "invocation.received",
-		Payload: mustJSON(map[string]any{
-			"tool": req.Tool, "upstream": upstream.Name,
-			"request_id": req.RequestID,
-			"input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input),
-			"disposition": string(decision.Disposition), "disposition_reason": decision.Reason,
-		}),
-		CreatedAt: now,
+		Payload:      mustJSON(receivedPayload),
+		CreatedAt:    now,
 	})
 
 	switch decision.Disposition {
@@ -436,11 +446,12 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	}
 
 	// Evaluate rules against (source, tool, user) — same logic as Invoke.
+	agentID := auth.AgentIDFromContext(ctx)
 	ruleAction := ""
 	if s.rules != nil {
 		if approvalRules, err := s.rules.ListApprovalRules(ctx); err == nil {
-			user := ""
-			if req.RequestID != nil {
+			user := agentID
+			if user == "" && req.RequestID != nil {
 				user = *req.RequestID
 			}
 			if matched := matchRule(approvalRules, source, req.Tool, user); matched != nil {
@@ -450,6 +461,9 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	}
 
 	receivedPayload := map[string]any{"tool": req.Tool, "upstream": source, "request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "external": true}
+	if agentID != "" {
+		receivedPayload["agent_id"] = agentID
+	}
 	if req.Description != "" {
 		receivedPayload["description"] = req.Description
 	}

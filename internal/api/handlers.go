@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"atryum/internal/auth"
 	"atryum/internal/invocation"
 	"atryum/internal/invocation/policy"
 	"atryum/internal/mcp"
@@ -74,6 +75,8 @@ type Handler struct {
 	forwarder      mcpEnvelopeForwarder
 	staticHTTP     http.Handler
 	debug          bool
+	authDebugSkip  bool
+	authValidator  *auth.Validator
 }
 
 type PolicyStatusResponse struct {
@@ -228,10 +231,34 @@ func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Reg
 	return &Handler{svc: svc, serverSvc: serverSvc, policyRegistry: policyRegistry, rulesRepo: rules, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug}
 }
 
+// SetAuthValidator installs the inbound auth validator. When non-nil, the
+// /mcp/ routes require a valid bearer token. Pass nil (or omit) to leave
+// /mcp/ anonymous.
+func (h *Handler) SetAuthValidator(v *auth.Validator) {
+	h.authValidator = v
+}
+
+func (h *Handler) SetAuthDebugSkipVerify(enabled bool) {
+	h.authDebugSkip = enabled
+}
+
+// protectedResourceMetadata serves the OAuth 2.0 protected-resource metadata
+// (RFC 9728) document so MCP clients can discover the authorization server.
+// The resource URL is computed from the incoming request so deployments
+// behind reverse proxies pick up X-Forwarded-* automatically.
+func (h *Handler) protectedResourceMetadata() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resource := strings.TrimRight(baseURL(r), "/") + "/mcp"
+		auth.ProtectedResourceHandler(h.authValidator, resource).ServeHTTP(w, r)
+	})
+}
+
 func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", h.healthz)
-	mux.HandleFunc("/mcp/", h.invokeUpstream)
+	mux.Handle("/.well-known/oauth-protected-resource", h.protectedResourceMetadata())
+	mcpHandler := auth.MiddlewareWithOptions(h.authValidator, "/.well-known/oauth-protected-resource", auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})(http.HandlerFunc(h.invokeUpstream))
+	mux.Handle("/mcp/", mcpHandler)
 	mux.HandleFunc("/api/v1/invocations", h.invocations)
 	mux.HandleFunc("/api/v1/admin/invocations", h.adminInvocations)
 	mux.HandleFunc("/api/v1/admin/invocations/stream", h.adminInvocationStream)
