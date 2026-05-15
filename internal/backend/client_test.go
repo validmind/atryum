@@ -29,13 +29,13 @@ func TestNewClientRequiresCredentialsWhenBackendConfigured(t *testing.T) {
 func TestCheckConnectionSendsMachineCredentials(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != connectionPath {
-			t.Fatalf("path = %q", r.URL.Path)
+			t.Errorf("path = %q", r.URL.Path)
 		}
 		if got := r.Header.Get("X-MACHINE-KEY"); got != "machine-key" {
-			t.Fatalf("X-MACHINE-KEY = %q", got)
+			t.Errorf("X-MACHINE-KEY = %q", got)
 		}
 		if got := r.Header.Get("X-MACHINE-SECRET"); got != "machine-secret" {
-			t.Fatalf("X-MACHINE-SECRET = %q", got)
+			t.Errorf("X-MACHINE-SECRET = %q", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true,"machine_user_cuid":"cmu123","service_name":"atryum"}`))

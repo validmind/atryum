@@ -39,15 +39,11 @@ func NewClient(cfg config.BackendConfig) (*Client, error) {
 		return nil, fmt.Errorf("backend base_url is invalid: %w", err)
 	}
 
-	timeout := time.Duration(cfg.ConnectionTimeoutSecs) * time.Second
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
 	return &Client{
 		baseURL:       strings.TrimRight(baseURL, "/"),
 		machineKey:    strings.TrimSpace(cfg.MachineKey),
 		machineSecret: strings.TrimSpace(cfg.MachineSecret),
-		httpClient:    &http.Client{Timeout: timeout},
+		httpClient:    &http.Client{Timeout: time.Duration(cfg.ConnectionTimeoutSecs) * time.Second},
 	}, nil
 }
 
