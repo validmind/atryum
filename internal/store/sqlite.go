@@ -82,9 +82,9 @@ func (r *InvocationRepo) Create(ctx context.Context, inv invocation.Invocation) 
 		approval = string(b)
 	}
 	query, args, err := r.sb.Insert("invocations").Columns(
-		"invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at", "matched_rule_id",
+		"invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at", "matched_rule_id", "agent_id",
 	).Values(
-		inv.InvocationID, inv.RequestID, inv.IdempotencyKey, inv.Tool, inv.Upstream, inv.Status, approval, string(inv.Input), nullableString(inv.Response), nullableString(inv.Error), inv.SubmittedAt, inv.CompletedAt, inv.MatchedRuleID,
+		inv.InvocationID, inv.RequestID, inv.IdempotencyKey, inv.Tool, inv.Upstream, inv.Status, approval, string(inv.Input), nullableString(inv.Response), nullableString(inv.Error), inv.SubmittedAt, inv.CompletedAt, inv.MatchedRuleID, inv.AgentID,
 	).ToSql()
 	if err != nil {
 		return err
@@ -108,7 +108,7 @@ func (r *InvocationRepo) UpdateResult(ctx context.Context, inv invocation.Invoca
 }
 
 func (r *InvocationRepo) Get(ctx context.Context, id string) (invocation.Invocation, error) {
-	query, args, err := r.sb.Select("invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at", "matched_rule_id").From("invocations").Where(sq.Eq{"invocation_id": id}).ToSql()
+	query, args, err := r.sb.Select("invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at", "matched_rule_id", "agent_id").From("invocations").Where(sq.Eq{"invocation_id": id}).ToSql()
 	if err != nil {
 		return invocation.Invocation{}, err
 	}
@@ -117,7 +117,7 @@ func (r *InvocationRepo) Get(ctx context.Context, id string) (invocation.Invocat
 }
 
 func (r *InvocationRepo) GetByIdempotencyKey(ctx context.Context, key string) (invocation.Invocation, error) {
-	query, args, err := r.sb.Select("invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at", "matched_rule_id").From("invocations").Where(sq.Eq{"idempotency_key": key}).ToSql()
+	query, args, err := r.sb.Select("invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at", "matched_rule_id", "agent_id").From("invocations").Where(sq.Eq{"idempotency_key": key}).ToSql()
 	if err != nil {
 		return invocation.Invocation{}, err
 	}
@@ -129,7 +129,7 @@ func (r *InvocationRepo) List(ctx context.Context, filter invocation.InvocationL
 	if filter.Limit == 0 {
 		filter.Limit = 50
 	}
-	builder := r.sb.Select("invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at", "matched_rule_id").From("invocations")
+	builder := r.sb.Select("invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at", "matched_rule_id", "agent_id").From("invocations")
 	countBuilder := r.sb.Select("COUNT(*)").From("invocations")
 	builder, countBuilder = applyInvocationFilter(builder, countBuilder, filter)
 	query, args, err := builder.OrderBy("submitted_at DESC").Limit(filter.Limit).Offset(filter.Offset).ToSql()
@@ -524,7 +524,8 @@ func scanInvocation(scanner interface{ Scan(dest ...any) error }) (invocation.In
 	var requestJSON, responseJSON, errorJSON sql.NullString
 	var completedAt sql.NullTime
 	var matchedRuleID sql.NullString
-	if err := scanner.Scan(&inv.InvocationID, &requestID, &idempotencyKey, &inv.Tool, &inv.Upstream, &inv.Status, &approval, &requestJSON, &responseJSON, &errorJSON, &inv.SubmittedAt, &completedAt, &matchedRuleID); err != nil {
+	var agentID sql.NullString
+	if err := scanner.Scan(&inv.InvocationID, &requestID, &idempotencyKey, &inv.Tool, &inv.Upstream, &inv.Status, &approval, &requestJSON, &responseJSON, &errorJSON, &inv.SubmittedAt, &completedAt, &matchedRuleID, &agentID); err != nil {
 		return invocation.Invocation{}, err
 	}
 	if requestID.Valid {
@@ -552,6 +553,9 @@ func scanInvocation(scanner interface{ Scan(dest ...any) error }) (invocation.In
 	}
 	if matchedRuleID.Valid {
 		inv.MatchedRuleID = &matchedRuleID.String
+	}
+	if agentID.Valid {
+		inv.AgentID = &agentID.String
 	}
 	return inv, nil
 }
@@ -625,6 +629,10 @@ func applyInvocationFilter(builder sq.SelectBuilder, countBuilder sq.SelectBuild
 	if filter.Status != "" {
 		builder = builder.Where(sq.Eq{"status": filter.Status})
 		countBuilder = countBuilder.Where(sq.Eq{"status": filter.Status})
+	}
+	if filter.AgentID != "" {
+		builder = builder.Where(sq.Eq{"agent_id": filter.AgentID})
+		countBuilder = countBuilder.Where(sq.Eq{"agent_id": filter.AgentID})
 	}
 	return builder, countBuilder
 }

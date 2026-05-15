@@ -41,8 +41,8 @@ func TestInitDB_FreshDatabase(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 5 {
-		t.Fatalf("expected 5 migrations, got %d", count)
+	if count != 7 {
+		t.Fatalf("expected 7 migrations, got %d", count)
 	}
 
 	// Verify all tables exist
@@ -70,8 +70,8 @@ func TestInitDB_Idempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 5 {
-		t.Fatalf("expected 5 migrations after double init, got %d", count)
+	if count != 7 {
+		t.Fatalf("expected 7 migrations after double init, got %d", count)
 	}
 }
 
@@ -170,6 +170,61 @@ func TestInvocationRepo_CRUD(t *testing.T) {
 	}
 	if got3.InvocationID != "inv-2" {
 		t.Errorf("idem key mismatch: %s", got3.InvocationID)
+	}
+}
+
+func TestInvocationRepo_AgentIDPersistedAndFilterable(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+	if err := InitDB(db); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	repo := NewInvocationRepo(db)
+	ctx := context.Background()
+
+	// One row with an agent, one without — confirms NULL-friendly column.
+	withAgent := invocation.Invocation{
+		InvocationID: "inv-agent",
+		Tool:         "t", Upstream: "u", Status: "received",
+		Input:       []byte(`{}`),
+		AgentID:     strPtr("agent-007"),
+		SubmittedAt: time.Now().UTC(),
+	}
+	noAgent := invocation.Invocation{
+		InvocationID: "inv-anon",
+		Tool:         "t", Upstream: "u", Status: "received",
+		Input:       []byte(`{}`),
+		SubmittedAt: time.Now().UTC(),
+	}
+	if err := repo.Create(ctx, withAgent); err != nil {
+		t.Fatalf("create withAgent: %v", err)
+	}
+	if err := repo.Create(ctx, noAgent); err != nil {
+		t.Fatalf("create noAgent: %v", err)
+	}
+
+	got, err := repo.Get(ctx, "inv-agent")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.AgentID == nil || *got.AgentID != "agent-007" {
+		t.Fatalf("agent_id round-trip failed: %+v", got.AgentID)
+	}
+	gotAnon, err := repo.Get(ctx, "inv-anon")
+	if err != nil {
+		t.Fatalf("Get anon: %v", err)
+	}
+	if gotAnon.AgentID != nil {
+		t.Fatalf("expected nil agent_id, got %q", *gotAnon.AgentID)
+	}
+
+	// Filter by agent_id returns only the matching row.
+	invs, total, err := repo.List(ctx, invocation.InvocationListFilter{AgentID: "agent-007", Limit: 10})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if total != 1 || len(invs) != 1 || invs[0].InvocationID != "inv-agent" {
+		t.Fatalf("unexpected filter result: total=%d items=%+v", total, invs)
 	}
 }
 

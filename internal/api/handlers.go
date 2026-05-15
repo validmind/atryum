@@ -177,7 +177,7 @@ type AdminRule struct {
 	Action         string    `json:"action"`
 	ServerPatterns []string  `json:"server_patterns"`
 	ToolPatterns   []string  `json:"tool_patterns"`
-	UserPattern    string    `json:"user_pattern"`
+	AgentIDPattern string    `json:"agent_id_pattern"`
 	Description    string    `json:"description,omitempty"`
 	Enabled        bool      `json:"enabled"`
 	Order          int       `json:"order"`
@@ -189,7 +189,7 @@ type AdminRuleInput struct {
 	Action         string   `json:"action"`
 	ServerPatterns []string `json:"server_patterns"`
 	ToolPatterns   []string `json:"tool_patterns"`
-	UserPattern    string   `json:"user_pattern"`
+	AgentIDPattern string   `json:"agent_id_pattern"`
 	Description    string   `json:"description,omitempty"`
 	Enabled        *bool    `json:"enabled,omitempty"`
 }
@@ -639,7 +639,7 @@ func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) 
 				Action:         req.CreateRule.Action,
 				ServerPatterns: normalizePatternSlice(req.CreateRule.ServerPatterns),
 				ToolPatterns:   normalizePatternSlice(req.CreateRule.ToolPatterns),
-				UserPattern:    defaultPattern(req.CreateRule.UserPattern),
+				AgentIDPattern: defaultPattern(req.CreateRule.AgentIDPattern),
 				Description:    req.CreateRule.Description,
 				Enabled:        enabled,
 			}
@@ -687,7 +687,7 @@ func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) 
 				Action:         req.CreateRule.Action,
 				ServerPatterns: normalizePatternSlice(req.CreateRule.ServerPatterns),
 				ToolPatterns:   normalizePatternSlice(req.CreateRule.ToolPatterns),
-				UserPattern:    defaultPattern(req.CreateRule.UserPattern),
+				AgentIDPattern: defaultPattern(req.CreateRule.AgentIDPattern),
 				Description:    req.CreateRule.Description,
 				Enabled:        enabled,
 			}
@@ -977,7 +977,7 @@ func (h *Handler) adminRules(w http.ResponseWriter, r *http.Request) {
 			Action:         req.Action,
 			ServerPatterns: normalizePatternSlice(req.ServerPatterns),
 			ToolPatterns:   normalizePatternSlice(req.ToolPatterns),
-			UserPattern:    defaultPattern(req.UserPattern),
+			AgentIDPattern: defaultPattern(req.AgentIDPattern),
 			Description:    req.Description,
 			Enabled:        enabled,
 			Order:          order,
@@ -1075,7 +1075,7 @@ func (h *Handler) adminRuleDetail(w http.ResponseWriter, r *http.Request) {
 		existing.Action = req.Action
 		existing.ServerPatterns = normalizePatternSlice(req.ServerPatterns)
 		existing.ToolPatterns = normalizePatternSlice(req.ToolPatterns)
-		existing.UserPattern = defaultPattern(req.UserPattern)
+		existing.AgentIDPattern = defaultPattern(req.AgentIDPattern)
 		existing.Description = req.Description
 		existing.Enabled = enabled
 		if err := h.rulesRepo.Update(r.Context(), existing); err != nil {
@@ -1117,7 +1117,7 @@ func toAdminRule(r store.Rule) AdminRule {
 		Action:         r.Action,
 		ServerPatterns: sp,
 		ToolPatterns:   tp,
-		UserPattern:    r.UserPattern,
+		AgentIDPattern: r.AgentIDPattern,
 		Description:    r.Description,
 		Enabled:        r.Enabled,
 		Order:          r.Order,

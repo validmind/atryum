@@ -94,6 +94,11 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		return InvocationResponse{}, err
 	}
 
+	// agentID is the authenticated agent identity from middleware. When auth
+	// is disabled the field is empty and we fall back to request_id for rule
+	// matching to preserve pre-auth behavior.
+	agentID := auth.AgentIDFromContext(ctx)
+
 	now := time.Now().UTC()
 	inv := Invocation{
 		InvocationID:   "inv_" + uuid.NewString(),
@@ -105,14 +110,12 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		Input:          inputJSON,
 		SubmittedAt:    now,
 	}
+	if agentID != "" {
+		inv.AgentID = &agentID
+	}
 	if err := s.invocations.Create(ctx, inv); err != nil {
 		return InvocationResponse{}, err
 	}
-
-	// agentID is the authenticated agent identity from middleware. When auth
-	// is disabled the field is empty and we fall back to request_id for rule
-	// matching to preserve pre-auth behavior.
-	agentID := auth.AgentIDFromContext(ctx)
 
 	// Determine disposition: check rules first (fine-grained), then fall back to policy (global).
 	// Both resolve to a policy.Decision so the rest of the flow is uniform.
@@ -430,6 +433,9 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	if err != nil {
 		return InvocationResponse{}, err
 	}
+	// Evaluate rules against (source, tool, user) — same logic as Invoke.
+	agentID := auth.AgentIDFromContext(ctx)
+
 	now := time.Now().UTC()
 	inv := Invocation{
 		InvocationID:   "inv_" + uuid.NewString(),
@@ -441,12 +447,12 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		Input:          inputJSON,
 		SubmittedAt:    now,
 	}
+	if agentID != "" {
+		inv.AgentID = &agentID
+	}
 	if err := s.invocations.Create(ctx, inv); err != nil {
 		return InvocationResponse{}, err
 	}
-
-	// Evaluate rules against (source, tool, user) — same logic as Invoke.
-	agentID := auth.AgentIDFromContext(ctx)
 	ruleAction := ""
 	if s.rules != nil {
 		if approvalRules, err := s.rules.ListApprovalRules(ctx); err == nil {
@@ -671,7 +677,7 @@ func (s *Service) Events(ctx context.Context, invocationID string, filter EventL
 }
 
 func (s *Service) toResponse(inv Invocation) InvocationResponse {
-	resp := InvocationResponse{InvocationID: inv.InvocationID, ServerName: inv.Upstream, ToolName: inv.Tool, Status: inv.Status, Approval: inv.Approval, MatchedRuleID: inv.MatchedRuleID, RequestID: inv.RequestID, SubmittedAt: inv.SubmittedAt, CompletedAt: inv.CompletedAt}
+	resp := InvocationResponse{InvocationID: inv.InvocationID, ServerName: inv.Upstream, ToolName: inv.Tool, Status: inv.Status, Approval: inv.Approval, MatchedRuleID: inv.MatchedRuleID, AgentID: inv.AgentID, RequestID: inv.RequestID, SubmittedAt: inv.SubmittedAt, CompletedAt: inv.CompletedAt}
 	if len(inv.Input) > 0 {
 		resp.Input = json.RawMessage(inv.Input)
 	}

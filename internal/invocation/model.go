@@ -37,6 +37,7 @@ type Invocation struct {
 	Status         Status     `json:"status"`
 	Approval       *Approval  `json:"approval"`
 	MatchedRuleID  *string    `json:"matched_rule_id,omitempty"`
+	AgentID        *string    `json:"agent_id,omitempty"`
 	Input          []byte     `json:"-"`
 	Response       []byte     `json:"-"`
 	Error          []byte     `json:"-"`
@@ -53,11 +54,12 @@ type Event struct {
 }
 
 type InvocationListFilter struct {
-	Offset uint64
-	Limit  uint64
-	Server string
-	Tool   string
-	Status string
+	Offset  uint64
+	Limit   uint64
+	Server  string
+	Tool    string
+	Status  string
+	AgentID string
 }
 
 type EventListFilter struct {
@@ -110,6 +112,7 @@ type InvocationResponse struct {
 	Status        Status          `json:"status"`
 	Approval      *Approval       `json:"approval"`
 	MatchedRuleID *string         `json:"matched_rule_id,omitempty"`
+	AgentID       *string         `json:"agent_id,omitempty"`
 	RequestID     *string         `json:"request_id,omitempty"`
 	Input         json.RawMessage `json:"input,omitempty"`
 	SubmittedAt   time.Time       `json:"submitted_at"`
