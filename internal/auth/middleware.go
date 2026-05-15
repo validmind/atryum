@@ -36,7 +36,11 @@ func MiddlewareWithOptions(v *Validator, resourceMetadataPath string, opts Middl
 			metadataURL := absoluteURL(r, resourceMetadataPath)
 			header := strings.TrimSpace(r.Header.Get("Authorization"))
 			if header == "" {
-				writeChallenge(w, http.StatusUnauthorized, "missing bearer token", "", metadataURL, challengeScope(v, nil))
+				scope := challengeScope(v, nil)
+				if opts.DebugLogIdentity {
+					logAuthFailure(r, "invalid_token", "missing bearer token", scope)
+				}
+				writeChallenge(w, http.StatusUnauthorized, "missing bearer token", "", metadataURL, scope)
 				return
 			}
 			if !strings.HasPrefix(strings.ToLower(header), "bearer ") {

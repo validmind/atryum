@@ -413,6 +413,44 @@ func TestMiddlewareLogsMissingScope(t *testing.T) {
 	}
 }
 
+func TestMiddlewareDoesNotLogMissingTokenByDefault(t *testing.T) {
+	idp := newTestIdP(t)
+	v := newValidatorForIdP(t, idp)
+	var logs bytes.Buffer
+	origWriter := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(origWriter) })
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	h := Middleware(v, "/.well-known/oauth-protected-resource")(next)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/x", strings.NewReader("{}"))
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	got := logs.String()
+	if strings.Contains(got, "[auth] invalid_token") {
+		t.Fatalf("expected no missing token auth log by default, got %q", got)
+	}
+}
+
+func TestMiddlewareLogsMissingTokenInDebugMode(t *testing.T) {
+	idp := newTestIdP(t)
+	v := newValidatorForIdP(t, idp)
+	var logs bytes.Buffer
+	origWriter := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(origWriter) })
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	h := MiddlewareWithOptions(v, "/.well-known/oauth-protected-resource", MiddlewareOptions{DebugLogIdentity: true})(next)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/x", strings.NewReader("{}"))
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	got := logs.String()
+	if !strings.Contains(got, "[auth] invalid_token") || !strings.Contains(got, `description="missing bearer token"`) {
+		t.Fatalf("expected missing token auth log, got %q", got)
+	}
+}
+
 func TestMiddlewareLogsInvalidToken(t *testing.T) {
 	idp := newTestIdP(t)
 	v := newValidatorForIdP(t, idp)
