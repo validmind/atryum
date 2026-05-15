@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -188,10 +189,8 @@ func audienceMatches(claim any, audience string) bool {
 	case string:
 		return v == audience
 	case []string:
-		for _, item := range v {
-			if item == audience {
-				return true
-			}
+		if slices.Contains(v, audience) {
+			return true
 		}
 	case []any:
 		for _, item := range v {
