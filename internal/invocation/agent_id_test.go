@@ -59,7 +59,7 @@ func TestInvokeUsesAuthenticatedAgentIDForRulesAndEvents(t *testing.T) {
 	rules := stubRulesStore{rules: []invocation.ApprovalRule{{
 		ID: "rule_agent_007", Action: invocation.RuleActionAutoApprove,
 		ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"},
-		UserPattern: "agent-007", Enabled: true,
+		AgentIDPattern: "agent-007", Enabled: true,
 	}}}
 
 	svc := invocation.NewService(
@@ -98,6 +98,23 @@ func TestInvokeUsesAuthenticatedAgentIDForRulesAndEvents(t *testing.T) {
 	if !sawAgentInReceived {
 		t.Fatalf("expected invocation.received event to record agent_id; events: %s", eventsAsJSON(events.Items))
 	}
+
+	// The invocations row itself should carry the agent_id (column added in
+	// migration 006), and the column should be filterable.
+	got, err := svc.Get(context.Background(), resp.InvocationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AgentID == nil || *got.AgentID != "agent-007" {
+		t.Fatalf("expected invocation.agent_id=agent-007, got %v", got.AgentID)
+	}
+	list, err := svc.List(context.Background(), invocation.InvocationListFilter{AgentID: "agent-007", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if list.Total != 1 || len(list.Items) != 1 || list.Items[0].InvocationID != resp.InvocationID {
+		t.Fatalf("expected exactly the auth'd invocation when filtering by agent_id, got %+v", list)
+	}
 }
 
 func TestInvokeWithoutAuthFallsBackToRequestIDForRules(t *testing.T) {
@@ -126,7 +143,7 @@ func TestInvokeWithoutAuthFallsBackToRequestIDForRules(t *testing.T) {
 	rules := stubRulesStore{rules: []invocation.ApprovalRule{{
 		ID: "rule_legacy", Action: invocation.RuleActionAutoApprove,
 		ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"},
-		UserPattern: "legacy-request-id", Enabled: true,
+		AgentIDPattern: "legacy-request-id", Enabled: true,
 	}}}
 	svc := invocation.NewService(
 		store.NewInvocationRepo(db), store.NewEventRepo(db), resolver,

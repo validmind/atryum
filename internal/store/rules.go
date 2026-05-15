@@ -15,12 +15,13 @@ import (
 // Rule is the store-level representation of an approval rule.
 // ServerPatterns and ToolPatterns are serialized as JSON arrays in the
 // server_pattern / tool_pattern TEXT columns; an empty slice means "match all".
+// AgentIDPattern is the literal authenticated agent_id (or "*"/"" for any).
 type Rule struct {
 	ID             string
 	Action         string
 	ServerPatterns []string
 	ToolPatterns   []string
-	UserPattern    string
+	AgentIDPattern string
 	Description    string
 	Enabled        bool
 	Order          int
@@ -43,7 +44,7 @@ func NewRulesRepoWithDialect(db *sql.DB, dialect Dialect) *RulesRepo {
 }
 
 var ruleColumns = []string{
-	"id", "action", "server_pattern", "tool_pattern", "user_pattern",
+	"id", "action", "server_pattern", "tool_pattern", "agent_id_pattern",
 	"description", "enabled", "rule_order", "created_at", "updated_at",
 }
 
@@ -56,7 +57,7 @@ func (r *RulesRepo) Create(ctx context.Context, rule Rule) error {
 	query, args, err := r.sb.Insert("approval_rules").
 		Columns(ruleColumns...).
 		Values(
-			rule.ID, rule.Action, serverJSON, toolJSON, rule.UserPattern,
+			rule.ID, rule.Action, serverJSON, toolJSON, rule.AgentIDPattern,
 			emptyToNil(rule.Description), boolToInt(rule.Enabled), rule.Order, now, now,
 		).ToSql()
 	if err != nil {
@@ -126,7 +127,7 @@ func (r *RulesRepo) Update(ctx context.Context, rule Rule) error {
 		Set("action", rule.Action).
 		Set("server_pattern", serverJSON).
 		Set("tool_pattern", toolJSON).
-		Set("user_pattern", rule.UserPattern).
+		Set("agent_id_pattern", rule.AgentIDPattern).
 		Set("description", emptyToNil(rule.Description)).
 		Set("enabled", boolToInt(rule.Enabled)).
 		Set("updated_at", now).
@@ -267,7 +268,7 @@ func scanRule(scanner interface{ Scan(dest ...any) error }) (Rule, error) {
 	var description sql.NullString
 	var enabled int
 	if err := scanner.Scan(
-		&rule.ID, &rule.Action, &serverJSON, &toolJSON, &rule.UserPattern,
+		&rule.ID, &rule.Action, &serverJSON, &toolJSON, &rule.AgentIDPattern,
 		&description, &enabled, &rule.Order, &rule.CreatedAt, &rule.UpdatedAt,
 	); err != nil {
 		return Rule{}, err
@@ -304,7 +305,7 @@ func (r *RulesRepo) ListApprovalRules(ctx context.Context) ([]invocation.Approva
 			Action:         rule.Action,
 			ServerPatterns: rule.ServerPatterns,
 			ToolPatterns:   rule.ToolPatterns,
-			UserPattern:    rule.UserPattern,
+			AgentIDPattern: rule.AgentIDPattern,
 			Enabled:        rule.Enabled,
 		})
 	}
@@ -357,7 +358,7 @@ func (r *RulesRepo) InsertBefore(ctx context.Context, anchorID string, rule Rule
 	insQ, insArgs, err := r.sb.Insert("approval_rules").
 		Columns(ruleColumns...).
 		Values(
-			rule.ID, rule.Action, serverJSON, toolJSON, rule.UserPattern,
+			rule.ID, rule.Action, serverJSON, toolJSON, rule.AgentIDPattern,
 			emptyToNil(rule.Description), boolToInt(rule.Enabled), rule.Order, now, now,
 		).ToSql()
 	if err != nil {

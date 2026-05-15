@@ -166,7 +166,7 @@ function buildPendingRule(action) {
     action,
     server_patterns: servers.length ? servers : (state.currentInvocationDetail ? [state.currentInvocationDetail.server_name] : []),
     tool_patterns: tools.length ? tools : (state.currentInvocationDetail ? [state.currentInvocationDetail.tool_name] : []),
-    user_pattern: $('#rule-user').value.trim() || '*',
+    agent_id_pattern: $('#rule-user').value.trim() || '*',
     description: $('#rule-desc').value.trim(),
   };
 }
@@ -178,7 +178,7 @@ async function createRuleOnly() {
     action: $('#inv-rule-action').value,
     server_patterns: servers,
     tool_patterns: tools,
-    user_pattern: $('#inv-rule-user').value.trim() || '*',
+    agent_id_pattern: $('#inv-rule-user').value.trim() || '*',
     description: $('#inv-rule-desc').value.trim(),
     enabled: true,
   };

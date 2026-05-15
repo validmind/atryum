@@ -16,7 +16,7 @@ type ApprovalRule struct {
 	Action         string   // one of the RuleAction* constants
 	ServerPatterns []string // empty slice = match any server
 	ToolPatterns   []string // empty slice = match any tool
-	UserPattern    string   // "*" or "" = match any user
+	AgentIDPattern string   // "*" or "" = match any agent
 	Enabled        bool
 }
 
@@ -28,7 +28,9 @@ type rulesStore interface {
 
 // matchRule returns the first enabled rule that matches the given invocation
 // parameters, or nil if no rule matches (fall back to human approval).
-func matchRule(rules []ApprovalRule, server, tool, user string) *ApprovalRule {
+// The agentID is the authenticated agent identity (empty when auth is
+// disabled — callers fall back to request_id for parity with pre-auth behavior).
+func matchRule(rules []ApprovalRule, server, tool, agentID string) *ApprovalRule {
 	for i := range rules {
 		r := &rules[i]
 		if !r.Enabled {
@@ -40,7 +42,7 @@ func matchRule(rules []ApprovalRule, server, tool, user string) *ApprovalRule {
 		if !matchPatterns(r.ToolPatterns, tool) {
 			continue
 		}
-		if !matchUserPattern(r.UserPattern, user) {
+		if !matchAgentIDPattern(r.AgentIDPattern, agentID) {
 			continue
 		}
 		return r
@@ -62,7 +64,8 @@ func matchPatterns(patterns []string, value string) bool {
 	return false
 }
 
-// matchUserPattern returns true when the rule's user pattern matches user.
-func matchUserPattern(pattern, user string) bool {
-	return pattern == "" || pattern == "*" || pattern == user
+// matchAgentIDPattern returns true when the rule's agent_id pattern matches the
+// authenticated agent identity. An empty or "*" pattern matches any agent.
+func matchAgentIDPattern(pattern, agentID string) bool {
+	return pattern == "" || pattern == "*" || pattern == agentID
 }
