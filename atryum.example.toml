@@ -10,6 +10,21 @@ database_path = "./atryum.db"
 database_url = ""
 log_level = "info"
 
+[backend]
+# Optional ValidMind backend connection check. When base_url is set, Atryum
+# verifies these machine-user credentials at startup by calling:
+# GET /internal/v1/atryum/connection
+#
+# Environment variables override these TOML values:
+# ATRYUM_BACKEND_BASE_URL
+# ATRYUM_MACHINE_KEY
+# ATRYUM_MACHINE_SECRET
+# ATRYUM_BACKEND_CONNECTION_TIMEOUT_SECONDS
+base_url = ""
+machine_key = ""
+machine_secret = ""
+connection_timeout_seconds = 5
+
 [defaults]
 request_timeout_seconds = 30
 

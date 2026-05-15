@@ -1,6 +1,9 @@
 package config
 
 import (
+	"os"
+	"strconv"
+
 	"github.com/BurntSushi/toml"
 
 	"atryum/internal/auth"
@@ -8,6 +11,7 @@ import (
 
 type Config struct {
 	Server    ServerConfig     `toml:"server"`
+	Backend   BackendConfig    `toml:"backend"`
 	Defaults  DefaultsConfig   `toml:"defaults"`
 	Policy    PolicyConfig     `toml:"policy"`
 	Upstreams []UpstreamConfig `toml:"upstreams"`
@@ -16,6 +20,15 @@ type Config struct {
 	// facing /mcp/ routes remain anonymous.
 	Auth      []auth.Config   `toml:"auth"`
 	AuthDebug AuthDebugConfig `toml:"auth_debug"`
+}
+
+// BackendConfig configures Atryum's startup connection check to the ValidMind
+// backend. Environment variables override TOML when set.
+type BackendConfig struct {
+	BaseURL               string `toml:"base_url"`
+	MachineKey            string `toml:"machine_key"`
+	MachineSecret         string `toml:"machine_secret"`
+	ConnectionTimeoutSecs int    `toml:"connection_timeout_seconds"`
 }
 
 // AuthDebugConfig contains local-only auth debugging switches.
@@ -59,10 +72,34 @@ func Load(path string) (Config, error) {
 			DatabasePath: "./atryum.db",
 			LogLevel:     "info",
 		},
+		Backend: BackendConfig{
+			ConnectionTimeoutSecs: 5,
+		},
 		Defaults: DefaultsConfig{
 			RequestTimeoutSeconds: 30,
 		},
 	}
 	_, err := toml.DecodeFile(path, &cfg)
+	cfg.Backend.ApplyEnv()
 	return cfg, err
+}
+
+func (c *BackendConfig) ApplyEnv() {
+	if value := os.Getenv("ATRYUM_BACKEND_BASE_URL"); value != "" {
+		c.BaseURL = value
+	}
+	if value := os.Getenv("ATRYUM_MACHINE_KEY"); value != "" {
+		c.MachineKey = value
+	}
+	if value := os.Getenv("ATRYUM_MACHINE_SECRET"); value != "" {
+		c.MachineSecret = value
+	}
+	if value := os.Getenv("ATRYUM_BACKEND_CONNECTION_TIMEOUT_SECONDS"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			c.ConnectionTimeoutSecs = parsed
+		}
+	}
+	if c.ConnectionTimeoutSecs <= 0 {
+		c.ConnectionTimeoutSecs = 5
+	}
 }

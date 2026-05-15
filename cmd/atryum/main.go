@@ -12,6 +12,7 @@ import (
 
 	"atryum/internal/api"
 	"atryum/internal/auth"
+	backendclient "atryum/internal/backend"
 	"atryum/internal/config"
 	"atryum/internal/invocation"
 	"atryum/internal/invocation/policy"
@@ -29,6 +30,19 @@ func main() {
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
+	}
+	backendClient, err := backendclient.NewClient(cfg.Backend)
+	if err != nil {
+		log.Fatalf("backend config: %v", err)
+	}
+	if backendClient != nil {
+		resp, err := backendClient.CheckConnection(context.Background())
+		if err != nil {
+			log.Fatalf("backend connection check: %v", err)
+		}
+		log.Printf("backend connection verified for service=%s machine_user_cuid=%s", resp.ServiceName, resp.MachineUserCUID)
+	} else {
+		log.Printf("backend connection check skipped (backend.base_url not configured)")
 	}
 
 	db, dialect, err := store.OpenDatabase(cfg.Server.DatabaseURL, cfg.Server.DatabasePath)

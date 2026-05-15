@@ -94,6 +94,28 @@ on the request context. Requests reach the upstream MCP server as if no
 This is only for local debugging. Do not enable it in shared or production
 environments.
 
+## Backend connection check
+
+Atryum can verify its ValidMind backend machine-user credentials during
+startup:
+
+```toml
+[backend]
+base_url = "https://api.example.validmind.ai"
+machine_key = "replace-me"
+machine_secret = "replace-me"
+connection_timeout_seconds = 5
+```
+
+The same values can be supplied with environment variables, which override
+TOML: `ATRYUM_BACKEND_BASE_URL`, `ATRYUM_MACHINE_KEY`,
+`ATRYUM_MACHINE_SECRET`, and
+`ATRYUM_BACKEND_CONNECTION_TIMEOUT_SECONDS`.
+
+When `backend.base_url` is empty, the check is skipped for local standalone
+runs. When it is set, startup fails if credentials are missing or the backend
+rejects `GET /internal/v1/atryum/connection`.
+
 ## Database configuration
 
 SQLite remains the default storage provider:
