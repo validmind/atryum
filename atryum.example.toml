@@ -36,3 +36,13 @@ SHORTCUT_READONLY = "true"
 # timeout_seconds = 30
 # enabled = true
 # auth_token = ""
+
+# Claude Managed Agents (Anthropic Agents API).
+# Single-tenant: one API key per atryum instance. Agents and the sessions
+# they own are managed via the admin API (/api/v1/admin/claude-agents).
+# Atryum polls registered sessions for tool-approval events and gates them
+# through the same invocation/rules pipeline as MCP and harness sources.
+[claude_agents]
+api_key = ""
+base_url = "https://api.anthropic.com"
+poll_interval_seconds = 5

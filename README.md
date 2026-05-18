@@ -182,6 +182,53 @@ Each server now exposes generic status metadata suitable for current token/stdio
 
 `POST /api/v1/admin/servers/{name}/test` updates these fields in the DB and returns the latest status snapshot.
 
+## Claude Managed Agents
+
+Atryum can act as the human-in-the-loop approval gateway for [Anthropic Managed Agents](https://platform.claude.com/docs/en/managed-agents/permission-policies). Configure tools on the agent side with `permission_policy: { type: "always_ask" }`; atryum will:
+
+1. Poll registered Claude sessions for `session.status_idle` events with `stop_reason.type == requires_action`.
+2. Submit each blocking `agent.tool_use` / `agent.mcp_tool_use` into the same invocation/rules pipeline used for MCP and harness flows.
+3. Resolve the invocation via the existing UI / rules engine.
+4. POST `user.tool_confirmation` (allow / deny + optional `deny_message`) back to Anthropic.
+
+Single-tenant by design: one API key per atryum instance. Each Claude-side agent (e.g. "PR Reviewer", "Calendar Manager") becomes its own atryum entity peer to MCP servers and the harness path. **Approval rules attach to the agent name**, so a rule with `server_patterns: ["PR Reviewer"]` only auto-approves for that agent.
+
+### Configuration
+
+```toml
+[claude_agents]
+api_key = "sk-ant-..."
+base_url = "https://api.anthropic.com"
+poll_interval_seconds = 5
+```
+
+With no `api_key` set, the rest of atryum behaves exactly as before — the watcher and dispatcher simply do not start.
+
+### Auto-discovery
+
+Once the watcher is running, every tick also sweeps Anthropic for new managed agents and their sessions:
+
+1. `GET /v1/agents` → for each non-archived agent that is not yet in `claude_agents`, atryum inserts a row keyed on the Anthropic `agent_id` (name and description copied from the agent). Existing rows are left untouched, so a human can edit name / description / enabled without discovery clobbering changes.
+2. For each known atryum agent, `GET /v1/sessions?agent_id=…&statuses[]=idle&statuses[]=running&statuses[]=rescheduling` → for each session not yet in `claude_agent_sessions`, atryum inserts a row tied back to the local agent.
+3. The existing per-session events poll then runs against the union of manually-registered and auto-discovered sessions.
+
+This means the only required setup is the `api_key` — `POST /api/v1/admin/claude-agents` and `POST /…/sessions` remain available for cases where you want to pre-seed or to scope rules before discovery runs.
+
+### Admin APIs
+
+- `GET    /api/v1/admin/claude-agents`
+- `POST   /api/v1/admin/claude-agents`
+- `GET    /api/v1/admin/claude-agents/{id}`
+- `PUT    /api/v1/admin/claude-agents/{id}`
+- `DELETE /api/v1/admin/claude-agents/{id}`
+- `GET    /api/v1/admin/claude-agents/{id}/sessions`
+- `POST   /api/v1/admin/claude-agents/{id}/sessions`
+- `DELETE /api/v1/admin/claude-agents/{id}/sessions/{sessionRowId}`
+
+The built-in UI exposes a "Claude Agents" page at `/ui/claude-agents` for managing agents and registering session ids.
+
+See [examples/claude_agents.md](examples/claude_agents.md) for an end-to-end walkthrough.
+
 ## Remaining TOML/bootstrap behavior
 
 `[[upstreams]]` entries are bootstrap-only:

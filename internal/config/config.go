@@ -3,10 +3,21 @@ package config
 import "github.com/BurntSushi/toml"
 
 type Config struct {
-	Server    ServerConfig     `toml:"server"`
-	Defaults  DefaultsConfig   `toml:"defaults"`
-	Policy    PolicyConfig     `toml:"policy"`
-	Upstreams []UpstreamConfig `toml:"upstreams"`
+	Server       ServerConfig       `toml:"server"`
+	Defaults     DefaultsConfig     `toml:"defaults"`
+	Policy       PolicyConfig       `toml:"policy"`
+	Upstreams    []UpstreamConfig   `toml:"upstreams"`
+	ClaudeAgents ClaudeAgentsConfig `toml:"claude_agents"`
+}
+
+// ClaudeAgentsConfig configures the connection to Anthropic's Managed Agents
+// API. The watcher polls registered sessions and gates tool approvals through
+// atryum's normal invocation/rules pipeline. Single-tenant: one API key per
+// atryum instance.
+type ClaudeAgentsConfig struct {
+	APIKey              string `toml:"api_key"`
+	BaseURL             string `toml:"base_url"`
+	PollIntervalSeconds int    `toml:"poll_interval_seconds"`
 }
 
 // PolicyConfig selects the active approval policy provider at startup.

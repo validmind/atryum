@@ -43,16 +43,34 @@ type upstreamClient interface {
 	ForwardEnvelope(ctx context.Context, upstream mcp.Upstream, envelope mcp.Envelope, protocolVersion string) (mcp.ForwardResult, error)
 }
 
+// ResolutionListener is invoked after an invocation transitions to a final
+// approval state (approved, auto_approved, denied, auto_denied). Listeners
+// run synchronously and any error is logged but does not block the caller's
+// path — listeners are expected to be best-effort side effects (e.g. posting
+// the decision back to an external system like Anthropic's Agents API).
+type ResolutionListener interface {
+	OnResolution(ctx context.Context, inv Invocation) error
+}
+
+// ResolutionListenerFunc adapts a function to the ResolutionListener
+// interface for convenient use at wiring time.
+type ResolutionListenerFunc func(ctx context.Context, inv Invocation) error
+
+func (f ResolutionListenerFunc) OnResolution(ctx context.Context, inv Invocation) error {
+	return f(ctx, inv)
+}
+
 type Service struct {
-	invocations      invocationRepo
-	events           eventRepo
-	resolver         resolver
-	client           upstreamClient
-	policy           policy.Provider
-	rules            rulesStore // nil = no rule evaluation
-	defaultTimeout   time.Duration
-	mu               sync.Mutex
-	pendingApprovals map[string]chan approvalDecision
+	invocations         invocationRepo
+	events              eventRepo
+	resolver            resolver
+	client              upstreamClient
+	policy              policy.Provider
+	rules               rulesStore // nil = no rule evaluation
+	defaultTimeout      time.Duration
+	mu                  sync.Mutex
+	pendingApprovals    map[string]chan approvalDecision
+	resolutionListeners []ResolutionListener
 }
 
 func NewService(inv invocationRepo, evt eventRepo, resolver resolver, client upstreamClient, policyProvider policy.Provider, defaultTimeout time.Duration, rules rulesStore) *Service {
@@ -65,6 +83,36 @@ func NewService(inv invocationRepo, evt eventRepo, resolver resolver, client ups
 		rules:            rules,
 		defaultTimeout:   defaultTimeout,
 		pendingApprovals: make(map[string]chan approvalDecision),
+	}
+}
+
+// AddResolutionListener registers a listener that fires whenever an
+// invocation reaches a final approval state. Safe to call before Start.
+func (s *Service) AddResolutionListener(l ResolutionListener) {
+	if l == nil {
+		return
+	}
+	s.mu.Lock()
+	s.resolutionListeners = append(s.resolutionListeners, l)
+	s.mu.Unlock()
+}
+
+// dispatchResolution fans out a resolved invocation to every listener.
+// Errors are swallowed (logged via the events table or the listener itself)
+// so a misbehaving listener cannot block the request path.
+func (s *Service) dispatchResolution(ctx context.Context, inv Invocation) {
+	s.mu.Lock()
+	listeners := append([]ResolutionListener(nil), s.resolutionListeners...)
+	s.mu.Unlock()
+	for _, l := range listeners {
+		if err := l.OnResolution(ctx, inv); err != nil {
+			_ = s.events.Create(ctx, Event{
+				InvocationID: inv.InvocationID,
+				EventType:    "invocation.resolution_listener_error",
+				Payload:      mustJSON(map[string]any{"error": err.Error()}),
+				CreatedAt:    time.Now().UTC(),
+			})
+		}
 	}
 }
 
@@ -373,11 +421,15 @@ func (s *Service) recordExternalDecision(ctx context.Context, invocationID strin
 			return err
 		}
 		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.approved", Payload: mustJSON(map[string]any{"input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input)}), CreatedAt: now})
+		s.dispatchResolution(ctx, inv)
 		return nil
 	}
 	inv.Status = StatusDenied
 	inv.CompletedAt = &now
-	inv.Approval = &Approval{Status: "denied", Reason: stringPtr("human")}
+	inv.Approval = &Approval{Status: "denied", Reason: stringPtr("human"), DecisionAt: stringPtr(now.Format(time.RFC3339Nano))}
+	if message != "" {
+		inv.Approval.Reason = stringPtr(message)
+	}
 	msg := "Tool call denied by the MCP permissions system."
 	if message != "" {
 		msg += "\n\nReason: " + message
@@ -387,6 +439,7 @@ func (s *Service) recordExternalDecision(ctx context.Context, invocationID strin
 		return err
 	}
 	_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"message": message, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input)}), CreatedAt: now})
+	s.dispatchResolution(ctx, inv)
 	return nil
 }
 
@@ -431,6 +484,14 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		Input:          inputJSON,
 		SubmittedAt:    now,
 	}
+	if req.ClaudeSessionID != "" {
+		v := req.ClaudeSessionID
+		inv.ClaudeSessionID = &v
+	}
+	if req.ClaudeToolUseEventID != "" {
+		v := req.ClaudeToolUseEventID
+		inv.ClaudeToolUseEventID = &v
+	}
 	if err := s.invocations.Create(ctx, inv); err != nil {
 		return InvocationResponse{}, err
 	}
@@ -470,6 +531,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": "Tool call denied by approval rule (auto_deny)."}}, "isError": true})
 		_ = s.invocations.UpdateResult(context.Background(), inv)
 		_ = s.events.Create(context.Background(), Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"reason": "matched approval rule (auto_deny)", "disposition": "never"}), CreatedAt: completed})
+		s.dispatchResolution(ctx, inv)
 		return s.toResponse(inv), nil
 
 	case RuleActionAutoApprove:
@@ -479,6 +541,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 			return InvocationResponse{}, err
 		}
 		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.approved", Payload: mustJSON(map[string]any{"auto_approved": true, "auto_reason": "matched approval rule (auto_approve)"}), CreatedAt: time.Now().UTC()})
+		s.dispatchResolution(ctx, inv)
 		return s.toResponse(inv), nil
 	}
 

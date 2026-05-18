@@ -42,6 +42,12 @@ type Invocation struct {
 	Error          []byte     `json:"-"`
 	SubmittedAt    time.Time  `json:"submitted_at"`
 	CompletedAt    *time.Time `json:"completed_at,omitempty"`
+
+	// Claude Managed Agents linkage. Both fields are populated when the
+	// invocation originated from a Claude session and atryum is responsible
+	// for posting `user.tool_confirmation` back to Anthropic on resolution.
+	ClaudeSessionID      *string `json:"claude_session_id,omitempty"`
+	ClaudeToolUseEventID *string `json:"claude_tool_use_event_id,omitempty"`
 }
 
 type Event struct {
@@ -91,6 +97,12 @@ type ExternalSubmitRequest struct {
 	RequestID      *string        `json:"request_id,omitempty"`
 	IdempotencyKey *string        `json:"idempotency_key,omitempty"`
 	ThreadID       string         `json:"thread_id,omitempty"`
+
+	// Claude Managed Agents linkage. When both are set, the invocation is
+	// recorded with these fields and a registered ResolutionListener can
+	// post `user.tool_confirmation` back to Anthropic on resolution.
+	ClaudeSessionID      string `json:"claude_session_id,omitempty"`
+	ClaudeToolUseEventID string `json:"claude_tool_use_event_id,omitempty"`
 }
 
 // ExternalExecutionUpdate is sent by the external executor to report on a

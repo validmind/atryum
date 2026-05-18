@@ -75,16 +75,21 @@ func NewOAuthRepoWithDialect(db *sql.DB, dialect Dialect) *OAuthRepo {
 // InitDB is now handled by migrations.go which runs embedded SQL files
 // from internal/store/migrations/ in order.
 
+var invocationColumns = []string{
+	"invocation_id", "request_id", "idempotency_key", "tool_name",
+	"upstream_name", "status", "approval_json", "request_json",
+	"response_json", "error_json", "submitted_at", "completed_at",
+	"matched_rule_id", "claude_session_id", "claude_tool_use_event_id",
+}
+
 func (r *InvocationRepo) Create(ctx context.Context, inv invocation.Invocation) error {
 	var approval any
 	if inv.Approval != nil {
 		b, _ := json.Marshal(inv.Approval)
 		approval = string(b)
 	}
-	query, args, err := r.sb.Insert("invocations").Columns(
-		"invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at", "matched_rule_id",
-	).Values(
-		inv.InvocationID, inv.RequestID, inv.IdempotencyKey, inv.Tool, inv.Upstream, inv.Status, approval, string(inv.Input), nullableString(inv.Response), nullableString(inv.Error), inv.SubmittedAt, inv.CompletedAt, inv.MatchedRuleID,
+	query, args, err := r.sb.Insert("invocations").Columns(invocationColumns...).Values(
+		inv.InvocationID, inv.RequestID, inv.IdempotencyKey, inv.Tool, inv.Upstream, inv.Status, approval, string(inv.Input), nullableString(inv.Response), nullableString(inv.Error), inv.SubmittedAt, inv.CompletedAt, inv.MatchedRuleID, inv.ClaudeSessionID, inv.ClaudeToolUseEventID,
 	).ToSql()
 	if err != nil {
 		return err
@@ -108,7 +113,7 @@ func (r *InvocationRepo) UpdateResult(ctx context.Context, inv invocation.Invoca
 }
 
 func (r *InvocationRepo) Get(ctx context.Context, id string) (invocation.Invocation, error) {
-	query, args, err := r.sb.Select("invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at", "matched_rule_id").From("invocations").Where(sq.Eq{"invocation_id": id}).ToSql()
+	query, args, err := r.sb.Select(invocationColumns...).From("invocations").Where(sq.Eq{"invocation_id": id}).ToSql()
 	if err != nil {
 		return invocation.Invocation{}, err
 	}
@@ -117,7 +122,7 @@ func (r *InvocationRepo) Get(ctx context.Context, id string) (invocation.Invocat
 }
 
 func (r *InvocationRepo) GetByIdempotencyKey(ctx context.Context, key string) (invocation.Invocation, error) {
-	query, args, err := r.sb.Select("invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at", "matched_rule_id").From("invocations").Where(sq.Eq{"idempotency_key": key}).ToSql()
+	query, args, err := r.sb.Select(invocationColumns...).From("invocations").Where(sq.Eq{"idempotency_key": key}).ToSql()
 	if err != nil {
 		return invocation.Invocation{}, err
 	}
@@ -129,7 +134,7 @@ func (r *InvocationRepo) List(ctx context.Context, filter invocation.InvocationL
 	if filter.Limit == 0 {
 		filter.Limit = 50
 	}
-	builder := r.sb.Select("invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at", "matched_rule_id").From("invocations")
+	builder := r.sb.Select(invocationColumns...).From("invocations")
 	countBuilder := r.sb.Select("COUNT(*)").From("invocations")
 	builder, countBuilder = applyInvocationFilter(builder, countBuilder, filter)
 	query, args, err := builder.OrderBy("submitted_at DESC").Limit(filter.Limit).Offset(filter.Offset).ToSql()
@@ -524,7 +529,8 @@ func scanInvocation(scanner interface{ Scan(dest ...any) error }) (invocation.In
 	var requestJSON, responseJSON, errorJSON sql.NullString
 	var completedAt sql.NullTime
 	var matchedRuleID sql.NullString
-	if err := scanner.Scan(&inv.InvocationID, &requestID, &idempotencyKey, &inv.Tool, &inv.Upstream, &inv.Status, &approval, &requestJSON, &responseJSON, &errorJSON, &inv.SubmittedAt, &completedAt, &matchedRuleID); err != nil {
+	var claudeSessionID, claudeToolUseEventID sql.NullString
+	if err := scanner.Scan(&inv.InvocationID, &requestID, &idempotencyKey, &inv.Tool, &inv.Upstream, &inv.Status, &approval, &requestJSON, &responseJSON, &errorJSON, &inv.SubmittedAt, &completedAt, &matchedRuleID, &claudeSessionID, &claudeToolUseEventID); err != nil {
 		return invocation.Invocation{}, err
 	}
 	if requestID.Valid {
@@ -552,6 +558,12 @@ func scanInvocation(scanner interface{ Scan(dest ...any) error }) (invocation.In
 	}
 	if matchedRuleID.Valid {
 		inv.MatchedRuleID = &matchedRuleID.String
+	}
+	if claudeSessionID.Valid {
+		inv.ClaudeSessionID = &claudeSessionID.String
+	}
+	if claudeToolUseEventID.Valid {
+		inv.ClaudeToolUseEventID = &claudeToolUseEventID.String
 	}
 	return inv, nil
 }

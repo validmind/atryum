@@ -67,13 +67,14 @@ type rulesRepo interface {
 }
 
 type Handler struct {
-	svc            service
-	serverSvc      serverService
-	policyRegistry *policy.Registry
-	rulesRepo      rulesRepo
-	forwarder      mcpEnvelopeForwarder
-	staticHTTP     http.Handler
-	debug          bool
+	svc              service
+	serverSvc        serverService
+	policyRegistry   *policy.Registry
+	rulesRepo        rulesRepo
+	claudeAgentsRepo claudeAgentsRepo
+	forwarder        mcpEnvelopeForwarder
+	staticHTTP       http.Handler
+	debug            bool
 }
 
 type PolicyStatusResponse struct {
@@ -215,7 +216,7 @@ type invocationStreamEnvelope struct {
 	Items []invocation.InvocationResponse `json:"items"`
 }
 
-func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Registry, rules rulesRepo) *Handler {
+func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Registry, rules rulesRepo, claudeAgents claudeAgentsRepo) *Handler {
 	staticSub, err := fs.Sub(webFS, "web")
 	if err != nil {
 		panic(err)
@@ -225,7 +226,7 @@ func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Reg
 	if f, ok := svc.(mcpEnvelopeForwarder); ok {
 		forwarder = f
 	}
-	return &Handler{svc: svc, serverSvc: serverSvc, policyRegistry: policyRegistry, rulesRepo: rules, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug}
+	return &Handler{svc: svc, serverSvc: serverSvc, policyRegistry: policyRegistry, rulesRepo: rules, claudeAgentsRepo: claudeAgents, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug}
 }
 
 func (h *Handler) Routes() http.Handler {
@@ -240,6 +241,8 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/api/v1/admin/servers/", h.adminServerDetail)
 	mux.HandleFunc("/api/v1/admin/rules", h.adminRules)
 	mux.HandleFunc("/api/v1/admin/rules/", h.adminRuleDetail)
+	mux.HandleFunc("/api/v1/admin/claude-agents", h.adminClaudeAgents)
+	mux.HandleFunc("/api/v1/admin/claude-agents/", h.adminClaudeAgentDetail)
 	mux.HandleFunc("/api/v1/admin/oauth/callback", h.oauthCallback)
 	mux.HandleFunc("/api/v1/admin/policy", h.adminPolicy)
 	mux.HandleFunc("/api/v1/external/invocations", h.externalInvocations)
