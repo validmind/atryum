@@ -46,6 +46,9 @@ func (s *stubService) Get(context.Context, string) (invocation.InvocationRespons
 func (s *stubService) List(context.Context, invocation.InvocationListFilter) (invocation.InvocationListResponse, error) {
 	return invocation.InvocationListResponse{Items: []invocation.InvocationResponse{s.invoke}, Total: 1, Limit: 50}, nil
 }
+func (s *stubService) ListAgentIDs(context.Context) ([]string, error) {
+	return nil, nil
+}
 func (s *stubService) Events(context.Context, string, invocation.EventListFilter) (invocation.EventListResponse, error) {
 	return invocation.EventListResponse{}, nil
 }

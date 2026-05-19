@@ -34,6 +34,7 @@ type service interface {
 	ResolveToolServer(ctx context.Context, toolName string) (string, error)
 	Get(ctx context.Context, id string) (invocation.InvocationResponse, error)
 	List(ctx context.Context, filter invocation.InvocationListFilter) (invocation.InvocationListResponse, error)
+	ListAgentIDs(ctx context.Context) ([]string, error)
 	Events(ctx context.Context, invocationID string, filter invocation.EventListFilter) (invocation.EventListResponse, error)
 	Approve(ctx context.Context, invocationID string) error
 	Deny(ctx context.Context, invocationID string, message string) error
@@ -77,6 +78,7 @@ type Handler struct {
 	debug          bool
 	authDebugSkip  bool
 	authValidator  *auth.Validator
+	apiKeyAuth     auth.APIKeyConfig
 }
 
 type PolicyStatusResponse struct {
@@ -242,6 +244,12 @@ func (h *Handler) SetAuthDebugSkipVerify(enabled bool) {
 	h.authDebugSkip = enabled
 }
 
+// SetAPIKeyAuth installs the static api-key/secret pair used to protect the
+// read-only invocation reporting endpoints.
+func (h *Handler) SetAPIKeyAuth(cfg auth.APIKeyConfig) {
+	h.apiKeyAuth = cfg
+}
+
 // protectedResourceMetadata serves the OAuth 2.0 protected-resource metadata
 // (RFC 9728) document so MCP clients can discover the authorization server.
 // The resource URL is computed from the incoming request so deployments
@@ -271,6 +279,9 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/api/v1/admin/policy", h.adminPolicy)
 	mux.HandleFunc("/api/v1/external/invocations", h.externalInvocations)
 	mux.HandleFunc("/api/v1/external/invocations/", h.externalInvocationDetail)
+	apiKeyMW := auth.APIKeyMiddleware(h.apiKeyAuth)
+	mux.Handle("/agent_ids", apiKeyMW(http.HandlerFunc(h.agentIDs)))
+	mux.Handle("/invocations/", apiKeyMW(http.HandlerFunc(h.invocationsByAgentID)))
 	mux.HandleFunc("/ui", h.uiIndex)
 	mux.Handle("/ui/", http.StripPrefix("/ui/", h.spaFileServer()))
 	mux.HandleFunc("/", h.root)
@@ -522,6 +533,78 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		w.WriteHeader(status)
 		_, _ = w.Write(forwarded.Body)
 	}
+}
+
+// agentIDs returns the distinct agent IDs that have submitted invocations.
+// Protected by the API key middleware.
+func (h *Handler) agentIDs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	ids, err := h.svc.ListAgentIDs(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if ids == nil {
+		ids = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": ids})
+}
+
+// invocationsByAgentID returns a paginated list of invocations for the given
+// agent_id. Supports optional `start_date` and `end_date` query parameters
+// (RFC3339). Protected by the API key middleware.
+func (h *Handler) invocationsByAgentID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	agentID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/invocations/"), "/")
+	if agentID == "" {
+		writeError(w, http.StatusBadRequest, "agent_id is required")
+		return
+	}
+	filter := invocation.InvocationListFilter{
+		Offset:  readUintQuery(r, "offset", 0),
+		Limit:   readUintQuery(r, "limit", 50),
+		AgentID: agentID,
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("start_date")); raw != "" {
+		t, err := parseDateParam(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid start_date: "+err.Error())
+			return
+		}
+		filter.StartDate = &t
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("end_date")); raw != "" {
+		t, err := parseDateParam(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid end_date: "+err.Error())
+			return
+		}
+		filter.EndDate = &t
+	}
+	resp, err := h.svc.List(r.Context(), filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// parseDateParam accepts RFC3339 timestamps as well as YYYY-MM-DD dates
+// (interpreted as UTC midnight).
+func parseDateParam(value string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, value); err == nil {
+		return t.UTC(), nil
+	}
+	if t, err := time.Parse("2006-01-02", value); err == nil {
+		return t.UTC(), nil
+	}
+	return time.Time{}, fmt.Errorf("expected RFC3339 timestamp or YYYY-MM-DD date")
 }
 
 func (h *Handler) adminInvocations(w http.ResponseWriter, r *http.Request) {

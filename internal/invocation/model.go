@@ -54,12 +54,14 @@ type Event struct {
 }
 
 type InvocationListFilter struct {
-	Offset  uint64
-	Limit   uint64
-	Server  string
-	Tool    string
-	Status  string
-	AgentID string
+	Offset    uint64
+	Limit     uint64
+	Server    string
+	Tool      string
+	Status    string
+	AgentID   string
+	StartDate *time.Time
+	EndDate   *time.Time
 }
 
 type EventListFilter struct {

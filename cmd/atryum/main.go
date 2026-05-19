@@ -95,6 +95,12 @@ func main() {
 	} else {
 		log.Printf("inbound auth disabled (no [[auth]] section configured)")
 	}
+	handler.SetAPIKeyAuth(cfg.APIKey)
+	if cfg.APIKey.Enabled() {
+		log.Printf("api key auth enabled for /invocations/{agent_id} and /agent_ids")
+	} else {
+		log.Printf("api key auth NOT configured: /invocations/{agent_id} and /agent_ids will refuse all requests")
+	}
 	authDebugSkipVerify := cfg.AuthDebug.SkipVerify || truthyEnv("ATRYUM_AUTH_DEBUG_SKIP_VERIFY")
 	if authDebugSkipVerify {
 		handler.SetAuthDebugSkipVerify(true)
