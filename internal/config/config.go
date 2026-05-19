@@ -12,6 +12,7 @@ import (
 type Config struct {
 	Server    ServerConfig     `toml:"server"`
 	Backend   BackendConfig    `toml:"backend"`
+	AgentSync AgentSyncConfig  `toml:"agent_sync"`
 	Defaults  DefaultsConfig   `toml:"defaults"`
 	Policy    PolicyConfig     `toml:"policy"`
 	Upstreams []UpstreamConfig `toml:"upstreams"`
@@ -20,6 +21,14 @@ type Config struct {
 	// facing /mcp/ routes remain anonymous.
 	Auth      []auth.Config   `toml:"auth"`
 	AuthDebug AuthDebugConfig `toml:"auth_debug"`
+}
+
+// AgentSyncConfig configures startup agent (inventory model) fetching from the
+// ValidMind backend. All fields are optional; the fetch is skipped when either
+// OrgCUID or RecordTypeCUID is empty.
+type AgentSyncConfig struct {
+	OrgCUID             string `toml:"org_cuid"`
+	AgentRecordTypeSlug string `toml:"agent_record_type_slug"`
 }
 
 // BackendConfig configures Atryum's startup connection check to the ValidMind

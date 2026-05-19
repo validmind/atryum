@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/google/uuid"
 
 	"atryum/internal/api"
 	"atryum/internal/auth"
@@ -60,6 +63,47 @@ func main() {
 	serverRepo := store.NewServerRepoWithDialect(db, dialect)
 	oauthRepo := store.NewOAuthRepoWithDialect(db, dialect)
 	rulesRepo := store.NewRulesRepoWithDialect(db, dialect)
+	agentsRepo := store.NewAgentsRepoWithDialect(db, dialect)
+
+	// syncAgents is the shared sync function used both at startup and via the
+	// admin API POST /api/v1/admin/agents/sync endpoint.
+	syncAgents := func(ctx context.Context) error {
+		if backendClient == nil {
+			return fmt.Errorf("backend not configured")
+		}
+		if cfg.AgentSync.OrgCUID == "" || cfg.AgentSync.AgentRecordTypeSlug == "" {
+			return fmt.Errorf("agent_sync org_cuid and agent_record_type_slug must be set")
+		}
+		agentsResp, err := backendClient.FetchAgents(ctx, cfg.AgentSync.OrgCUID, cfg.AgentSync.AgentRecordTypeSlug)
+		if err != nil {
+			return fmt.Errorf("fetch agents: %w", err)
+		}
+		log.Printf("agent sync: fetched %d agent(s) for org=%s (%s) record_type=%s", agentsResp.Total, agentsResp.OrgCUID, agentsResp.OrgName, cfg.AgentSync.AgentRecordTypeSlug)
+		syncedAt := time.Now().UTC()
+		for _, a := range agentsResp.Results {
+			description, _ := a.CustomFields["description"].(string)
+			log.Printf("  agent cuid=%s name=%q description=%q", a.CUID, a.Name, description)
+			if upsertErr := agentsRepo.Upsert(ctx, store.AgentRecord{
+				ID:                 uuid.NewString(),
+				VMOrganizationCUID: agentsResp.OrgCUID,
+				VMOrganizationName: agentsResp.OrgName,
+				VMCUID:             a.CUID,
+				VMName:             a.Name,
+				VMDescription:      description,
+				Enabled:            true,
+				SyncedAt:           syncedAt,
+			}); upsertErr != nil {
+				log.Printf("  agent sync upsert failed for cuid=%s: %v", a.CUID, upsertErr)
+			}
+		}
+		return nil
+	}
+
+	if backendClient != nil && cfg.AgentSync.OrgCUID != "" && cfg.AgentSync.AgentRecordTypeSlug != "" {
+		if err := syncAgents(context.Background()); err != nil {
+			log.Printf("agent sync failed: %v", err)
+		}
+	}
 	resolver := mcp.NewResolver(serverRepo, cfg)
 	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
 		log.Fatalf("bootstrap servers: %v", err)
@@ -83,7 +127,7 @@ func main() {
 
 	service := invocation.NewService(invRepo, eventRepo, resolver, client, policyRegistry, time.Duration(cfg.Defaults.RequestTimeoutSeconds)*time.Second, rulesRepo)
 	serverAdmin := api.NewServerAdminService(serverRepo, oauthRepo, client, 5*time.Second)
-	handler := api.NewHandler(service, serverAdmin, policyRegistry, rulesRepo)
+	handler := api.NewHandler(service, serverAdmin, policyRegistry, rulesRepo, agentsRepo, syncAgents)
 
 	authValidator, err := auth.NewValidator(cfg.Auth, nil)
 	if err != nil {

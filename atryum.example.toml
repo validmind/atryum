@@ -25,6 +25,15 @@ machine_key = ""
 machine_secret = ""
 connection_timeout_seconds = 5
 
+# Optional agent sync configuration. When base_url is set in [backend] and
+# both org_cuid and record_type_cuid are provided, Atryum fetches all active
+# inventory models (agents) for that org + primary record type at startup and
+# prints their cuid, name, description, and agent_ids (from agent_ids_field_name).
+#
+# [agent_sync]
+# org_cuid = ""
+# agent_record_type_slug = ""
+
 [defaults]
 request_timeout_seconds = 30
 

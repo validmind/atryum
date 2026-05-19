@@ -13,11 +13,26 @@ import (
 )
 
 const connectionPath = "/internal/v1/atryum/connection"
+const agentsPath = "/internal/v1/atryum/agents"
 
 type ConnectionResponse struct {
 	OK              bool   `json:"ok"`
 	MachineUserCUID string `json:"machine_user_cuid"`
 	ServiceName     string `json:"service_name"`
+}
+
+// Agent represents an inventory model record returned by the backend.
+type Agent struct {
+	CUID         string         `json:"cuid"`
+	Name         string         `json:"name"`
+	CustomFields map[string]any `json:"custom_fields"`
+}
+
+type AgentsResponse struct {
+	OrgCUID string  `json:"org_cuid"`
+	OrgName string  `json:"org_name"`
+	Results []Agent `json:"results"`
+	Total   int     `json:"total"`
 }
 
 type Client struct {
@@ -45,6 +60,44 @@ func NewClient(cfg config.BackendConfig) (*Client, error) {
 		machineSecret: strings.TrimSpace(cfg.MachineSecret),
 		httpClient:    &http.Client{Timeout: time.Duration(cfg.ConnectionTimeoutSecs) * time.Second},
 	}, nil
+}
+
+// FetchAgents retrieves active inventory model agents from the backend for the
+// given org and primary record type slug. It returns an empty slice when the
+// backend returns zero results.
+func (c *Client) FetchAgents(ctx context.Context, orgCUID, agentRecordTypeSlug string) (AgentsResponse, error) {
+	u, err := url.Parse(c.baseURL + agentsPath)
+	if err != nil {
+		return AgentsResponse{}, fmt.Errorf("build agents URL: %w", err)
+	}
+	q := u.Query()
+	q.Set("org_cuid", orgCUID)
+	q.Set("primary_record_type_slug", agentRecordTypeSlug)
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return AgentsResponse{}, fmt.Errorf("build agents request: %w", err)
+	}
+	req.Header.Set("X-MACHINE-KEY", c.machineKey)
+	req.Header.Set("X-MACHINE-SECRET", c.machineSecret)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return AgentsResponse{}, fmt.Errorf("call agents endpoint: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return AgentsResponse{}, fmt.Errorf("agents endpoint returned %s", resp.Status)
+	}
+
+	var payload AgentsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return AgentsResponse{}, fmt.Errorf("decode agents response: %w", err)
+	}
+	return payload, nil
 }
 
 func (c *Client) CheckConnection(ctx context.Context) (ConnectionResponse, error) {
