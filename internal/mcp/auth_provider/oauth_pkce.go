@@ -37,6 +37,7 @@ func (OAuthPKCEProvider) BuildConnectRequest(_ context.Context, upstream mcp.Ups
 	if err != nil {
 		return ConnectRequest{}, err
 	}
+	debugf("pkce build server=%s state=%s verifier_len=%d challenge=%s client_id=%s redirect_uri=%s", upstream.Name, state, len(verifier), challenge, upstream.OAuthClientID, redirectURI)
 	values := url.Values{}
 	values.Set("response_type", "code")
 	values.Set("client_id", upstream.OAuthClientID)
@@ -57,6 +58,8 @@ func (OAuthPKCEProvider) ExchangeAuthCode(ctx context.Context, client *mcp.Clien
 	if strings.TrimSpace(session.CodeVerifier) == "" {
 		return mcp.OAuthToken{}, fmt.Errorf("missing pkce code verifier")
 	}
+	replayChallenge := pkceChallengeFromVerifier(session.CodeVerifier)
+	debugf("pkce exchange server=%s state=%s verifier_len=%d replay_challenge=%s redirect_uri=%s code_len=%d", upstream.Name, session.State, len(session.CodeVerifier), replayChallenge, redirectURI, len(code))
 	return client.ExchangeOAuthCode(ctx, upstream, code, redirectURI, session.CodeVerifier)
 }
 
@@ -66,7 +69,10 @@ func newPKCEPair() (string, string, error) {
 		return "", "", err
 	}
 	verifier := base64.RawURLEncoding.EncodeToString(raw)
+	return verifier, pkceChallengeFromVerifier(verifier), nil
+}
+
+func pkceChallengeFromVerifier(verifier string) string {
 	sum := sha256.Sum256([]byte(verifier))
-	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
-	return verifier, challenge, nil
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }

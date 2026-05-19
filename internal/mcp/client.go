@@ -107,7 +107,23 @@ type Upstream struct {
 	OAuthClientID      string
 	OAuthClientSecret  string
 	OAuthScopes        string
+	// OAuthClientRegistration records HOW the OAuth client_id was obtained,
+	// independent of which strategy is now driving the live flow. After DCR
+	// runs, OAuthProviderID flips to oauth_pkce / oauth_client_secret
+	// because that's operationally what's happening — this field preserves
+	// the registration provenance so the UI can label it correctly and we
+	// can act on the distinction later (e.g. "re-register" buttons).
+	OAuthClientRegistration ClientRegistration
 }
+
+type ClientRegistration string
+
+const (
+	ClientRegistrationUnknown   ClientRegistration = ""
+	ClientRegistrationPreshared ClientRegistration = "preshared"
+	ClientRegistrationDynamic   ClientRegistration = "dynamic"
+	ClientRegistrationCIMD      ClientRegistration = "cimd"
+)
 
 type Envelope struct {
 	JSONRPC string          `json:"jsonrpc,omitempty"`
@@ -367,27 +383,43 @@ func (c *Client) ExchangeOAuthCode(ctx context.Context, upstream Upstream, code 
 		return OAuthToken{}, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	c.debugf("oauth token exchange server=%s token_url=%s client_id=%s has_secret=%t has_verifier=%t redirect_uri=%s", upstream.Name, upstream.OAuthTokenURL, upstream.OAuthClientID, strings.TrimSpace(upstream.OAuthClientSecret) != "", strings.TrimSpace(codeVerifier) != "", redirectURI)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		c.debugf("oauth token exchange transport error server=%s err=%v", upstream.Name, err)
 		return OAuthToken{}, err
 	}
 	defer resp.Body.Close()
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	c.debugf("oauth token exchange response server=%s status=%d body=%s", upstream.Name, resp.StatusCode, truncateForLog(bodyBytes, 600))
 	var payload struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		TokenType    string `json:"token_type"`
-		Scope        string `json:"scope"`
-		ExpiresIn    int    `json:"expires_in"`
-		Error        string `json:"error"`
+		AccessToken      string `json:"access_token"`
+		RefreshToken     string `json:"refresh_token"`
+		TokenType        string `json:"token_type"`
+		Scope            string `json:"scope"`
+		ExpiresIn        int    `json:"expires_in"`
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return OAuthToken{}, err
-	}
+	_ = json.Unmarshal(bodyBytes, &payload)
 	if resp.StatusCode >= http.StatusBadRequest || payload.Error != "" || payload.AccessToken == "" {
-		if payload.Error != "" {
-			return OAuthToken{}, fmt.Errorf("oauth token exchange failed: %s", payload.Error)
+		// Surface as much of the AS response as we can — the bare status is
+		// useless for diagnosing why an OAuth exchange failed.
+		snippet := strings.TrimSpace(string(bodyBytes))
+		if len(snippet) > 400 {
+			snippet = snippet[:400] + "…"
 		}
-		return OAuthToken{}, fmt.Errorf("oauth token exchange failed with status %d", resp.StatusCode)
+		switch {
+		case payload.Error != "" && payload.ErrorDescription != "":
+			return OAuthToken{}, fmt.Errorf("oauth token exchange failed (status %d): %s — %s", resp.StatusCode, payload.Error, payload.ErrorDescription)
+		case payload.Error != "":
+			return OAuthToken{}, fmt.Errorf("oauth token exchange failed (status %d): %s", resp.StatusCode, payload.Error)
+		case snippet != "":
+			return OAuthToken{}, fmt.Errorf("oauth token exchange failed (status %d): %s", resp.StatusCode, snippet)
+		default:
+			return OAuthToken{}, fmt.Errorf("oauth token exchange failed with status %d (empty body)", resp.StatusCode)
+		}
 	}
 	var expiresAt *time.Time
 	if payload.ExpiresIn > 0 {
@@ -1030,4 +1062,12 @@ func (c *Client) debugf(format string, args ...any) {
 		return
 	}
 	log.Printf("[mcp] "+format, args...)
+}
+
+func truncateForLog(b []byte, max int) string {
+	s := strings.TrimSpace(string(b))
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }

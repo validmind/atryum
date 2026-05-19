@@ -122,21 +122,32 @@ type AdminServer struct {
 	LastCheckOK        bool              `json:"last_check_ok"`
 	LastErrorSummary   *string           `json:"last_error_summary,omitempty"`
 	ActionRequired     *string           `json:"action_required,omitempty"`
-	OAuthProviderID    string            `json:"oauth_provider_id,omitempty"`
-	OAuthProviderLabel string            `json:"oauth_provider_label,omitempty"`
+	OAuthProviderID         string `json:"oauth_provider_id,omitempty"`
+	OAuthProviderLabel      string `json:"oauth_provider_label,omitempty"`
+	OAuthClientRegistration string `json:"oauth_client_registration,omitempty"`
+	OAuthClientID           string `json:"oauth_client_id,omitempty"`
+	OAuthAuthorizeURL       string `json:"oauth_authorize_url,omitempty"`
+	OAuthTokenURL           string `json:"oauth_token_url,omitempty"`
+	OAuthScopes             string `json:"oauth_scopes,omitempty"`
+	HasOAuthClientSecret    bool   `json:"has_oauth_client_secret,omitempty"`
 }
 
 type AdminServerUpsertRequest struct {
-	Name           string            `json:"name,omitempty"`
-	Mode           string            `json:"mode"`
-	BaseURL        string            `json:"base_url,omitempty"`
-	AuthToken      string            `json:"auth_token,omitempty"`
-	AuthHeaders    []mcp.AuthHeader  `json:"auth_headers,omitempty"`
-	TimeoutSeconds int               `json:"timeout_seconds,omitempty"`
-	Command        string            `json:"command,omitempty"`
-	Args           []string          `json:"args,omitempty"`
-	Env            map[string]string `json:"env,omitempty"`
-	Enabled        *bool             `json:"enabled,omitempty"`
+	Name              string            `json:"name,omitempty"`
+	Mode              string            `json:"mode"`
+	BaseURL           string            `json:"base_url,omitempty"`
+	AuthToken         string            `json:"auth_token,omitempty"`
+	AuthHeaders       []mcp.AuthHeader  `json:"auth_headers,omitempty"`
+	TimeoutSeconds    int               `json:"timeout_seconds,omitempty"`
+	Command           string            `json:"command,omitempty"`
+	Args              []string          `json:"args,omitempty"`
+	Env               map[string]string `json:"env,omitempty"`
+	Enabled           *bool             `json:"enabled,omitempty"`
+	OAuthClientID     string            `json:"oauth_client_id,omitempty"`
+	OAuthClientSecret string            `json:"oauth_client_secret,omitempty"`
+	OAuthAuthorizeURL string            `json:"oauth_authorize_url,omitempty"`
+	OAuthTokenURL     string            `json:"oauth_token_url,omitempty"`
+	OAuthScopes       string            `json:"oauth_scopes,omitempty"`
 }
 
 type ServerListResponse struct {
@@ -1231,6 +1242,11 @@ func (s *ServerAdminService) Upsert(ctx context.Context, name string, req AdminS
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 	}
+	// Load any existing row so we can preserve OAuth fields the form
+	// chose not to re-send (notably client_secret, which is never echoed
+	// back to the browser).
+	existing, _ := s.repo.GetServerAny(ctx, serverName)
+
 	upstream := mcp.Upstream{
 		Name:        serverName,
 		Mode:        mcp.UpstreamMode(mode),
@@ -1243,6 +1259,31 @@ func (s *ServerAdminService) Upsert(ctx context.Context, name string, req AdminS
 		Env:         cloneEnv(req.Env),
 		Enabled:     enabled,
 	}
+
+	// OAuth fields from the request body win, except client_secret which
+	// uses an empty-means-unchanged semantic (the form never receives the
+	// stored secret, so submitting empty must not wipe it). Provenance is
+	// flipped to "preshared" only when the admin actually changes the
+	// client_id — a re-saved DCR row keeps its "dynamic" tag.
+	upstream.OAuthClientID = strings.TrimSpace(req.OAuthClientID)
+	upstream.OAuthAuthorizeURL = strings.TrimSpace(req.OAuthAuthorizeURL)
+	upstream.OAuthTokenURL = strings.TrimSpace(req.OAuthTokenURL)
+	upstream.OAuthScopes = strings.TrimSpace(req.OAuthScopes)
+	upstream.OAuthClientRegistration = existing.OAuthClientRegistration
+	if strings.TrimSpace(req.OAuthClientSecret) != "" {
+		upstream.OAuthClientSecret = req.OAuthClientSecret
+	} else {
+		upstream.OAuthClientSecret = existing.OAuthClientSecret
+	}
+	if upstream.OAuthClientID != "" && upstream.OAuthClientID != existing.OAuthClientID {
+		upstream.OAuthClientRegistration = mcp.ClientRegistrationPreshared
+	}
+	if upstream.OAuthClientID == "" {
+		// Cleared — drop provenance so a re-discovery on next save can
+		// pick the right registration mode again.
+		upstream.OAuthClientRegistration = mcp.ClientRegistrationUnknown
+	}
+
 	prepared, prepareErr := authprovider.Prepare(ctx, authprovider.NewRegistry(), upstream)
 	if prepareErr == nil {
 		upstream = prepared
@@ -1312,9 +1353,16 @@ func (s *ServerAdminService) StartConnect(ctx context.Context, name string, appB
 	if err != nil {
 		return OAuthConnectStartResponse{}, err
 	}
+	if connectReq.UpstreamPatch != nil {
+		connectReq.UpstreamPatch(&upstream)
+		if err := s.repo.UpsertServer(ctx, upstream); err != nil {
+			return OAuthConnectStartResponse{}, err
+		}
+	}
 	if err := s.oauthRepo.UpsertConnectSession(ctx, store.OAuthConnectSession{State: stateToken, ServerName: name, Status: "pending", CodeVerifier: connectReq.CodeVerifier, RedirectURI: redirectURI, StartedAt: time.Now().UTC()}); err != nil {
 		return OAuthConnectStartResponse{}, err
 	}
+	log.Printf("[mcp-auth] start_connect server=%s state=%s verifier_len=%d redirect_uri=%s", name, stateToken, len(connectReq.CodeVerifier), redirectURI)
 	return OAuthConnectStartResponse{ConnectURL: connectReq.URL, State: stateToken}, nil
 }
 
@@ -1472,7 +1520,7 @@ func (h *Handler) externalInvocationDetail(w http.ResponseWriter, r *http.Reques
 }
 
 func toAdminServer(upstream mcp.Upstream) AdminServer {
-	return AdminServer{Name: upstream.Name, Mode: string(upstream.Mode), BaseURL: upstream.BaseURL, AuthToken: upstream.AuthToken, AuthHeaders: append([]mcp.AuthHeader(nil), upstream.AuthHeaders...), TimeoutSeconds: int(upstream.Timeout / time.Second), Command: upstream.Command, Args: append([]string(nil), upstream.Args...), Env: cloneEnv(upstream.Env), Enabled: upstream.Enabled, AuthType: string(upstream.Status.AuthType), ConnectionStatus: string(upstream.Status.ConnectionStatus), AuthStatus: string(upstream.Status.AuthStatus), ReauthNeeded: upstream.Status.ReauthNeeded, LastCheckedAt: upstream.Status.LastCheckedAt, LastCheckOK: upstream.Status.LastCheckOK, LastErrorSummary: upstream.Status.LastErrorSummary, ActionRequired: upstream.Status.ActionRequired, OAuthProviderID: upstream.OAuthProviderID, OAuthProviderLabel: upstream.OAuthProviderLabel}
+	return AdminServer{Name: upstream.Name, Mode: string(upstream.Mode), BaseURL: upstream.BaseURL, AuthToken: upstream.AuthToken, AuthHeaders: append([]mcp.AuthHeader(nil), upstream.AuthHeaders...), TimeoutSeconds: int(upstream.Timeout / time.Second), Command: upstream.Command, Args: append([]string(nil), upstream.Args...), Env: cloneEnv(upstream.Env), Enabled: upstream.Enabled, AuthType: string(upstream.Status.AuthType), ConnectionStatus: string(upstream.Status.ConnectionStatus), AuthStatus: string(upstream.Status.AuthStatus), ReauthNeeded: upstream.Status.ReauthNeeded, LastCheckedAt: upstream.Status.LastCheckedAt, LastCheckOK: upstream.Status.LastCheckOK, LastErrorSummary: upstream.Status.LastErrorSummary, ActionRequired: upstream.Status.ActionRequired, OAuthProviderID: upstream.OAuthProviderID, OAuthProviderLabel: upstream.OAuthProviderLabel, OAuthClientRegistration: string(upstream.OAuthClientRegistration), OAuthClientID: upstream.OAuthClientID, OAuthAuthorizeURL: upstream.OAuthAuthorizeURL, OAuthTokenURL: upstream.OAuthTokenURL, OAuthScopes: upstream.OAuthScopes, HasOAuthClientSecret: strings.TrimSpace(upstream.OAuthClientSecret) != ""}
 }
 
 func validateUpstream(upstream mcp.Upstream) error {
