@@ -366,9 +366,29 @@ async function loadServerDetail(name) {
   renderServerMeta(detail);
   setServerStatus(`Loaded server ${detail.name}.`, false);
   $('#toggle-server-enabled').textContent = detail.enabled ? 'Disable' : 'Enable';
-  $('#connect-server').textContent = detail.reauth_needed || detail.auth_status === 'missing_credentials' ? 'Reconnect' : 'Connect';
-  $('#connect-server').disabled = !detail.oauth_provider_id;
+  applyConnectButtonState(detail);
   await loadServersSelectionOnly();
+}
+
+// applyConnectButtonState centralizes the "should the Connect button be
+// enabled, and what should it say?" decision so that load / save paths
+// can't drift apart. Bearer-token and custom-header providers don't use a
+// browser flow, so they leave the button disabled with a hint. HTTP
+// upstreams with a base URL get an enabled button even when no provider
+// has been resolved yet — the connect attempt will trigger discovery and
+// (if advertised) Dynamic Client Registration.
+function applyConnectButtonState(detail) {
+  const btn = $('#connect-server');
+  const isHTTP = (detail.mode || 'http') === 'http';
+  const hasBaseURL = Boolean((detail.base_url || '').trim());
+  const providerID = detail.oauth_provider_id || '';
+  const isStatic = providerID === 'bearer_token' || providerID === 'custom_headers';
+  const reauth = detail.reauth_needed || detail.auth_status === 'missing_credentials' || detail.auth_status === 'invalid' || detail.auth_status === 'reauth_needed';
+  btn.textContent = reauth ? 'Reconnect' : 'Connect';
+  btn.disabled = !(isHTTP && hasBaseURL && !isStatic);
+  btn.title = isStatic
+    ? 'This server uses a static credential (bearer token or custom headers); no browser connect is needed.'
+    : (btn.disabled ? 'Set the server mode to HTTP and provide a base URL to enable OAuth connect.' : '');
 }
 
 async function loadServersSelectionOnly() {
@@ -383,11 +403,25 @@ function fillServerForm(detail) {
   $('#server-mode').value = detail.mode || 'http';
   $('#server-base-url').value = detail.base_url || '';
   $('#server-timeout').value = detail.timeout_seconds || 30;
-  $('#server-auth-summary').value = detail.oauth_provider_label || detail.auth_type || 'none';
+  const regLabels = { dynamic: 'registered dynamically', preshared: 'pre-shared client', cimd: 'client metadata document' };
+  const regSuffix = detail.oauth_client_registration && regLabels[detail.oauth_client_registration]
+    ? ` — ${regLabels[detail.oauth_client_registration]}`
+    : '';
+  $('#server-auth-summary').value = (detail.oauth_provider_label || detail.auth_type || 'none') + regSuffix;
   $('#server-command').value = detail.command || '';
   $('#server-args').value = JSON.stringify(detail.args || [], null, 2);
   $('#server-env').value = JSON.stringify(detail.env || {}, null, 2);
   $('#server-enabled').checked = Boolean(detail.enabled);
+  $('#server-oauth-client-id').value = detail.oauth_client_id || '';
+  // The backend never echoes client_secret; the form starts blank and an
+  // empty submit preserves the stored value.
+  $('#server-oauth-client-secret').value = '';
+  $('#server-oauth-client-secret').placeholder = detail.has_oauth_client_secret
+    ? '••••••• (unchanged)'
+    : '';
+  $('#server-oauth-authorize-url').value = detail.oauth_authorize_url || '';
+  $('#server-oauth-token-url').value = detail.oauth_token_url || '';
+  $('#server-oauth-scopes').value = detail.oauth_scopes || '';
   updateServerModeFields();
 }
 
@@ -427,8 +461,7 @@ function startNewServer() {
   $('#server-enabled').checked = true;
   $('#server-mode').value = 'http';
   $('#toggle-server-enabled').textContent = 'Disable';
-  $('#connect-server').textContent = 'Connect';
-  $('#connect-server').disabled = true;
+  applyConnectButtonState({ mode: 'http', base_url: '', oauth_provider_id: '' });
   $('#server-badges').innerHTML = [renderBadge('unknown'), renderBadge('unknown'), renderBadge('not_tested', 'neutral')].join('');
   $('#server-detail-summary').innerHTML = '<div><strong>Status:</strong> Create and test a server to see readiness and auth state.</div>';
   updateServerModeFields();
@@ -461,8 +494,7 @@ async function saveServer(overrideEnabled) {
     fillServerForm(saved);
     renderServerMeta(saved);
     $('#toggle-server-enabled').textContent = saved.enabled ? 'Disable' : 'Enable';
-    $('#connect-server').textContent = saved.reauth_needed || saved.auth_status === 'missing_credentials' ? 'Reconnect' : 'Connect';
-  $('#connect-server').disabled = !saved.oauth_provider_id;
+    applyConnectButtonState(saved);
     setServerStatus(`Saved server ${saved.name}.`, false);
     await loadServers();
     return saved;
@@ -483,6 +515,11 @@ function buildServerPayload(overrideEnabled) {
     args: parseJSONField('#server-args', 'Args JSON array', true),
     env: parseJSONField('#server-env', 'Env JSON object', false),
     enabled,
+    oauth_client_id: $('#server-oauth-client-id').value.trim(),
+    oauth_client_secret: $('#server-oauth-client-secret').value,
+    oauth_authorize_url: $('#server-oauth-authorize-url').value.trim(),
+    oauth_token_url: $('#server-oauth-token-url').value.trim(),
+    oauth_scopes: $('#server-oauth-scopes').value.trim(),
   };
 }
 

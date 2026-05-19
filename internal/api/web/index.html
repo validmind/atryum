@@ -189,6 +189,15 @@
                 <span>Auth / provider</span>
                 <input id="server-auth-summary" disabled placeholder="Detected automatically from URL or current auth state" />
               </label>
+              <details class="field-http full-width">
+                <summary>Manual OAuth configuration (advanced)</summary>
+                <p class="hint">For servers that don't support Dynamic Client Registration. Register an app with the provider (e.g. api.slack.com) and paste the credentials here. Leave Client Secret blank to keep any value already stored. Authorize/Token URLs are auto-discovered when blank.</p>
+                <label><span>Client ID</span><input id="server-oauth-client-id" placeholder="abcdef1234.5678" /></label>
+                <label><span>Client Secret</span><input id="server-oauth-client-secret" type="password" placeholder="(leave blank to keep stored value)" /></label>
+                <label><span>Authorize URL</span><input id="server-oauth-authorize-url" placeholder="auto-discovered when blank" /></label>
+                <label><span>Token URL</span><input id="server-oauth-token-url" placeholder="auto-discovered when blank" /></label>
+                <label><span>Scopes (space-separated)</span><input id="server-oauth-scopes" placeholder="chat:write channels:history" /></label>
+              </details>
               <label class="field-stdio">
                 <span>Command</span>
                 <input id="server-command" placeholder="npx" />
