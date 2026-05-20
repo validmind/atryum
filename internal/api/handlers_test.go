@@ -88,7 +88,7 @@ func (stubServerService) CompleteConnect(context.Context, string, string, string
 }
 
 func TestMCPInitializeNegotiatesProtocolVersion(t *testing.T) {
-	h := NewHandler(&stubService{}, stubServerService{}, nil, nil)
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("MCP-Protocol-Version", "2025-11-25")
@@ -113,7 +113,7 @@ func TestMCPInitializeNegotiatesProtocolVersion(t *testing.T) {
 }
 
 func TestMCPInitializedNotificationReturnsAccepted(t *testing.T) {
-	h := NewHandler(&stubService{}, stubServerService{}, nil, nil)
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`))
 	w := httptest.NewRecorder()
 
@@ -126,7 +126,7 @@ func TestMCPInitializedNotificationReturnsAccepted(t *testing.T) {
 
 func TestMCPPingPassThrough(t *testing.T) {
 	svc := &stubService{upstream: mcp.Upstream{Name: "demo", Mode: mcp.UpstreamModeHTTP}, forward: mcp.ForwardResult{StatusCode: http.StatusOK, Body: []byte(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`), ContentType: "application/json", ProtocolVersion: "2025-11-25"}}
-	h := NewHandler(svc, stubServerService{}, nil, nil)
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}`))
 	w := httptest.NewRecorder()
 
@@ -142,7 +142,7 @@ func TestMCPPingPassThrough(t *testing.T) {
 
 func TestMCPUnknownNotificationPassThroughFallbackAccepted(t *testing.T) {
 	svc := &stubService{fwdErr: context.Canceled}
-	h := NewHandler(svc, stubServerService{}, nil, nil)
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/custom","params":{"x":1}}`))
 	w := httptest.NewRecorder()
 
@@ -154,7 +154,7 @@ func TestMCPUnknownNotificationPassThroughFallbackAccepted(t *testing.T) {
 }
 
 func TestMCPMalformedJSONReturnsParseError(t *testing.T) {
-	h := NewHandler(&stubService{}, stubServerService{}, nil, nil)
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":`))
 	w := httptest.NewRecorder()
 
@@ -166,7 +166,7 @@ func TestMCPMalformedJSONReturnsParseError(t *testing.T) {
 }
 
 func TestMCPGetOpenSSEStream(t *testing.T) {
-	h := NewHandler(&stubService{}, stubServerService{}, nil, nil)
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodGet, "/mcp/demo", nil).WithContext(ctx)
 	w := httptest.NewRecorder()
@@ -187,7 +187,7 @@ func TestMCPGetOpenSSEStream(t *testing.T) {
 }
 
 func TestMCPDeleteReturn405(t *testing.T) {
-	h := NewHandler(&stubService{}, stubServerService{}, nil, nil)
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodDelete, "/mcp/demo", nil)
 	w := httptest.NewRecorder()
 	h.Routes().ServeHTTP(w, req)
@@ -197,7 +197,7 @@ func TestMCPDeleteReturn405(t *testing.T) {
 }
 
 func TestMCPToolsList(t *testing.T) {
-	h := NewHandler(&stubService{tools: []mcp.Tool{{Name: "demo_tool"}}}, stubServerService{}, nil, nil)
+	h := NewHandler(&stubService{tools: []mcp.Tool{{Name: "demo_tool"}}}, stubServerService{}, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
 	w := httptest.NewRecorder()
 
@@ -211,7 +211,7 @@ func TestMCPToolsList(t *testing.T) {
 func TestMCPToolsCallInterceptsInvocation(t *testing.T) {
 	now := time.Now().UTC()
 	svc := &stubService{invoke: invocation.InvocationResponse{InvocationID: "inv_123", ServerName: "demo", ToolName: "demo_tool", Status: invocation.StatusSucceeded, Input: json.RawMessage(`{"a":1}`), SubmittedAt: now, CompletedAt: &now, Result: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`)}}
-	h := NewHandler(svc, stubServerService{}, nil, nil)
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"demo_tool","arguments":{"a":1}}}`))
 	w := httptest.NewRecorder()
 
@@ -234,7 +234,7 @@ func TestMCPToolsCallInterceptsInvocation(t *testing.T) {
 func TestAdminInvocationsResponsesIncludeServerToolAndInput(t *testing.T) {
 	now := time.Now().UTC()
 	svc := &stubService{invoke: invocation.InvocationResponse{InvocationID: "inv_123", ServerName: "demo-server", ToolName: "demo_tool", Status: invocation.StatusSucceeded, Input: json.RawMessage(`{"issue":123,"verbose":true}`), SubmittedAt: now, CompletedAt: &now}}
-	h := NewHandler(svc, stubServerService{}, nil, nil)
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil)
 
 	t.Run("list", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)

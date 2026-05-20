@@ -14,6 +14,7 @@ import (
 
 const connectionPath = "/internal/v1/atryum/connection"
 const agentsPath = "/internal/v1/atryum/agents"
+const modelConfigsPath = "/internal/v1/atryum/model-configs"
 
 type ConnectionResponse struct {
 	OK              bool   `json:"ok"`
@@ -33,6 +34,18 @@ type AgentsResponse struct {
 	OrgName string  `json:"org_name"`
 	Results []Agent `json:"results"`
 	Total   int     `json:"total"`
+}
+
+// ModelConfig represents a single agent model configuration returned by the backend.
+type ModelConfig struct {
+	CUID string `json:"cuid"`
+	Name string `json:"name"`
+}
+
+// ModelConfigsResponse is the response envelope for the model-configs endpoint.
+type ModelConfigsResponse struct {
+	Items []ModelConfig `json:"items"`
+	Total int           `json:"total"`
 }
 
 type Client struct {
@@ -96,6 +109,33 @@ func (c *Client) FetchAgents(ctx context.Context, orgCUID, agentRecordTypeSlug s
 	var payload AgentsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return AgentsResponse{}, fmt.Errorf("decode agents response: %w", err)
+	}
+	return payload, nil
+}
+
+// FetchModelConfigs retrieves all agent model configurations from the backend.
+func (c *Client) FetchModelConfigs(ctx context.Context) (ModelConfigsResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+modelConfigsPath, nil)
+	if err != nil {
+		return ModelConfigsResponse{}, fmt.Errorf("build model-configs request: %w", err)
+	}
+	req.Header.Set("X-MACHINE-KEY", c.machineKey)
+	req.Header.Set("X-MACHINE-SECRET", c.machineSecret)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return ModelConfigsResponse{}, fmt.Errorf("call model-configs endpoint: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return ModelConfigsResponse{}, fmt.Errorf("model-configs endpoint returned %s", resp.Status)
+	}
+
+	var payload ModelConfigsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return ModelConfigsResponse{}, fmt.Errorf("decode model-configs response: %w", err)
 	}
 	return payload, nil
 }

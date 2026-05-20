@@ -128,7 +128,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 			if user == "" && req.RequestID != nil {
 				user = *req.RequestID
 			}
-			if matched := matchRule(approvalRules, upstream.Name, req.Tool, user); matched != nil {
+			if matched := matchRule(approvalRules, upstream.Name, req.Tool, user, ""); matched != nil {
 				ruleMatched = true
 				if matched.ID != "" {
 					matchedRuleID = &matched.ID
@@ -138,6 +138,9 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 					decision = policy.Decision{Disposition: policy.DispositionNever, Reason: "matched approval rule (auto_deny)"}
 				case RuleActionAutoApprove:
 					decision = policy.Decision{Disposition: policy.DispositionAuto, Reason: "matched approval rule (auto_approve)"}
+				case RuleActionAIEvaluation:
+					// Stub: fall back to human approval until LLM wiring is implemented.
+					decision = policy.Decision{Disposition: policy.DispositionHuman, Reason: "matched approval rule (ai_evaluation — pending human review)"}
 				default:
 					decision = policy.Decision{Disposition: policy.DispositionHuman, Reason: "matched approval rule (human_approval)"}
 				}
@@ -460,7 +463,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 			if user == "" && req.RequestID != nil {
 				user = *req.RequestID
 			}
-			if matched := matchRule(approvalRules, source, req.Tool, user); matched != nil {
+			if matched := matchRule(approvalRules, source, req.Tool, user, ""); matched != nil {
 				ruleAction = matched.Action
 			}
 		}

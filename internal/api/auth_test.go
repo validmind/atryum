@@ -92,7 +92,7 @@ func defaultClaims() jwt.MapClaims {
 
 func newAuthedHandler(t *testing.T, svc service, rig *authTestRig) http.Handler {
 	t.Helper()
-	h := NewHandler(svc, stubServerService{}, nil, nil)
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil)
 	h.SetAuthValidator(rig.v)
 	return h.Routes()
 }
@@ -238,7 +238,7 @@ func TestProtectedResourceMetadataServed(t *testing.T) {
 
 // Sanity: when no validator is configured, /mcp/ behaves as before.
 func TestMCPNoValidatorPreservesAnonymousAccess(t *testing.T) {
-	h := NewHandler(&stubService{}, stubServerService{}, nil, nil)
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`))
 	w := httptest.NewRecorder()
 	h.Routes().ServeHTTP(w, req)

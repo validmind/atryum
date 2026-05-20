@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"atryum/internal/auth"
+	backendclient "atryum/internal/backend"
 	"atryum/internal/invocation"
 	"atryum/internal/invocation/policy"
 	"atryum/internal/mcp"
@@ -75,17 +76,18 @@ type agentsRepo interface {
 }
 
 type Handler struct {
-	svc            service
-	serverSvc      serverService
-	policyRegistry *policy.Registry
-	rulesRepo      rulesRepo
-	agentsRepo     agentsRepo
-	syncAgentsFn   func(ctx context.Context) error
-	forwarder      mcpEnvelopeForwarder
-	staticHTTP     http.Handler
-	debug          bool
-	authDebugSkip  bool
-	authValidator  *auth.Validator
+	svc             service
+	serverSvc       serverService
+	policyRegistry  *policy.Registry
+	rulesRepo       rulesRepo
+	agentsRepo      agentsRepo
+	backendClient   *backendclient.Client
+	syncAgentsFn    func(ctx context.Context) error
+	forwarder       mcpEnvelopeForwarder
+	staticHTTP      http.Handler
+	debug           bool
+	authDebugSkip   bool
+	authValidator   *auth.Validator
 }
 
 type PolicyStatusResponse struct {
@@ -193,25 +195,40 @@ type OAuthConnectStatusResponse struct {
 // ─── Rules ───────────────────────────────────────────────────────────────────
 
 type AdminRule struct {
-	ID             string    `json:"id"`
-	Action         string    `json:"action"`
-	ServerPatterns []string  `json:"server_patterns"`
-	ToolPatterns   []string  `json:"tool_patterns"`
-	AgentIDPattern string    `json:"agent_id_pattern"`
-	Description    string    `json:"description,omitempty"`
-	Enabled        bool      `json:"enabled"`
-	Order          int       `json:"order"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID              string    `json:"id"`
+	Action          string    `json:"action"`
+	ServerPatterns  []string  `json:"server_patterns"`
+	ToolPatterns    []string  `json:"tool_patterns"`
+	AgentIDPattern  string    `json:"agent_id_pattern"`
+	ModelConfigCUID string    `json:"model_config_cuid,omitempty"`
+	AgentCUIDs      []string  `json:"agent_cuids"`
+	Description     string    `json:"description,omitempty"`
+	Enabled         bool      `json:"enabled"`
+	Order           int       `json:"order"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type AdminRuleInput struct {
-	Action         string   `json:"action"`
-	ServerPatterns []string `json:"server_patterns"`
-	ToolPatterns   []string `json:"tool_patterns"`
-	AgentIDPattern string   `json:"agent_id_pattern"`
-	Description    string   `json:"description,omitempty"`
-	Enabled        *bool    `json:"enabled,omitempty"`
+	Action          string   `json:"action"`
+	ServerPatterns  []string `json:"server_patterns"`
+	ToolPatterns    []string `json:"tool_patterns"`
+	AgentIDPattern  string   `json:"agent_id_pattern"`
+	ModelConfigCUID string   `json:"model_config_cuid,omitempty"`
+	AgentCUIDs      []string `json:"agent_cuids"`
+	Description     string   `json:"description,omitempty"`
+	Enabled         *bool    `json:"enabled,omitempty"`
+}
+
+// AdminModelConfig is the API representation of a VM agent model configuration.
+type AdminModelConfig struct {
+	CUID string `json:"cuid"`
+	Name string `json:"name"`
+}
+
+type ModelConfigListResponse struct {
+	Items []AdminModelConfig `json:"items"`
+	Total int                `json:"total"`
 }
 
 type RuleListResponse struct {
@@ -286,7 +303,7 @@ type invocationStreamEnvelope struct {
 	Items []invocation.InvocationResponse `json:"items"`
 }
 
-func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Registry, rules rulesRepo, agents agentsRepo, syncAgents func(ctx context.Context) error) *Handler {
+func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Registry, rules rulesRepo, agents agentsRepo, syncAgents func(ctx context.Context) error, bc *backendclient.Client) *Handler {
 	staticSub, err := fs.Sub(webFS, "web")
 	if err != nil {
 		panic(err)
@@ -296,7 +313,7 @@ func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Reg
 	if f, ok := svc.(mcpEnvelopeForwarder); ok {
 		forwarder = f
 	}
-	return &Handler{svc: svc, serverSvc: serverSvc, policyRegistry: policyRegistry, rulesRepo: rules, agentsRepo: agents, syncAgentsFn: syncAgents, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug}
+	return &Handler{svc: svc, serverSvc: serverSvc, policyRegistry: policyRegistry, rulesRepo: rules, agentsRepo: agents, backendClient: bc, syncAgentsFn: syncAgents, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug}
 }
 
 // SetAuthValidator installs the inbound auth validator. When non-nil, the
@@ -337,6 +354,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/api/v1/admin/rules/", h.adminRuleDetail)
 	mux.HandleFunc("/api/v1/admin/agents", h.adminAgents)
 	mux.HandleFunc("/api/v1/admin/agents/", h.adminAgentDetail)
+	mux.HandleFunc("/api/v1/admin/model-configs", h.adminModelConfigs)
 	mux.HandleFunc("/api/v1/admin/oauth/callback", h.oauthCallback)
 	mux.HandleFunc("/api/v1/admin/policy", h.adminPolicy)
 	mux.HandleFunc("/api/v1/external/invocations", h.externalInvocations)
@@ -705,13 +723,15 @@ func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) 
 				enabled = *req.CreateRule.Enabled
 			}
 			newRule := store.Rule{
-				ID:             "rule_" + newUUID(),
-				Action:         req.CreateRule.Action,
-				ServerPatterns: normalizePatternSlice(req.CreateRule.ServerPatterns),
-				ToolPatterns:   normalizePatternSlice(req.CreateRule.ToolPatterns),
-				AgentIDPattern: defaultPattern(req.CreateRule.AgentIDPattern),
-				Description:    req.CreateRule.Description,
-				Enabled:        enabled,
+				ID:              "rule_" + newUUID(),
+				Action:          req.CreateRule.Action,
+				ServerPatterns:  normalizePatternSlice(req.CreateRule.ServerPatterns),
+				ToolPatterns:    normalizePatternSlice(req.CreateRule.ToolPatterns),
+				AgentIDPattern:  defaultPattern(req.CreateRule.AgentIDPattern),
+				ModelConfigCUID: req.CreateRule.ModelConfigCUID,
+				AgentCUIDs:      normalizePatternSlice(req.CreateRule.AgentCUIDs),
+				Description:     req.CreateRule.Description,
+				Enabled:         enabled,
 			}
 			if err := h.rulesRepo.InsertBefore(r.Context(), anchorID, newRule); err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
@@ -753,13 +773,15 @@ func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) 
 				enabled = *req.CreateRule.Enabled
 			}
 			newRule := store.Rule{
-				ID:             "rule_" + newUUID(),
-				Action:         req.CreateRule.Action,
-				ServerPatterns: normalizePatternSlice(req.CreateRule.ServerPatterns),
-				ToolPatterns:   normalizePatternSlice(req.CreateRule.ToolPatterns),
-				AgentIDPattern: defaultPattern(req.CreateRule.AgentIDPattern),
-				Description:    req.CreateRule.Description,
-				Enabled:        enabled,
+				ID:              "rule_" + newUUID(),
+				Action:          req.CreateRule.Action,
+				ServerPatterns:  normalizePatternSlice(req.CreateRule.ServerPatterns),
+				ToolPatterns:    normalizePatternSlice(req.CreateRule.ToolPatterns),
+				AgentIDPattern:  defaultPattern(req.CreateRule.AgentIDPattern),
+				ModelConfigCUID: req.CreateRule.ModelConfigCUID,
+				AgentCUIDs:      normalizePatternSlice(req.CreateRule.AgentCUIDs),
+				Description:     req.CreateRule.Description,
+				Enabled:         enabled,
 			}
 			if err := h.rulesRepo.InsertBefore(r.Context(), anchorID, newRule); err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
@@ -1043,14 +1065,16 @@ func (h *Handler) adminRules(w http.ResponseWriter, r *http.Request) {
 			enabled = *req.Enabled
 		}
 		rule := store.Rule{
-			ID:             "rule_" + newUUID(),
-			Action:         req.Action,
-			ServerPatterns: normalizePatternSlice(req.ServerPatterns),
-			ToolPatterns:   normalizePatternSlice(req.ToolPatterns),
-			AgentIDPattern: defaultPattern(req.AgentIDPattern),
-			Description:    req.Description,
-			Enabled:        enabled,
-			Order:          order,
+			ID:              "rule_" + newUUID(),
+			Action:          req.Action,
+			ServerPatterns:  normalizePatternSlice(req.ServerPatterns),
+			ToolPatterns:    normalizePatternSlice(req.ToolPatterns),
+			AgentIDPattern:  defaultPattern(req.AgentIDPattern),
+			ModelConfigCUID: req.ModelConfigCUID,
+			AgentCUIDs:      normalizePatternSlice(req.AgentCUIDs),
+			Description:     req.Description,
+			Enabled:         enabled,
+			Order:           order,
 		}
 		if err := h.rulesRepo.Create(r.Context(), rule); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
@@ -1146,6 +1170,8 @@ func (h *Handler) adminRuleDetail(w http.ResponseWriter, r *http.Request) {
 		existing.ServerPatterns = normalizePatternSlice(req.ServerPatterns)
 		existing.ToolPatterns = normalizePatternSlice(req.ToolPatterns)
 		existing.AgentIDPattern = defaultPattern(req.AgentIDPattern)
+		existing.ModelConfigCUID = req.ModelConfigCUID
+		existing.AgentCUIDs = normalizePatternSlice(req.AgentCUIDs)
 		existing.Description = req.Description
 		existing.Enabled = enabled
 		if err := h.rulesRepo.Update(r.Context(), existing); err != nil {
@@ -1173,6 +1199,31 @@ func (h *Handler) adminRuleDetail(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ─── Model config handler ─────────────────────────────────────────────────────
+
+func (h *Handler) adminModelConfigs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.backendClient == nil {
+		writeError(w, http.StatusServiceUnavailable, "backend not configured")
+		return
+	}
+	resp, err := h.backendClient.FetchModelConfigs(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "failed to fetch model configs: "+err.Error())
+		return
+	}
+	items := make([]AdminModelConfig, 0, len(resp.Items))
+	for _, c := range resp.Items {
+		items = append(items, AdminModelConfig{CUID: c.CUID, Name: c.Name})
+	}
+	writeJSON(w, http.StatusOK, ModelConfigListResponse{Items: items, Total: len(items)})
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 func toAdminRule(r store.Rule) AdminRule {
 	sp := r.ServerPatterns
 	if sp == nil {
@@ -1182,17 +1233,23 @@ func toAdminRule(r store.Rule) AdminRule {
 	if tp == nil {
 		tp = []string{}
 	}
+	ac := r.AgentCUIDs
+	if ac == nil {
+		ac = []string{}
+	}
 	return AdminRule{
-		ID:             r.ID,
-		Action:         r.Action,
-		ServerPatterns: sp,
-		ToolPatterns:   tp,
-		AgentIDPattern: r.AgentIDPattern,
-		Description:    r.Description,
-		Enabled:        r.Enabled,
-		Order:          r.Order,
-		CreatedAt:      r.CreatedAt,
-		UpdatedAt:      r.UpdatedAt,
+		ID:              r.ID,
+		Action:          r.Action,
+		ServerPatterns:  sp,
+		ToolPatterns:    tp,
+		AgentIDPattern:  r.AgentIDPattern,
+		ModelConfigCUID: r.ModelConfigCUID,
+		AgentCUIDs:      ac,
+		Description:     r.Description,
+		Enabled:         r.Enabled,
+		Order:           r.Order,
+		CreatedAt:       r.CreatedAt,
+		UpdatedAt:       r.UpdatedAt,
 	}
 }
 
@@ -1316,8 +1373,12 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 func validateRuleInput(req AdminRuleInput) error {
 	switch req.Action {
 	case "auto_approve", "auto_deny", "human_approval":
+	case "ai_evaluation":
+		if strings.TrimSpace(req.ModelConfigCUID) == "" {
+			return fmt.Errorf("model_config_cuid is required for ai_evaluation rules")
+		}
 	default:
-		return fmt.Errorf("action must be one of: auto_approve, auto_deny, human_approval")
+		return fmt.Errorf("action must be one of: auto_approve, auto_deny, human_approval, ai_evaluation")
 	}
 	return nil
 }

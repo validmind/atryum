@@ -127,7 +127,7 @@ func main() {
 
 	service := invocation.NewService(invRepo, eventRepo, resolver, client, policyRegistry, time.Duration(cfg.Defaults.RequestTimeoutSeconds)*time.Second, rulesRepo)
 	serverAdmin := api.NewServerAdminService(serverRepo, oauthRepo, client, 5*time.Second)
-	handler := api.NewHandler(service, serverAdmin, policyRegistry, rulesRepo, agentsRepo, syncAgents)
+	handler := api.NewHandler(service, serverAdmin, policyRegistry, rulesRepo, agentsRepo, syncAgents, backendClient)
 
 	authValidator, err := auth.NewValidator(cfg.Auth, nil)
 	if err != nil {
