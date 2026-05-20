@@ -11,6 +11,7 @@ func TestLoadServerDatabaseURL(t *testing.T) {
 	path := filepath.Join(dir, "atryum.toml")
 	if err := os.WriteFile(path, []byte(`[server]
 listen_addr = ":9090"
+public_base_url = "https://atryum.example.com"
 database_path = "./atryum.db"
 database_url = "postgresql://postgres:password@127.0.0.1:5432/postgres"
 log_level = "debug"
@@ -30,6 +31,9 @@ connection_timeout_seconds = 7
 	}
 	if cfg.Server.DatabaseURL != "postgresql://postgres:password@127.0.0.1:5432/postgres" {
 		t.Fatalf("DatabaseURL = %q", cfg.Server.DatabaseURL)
+	}
+	if cfg.Server.PublicBaseURL != "https://atryum.example.com" {
+		t.Fatalf("PublicBaseURL = %q", cfg.Server.PublicBaseURL)
 	}
 	if cfg.Backend.BaseURL != "https://backend.example" {
 		t.Fatalf("Backend.BaseURL = %q", cfg.Backend.BaseURL)

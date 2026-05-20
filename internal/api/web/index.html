@@ -196,7 +196,9 @@
                 <label><span>Client Secret</span><input id="server-oauth-client-secret" type="password" placeholder="(leave blank to keep stored value)" /></label>
                 <label><span>Authorize URL</span><input id="server-oauth-authorize-url" placeholder="auto-discovered when blank" /></label>
                 <label><span>Token URL</span><input id="server-oauth-token-url" placeholder="auto-discovered when blank" /></label>
-                <label><span>Scopes (space-separated)</span><input id="server-oauth-scopes" placeholder="chat:write channels:history" /></label>
+                <label class="checkbox-inline"><input id="server-oauth-use-default-scopes" type="checkbox" checked /><span>Use default scopes (whatever the OAuth app declared with the provider)</span></label>
+                <label id="server-oauth-scopes-row" style="display:none"><span>Scopes (space-separated, requested — scope down to a subset)</span><input id="server-oauth-scopes" placeholder="chat:write channels:history" /></label>
+                <label id="server-oauth-granted-scopes-row" style="display:none"><span>Granted scopes (from latest token exchange)</span><textarea id="server-oauth-granted-scopes" rows="3" disabled></textarea></label>
               </details>
               <label class="field-stdio">
                 <span>Command</span>

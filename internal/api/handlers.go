@@ -106,32 +106,38 @@ type DenyRequest struct {
 }
 
 type AdminServer struct {
-	Name               string            `json:"name"`
-	Mode               string            `json:"mode"`
-	BaseURL            string            `json:"base_url,omitempty"`
-	AuthToken          string            `json:"auth_token,omitempty"`
-	AuthHeaders        []mcp.AuthHeader  `json:"auth_headers,omitempty"`
-	TimeoutSeconds     int               `json:"timeout_seconds"`
-	Command            string            `json:"command,omitempty"`
-	Args               []string          `json:"args,omitempty"`
-	Env                map[string]string `json:"env,omitempty"`
-	Enabled            bool              `json:"enabled"`
-	AuthType           string            `json:"auth_type"`
-	ConnectionStatus   string            `json:"connection_status"`
-	AuthStatus         string            `json:"auth_status"`
-	ReauthNeeded       bool              `json:"reauth_needed"`
-	LastCheckedAt      *time.Time        `json:"last_checked_at,omitempty"`
-	LastCheckOK        bool              `json:"last_check_ok"`
-	LastErrorSummary   *string           `json:"last_error_summary,omitempty"`
-	ActionRequired     *string           `json:"action_required,omitempty"`
-	OAuthProviderID         string `json:"oauth_provider_id,omitempty"`
-	OAuthProviderLabel      string `json:"oauth_provider_label,omitempty"`
-	OAuthClientRegistration string `json:"oauth_client_registration,omitempty"`
-	OAuthClientID           string `json:"oauth_client_id,omitempty"`
-	OAuthAuthorizeURL       string `json:"oauth_authorize_url,omitempty"`
-	OAuthTokenURL           string `json:"oauth_token_url,omitempty"`
-	OAuthScopes             string `json:"oauth_scopes,omitempty"`
-	HasOAuthClientSecret    bool   `json:"has_oauth_client_secret,omitempty"`
+	Name                    string            `json:"name"`
+	Mode                    string            `json:"mode"`
+	BaseURL                 string            `json:"base_url,omitempty"`
+	AuthToken               string            `json:"auth_token,omitempty"`
+	AuthHeaders             []mcp.AuthHeader  `json:"auth_headers,omitempty"`
+	TimeoutSeconds          int               `json:"timeout_seconds"`
+	Command                 string            `json:"command,omitempty"`
+	Args                    []string          `json:"args,omitempty"`
+	Env                     map[string]string `json:"env,omitempty"`
+	Enabled                 bool              `json:"enabled"`
+	AuthType                string            `json:"auth_type"`
+	ConnectionStatus        string            `json:"connection_status"`
+	AuthStatus              string            `json:"auth_status"`
+	ReauthNeeded            bool              `json:"reauth_needed"`
+	LastCheckedAt           *time.Time        `json:"last_checked_at,omitempty"`
+	LastCheckOK             bool              `json:"last_check_ok"`
+	LastErrorSummary        *string           `json:"last_error_summary,omitempty"`
+	ActionRequired          *string           `json:"action_required,omitempty"`
+	OAuthProviderID         string            `json:"oauth_provider_id,omitempty"`
+	OAuthProviderLabel      string            `json:"oauth_provider_label,omitempty"`
+	OAuthClientRegistration string            `json:"oauth_client_registration,omitempty"`
+	OAuthClientID           string            `json:"oauth_client_id,omitempty"`
+	OAuthAuthorizeURL       string            `json:"oauth_authorize_url,omitempty"`
+	OAuthTokenURL           string            `json:"oauth_token_url,omitempty"`
+	OAuthScopes             string            `json:"oauth_scopes,omitempty"`
+	HasOAuthClientSecret    bool              `json:"has_oauth_client_secret,omitempty"`
+	// OAuthGrantedScopes is what the authorization server actually issued
+	// on the most recent token exchange (read from oauth_credentials.scope).
+	// Distinct from OAuthScopes, which is what we *request* in the next
+	// authorize URL. They can diverge: Slack-style ASes honor whatever
+	// scopes the registered app declares regardless of what we send.
+	OAuthGrantedScopes string `json:"oauth_granted_scopes,omitempty"`
 }
 
 type AdminServerUpsertRequest struct {
@@ -1266,10 +1272,11 @@ func readUintQuery(r *http.Request, key string, fallback uint64) uint64 {
 }
 
 type ServerAdminService struct {
-	repo      serverRepo
-	oauthRepo *store.OAuthRepo
-	client    *mcp.Client
-	timeout   time.Duration
+	repo          serverRepo
+	oauthRepo     *store.OAuthRepo
+	client        *mcp.Client
+	timeout       time.Duration
+	publicBaseURL string
 }
 
 type serverRepo interface {
@@ -1281,8 +1288,8 @@ type serverRepo interface {
 	DisableServer(ctx context.Context, name string) error
 }
 
-func NewServerAdminService(repo serverRepo, oauthRepo *store.OAuthRepo, client *mcp.Client, timeout time.Duration) *ServerAdminService {
-	return &ServerAdminService{repo: repo, oauthRepo: oauthRepo, client: client, timeout: timeout}
+func NewServerAdminService(repo serverRepo, oauthRepo *store.OAuthRepo, client *mcp.Client, timeout time.Duration, publicBaseURL string) *ServerAdminService {
+	return &ServerAdminService{repo: repo, oauthRepo: oauthRepo, client: client, timeout: timeout, publicBaseURL: strings.TrimRight(strings.TrimSpace(publicBaseURL), "/")}
 }
 
 func (s *ServerAdminService) List(ctx context.Context, filter mcp.ServerFilter) (ServerListResponse, error) {
@@ -1292,7 +1299,7 @@ func (s *ServerAdminService) List(ctx context.Context, filter mcp.ServerFilter) 
 	}
 	servers := make([]AdminServer, 0, len(items))
 	for _, item := range items {
-		servers = append(servers, toAdminServer(item))
+		servers = append(servers, s.adminViewWithGrantedScopes(ctx, item))
 	}
 	return ServerListResponse{Items: servers, Total: total, Offset: filter.Offset, Limit: normalizeLimit(filter.Limit, 50)}, nil
 }
@@ -1302,7 +1309,19 @@ func (s *ServerAdminService) Get(ctx context.Context, name string) (AdminServer,
 	if err != nil {
 		return AdminServer{}, err
 	}
-	return toAdminServer(upstream), nil
+	return s.adminViewWithGrantedScopes(ctx, upstream), nil
+}
+
+// adminViewWithGrantedScopes is toAdminServer + an overlay of the actual
+// scope string the AS granted on the latest successful token exchange.
+// Pulled separately from oauth_credentials.scope so the UI can show both
+// what we requested and what's actually live.
+func (s *ServerAdminService) adminViewWithGrantedScopes(ctx context.Context, upstream mcp.Upstream) AdminServer {
+	view := toAdminServer(upstream)
+	if cred, err := s.oauthRepo.GetCredential(ctx, upstream.Name); err == nil {
+		view.OAuthGrantedScopes = cred.Scope
+	}
+	return view
 }
 
 func (s *ServerAdminService) Upsert(ctx context.Context, name string, req AdminServerUpsertRequest) (AdminServer, error) {
@@ -1378,7 +1397,7 @@ func (s *ServerAdminService) Upsert(ctx context.Context, name string, req AdminS
 	if err := s.repo.UpsertServer(ctx, upstream); err != nil {
 		return AdminServer{}, err
 	}
-	return toAdminServer(upstream), nil
+	return s.adminViewWithGrantedScopes(ctx, upstream), nil
 }
 
 func (s *ServerAdminService) Delete(ctx context.Context, name string, disable bool) error {
@@ -1431,7 +1450,11 @@ func (s *ServerAdminService) StartConnect(ctx context.Context, name string, appB
 	if err != nil {
 		return OAuthConnectStartResponse{}, err
 	}
-	redirectURI := strings.TrimRight(appBaseURL, "/") + "/api/v1/admin/oauth/callback"
+	redirectBaseURL := strings.TrimRight(appBaseURL, "/")
+	if s.publicBaseURL != "" {
+		redirectBaseURL = s.publicBaseURL
+	}
+	redirectURI := redirectBaseURL + "/api/v1/admin/oauth/callback"
 	connectReq, err := provider.BuildConnectRequest(ctx, upstream, redirectURI, stateToken)
 	if err != nil {
 		return OAuthConnectStartResponse{}, err

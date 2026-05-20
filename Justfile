@@ -22,12 +22,14 @@ stop:
 
 check: fmt test
 
-# PostgreSQL via docker-compose
-pg-up:
-	docker compose up -d --wait
+up:
+	docker compose --profile dev up -d --wait --build
 
-pg-down:
-	docker compose down
+down:
+	docker compose --profile dev down
+
+logs:
+  docker compose --profile dev logs --follow
 
 pg-reset:
 	docker compose down -v

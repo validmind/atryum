@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -193,15 +194,39 @@ type ServerFilter struct {
 	Enabled *bool
 }
 
+// CredentialStore returns the OAuth access token currently stored for a
+// server. It is consulted on every ResolveContext so that proxied MCP
+// requests (tools/list, tools/call, forward) get the live access token
+// attached. The interface is intentionally narrow — the resolver does not
+// need to know about refresh tokens or expiry; that's the credential
+// store's problem.
+type CredentialStore interface {
+	GetCredential(ctx context.Context, serverName string) (AccessTokenView, error)
+}
+
+type AccessTokenView struct {
+	AccessToken string
+}
+
 type Resolver struct {
-	store     ServerStore
-	bootstrap map[string]Upstream
+	store       ServerStore
+	credentials CredentialStore
+	bootstrap   map[string]Upstream
 }
 
 type Client struct {
 	httpClient *http.Client
 	nextID     atomic.Int64
 	debug      bool
+
+	// MCP Streamable HTTP session IDs per upstream. The transport
+	// (since spec rev 2025-03-26) lets a server require an `Mcp-Session-Id`
+	// header on every non-initialize request. We initialize lazily, cache
+	// the id, and clear it on 404 (server-side expiry) so the next call
+	// re-inits. Stateless upstreams (those that never return the header)
+	// stay as empty strings.
+	sessionMu sync.Mutex
+	sessions  map[string]string
 }
 
 type InvokeResult struct {
@@ -247,9 +272,18 @@ func NewResolver(store ServerStore, cfg config.Config) *Resolver {
 	return &Resolver{store: store, bootstrap: bootstrap}
 }
 
+// WithCredentials returns the resolver wired up with an OAuth credential
+// store. When set, ResolveContext overlays the stored access token onto
+// upstream.AuthToken so that downstream HTTP requests carry it as a
+// Bearer header.
+func (r *Resolver) WithCredentials(credentials CredentialStore) *Resolver {
+	r.credentials = credentials
+	return r
+}
+
 func NewHTTPClient() *Client {
 	debug := strings.EqualFold(os.Getenv("ATRYUM_MCP_DEBUG"), "1") || strings.EqualFold(os.Getenv("ATRYUM_MCP_DEBUG"), "true")
-	return &Client{httpClient: &http.Client{}, debug: debug}
+	return &Client{httpClient: &http.Client{}, debug: debug, sessions: make(map[string]string)}
 }
 
 func (r *Resolver) Resolve(name string) (Upstream, error) {
@@ -260,7 +294,7 @@ func (r *Resolver) ResolveContext(ctx context.Context, name string) (Upstream, e
 	if r.store != nil {
 		upstream, err := r.store.GetServer(ctx, name)
 		if err == nil {
-			return upstream, nil
+			return r.overlayCredential(ctx, upstream), nil
 		}
 		if err != nil && err != sql.ErrNoRows {
 			return Upstream{}, err
@@ -270,7 +304,24 @@ func (r *Resolver) ResolveContext(ctx context.Context, name string) (Upstream, e
 	if !ok || !upstream.Enabled {
 		return Upstream{}, fmt.Errorf("upstream %q not configured or disabled", name)
 	}
-	return upstream, nil
+	return r.overlayCredential(ctx, upstream), nil
+}
+
+// overlayCredential injects the live OAuth access token (when one is
+// stored) onto upstream.AuthToken so that applyAuthHeaders adds the
+// Bearer header to forwarded MCP requests. The DB never persists the
+// access token onto mcp_servers.auth_token — it lives in
+// oauth_credentials and is replayed on each resolve.
+func (r *Resolver) overlayCredential(ctx context.Context, upstream Upstream) Upstream {
+	if r.credentials == nil {
+		return upstream
+	}
+	cred, err := r.credentials.GetCredential(ctx, upstream.Name)
+	if err != nil || strings.TrimSpace(cred.AccessToken) == "" {
+		return upstream
+	}
+	upstream.AuthToken = cred.AccessToken
+	return upstream
 }
 
 func (r *Resolver) ListAll(ctx context.Context) ([]Upstream, error) {
@@ -281,13 +332,16 @@ func (r *Resolver) ListAll(ctx context.Context) ([]Upstream, error) {
 			return nil, err
 		}
 		if len(upstreams) > 0 {
+			for i := range upstreams {
+				upstreams[i] = r.overlayCredential(ctx, upstreams[i])
+			}
 			return upstreams, nil
 		}
 	}
 	var result []Upstream
 	for _, u := range r.bootstrap {
 		if u.Enabled {
-			result = append(result, u)
+			result = append(result, r.overlayCredential(ctx, u))
 		}
 	}
 	return result, nil
@@ -447,6 +501,9 @@ func (c *Client) TestConnection(ctx context.Context, upstream Upstream) Connecti
 }
 
 func (c *Client) invokeHTTP(ctx context.Context, upstream Upstream, tool string, input map[string]any, requestID *string) (InvokeResult, error) {
+	if err := c.ensureHTTPSession(ctx, upstream); err != nil {
+		return InvokeResult{}, err
+	}
 	params := map[string]any{"name": tool, "arguments": input}
 	if requestID != nil && *requestID != "" {
 		params["_meta"] = map[string]any{"atryumRequestId": *requestID}
@@ -476,6 +533,9 @@ func (c *Client) invokeHTTP(ctx context.Context, upstream Upstream, tool string,
 }
 
 func (c *Client) listToolsHTTP(ctx context.Context, upstream Upstream) ([]Tool, error) {
+	if err := c.ensureHTTPSession(ctx, upstream); err != nil {
+		return nil, err
+	}
 	body, err := json.Marshal(Envelope{JSONRPC: "2.0", ID: json.RawMessage([]byte("1")), Method: "tools/list", Params: mustRawJSON(map[string]any{})})
 	if err != nil {
 		return nil, err
@@ -495,6 +555,13 @@ func (c *Client) listToolsHTTP(ctx context.Context, upstream Upstream) ([]Tool, 
 }
 
 func (c *Client) forwardEnvelopeHTTP(ctx context.Context, upstream Upstream, envelope Envelope, protocolVersion string) (ForwardResult, error) {
+	// "initialize" requests carry no prior session; for everything else,
+	// make sure we have one so spec-compliant upstreams don't reject us.
+	if envelope.Method != "initialize" {
+		if err := c.ensureHTTPSession(ctx, upstream); err != nil {
+			return ForwardResult{}, err
+		}
+	}
 	body, err := json.Marshal(envelope)
 	if err != nil {
 		return ForwardResult{}, err
@@ -502,7 +569,7 @@ func (c *Client) forwardEnvelopeHTTP(ctx context.Context, upstream Upstream, env
 	return c.doHTTPEnvelope(ctx, upstream, body, protocolVersion)
 }
 
-func (c *Client) doHTTPEnvelopeRaw(ctx context.Context, upstream Upstream, body []byte, protocolVersion string) (*http.Response, error) {
+func (c *Client) doHTTPEnvelopeRaw(ctx context.Context, upstream Upstream, body []byte, protocolVersion, sessionID string) (*http.Response, error) {
 	endpoint := strings.TrimRight(upstream.BaseURL, "/")
 	client := c.httpClient
 	if upstream.Timeout > 0 {
@@ -517,16 +584,27 @@ func (c *Client) doHTTPEnvelopeRaw(ctx context.Context, upstream Upstream, body 
 	if strings.TrimSpace(protocolVersion) != "" {
 		req.Header.Set("MCP-Protocol-Version", protocolVersion)
 	}
+	if strings.TrimSpace(sessionID) != "" {
+		req.Header.Set("Mcp-Session-Id", sessionID)
+	}
 	applyAuthHeaders(req, upstream)
 	return client.Do(req)
 }
 
 func (c *Client) doHTTPEnvelope(ctx context.Context, upstream Upstream, body []byte, protocolVersion string) (ForwardResult, error) {
-	resp, err := c.doHTTPEnvelopeRaw(ctx, upstream, body, protocolVersion)
+	sessionID := c.getSession(upstream.Name)
+	resp, err := c.doHTTPEnvelopeRaw(ctx, upstream, body, protocolVersion, sessionID)
 	if err != nil {
 		return ForwardResult{}, err
 	}
 	defer resp.Body.Close()
+	// Capture/clear session id based on response. 404 with an existing
+	// session means the server forgot us; drop it so the next call inits.
+	if newSession := strings.TrimSpace(resp.Header.Get("Mcp-Session-Id")); newSession != "" {
+		c.setSession(upstream.Name, newSession)
+	} else if resp.StatusCode == http.StatusNotFound && sessionID != "" {
+		c.clearSession(upstream.Name)
+	}
 	contentType := resp.Header.Get("Content-Type")
 	if strings.Contains(contentType, "text/event-stream") {
 		data, sseErr := extractFirstSSEData(resp.Body)
@@ -541,6 +619,61 @@ func (c *Client) doHTTPEnvelope(ctx context.Context, upstream Upstream, body []b
 		return ForwardResult{}, err
 	}
 	return ForwardResult{StatusCode: resp.StatusCode, Body: respBody.Bytes(), ContentType: contentType, ProtocolVersion: resp.Header.Get("MCP-Protocol-Version")}, nil
+}
+
+func (c *Client) getSession(name string) string {
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+	return c.sessions[name]
+}
+
+func (c *Client) setSession(name, id string) {
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+	c.sessions[name] = id
+}
+
+func (c *Client) clearSession(name string) {
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+	delete(c.sessions, name)
+}
+
+// ensureHTTPSession initializes the upstream session if not yet established,
+// returning silently if the upstream is stateless (doesn't emit
+// Mcp-Session-Id). Required by spec-compliant servers (e.g. Shortcut) which
+// reject non-initialize requests that arrive without a session id.
+func (c *Client) ensureHTTPSession(ctx context.Context, upstream Upstream) error {
+	if c.getSession(upstream.Name) != "" {
+		return nil
+	}
+	initBody, err := json.Marshal(Envelope{
+		JSONRPC: "2.0",
+		ID:      json.RawMessage([]byte("1")),
+		Method:  "initialize",
+		Params: mustRawJSON(map[string]any{
+			"protocolVersion": DefaultMCPProtocolVersion,
+			"clientInfo":      map[string]any{"name": "atryum", "version": "0.1.0"},
+			"capabilities":    map[string]any{},
+		}),
+	})
+	if err != nil {
+		return err
+	}
+	// doHTTPEnvelope reads the Mcp-Session-Id response header and stores it.
+	if _, err := c.doHTTPEnvelope(ctx, upstream, initBody, DefaultMCPProtocolVersion); err != nil {
+		return err
+	}
+	// Spec requires the client to send notifications/initialized after a
+	// successful initialize. Stateless servers ignore it; stateful ones need
+	// it to mark the session usable.
+	if c.getSession(upstream.Name) != "" {
+		notifyBody, err := json.Marshal(Envelope{JSONRPC: "2.0", Method: "notifications/initialized", Params: mustRawJSON(map[string]any{})})
+		if err == nil {
+			_, _ = c.doHTTPEnvelope(ctx, upstream, notifyBody, DefaultMCPProtocolVersion)
+		}
+	}
+	return nil
 }
 
 func (c *Client) invokeStdio(ctx context.Context, upstream Upstream, tool string, input map[string]any) (InvokeResult, error) {
@@ -669,15 +802,25 @@ func fromConfig(u config.UpstreamConfig) Upstream {
 		mode = UpstreamMode(u.Mode)
 	}
 	upstream := Upstream{
-		Name:      u.Name,
-		Mode:      mode,
-		BaseURL:   strings.TrimRight(u.BaseURL, "/"),
-		AuthToken: u.AuthToken,
-		Timeout:   time.Duration(u.TimeoutSeconds) * time.Second,
-		Command:   u.Command,
-		Args:      append([]string(nil), u.Args...),
-		Env:       cloneMap(u.Env),
-		Enabled:   u.Enabled,
+		Name:              u.Name,
+		Mode:              mode,
+		BaseURL:           strings.TrimRight(u.BaseURL, "/"),
+		AuthToken:         u.AuthToken,
+		Timeout:           time.Duration(u.TimeoutSeconds) * time.Second,
+		Command:           u.Command,
+		Args:              append([]string(nil), u.Args...),
+		Env:               cloneMap(u.Env),
+		Enabled:           u.Enabled,
+		OAuthClientID:     strings.TrimSpace(u.OAuthClientID),
+		OAuthClientSecret: u.OAuthClientSecret,
+		OAuthAuthorizeURL: strings.TrimSpace(u.OAuthAuthorizeURL),
+		OAuthTokenURL:     strings.TrimSpace(u.OAuthTokenURL),
+		OAuthScopes:       strings.TrimSpace(u.OAuthScopes),
+	}
+	if strings.TrimSpace(u.OAuthClientID) != "" {
+		// Bootstrapped pre-shared client — record provenance so the UI
+		// can label it and so subsequent saves don't re-flip provenance.
+		upstream.OAuthClientRegistration = ClientRegistrationPreshared
 	}
 	upstream.Status = inferInitialStatus(upstream)
 	return upstream
