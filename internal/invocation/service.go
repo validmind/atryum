@@ -26,6 +26,7 @@ type invocationRepo interface {
 	Get(ctx context.Context, id string) (Invocation, error)
 	GetByIdempotencyKey(ctx context.Context, key string) (Invocation, error)
 	List(ctx context.Context, filter InvocationListFilter) ([]Invocation, int, error)
+	ListAgentIDs(ctx context.Context) ([]string, error)
 }
 
 type eventRepo interface {
@@ -650,6 +651,10 @@ func (s *Service) Get(ctx context.Context, id string) (InvocationResponse, error
 		return InvocationResponse{}, err
 	}
 	return s.toResponse(inv), nil
+}
+
+func (s *Service) ListAgentIDs(ctx context.Context) ([]string, error) {
+	return s.invocations.ListAgentIDs(ctx)
 }
 
 func (s *Service) List(ctx context.Context, filter InvocationListFilter) (InvocationListResponse, error) {

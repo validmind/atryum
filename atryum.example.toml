@@ -28,6 +28,14 @@ connection_timeout_seconds = 5
 [defaults]
 request_timeout_seconds = 30
 
+# Static API key/secret pair that protects the read-only invocation reporting
+# endpoints (GET /invocations/{agent_id}, GET /agent_ids). Callers must send
+# both `X-API-Key` and `X-API-Secret` headers matching these values. When
+# either field is empty, those endpoints refuse every request with 503.
+[api_key]
+key = ""
+secret = ""
+
 # Local-only auth debug mode. When true, the Authorization header is ignored
 # entirely on /mcp/: no bearer token is required and no identity is set on
 # the request context. Never enable outside local debugging.

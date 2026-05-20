@@ -20,6 +20,10 @@ type Config struct {
 	// facing /mcp/ routes remain anonymous.
 	Auth      []auth.Config   `toml:"auth"`
 	AuthDebug AuthDebugConfig `toml:"auth_debug"`
+	// APIKey protects the read-only reporting endpoints
+	// (GET /invocations/{agent_id}, GET /agent_ids). When key or secret is
+	// empty, those endpoints refuse every request.
+	APIKey auth.APIKeyConfig `toml:"api_key"`
 }
 
 // BackendConfig configures Atryum's startup connection check to the ValidMind
