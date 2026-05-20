@@ -41,12 +41,12 @@ func TestInitDB_FreshDatabase(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 8 {
-		t.Fatalf("expected 8 migrations, got %d", count)
+	if count != 10 {
+		t.Fatalf("expected 10 migrations, got %d", count)
 	}
 
 	// Verify all tables exist
-	tables := []string{"invocations", "invocation_events", "mcp_servers", "oauth_credentials", "oauth_connect_sessions", "approval_rules"}
+	tables := []string{"invocations", "invocation_events", "mcp_servers", "oauth_credentials", "oauth_connect_sessions", "approval_rules", "agent_clients"}
 	for _, table := range tables {
 		var name string
 		if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&name); err != nil {
@@ -70,8 +70,8 @@ func TestInitDB_Idempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 8 {
-		t.Fatalf("expected 8 migrations after double init, got %d", count)
+	if count != 10 {
+		t.Fatalf("expected 10 migrations after double init, got %d", count)
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"atryum/internal/auth"
@@ -68,17 +69,41 @@ type rulesRepo interface {
 	InsertBefore(ctx context.Context, anchorID string, rule store.Rule) error
 }
 
+// agentClientRecorder lets the MCP initialize handler persist the clientInfo
+// + JWT subject the agent reported about itself.
+type agentClientRecorder interface {
+	RecordAgentClient(ctx context.Context, in store.AgentClient) error
+}
+
+// clientInfoSnapshot is what the agent reported in `initialize.clientInfo`.
+type clientInfoSnapshot struct {
+	Name    string
+	Version string
+	At      time.Time
+}
+
 type Handler struct {
-	svc            service
-	serverSvc      serverService
-	policyRegistry *policy.Registry
-	rulesRepo      rulesRepo
-	forwarder      mcpEnvelopeForwarder
-	staticHTTP     http.Handler
-	debug          bool
-	authDebugSkip  bool
-	authValidator  *auth.Validator
-	apiKeyAuth     auth.APIKeyConfig
+	svc                 service
+	serverSvc           serverService
+	policyRegistry      *policy.Registry
+	rulesRepo           rulesRepo
+	forwarder           mcpEnvelopeForwarder
+	staticHTTP          http.Handler
+	debug               bool
+	authDebugSkip       bool
+	authValidator       *auth.Validator
+	apiKeyAuth          auth.APIKeyConfig
+	agentClientRecorder agentClientRecorder
+
+	// clientInfoCache remembers the most recent `initialize.clientInfo`
+	// per "session key" so that subsequent tools/call requests on the same
+	// HTTP session can attach client_name / client_version even when no
+	// JWT-based agent_id is available. The key prefers the standard MCP
+	// session header (`Mcp-Session-Id`); when absent it falls back to
+	// remote IP + User-Agent which is good enough to disambiguate agents
+	// on a developer machine.
+	clientInfoMu    sync.RWMutex
+	clientInfoCache map[string]clientInfoSnapshot
 }
 
 type PolicyStatusResponse struct {
@@ -241,7 +266,7 @@ func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Reg
 	if f, ok := svc.(mcpEnvelopeForwarder); ok {
 		forwarder = f
 	}
-	return &Handler{svc: svc, serverSvc: serverSvc, policyRegistry: policyRegistry, rulesRepo: rules, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug}
+	return &Handler{svc: svc, serverSvc: serverSvc, policyRegistry: policyRegistry, rulesRepo: rules, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug, clientInfoCache: make(map[string]clientInfoSnapshot)}
 }
 
 // SetAuthValidator installs the inbound auth validator. When non-nil, the
@@ -249,6 +274,14 @@ func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Reg
 // /mcp/ anonymous.
 func (h *Handler) SetAuthValidator(v *auth.Validator) {
 	h.authValidator = v
+}
+
+// SetAgentClientRecorder installs an optional store used to remember the
+// MCP `initialize` clientInfo (name+version) and JWT subject for each
+// authenticated agent_id so the invocations UI can show what kind of agent
+// is making each call.
+func (h *Handler) SetAgentClientRecorder(r agentClientRecorder) {
+	h.agentClientRecorder = r
 }
 
 func (h *Handler) SetAuthDebugSkipVerify(enabled bool) {
@@ -458,6 +491,7 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 
 	switch req.Method {
 	case "initialize":
+		h.recordInitializeClientInfo(r, req.Params)
 		result := map[string]any{
 			"protocolVersion": protocolVersion,
 			"serverInfo": map[string]any{
@@ -506,6 +540,13 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		toolReq := invocation.CreateInvocationRequest{Server: callServer, Tool: params.Name, Input: params.Arguments}
 		if requestID != "" {
 			toolReq.RequestID = stringPtr(requestID)
+		}
+		// Carry forward the harness-reported clientInfo captured at
+		// `initialize` time on this same session. Lets the invocations UI
+		// show Agent context even when /mcp/ is anonymous (no [[auth]]).
+		if snap, ok := h.lookupClientInfo(r); ok {
+			toolReq.ClientName = snap.Name
+			toolReq.ClientVersion = snap.Version
 		}
 		resp, err := h.svc.Invoke(r.Context(), toolReq)
 		if err != nil {
@@ -1783,6 +1824,105 @@ func normalizeToolCallResult(raw json.RawMessage, isError bool) any {
 		}
 	}
 	return map[string]any{"content": []map[string]any{{"type": "text", "text": string(raw)}}, "isError": isError}
+}
+
+// recordInitializeClientInfo captures the MCP `initialize.clientInfo` so it
+// can later be attached to invocations. It:
+//   - Always stashes the snapshot in the in-memory session cache keyed by
+//     `Mcp-Session-Id` (or remote-addr + UA fallback) so anonymous /mcp/
+//     callers still get an Agent column populated for follow-up tools/call
+//     requests on the same session.
+//   - Additionally upserts into the agent_clients table when both an
+//     authenticated agent_id and a configured recorder are present.
+//
+// Best-effort throughout: parse errors or repo failures must not break the
+// initialize handshake.
+func (h *Handler) recordInitializeClientInfo(r *http.Request, params json.RawMessage) {
+	var payload struct {
+		ClientInfo struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		} `json:"clientInfo"`
+	}
+	if len(params) > 0 {
+		_ = json.Unmarshal(params, &payload)
+	}
+	name := strings.TrimSpace(payload.ClientInfo.Name)
+	version := strings.TrimSpace(payload.ClientInfo.Version)
+	if name == "" && version == "" {
+		return
+	}
+	snap := clientInfoSnapshot{Name: name, Version: version, At: time.Now().UTC()}
+	if key := sessionKeyFromRequest(r); key != "" {
+		h.clientInfoMu.Lock()
+		h.clientInfoCache[key] = snap
+		// Bound the cache so a noisy fleet of agents can't grow it
+		// unboundedly. 1024 entries is plenty for a dev / single-tenant
+		// instance; oldest evicted opportunistically.
+		if len(h.clientInfoCache) > 1024 {
+			var oldestKey string
+			var oldestAt time.Time
+			for k, v := range h.clientInfoCache {
+				if oldestKey == "" || v.At.Before(oldestAt) {
+					oldestKey, oldestAt = k, v.At
+				}
+			}
+			delete(h.clientInfoCache, oldestKey)
+		}
+		h.clientInfoMu.Unlock()
+	}
+
+	if h.agentClientRecorder == nil {
+		return
+	}
+	identity, ok := auth.IdentityFromContext(r.Context())
+	if !ok || strings.TrimSpace(identity.AgentID) == "" {
+		return
+	}
+	rec := store.AgentClient{
+		AgentID:       identity.AgentID,
+		ClientName:    name,
+		ClientVersion: version,
+		Subject:       identity.Subject,
+		Issuer:        identity.Issuer,
+		LastSeenAt:    time.Now().UTC(),
+	}
+	if err := h.agentClientRecorder.RecordAgentClient(r.Context(), rec); err != nil {
+		h.debugf("record agent client agent_id=%q err=%v", identity.AgentID, err)
+	}
+}
+
+// lookupClientInfo returns any clientInfo captured for the request's session
+// key (set on a prior `initialize` call). Used so that anonymous tools/call
+// requests can still carry through "Amp 0.0.1234"-style context.
+func (h *Handler) lookupClientInfo(r *http.Request) (clientInfoSnapshot, bool) {
+	key := sessionKeyFromRequest(r)
+	if key == "" {
+		return clientInfoSnapshot{}, false
+	}
+	h.clientInfoMu.RLock()
+	snap, ok := h.clientInfoCache[key]
+	h.clientInfoMu.RUnlock()
+	return snap, ok
+}
+
+// sessionKeyFromRequest produces a best-effort identifier for the agent
+// session originating this HTTP request. Prefers the standard MCP
+// `Mcp-Session-Id` header when the client sets it; falls back to remote
+// IP + User-Agent which is usually distinct enough for local dev.
+func sessionKeyFromRequest(r *http.Request) string {
+	if v := strings.TrimSpace(r.Header.Get("Mcp-Session-Id")); v != "" {
+		return "sid:" + v
+	}
+	host := r.RemoteAddr
+	if i := strings.LastIndex(host, ":"); i > -1 {
+		host = host[:i]
+	}
+	ua := strings.TrimSpace(r.Header.Get("User-Agent"))
+	if host == "" && ua == "" {
+		return ""
+	}
+	return "addr:" + host + "|ua:" + ua
 }
 
 func compactRequestID(id json.RawMessage) string {

@@ -60,6 +60,7 @@ func main() {
 	serverRepo := store.NewServerRepoWithDialect(db, dialect)
 	oauthRepo := store.NewOAuthRepoWithDialect(db, dialect)
 	rulesRepo := store.NewRulesRepoWithDialect(db, dialect)
+	agentClientRepo := store.NewAgentClientRepoWithDialect(db, dialect)
 	resolver := mcp.NewResolver(serverRepo, cfg)
 	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
 		log.Fatalf("bootstrap servers: %v", err)
@@ -82,8 +83,10 @@ func main() {
 	log.Printf("policy provider: %s", policyRegistry.Active().DisplayName())
 
 	service := invocation.NewService(invRepo, eventRepo, resolver, client, policyRegistry, time.Duration(cfg.Defaults.RequestTimeoutSeconds)*time.Second, rulesRepo)
+	service.SetAgentClientLookup(agentClientRepo)
 	serverAdmin := api.NewServerAdminService(serverRepo, oauthRepo, client, 5*time.Second)
 	handler := api.NewHandler(service, serverAdmin, policyRegistry, rulesRepo)
+	handler.SetAgentClientRecorder(agentClientRepo)
 
 	authValidator, err := auth.NewValidator(cfg.Auth, nil)
 	if err != nil {

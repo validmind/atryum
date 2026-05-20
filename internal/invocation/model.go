@@ -38,11 +38,17 @@ type Invocation struct {
 	Approval       *Approval  `json:"approval"`
 	MatchedRuleID  *string    `json:"matched_rule_id,omitempty"`
 	AgentID        *string    `json:"agent_id,omitempty"`
-	Input          []byte     `json:"-"`
-	Response       []byte     `json:"-"`
-	Error          []byte     `json:"-"`
-	SubmittedAt    time.Time  `json:"submitted_at"`
-	CompletedAt    *time.Time `json:"completed_at,omitempty"`
+	// ClientName / ClientVersion mirror the MCP `initialize.clientInfo`
+	// the harness reported on the connection that issued this invocation.
+	// Captured even when auth is disabled (no agent_id) so the UI can still
+	// show "Amp 0.0.1234" for anonymous traffic.
+	ClientName    *string    `json:"client_name,omitempty"`
+	ClientVersion *string    `json:"client_version,omitempty"`
+	Input         []byte     `json:"-"`
+	Response      []byte     `json:"-"`
+	Error         []byte     `json:"-"`
+	SubmittedAt   time.Time  `json:"submitted_at"`
+	CompletedAt   *time.Time `json:"completed_at,omitempty"`
 }
 
 type Event struct {
@@ -81,6 +87,11 @@ type CreateInvocationRequest struct {
 	Input          map[string]any `json:"input"`
 	RequestID      *string        `json:"request_id,omitempty"`
 	IdempotencyKey *string        `json:"idempotency_key,omitempty"`
+	// ClientName / ClientVersion let the caller pass through the harness's
+	// MCP `initialize.clientInfo` for this specific call. Used to populate
+	// the per-row fallback for anonymous (no agent_id) invocations.
+	ClientName    string `json:"-"`
+	ClientVersion string `json:"-"`
 }
 
 // ExternalSubmitRequest is used by callers that execute the tool themselves
@@ -115,12 +126,22 @@ type InvocationResponse struct {
 	Approval      *Approval       `json:"approval"`
 	MatchedRuleID *string         `json:"matched_rule_id,omitempty"`
 	AgentID       *string         `json:"agent_id,omitempty"`
-	RequestID     *string         `json:"request_id,omitempty"`
-	Input         json.RawMessage `json:"input,omitempty"`
-	SubmittedAt   time.Time       `json:"submitted_at"`
-	CompletedAt   *time.Time      `json:"completed_at,omitempty"`
-	Result        json.RawMessage `json:"result,omitempty"`
-	Error         json.RawMessage `json:"error,omitempty"`
+	// AgentClientName / AgentClientVersion identify the MCP client software
+	// (e.g. "amp", "cursor", "claude-code") captured from the most recent
+	// `initialize` handshake associated with this AgentID. They describe the
+	// agent type/harness, not the human user.
+	AgentClientName    *string `json:"agent_client_name,omitempty"`
+	AgentClientVersion *string `json:"agent_client_version,omitempty"`
+	// UserID is the JWT subject claim (`sub`) captured alongside the agent's
+	// most recent `initialize` — the human/service principal behind the agent
+	// when available.
+	UserID          *string         `json:"user_id,omitempty"`
+	RequestID       *string         `json:"request_id,omitempty"`
+	Input           json.RawMessage `json:"input,omitempty"`
+	SubmittedAt     time.Time       `json:"submitted_at"`
+	CompletedAt     *time.Time      `json:"completed_at,omitempty"`
+	Result          json.RawMessage `json:"result,omitempty"`
+	Error           json.RawMessage `json:"error,omitempty"`
 }
 
 type InvocationListResponse struct {

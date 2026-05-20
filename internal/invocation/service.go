@@ -45,16 +45,30 @@ type upstreamClient interface {
 	ForwardEnvelope(ctx context.Context, upstream mcp.Upstream, envelope mcp.Envelope, protocolVersion string) (mcp.ForwardResult, error)
 }
 
+// AgentClientInfo describes the MCP client (and JWT subject) most recently
+// associated with an authenticated agent_id. Used purely to enrich the
+// invocations UI / API responses with display context — never for policy.
+type AgentClientInfo struct {
+	ClientName    string
+	ClientVersion string
+	Subject       string
+}
+
+type agentClientLookup interface {
+	LookupAgentClient(ctx context.Context, agentID string) (AgentClientInfo, bool)
+}
+
 type Service struct {
-	invocations      invocationRepo
-	events           eventRepo
-	resolver         resolver
-	client           upstreamClient
-	policy           policy.Provider
-	rules            rulesStore // nil = no rule evaluation
-	defaultTimeout   time.Duration
-	mu               sync.Mutex
-	pendingApprovals map[string]chan approvalDecision
+	invocations       invocationRepo
+	events            eventRepo
+	resolver          resolver
+	client            upstreamClient
+	policy            policy.Provider
+	rules             rulesStore // nil = no rule evaluation
+	agentClients      agentClientLookup
+	defaultTimeout    time.Duration
+	mu                sync.Mutex
+	pendingApprovals  map[string]chan approvalDecision
 }
 
 func NewService(inv invocationRepo, evt eventRepo, resolver resolver, client upstreamClient, policyProvider policy.Provider, defaultTimeout time.Duration, rules rulesStore) *Service {
@@ -68,6 +82,13 @@ func NewService(inv invocationRepo, evt eventRepo, resolver resolver, client ups
 		defaultTimeout:   defaultTimeout,
 		pendingApprovals: make(map[string]chan approvalDecision),
 	}
+}
+
+// SetAgentClientLookup installs an optional resolver from agent_id to the
+// captured MCP clientInfo + JWT subject. When nil, the corresponding fields
+// in InvocationResponse are simply left unset.
+func (s *Service) SetAgentClientLookup(lookup agentClientLookup) {
+	s.agentClients = lookup
 }
 
 func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (InvocationResponse, error) {
@@ -113,6 +134,14 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	}
 	if agentID != "" {
 		inv.AgentID = &agentID
+	}
+	if req.ClientName != "" {
+		v := req.ClientName
+		inv.ClientName = &v
+	}
+	if req.ClientVersion != "" {
+		v := req.ClientVersion
+		inv.ClientVersion = &v
 	}
 	if err := s.invocations.Create(ctx, inv); err != nil {
 		return InvocationResponse{}, err
@@ -443,10 +472,19 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		RequestID:      req.RequestID,
 		IdempotencyKey: req.IdempotencyKey,
 		Tool:           req.Tool,
-		Upstream:       source,
-		Status:         StatusReceived,
-		Input:          inputJSON,
-		SubmittedAt:    now,
+		// Upstream is intentionally left empty for external/non-MCP
+		// invocations — the harness ran the tool itself, there is no
+		// MCP server in the loop. The UI renders an empty server as
+		// "none". The harness identity is recorded as ClientName below
+		// so it shows up in the Agent column instead.
+		Upstream:    "",
+		Status:      StatusReceived,
+		Input:       inputJSON,
+		SubmittedAt: now,
+	}
+	if source != "" && source != "external" {
+		s := source
+		inv.ClientName = &s
 	}
 	if agentID != "" {
 		inv.AgentID = &agentID
@@ -650,7 +688,9 @@ func (s *Service) Get(ctx context.Context, id string) (InvocationResponse, error
 	if err != nil {
 		return InvocationResponse{}, err
 	}
-	return s.toResponse(inv), nil
+	resp := s.toResponse(inv)
+	s.enrichAgentClient(ctx, &resp)
+	return resp, nil
 }
 
 func (s *Service) ListAgentIDs(ctx context.Context) ([]string, error) {
@@ -662,11 +702,56 @@ func (s *Service) List(ctx context.Context, filter InvocationListFilter) (Invoca
 	if err != nil {
 		return InvocationListResponse{}, err
 	}
+	// Cache lookups per agent_id so we don't hit the repo N times for the
+	// common "all rows are from the same agent" case.
+	cache := map[string]AgentClientInfo{}
 	out := make([]InvocationResponse, 0, len(invocations))
 	for _, inv := range invocations {
-		out = append(out, s.toResponse(inv))
+		resp := s.toResponse(inv)
+		s.enrichAgentClientCached(ctx, &resp, cache)
+		out = append(out, resp)
 	}
 	return InvocationListResponse{Items: out, Total: total, Offset: filter.Offset, Limit: normalizedLimit(filter.Limit, 50)}, nil
+}
+
+func (s *Service) enrichAgentClient(ctx context.Context, resp *InvocationResponse) {
+	s.enrichAgentClientCached(ctx, resp, nil)
+}
+
+func (s *Service) enrichAgentClientCached(ctx context.Context, resp *InvocationResponse, cache map[string]AgentClientInfo) {
+	if s.agentClients == nil || resp.AgentID == nil || *resp.AgentID == "" {
+		return
+	}
+	id := *resp.AgentID
+	var info AgentClientInfo
+	var ok bool
+	if cache != nil {
+		if cached, hit := cache[id]; hit {
+			info = cached
+			ok = cached.ClientName != "" || cached.ClientVersion != "" || cached.Subject != ""
+		}
+	}
+	if !ok && cache != nil {
+		info, ok = s.agentClients.LookupAgentClient(ctx, id)
+		cache[id] = info
+	} else if !ok {
+		info, ok = s.agentClients.LookupAgentClient(ctx, id)
+	}
+	if !ok {
+		return
+	}
+	if resp.AgentClientName == nil && info.ClientName != "" {
+		v := info.ClientName
+		resp.AgentClientName = &v
+	}
+	if resp.AgentClientVersion == nil && info.ClientVersion != "" {
+		v := info.ClientVersion
+		resp.AgentClientVersion = &v
+	}
+	if resp.UserID == nil && info.Subject != "" {
+		v := info.Subject
+		resp.UserID = &v
+	}
 }
 
 func (s *Service) Events(ctx context.Context, invocationID string, filter EventListFilter) (EventListResponse, error) {
@@ -683,6 +768,15 @@ func (s *Service) Events(ctx context.Context, invocationID string, filter EventL
 
 func (s *Service) toResponse(inv Invocation) InvocationResponse {
 	resp := InvocationResponse{InvocationID: inv.InvocationID, ServerName: inv.Upstream, ToolName: inv.Tool, Status: inv.Status, Approval: inv.Approval, MatchedRuleID: inv.MatchedRuleID, AgentID: inv.AgentID, RequestID: inv.RequestID, SubmittedAt: inv.SubmittedAt, CompletedAt: inv.CompletedAt}
+	// Per-row clientInfo (captured from the connection that made this exact
+	// call) is the most accurate value. The agent_clients lookup in
+	// enrichAgentClient* only fills these in when they are still nil.
+	if inv.ClientName != nil {
+		resp.AgentClientName = inv.ClientName
+	}
+	if inv.ClientVersion != nil {
+		resp.AgentClientVersion = inv.ClientVersion
+	}
 	if len(inv.Input) > 0 {
 		resp.Input = json.RawMessage(inv.Input)
 	}
