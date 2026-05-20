@@ -1,5 +1,9 @@
 [server]
 listen_addr = ":8080"
+# Public browser-facing base URL used for OAuth redirect_uri generation.
+# In Docker Compose dev this can point at the Vite frontend proxy; in
+# production/Kubernetes it should be the ingress URL.
+public_base_url = "http://localhost:5175"
 # SQLite remains the default. database_path is used when database_url is empty.
 database_path = "./atryum.db"
 # Optional: select storage provider by URL scheme.
@@ -57,6 +61,30 @@ SHORTCUT_READONLY = "true"
 # timeout_seconds = 30
 # enabled = true
 # auth_token = ""
+
+# Optional HTTP + pre-shared OAuth bootstrap (Slack-style: AS doesn't support
+# Dynamic Client Registration, so the admin has registered an app with the
+# provider out-of-band and pasted client credentials below). Bootstrap-only:
+# these values seed mcp_servers when the DB is empty and are ignored on
+# subsequent runs. For ASes that support DCR (Datadog, Shortcut, ...),
+# leave these blank — discovery + DCR will populate them on first Connect.
+# [[upstreams]]
+# name              = "slack"
+# mode              = "http"
+# base_url          = "https://mcp.slack.com/mcp"
+# timeout_seconds   = 30
+# enabled           = true
+# oauth_client_id     = "1234567890.abcdef"
+# oauth_client_secret = "shhhhh"
+# # oauth_authorize_url / oauth_token_url are auto-discovered from
+# # .well-known/oauth-authorization-server when blank — only set them if
+# # the provider doesn't publish discovery metadata.
+# # oauth_authorize_url = ""
+# # oauth_token_url     = ""
+# # Leave oauth_scopes empty to let the OAuth app's registered scopes drive
+# # the grant (recommended for Slack). Set to a space-separated subset to
+# # scope the issued token down at authorize time.
+# # oauth_scopes        = "chat:write channels:history"
 
 # Inbound OAuth bearer-token authentication for /mcp/. Multiple [[auth]]
 # sections are supported; the validator picks the matching one based on

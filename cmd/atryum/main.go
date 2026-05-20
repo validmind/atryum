@@ -60,7 +60,7 @@ func main() {
 	serverRepo := store.NewServerRepoWithDialect(db, dialect)
 	oauthRepo := store.NewOAuthRepoWithDialect(db, dialect)
 	rulesRepo := store.NewRulesRepoWithDialect(db, dialect)
-	resolver := mcp.NewResolver(serverRepo, cfg)
+	resolver := mcp.NewResolver(serverRepo, cfg).WithCredentials(credentialAdapter{repo: oauthRepo})
 	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
 		log.Fatalf("bootstrap servers: %v", err)
 	}
@@ -82,7 +82,7 @@ func main() {
 	log.Printf("policy provider: %s", policyRegistry.Active().DisplayName())
 
 	service := invocation.NewService(invRepo, eventRepo, resolver, client, policyRegistry, time.Duration(cfg.Defaults.RequestTimeoutSeconds)*time.Second, rulesRepo)
-	serverAdmin := api.NewServerAdminService(serverRepo, oauthRepo, client, 5*time.Second)
+	serverAdmin := api.NewServerAdminService(serverRepo, oauthRepo, client, 5*time.Second, cfg.Server.PublicBaseURL)
 	handler := api.NewHandler(service, serverAdmin, policyRegistry, rulesRepo)
 
 	authValidator, err := auth.NewValidator(cfg.Auth, nil)
@@ -126,4 +126,19 @@ func main() {
 func truthyEnv(name string) bool {
 	value := os.Getenv(name)
 	return value == "1" || value == "true" || value == "TRUE" || value == "yes" || value == "YES"
+}
+
+// credentialAdapter bridges store.OAuthRepo into the narrow
+// mcp.CredentialStore interface the resolver consumes. Keeps the mcp
+// package independent of the concrete OAuthRepo/OAuthCredential types.
+type credentialAdapter struct {
+	repo *store.OAuthRepo
+}
+
+func (a credentialAdapter) GetCredential(ctx context.Context, serverName string) (mcp.AccessTokenView, error) {
+	cred, err := a.repo.GetCredential(ctx, serverName)
+	if err != nil {
+		return mcp.AccessTokenView{}, err
+	}
+	return mcp.AccessTokenView{AccessToken: cred.AccessToken}, nil
 }

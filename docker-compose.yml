@@ -15,6 +15,72 @@ services:
       timeout: 5s
       retries: 10
 
+  # First-run setup is handled by keycloak-init below. It checks whether the
+  # "atryum" realm exists; when it does not, it runs ./keycloak/setup-realm.sh.
+  #
+  # The script provisions the realm via the Admin REST API:
+  # creates the realm, the "atryum:mcp" client scope (with audience mapper +
+  # include-in-token-scope), the confidential "atryum" client for
+  # client_credentials grants, and tunes the anonymous DCR policies so MCP
+  # clients (Claude Code etc.) can self-register. Each step in the script
+  # carries a code comment with the equivalent admin-UI navigation, so it
+  # also serves as executable documentation of the manual setup.
+  #
+  # The script is idempotent — re-run it manually any time to reconcile drift:
+  #   ./keycloak/setup-realm.sh
+  # Login is admin/admin at http://localhost:8088.
+  keycloak:
+    profiles: ["dev"]
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--http-port=8088"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTP_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8088:8088"
+    volumes:
+      - keycloak_data:/opt/keycloak/data
+      # Drop *.json realm exports here to auto-import on first run:
+      - ./keycloak/import:/opt/keycloak/data/import:ro
+    healthcheck:
+      # Keycloak 26 serves /health/* on a separate management interface
+      # (default port 9000), not on the main HTTP port. The image is
+      # minimal — no curl, no wget — but it has bash, so we probe with
+      # bash's /dev/tcp builtin and grep for the 200 OK. Health stays
+      # in-container; port 9000 is intentionally NOT published.
+      test:
+        - "CMD-SHELL"
+        - 'exec 3<>/dev/tcp/127.0.0.1/9000; printf "GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3; grep -q "^HTTP/1.1 200" <&3'
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  keycloak-init:
+    profiles: ["dev"]
+    image: alpine:3.20
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    environment:
+      KC_URL: http://keycloak:8088
+      KC_ADMIN: admin
+      KC_PASSWORD: admin
+      REALM: atryum
+      KC_SETUP_SKIP_IF_REALM_EXISTS: "true"
+    volumes:
+      - ./keycloak/setup-realm.sh:/setup-realm.sh:ro
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        apk add --no-cache bash curl jq
+        bash /setup-realm.sh
+
   atryum:
     profiles: ["dev"]
     build:
@@ -22,6 +88,8 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8080:8080"
+    environment:
+      - ATRYUM_MCP_DEBUG=true
     volumes:
       - ./atryum.toml:/app/atryum.toml:ro
     healthcheck:
@@ -33,6 +101,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      keycloak-init:
+        condition: service_completed_successfully
 
   # Production: single binary with embedded Vite frontend (off by default)
   # Usage: docker compose --profile prod up atryum-prod
@@ -54,6 +124,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      keycloak:
+        condition: service_healthy
 
   frontend-init:
     profiles: ["dev"]
@@ -68,7 +140,18 @@ services:
     image: node:22-alpine
     user: "1000:1000"
     working_dir: /app
-    command: sh -c "npm install && npm run dev:atryum"
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        lock_hash="$$(sha256sum package-lock.json | awk '{print $$1}')"
+        marker="node_modules/.package-lock.sha256"
+        if [ ! -d node_modules/.bin ] || [ ! -f "$$marker" ] || [ "$$(cat "$$marker")" != "$$lock_hash" ]; then
+          npm install
+          printf '%s' "$$lock_hash" > "$$marker"
+        fi
+        npm run dev:atryum
     ports:
       - "5175:5175"
     volumes:
@@ -84,6 +167,7 @@ services:
 
 volumes:
   pgdata:
+  keycloak_data:
   frontend_node_modules:
 
 networks:
