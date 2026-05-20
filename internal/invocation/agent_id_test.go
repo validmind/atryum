@@ -117,6 +117,62 @@ func TestInvokeUsesAuthenticatedAgentIDForRulesAndEvents(t *testing.T) {
 	}
 }
 
+// Anonymous (no [[auth]]) callers should still surface MCP clientInfo on
+// the invocation row when the API layer passes it through.
+func TestInvokeWithoutAgentIDPersistsClientInfoFromRequest(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"content": []map[string]any{{"type": "text", "text": "ok"}}}})
+	}))
+	defer upstream.Close()
+
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := store.InitDB(db); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		Defaults:  config.DefaultsConfig{RequestTimeoutSeconds: 5},
+		Upstreams: []config.UpstreamConfig{{Name: "demo", Mode: "http", BaseURL: upstream.URL, Enabled: true, TimeoutSeconds: 5}},
+	}
+	resolver := mcp.NewResolver(store.NewServerRepo(db), cfg)
+	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	svc := invocation.NewService(
+		store.NewInvocationRepo(db), store.NewEventRepo(db), resolver,
+		mcp.NewHTTPClient(), policy.AlwaysApproveProvider{},
+		5*time.Second, nil, nil, nil, nil,
+	)
+
+	resp, err := svc.Invoke(context.Background(), invocation.CreateInvocationRequest{
+		Server: "demo", Tool: "demo_tool", Input: map[string]any{"x": 1},
+		ClientName: "amp", ClientVersion: "0.0.1234",
+	})
+	if err != nil {
+		t.Fatalf("Invoke: %v", err)
+	}
+	if resp.AgentID != nil {
+		t.Fatalf("expected no agent_id, got %v", resp.AgentID)
+	}
+	if resp.AgentClientName == nil || *resp.AgentClientName != "amp" {
+		t.Fatalf("AgentClientName = %v, want amp", resp.AgentClientName)
+	}
+	if resp.AgentClientVersion == nil || *resp.AgentClientVersion != "0.0.1234" {
+		t.Fatalf("AgentClientVersion = %v, want 0.0.1234", resp.AgentClientVersion)
+	}
+
+	got, err := svc.Get(context.Background(), resp.InvocationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AgentClientName == nil || *got.AgentClientName != "amp" {
+		t.Fatalf("Get AgentClientName = %v, want amp", got.AgentClientName)
+	}
+}
+
 func TestInvokeWithoutAuthFallsBackToRequestIDForRules(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"content": []map[string]any{{"type": "text", "text": "ok"}}}})

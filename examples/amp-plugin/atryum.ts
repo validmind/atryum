@@ -19,6 +19,13 @@ const SOURCE = process.env.ATRYUM_SOURCE || "amp";
 const POLL_INTERVAL = Number(process.env.ATRYUM_POLL_MS || 2000);
 // Amp exposes the current thread ID as $THREAD_ID in the plugin process env.
 const THREAD_ID = process.env.THREAD_ID || "";
+// Harness identity for the Atryum invocations UI Agent column. Falls back
+// to SOURCE for the name. ATRYUM_CLIENT_VERSION / AMP_VERSION are checked
+// in case a deployment plumbs the build version through the env; safe to
+// leave empty.
+const CLIENT_NAME = process.env.ATRYUM_CLIENT_NAME || SOURCE;
+const CLIENT_VERSION =
+  process.env.ATRYUM_CLIENT_VERSION || process.env.AMP_VERSION || "";
 
 type InvocationStatus =
   | "received"
@@ -65,6 +72,8 @@ async function submit(
       input,
       request_id: toolUseID,
       thread_id: THREAD_ID || undefined,
+      client_name: CLIENT_NAME,
+      client_version: CLIENT_VERSION || undefined,
     }),
   });
   if (!res.ok) {
