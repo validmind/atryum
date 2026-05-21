@@ -281,7 +281,9 @@ func (h *Handler) protectedResourceMetadata() http.Handler {
 func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", h.healthz)
-	mux.Handle("/.well-known/oauth-protected-resource", h.protectedResourceMetadata())
+	if h.authValidator != nil {
+		mux.Handle("/.well-known/oauth-protected-resource", h.protectedResourceMetadata())
+	}
 	mcpHandler := auth.MiddlewareWithOptions(h.authValidator, "/.well-known/oauth-protected-resource", auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})(http.HandlerFunc(h.invokeUpstream))
 	mux.Handle("/mcp/", mcpHandler)
 	mux.HandleFunc("/api/v1/invocations", h.invocations)

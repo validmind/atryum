@@ -246,3 +246,14 @@ func TestMCPNoValidatorPreservesAnonymousAccess(t *testing.T) {
 		t.Fatalf("expected 200 anonymous, got %d", w.Code)
 	}
 }
+
+func TestProtectedResourceMetadataNotServedWhenAuthDisabled(t *testing.T) {
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource", nil)
+	req.Host = "atryum.example"
+	w := httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 when auth disabled, got %d body=%s", w.Code, w.Body.String())
+	}
+}
