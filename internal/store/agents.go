@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
@@ -144,6 +145,21 @@ func (r *AgentsRepo) UpdateEnabled(ctx context.Context, id string, enabled bool)
 		return sql.ErrNoRows
 	}
 	return err
+}
+
+// GetByAgentID returns the agent record whose agent_ids JSON array contains the
+// given agentID string. Returns sql.ErrNoRows when no match is found.
+func (r *AgentsRepo) GetByAgentID(ctx context.Context, agentID string) (AgentRecord, error) {
+	cols := strings.Join(agentColumns, ", ")
+	var query string
+	if r.dialect == DialectPostgres {
+		// PostgreSQL: use the @> containment operator on JSONB.
+		query = `SELECT ` + cols + ` FROM agents WHERE agent_ids @> to_jsonb($1::text)::jsonb LIMIT 1`
+	} else {
+		// SQLite: use json_each to expand the array and match the value.
+		query = `SELECT ` + cols + ` FROM agents WHERE EXISTS (SELECT 1 FROM json_each(agent_ids) WHERE value = ?) LIMIT 1`
+	}
+	return scanAgent(r.db.QueryRowContext(ctx, query, agentID))
 }
 
 // List returns all agent records ordered by vm_name.

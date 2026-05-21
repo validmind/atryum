@@ -15,6 +15,7 @@ import (
 const connectionPath = "/internal/v1/atryum/connection"
 const agentsPath = "/internal/v1/atryum/agents"
 const modelConfigsPath = "/internal/v1/atryum/model-configs"
+const evaluatePath = "/internal/v1/atryum/evaluate"
 
 type ConnectionResponse struct {
 	OK              bool   `json:"ok"`
@@ -136,6 +137,61 @@ func (c *Client) FetchModelConfigs(ctx context.Context) (ModelConfigsResponse, e
 	var payload ModelConfigsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return ModelConfigsResponse{}, fmt.Errorf("decode model-configs response: %w", err)
+	}
+	return payload, nil
+}
+
+// EvaluateRequest is sent to the VM backend to ask the LLM whether a tool
+// call should be approved or denied.
+type EvaluateRequest struct {
+	ModelConfigCUID      string         `json:"model_config_cuid"`
+	AgentVMCUID          string         `json:"agent_vm_cuid,omitempty"`
+	ConstitutionFieldKey string         `json:"constitution_field_key,omitempty"`
+	ServerName           string         `json:"server_name"`
+	ToolName             string         `json:"tool_name"`
+	ToolArgs             map[string]any `json:"tool_args,omitempty"`
+	Context              string         `json:"context,omitempty"`
+}
+
+// EvaluateResponse is the result returned by the VM backend after LLM evaluation.
+type EvaluateResponse struct {
+	Approved bool   `json:"approved"`
+	Reason   string `json:"reason"`
+}
+
+// EvaluateToolCall calls the VM backend's evaluate endpoint and returns whether
+// the tool call should be approved.
+func (c *Client) EvaluateToolCall(ctx context.Context, req EvaluateRequest) (EvaluateResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return EvaluateResponse{}, fmt.Errorf("marshal evaluate request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(
+		ctx, http.MethodPost, c.baseURL+evaluatePath,
+		strings.NewReader(string(body)),
+	)
+	if err != nil {
+		return EvaluateResponse{}, fmt.Errorf("build evaluate request: %w", err)
+	}
+	httpReq.Header.Set("X-MACHINE-KEY", c.machineKey)
+	httpReq.Header.Set("X-MACHINE-SECRET", c.machineSecret)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return EvaluateResponse{}, fmt.Errorf("call evaluate endpoint: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return EvaluateResponse{}, fmt.Errorf("evaluate endpoint returned %s", resp.Status)
+	}
+
+	var payload EvaluateResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return EvaluateResponse{}, fmt.Errorf("decode evaluate response: %w", err)
 	}
 	return payload, nil
 }

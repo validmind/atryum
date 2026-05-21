@@ -65,7 +65,7 @@ func TestInvokeUsesAuthenticatedAgentIDForRulesAndEvents(t *testing.T) {
 	svc := invocation.NewService(
 		store.NewInvocationRepo(db), store.NewEventRepo(db), resolver,
 		mcp.NewHTTPClient(), policy.AlwaysDenyProvider{}, // would deny if the rule didn't match
-		5*time.Second, rules,
+		5*time.Second, rules, nil, nil, "",
 	)
 
 	ctx := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "agent-007", Issuer: "https://idp.test"})
@@ -148,7 +148,7 @@ func TestInvokeWithoutAuthFallsBackToRequestIDForRules(t *testing.T) {
 	svc := invocation.NewService(
 		store.NewInvocationRepo(db), store.NewEventRepo(db), resolver,
 		mcp.NewHTTPClient(), policy.AlwaysDenyProvider{},
-		5*time.Second, rules,
+		5*time.Second, rules, nil, nil, "",
 	)
 
 	rid := "legacy-request-id"

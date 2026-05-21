@@ -37,6 +37,15 @@ connection_timeout_seconds = 5
 [defaults]
 request_timeout_seconds = 30
 
+# AI Evaluation rule type configuration.
+# When an approval rule uses the "ai_evaluation" action, Atryum calls the
+# ValidMind backend to have the LLM evaluate whether to approve or deny the
+# tool call. The constitution is fetched from the agent's VM inventory model
+# custom fields using the key below.
+#
+# [ai_evaluation]
+# constitution_field_key = "constitution"
+
 # Local-only auth debug mode. When true, the Authorization header is ignored
 # entirely on /mcp/: no bearer token is required and no identity is set on
 # the request context. Never enable outside local debugging.

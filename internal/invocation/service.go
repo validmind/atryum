@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -14,6 +15,43 @@ import (
 	"atryum/internal/invocation/policy"
 	"atryum/internal/mcp"
 )
+
+// AgentLookup is the minimal interface required by the invocation service to
+// resolve an agent's VM CUID from its runtime agent ID.
+type AgentLookup interface {
+	GetByAgentID(ctx context.Context, agentID string) (AgentRecord, error)
+}
+
+// AgentRecord is a lightweight copy of store.AgentRecord used within the
+// invocation package to avoid a circular import.
+type AgentRecord struct {
+	ID     string // local Atryum agent UUID (used for rule matching)
+	VMCUID string // VM inventory model CUID (used for constitution lookup)
+}
+
+// EvaluatorClient is the minimal interface required by the invocation service
+// to call the VM backend for LLM evaluation.
+type EvaluatorClient interface {
+	EvaluateToolCall(ctx context.Context, req EvaluateRequest) (EvaluateResponse, error)
+}
+
+// EvaluateRequest mirrors backend.EvaluateRequest so the service package does
+// not import the backend package directly.
+type EvaluateRequest struct {
+	ModelConfigCUID      string         `json:"model_config_cuid"`
+	AgentVMCUID          string         `json:"agent_vm_cuid,omitempty"`
+	ConstitutionFieldKey string         `json:"constitution_field_key,omitempty"`
+	ServerName           string         `json:"server_name"`
+	ToolName             string         `json:"tool_name"`
+	ToolArgs             map[string]any `json:"tool_args,omitempty"`
+	Context              string         `json:"context,omitempty"`
+}
+
+// EvaluateResponse mirrors backend.EvaluateResponse.
+type EvaluateResponse struct {
+	Approved bool   `json:"approved"`
+	Reason   string `json:"reason"`
+}
 
 type approvalDecision struct {
 	approved bool
@@ -45,27 +83,44 @@ type upstreamClient interface {
 }
 
 type Service struct {
-	invocations      invocationRepo
-	events           eventRepo
-	resolver         resolver
-	client           upstreamClient
-	policy           policy.Provider
-	rules            rulesStore // nil = no rule evaluation
-	defaultTimeout   time.Duration
-	mu               sync.Mutex
-	pendingApprovals map[string]chan approvalDecision
+	invocations          invocationRepo
+	events               eventRepo
+	resolver             resolver
+	client               upstreamClient
+	policy               policy.Provider
+	rules                rulesStore // nil = no rule evaluation
+	agents               AgentLookup
+	evaluator            EvaluatorClient
+	constitutionFieldKey string
+	defaultTimeout       time.Duration
+	mu                   sync.Mutex
+	pendingApprovals     map[string]chan approvalDecision
 }
 
-func NewService(inv invocationRepo, evt eventRepo, resolver resolver, client upstreamClient, policyProvider policy.Provider, defaultTimeout time.Duration, rules rulesStore) *Service {
+func NewService(
+	inv invocationRepo,
+	evt eventRepo,
+	resolver resolver,
+	client upstreamClient,
+	policyProvider policy.Provider,
+	defaultTimeout time.Duration,
+	rules rulesStore,
+	agents AgentLookup,
+	evaluator EvaluatorClient,
+	constitutionFieldKey string,
+) *Service {
 	return &Service{
-		invocations:      inv,
-		events:           evt,
-		resolver:         resolver,
-		client:           client,
-		policy:           policyProvider,
-		rules:            rules,
-		defaultTimeout:   defaultTimeout,
-		pendingApprovals: make(map[string]chan approvalDecision),
+		invocations:          inv,
+		events:               evt,
+		resolver:             resolver,
+		client:               client,
+		policy:               policyProvider,
+		rules:                rules,
+		agents:               agents,
+		evaluator:            evaluator,
+		constitutionFieldKey: constitutionFieldKey,
+		defaultTimeout:       defaultTimeout,
+		pendingApprovals:     make(map[string]chan approvalDecision),
 	}
 }
 
@@ -98,6 +153,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	// is disabled the field is empty and we fall back to request_id for rule
 	// matching to preserve pre-auth behavior.
 	agentID := auth.AgentIDFromContext(ctx)
+	agentRec := s.resolveAgentRecord(ctx, agentID)
 
 	now := time.Now().UTC()
 	inv := Invocation{
@@ -128,7 +184,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 			if user == "" && req.RequestID != nil {
 				user = *req.RequestID
 			}
-			if matched := matchRule(approvalRules, upstream.Name, req.Tool, user, ""); matched != nil {
+			if matched := matchRule(approvalRules, upstream.Name, req.Tool, user, agentRec.ID); matched != nil {
 				ruleMatched = true
 				if matched.ID != "" {
 					matchedRuleID = &matched.ID
@@ -139,8 +195,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 				case RuleActionAutoApprove:
 					decision = policy.Decision{Disposition: policy.DispositionAuto, Reason: "matched approval rule (auto_approve)"}
 				case RuleActionAIEvaluation:
-					// Stub: fall back to human approval until LLM wiring is implemented.
-					decision = policy.Decision{Disposition: policy.DispositionHuman, Reason: "matched approval rule (ai_evaluation — pending human review)"}
+					decision = s.runAIEvaluation(ctx, matched, upstream.Name, req.Tool, req.Input, agentID)
 				default:
 					decision = policy.Decision{Disposition: policy.DispositionHuman, Reason: "matched approval rule (human_approval)"}
 				}
@@ -186,6 +241,90 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		// DispositionHuman and DispositionWorkflow both gate on a human decision.
 		return s.waitForHumanApproval(ctx, inv, upstream, req)
 	}
+}
+
+// resolveAgentRecord looks up the Atryum agent record for the given runtime
+// agentID. Returns a zero-value AgentRecord (with empty ID) when the agent
+// cannot be found or when agents lookup is not configured — callers treat an
+// empty ID as "match all agents" in rule filtering.
+func (s *Service) resolveAgentRecord(ctx context.Context, agentID string) AgentRecord {
+	if s.agents == nil || agentID == "" {
+		return AgentRecord{}
+	}
+	rec, err := s.agents.GetByAgentID(ctx, agentID)
+	if err != nil {
+		slog.Warn("could not resolve agent record for rule matching; agent-scoped rules will not match",
+			"agent_id", agentID, "error", err)
+		return AgentRecord{}
+	}
+	return rec
+}
+
+// runAIEvaluation calls the VM backend's evaluate endpoint and translates the
+// LLM verdict into a policy.Decision. On any error or if the evaluator is not
+// configured, it falls back to DispositionHuman so no invocation is silently lost.
+func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serverName, toolName string, toolArgs map[string]any, agentID string) policy.Decision {
+	if s.evaluator == nil {
+		slog.Warn("ai_evaluation rule matched but no evaluator configured; falling back to human_approval",
+			"rule_id", rule.ID, "tool", toolName, "server", serverName)
+		return policy.Decision{Disposition: policy.DispositionHuman, Reason: "ai_evaluation: evaluator not configured (falling back to human_approval)"}
+	}
+
+	// Resolve the agent's VM CUID so the constitution can be fetched server-side.
+	agentVMCUID := ""
+	if s.agents != nil && agentID != "" {
+		if rec, err := s.agents.GetByAgentID(ctx, agentID); err == nil {
+			agentVMCUID = rec.VMCUID
+		} else {
+			slog.Warn("ai_evaluation: could not resolve agent VM CUID; proceeding without constitution",
+				"agent_id", agentID, "error", err)
+		}
+	}
+
+	slog.Info("ai_evaluation: calling LLM",
+		"rule_id", rule.ID,
+		"server", serverName,
+		"tool", toolName,
+		"agent_id", agentID,
+		"agent_vm_cuid", agentVMCUID,
+		"model_config_cuid", rule.ModelConfigCUID,
+		"constitution_field_key", s.constitutionFieldKey,
+	)
+
+	evalCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	resp, err := s.evaluator.EvaluateToolCall(evalCtx, EvaluateRequest{
+		ModelConfigCUID:      rule.ModelConfigCUID,
+		AgentVMCUID:          agentVMCUID,
+		ConstitutionFieldKey: s.constitutionFieldKey,
+		ServerName:           serverName,
+		ToolName:             toolName,
+		ToolArgs:             toolArgs,
+	})
+	if err != nil {
+		slog.Error("ai_evaluation: LLM evaluation failed; falling back to human_approval",
+			"rule_id", rule.ID, "tool", toolName, "error", err)
+		return policy.Decision{Disposition: policy.DispositionHuman, Reason: "ai_evaluation: LLM call failed (falling back to human_approval)"}
+	}
+
+	verdict := "APPROVED"
+	if !resp.Approved {
+		verdict = "DENIED"
+	}
+	slog.Info("ai_evaluation: result",
+		"verdict", verdict,
+		"rule_id", rule.ID,
+		"server", serverName,
+		"tool", toolName,
+		"agent_id", agentID,
+		"reason", resp.Reason,
+	)
+
+	if resp.Approved {
+		return policy.Decision{Disposition: policy.DispositionAuto, Reason: "ai_evaluation approved: " + resp.Reason}
+	}
+	return policy.Decision{Disposition: policy.DispositionNever, Reason: "ai_evaluation denied: " + resp.Reason}
 }
 
 // denyByPolicy hard-denies the call without execution.
@@ -438,6 +577,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	}
 	// Evaluate rules against (source, tool, user) — same logic as Invoke.
 	agentID := auth.AgentIDFromContext(ctx)
+	agentRec := s.resolveAgentRecord(ctx, agentID)
 
 	now := time.Now().UTC()
 	inv := Invocation{
@@ -456,6 +596,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	if err := s.invocations.Create(ctx, inv); err != nil {
 		return InvocationResponse{}, err
 	}
+	var matchedRule *ApprovalRule
 	ruleAction := ""
 	if s.rules != nil {
 		if approvalRules, err := s.rules.ListApprovalRules(ctx); err == nil {
@@ -463,8 +604,9 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 			if user == "" && req.RequestID != nil {
 				user = *req.RequestID
 			}
-			if matched := matchRule(approvalRules, source, req.Tool, user, ""); matched != nil {
-				ruleAction = matched.Action
+			matchedRule = matchRule(approvalRules, source, req.Tool, user, agentRec.ID)
+			if matchedRule != nil {
+				ruleAction = matchedRule.Action
 			}
 		}
 	}
@@ -503,6 +645,29 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		}
 		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.approved", Payload: mustJSON(map[string]any{"auto_approved": true, "auto_reason": "matched approval rule (auto_approve)"}), CreatedAt: time.Now().UTC()})
 		return s.toResponse(inv), nil
+
+	case RuleActionAIEvaluation:
+		aiDecision := s.runAIEvaluation(ctx, matchedRule, source, req.Tool, req.Input, agentID)
+		if aiDecision.Disposition == policy.DispositionAuto {
+			inv.Status = StatusApproved
+			inv.Approval = &Approval{Status: "auto_approved", Reason: stringPtr(aiDecision.Reason)}
+			if err := s.invocations.UpdateResult(ctx, inv); err != nil {
+				return InvocationResponse{}, err
+			}
+			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.approved", Payload: mustJSON(map[string]any{"auto_approved": true, "auto_reason": aiDecision.Reason}), CreatedAt: time.Now().UTC()})
+			return s.toResponse(inv), nil
+		}
+		if aiDecision.Disposition == policy.DispositionNever {
+			completed := time.Now().UTC()
+			inv.Status = StatusDenied
+			inv.CompletedAt = &completed
+			inv.Approval = &Approval{Status: "auto_denied", Reason: stringPtr(aiDecision.Reason)}
+			inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": "Tool call denied by AI evaluation. Reason: " + aiDecision.Reason}}, "isError": true})
+			_ = s.invocations.UpdateResult(context.Background(), inv)
+			_ = s.events.Create(context.Background(), Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"reason": aiDecision.Reason, "disposition": "never"}), CreatedAt: completed})
+			return s.toResponse(inv), nil
+		}
+		// Fall through to human approval on fallback.
 	}
 
 	// Default: human approval required.

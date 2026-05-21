@@ -10,17 +10,25 @@ import (
 )
 
 type Config struct {
-	Server    ServerConfig     `toml:"server"`
-	Backend   BackendConfig    `toml:"backend"`
-	AgentSync AgentSyncConfig  `toml:"agent_sync"`
-	Defaults  DefaultsConfig   `toml:"defaults"`
-	Policy    PolicyConfig     `toml:"policy"`
-	Upstreams []UpstreamConfig `toml:"upstreams"`
+	Server       ServerConfig       `toml:"server"`
+	Backend      BackendConfig      `toml:"backend"`
+	AgentSync    AgentSyncConfig    `toml:"agent_sync"`
+	AIEvaluation AIEvaluationConfig `toml:"ai_evaluation"`
+	Defaults     DefaultsConfig     `toml:"defaults"`
+	Policy       PolicyConfig       `toml:"policy"`
+	Upstreams    []UpstreamConfig   `toml:"upstreams"`
 	// Auth holds zero or more inbound OAuth bearer-token validators
 	// (e.g. one entry for Keycloak, one for Auth0). When empty, the agent-
 	// facing /mcp/ routes remain anonymous.
 	Auth      []auth.Config   `toml:"auth"`
 	AuthDebug AuthDebugConfig `toml:"auth_debug"`
+}
+
+// AIEvaluationConfig configures the AI Evaluation rule type.
+// ConstitutionFieldKey is the key in the VM inventory model's custom_fields
+// map that holds the agent's constitution (governing rules for LLM evaluation).
+type AIEvaluationConfig struct {
+	ConstitutionFieldKey string `toml:"constitution_field_key"`
 }
 
 // AgentSyncConfig configures startup agent (inventory model) fetching from the

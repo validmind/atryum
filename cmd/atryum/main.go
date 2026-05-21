@@ -125,7 +125,18 @@ func main() {
 	}
 	log.Printf("policy provider: %s", policyRegistry.Active().DisplayName())
 
-	service := invocation.NewService(invRepo, eventRepo, resolver, client, policyRegistry, time.Duration(cfg.Defaults.RequestTimeoutSeconds)*time.Second, rulesRepo)
+	// Wrap store and backend client in thin adapters that satisfy the
+	// invocation package interfaces without creating import cycles.
+	var invAgents invocation.AgentLookup
+	if agentsRepo != nil {
+		invAgents = &agentsLookupAdapter{repo: agentsRepo}
+	}
+	var invEvaluator invocation.EvaluatorClient
+	if backendClient != nil {
+		invEvaluator = &evaluatorAdapter{client: backendClient}
+	}
+
+	service := invocation.NewService(invRepo, eventRepo, resolver, client, policyRegistry, time.Duration(cfg.Defaults.RequestTimeoutSeconds)*time.Second, rulesRepo, invAgents, invEvaluator, cfg.AIEvaluation.ConstitutionFieldKey)
 	serverAdmin := api.NewServerAdminService(serverRepo, oauthRepo, client, 5*time.Second)
 	handler := api.NewHandler(service, serverAdmin, policyRegistry, rulesRepo, agentsRepo, syncAgents, backendClient)
 
@@ -165,6 +176,40 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
+}
+
+// agentsLookupAdapter bridges store.AgentsRepo → invocation.AgentLookup.
+type agentsLookupAdapter struct {
+	repo *store.AgentsRepo
+}
+
+func (a *agentsLookupAdapter) GetByAgentID(ctx context.Context, agentID string) (invocation.AgentRecord, error) {
+	rec, err := a.repo.GetByAgentID(ctx, agentID)
+	if err != nil {
+		return invocation.AgentRecord{}, err
+	}
+	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID}, nil
+}
+
+// evaluatorAdapter bridges backendclient.Client → invocation.EvaluatorClient.
+type evaluatorAdapter struct {
+	client *backendclient.Client
+}
+
+func (e *evaluatorAdapter) EvaluateToolCall(ctx context.Context, req invocation.EvaluateRequest) (invocation.EvaluateResponse, error) {
+	resp, err := e.client.EvaluateToolCall(ctx, backendclient.EvaluateRequest{
+		ModelConfigCUID:      req.ModelConfigCUID,
+		AgentVMCUID:          req.AgentVMCUID,
+		ConstitutionFieldKey: req.ConstitutionFieldKey,
+		ServerName:           req.ServerName,
+		ToolName:             req.ToolName,
+		ToolArgs:             req.ToolArgs,
+		Context:              req.Context,
+	})
+	if err != nil {
+		return invocation.EvaluateResponse{}, err
+	}
+	return invocation.EvaluateResponse{Approved: resp.Approved, Reason: resp.Reason}, nil
 }
 
 func truthyEnv(name string) bool {
