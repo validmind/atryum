@@ -25,8 +25,9 @@ type AgentLookup interface {
 // AgentRecord is a lightweight copy of store.AgentRecord used within the
 // invocation package to avoid a circular import.
 type AgentRecord struct {
-	ID     string // local Atryum agent UUID (used for rule matching)
-	VMCUID string // VM inventory model CUID (used for constitution lookup)
+	ID                 string // local Atryum agent UUID (used for rule matching)
+	VMCUID             string // VM inventory model CUID (used for constitution lookup)
+	VMOrganizationCUID string // VM organization CUID (used for cross-tenant validation)
 }
 
 // EvaluatorClient is the minimal interface required by the invocation service
@@ -39,6 +40,7 @@ type EvaluatorClient interface {
 // not import the backend package directly.
 type EvaluateRequest struct {
 	ModelConfigCUID      string         `json:"model_config_cuid"`
+	OrgCUID              string         `json:"org_cuid,omitempty"`
 	AgentVMCUID          string         `json:"agent_vm_cuid,omitempty"`
 	ConstitutionFieldKey string         `json:"constitution_field_key,omitempty"`
 	ServerName           string         `json:"server_name"`
@@ -271,11 +273,14 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 		return policy.Decision{Disposition: policy.DispositionHuman, Reason: "ai_evaluation: evaluator not configured (falling back to human_approval)"}
 	}
 
-	// Resolve the agent's VM CUID so the constitution can be fetched server-side.
+	// Resolve the agent's VM CUID and org CUID so the constitution can be
+	// fetched server-side and the request can be cross-validated against the org.
 	agentVMCUID := ""
+	orgCUID := ""
 	if s.agents != nil && agentID != "" {
 		if rec, err := s.agents.GetByAgentID(ctx, agentID); err == nil {
 			agentVMCUID = rec.VMCUID
+			orgCUID = rec.VMOrganizationCUID
 		} else {
 			slog.Warn("ai_evaluation: could not resolve agent VM CUID; proceeding without constitution",
 				"agent_id", agentID, "error", err)
@@ -288,6 +293,7 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 		"tool", toolName,
 		"agent_id", agentID,
 		"agent_vm_cuid", agentVMCUID,
+		"org_cuid", orgCUID,
 		"model_config_cuid", rule.ModelConfigCUID,
 		"constitution_field_key", s.constitutionFieldKey,
 	)
@@ -297,6 +303,7 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 
 	resp, err := s.evaluator.EvaluateToolCall(evalCtx, EvaluateRequest{
 		ModelConfigCUID:      rule.ModelConfigCUID,
+		OrgCUID:              orgCUID,
 		AgentVMCUID:          agentVMCUID,
 		ConstitutionFieldKey: s.constitutionFieldKey,
 		ServerName:           serverName,

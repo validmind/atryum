@@ -95,6 +95,7 @@ func (c *Client) FetchAgents(ctx context.Context, orgCUID, agentRecordTypeSlug s
 	}
 	req.Header.Set("X-MACHINE-KEY", c.machineKey)
 	req.Header.Set("X-MACHINE-SECRET", c.machineSecret)
+	req.Header.Set("X-Org-CUID", orgCUID)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.httpClient.Do(req)
@@ -145,6 +146,7 @@ func (c *Client) FetchModelConfigs(ctx context.Context) (ModelConfigsResponse, e
 // call should be approved or denied.
 type EvaluateRequest struct {
 	ModelConfigCUID      string         `json:"model_config_cuid"`
+	OrgCUID              string         `json:"org_cuid,omitempty"`
 	AgentVMCUID          string         `json:"agent_vm_cuid,omitempty"`
 	ConstitutionFieldKey string         `json:"constitution_field_key,omitempty"`
 	ServerName           string         `json:"server_name"`
@@ -176,6 +178,9 @@ func (c *Client) EvaluateToolCall(ctx context.Context, req EvaluateRequest) (Eva
 	}
 	httpReq.Header.Set("X-MACHINE-KEY", c.machineKey)
 	httpReq.Header.Set("X-MACHINE-SECRET", c.machineSecret)
+	if req.OrgCUID != "" {
+		httpReq.Header.Set("X-Org-CUID", req.OrgCUID)
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
 

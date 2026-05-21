@@ -194,7 +194,7 @@ func (a *agentsLookupAdapter) GetByAgentID(ctx context.Context, agentID string) 
 	if err != nil {
 		return invocation.AgentRecord{}, err
 	}
-	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID}, nil
+	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID}, nil
 }
 
 // evaluatorAdapter bridges backendclient.Client → invocation.EvaluatorClient.
@@ -205,6 +205,7 @@ type evaluatorAdapter struct {
 func (e *evaluatorAdapter) EvaluateToolCall(ctx context.Context, req invocation.EvaluateRequest) (invocation.EvaluateResponse, error) {
 	resp, err := e.client.EvaluateToolCall(ctx, backendclient.EvaluateRequest{
 		ModelConfigCUID:      req.ModelConfigCUID,
+		OrgCUID:              req.OrgCUID,
 		AgentVMCUID:          req.AgentVMCUID,
 		ConstitutionFieldKey: req.ConstitutionFieldKey,
 		ServerName:           req.ServerName,
