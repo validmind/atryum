@@ -38,9 +38,6 @@ agent_record_type_slug = "ai-agents"                # primary record type slug i
 [ai_evaluation]
 constitution_field_key = "constitution"
 ```
-
-> **Where to find `org_cuid`:** In ValidMind, go to **Settings → Organization** and copy the CUID shown in the URL or organization details.
-
 ---
 
 ## Step 2 — Restart Atryum
@@ -77,7 +74,7 @@ Atryum will now recognise bearer tokens issued for that user as belonging to thi
 
 ## Step 5 — Create an AI Evaluation Approval Rule
 
-1. In the Atryum UI, go to **Approval Rules** and click **New Rule**.
+1. In the Atryum UI, go to **Rules** and click **New Rule**.
 2. Fill in the rule:
 
    | Field | Value |
