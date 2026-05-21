@@ -35,6 +35,7 @@ type service interface {
 	ResolveToolServer(ctx context.Context, toolName string) (string, error)
 	Get(ctx context.Context, id string) (invocation.InvocationResponse, error)
 	List(ctx context.Context, filter invocation.InvocationListFilter) (invocation.InvocationListResponse, error)
+	ListAgentIDs(ctx context.Context) ([]string, error)
 	Events(ctx context.Context, invocationID string, filter invocation.EventListFilter) (invocation.EventListResponse, error)
 	Approve(ctx context.Context, invocationID string) error
 	Deny(ctx context.Context, invocationID string, message string) error
@@ -88,6 +89,7 @@ type Handler struct {
 	debug           bool
 	authDebugSkip   bool
 	authValidator   *auth.Validator
+	apiKeyAuth      auth.APIKeyConfig
 }
 
 type PolicyStatusResponse struct {
@@ -115,32 +117,38 @@ type DenyRequest struct {
 }
 
 type AdminServer struct {
-	Name               string            `json:"name"`
-	Mode               string            `json:"mode"`
-	BaseURL            string            `json:"base_url,omitempty"`
-	AuthToken          string            `json:"auth_token,omitempty"`
-	AuthHeaders        []mcp.AuthHeader  `json:"auth_headers,omitempty"`
-	TimeoutSeconds     int               `json:"timeout_seconds"`
-	Command            string            `json:"command,omitempty"`
-	Args               []string          `json:"args,omitempty"`
-	Env                map[string]string `json:"env,omitempty"`
-	Enabled            bool              `json:"enabled"`
-	AuthType           string            `json:"auth_type"`
-	ConnectionStatus   string            `json:"connection_status"`
-	AuthStatus         string            `json:"auth_status"`
-	ReauthNeeded       bool              `json:"reauth_needed"`
-	LastCheckedAt      *time.Time        `json:"last_checked_at,omitempty"`
-	LastCheckOK        bool              `json:"last_check_ok"`
-	LastErrorSummary   *string           `json:"last_error_summary,omitempty"`
-	ActionRequired     *string           `json:"action_required,omitempty"`
-	OAuthProviderID         string `json:"oauth_provider_id,omitempty"`
-	OAuthProviderLabel      string `json:"oauth_provider_label,omitempty"`
-	OAuthClientRegistration string `json:"oauth_client_registration,omitempty"`
-	OAuthClientID           string `json:"oauth_client_id,omitempty"`
-	OAuthAuthorizeURL       string `json:"oauth_authorize_url,omitempty"`
-	OAuthTokenURL           string `json:"oauth_token_url,omitempty"`
-	OAuthScopes             string `json:"oauth_scopes,omitempty"`
-	HasOAuthClientSecret    bool   `json:"has_oauth_client_secret,omitempty"`
+	Name                    string            `json:"name"`
+	Mode                    string            `json:"mode"`
+	BaseURL                 string            `json:"base_url,omitempty"`
+	AuthToken               string            `json:"auth_token,omitempty"`
+	AuthHeaders             []mcp.AuthHeader  `json:"auth_headers,omitempty"`
+	TimeoutSeconds          int               `json:"timeout_seconds"`
+	Command                 string            `json:"command,omitempty"`
+	Args                    []string          `json:"args,omitempty"`
+	Env                     map[string]string `json:"env,omitempty"`
+	Enabled                 bool              `json:"enabled"`
+	AuthType                string            `json:"auth_type"`
+	ConnectionStatus        string            `json:"connection_status"`
+	AuthStatus              string            `json:"auth_status"`
+	ReauthNeeded            bool              `json:"reauth_needed"`
+	LastCheckedAt           *time.Time        `json:"last_checked_at,omitempty"`
+	LastCheckOK             bool              `json:"last_check_ok"`
+	LastErrorSummary        *string           `json:"last_error_summary,omitempty"`
+	ActionRequired          *string           `json:"action_required,omitempty"`
+	OAuthProviderID         string            `json:"oauth_provider_id,omitempty"`
+	OAuthProviderLabel      string            `json:"oauth_provider_label,omitempty"`
+	OAuthClientRegistration string            `json:"oauth_client_registration,omitempty"`
+	OAuthClientID           string            `json:"oauth_client_id,omitempty"`
+	OAuthAuthorizeURL       string            `json:"oauth_authorize_url,omitempty"`
+	OAuthTokenURL           string            `json:"oauth_token_url,omitempty"`
+	OAuthScopes             string            `json:"oauth_scopes,omitempty"`
+	HasOAuthClientSecret    bool              `json:"has_oauth_client_secret,omitempty"`
+	// OAuthGrantedScopes is what the authorization server actually issued
+	// on the most recent token exchange (read from oauth_credentials.scope).
+	// Distinct from OAuthScopes, which is what we *request* in the next
+	// authorize URL. They can diverge: Slack-style ASes honor whatever
+	// scopes the registered app declares regardless of what we send.
+	OAuthGrantedScopes string `json:"oauth_granted_scopes,omitempty"`
 }
 
 type AdminServerUpsertRequest struct {
@@ -327,6 +335,12 @@ func (h *Handler) SetAuthDebugSkipVerify(enabled bool) {
 	h.authDebugSkip = enabled
 }
 
+// SetAPIKeyAuth installs the static api-key/secret pair used to protect the
+// read-only invocation reporting endpoints.
+func (h *Handler) SetAPIKeyAuth(cfg auth.APIKeyConfig) {
+	h.apiKeyAuth = cfg
+}
+
 // protectedResourceMetadata serves the OAuth 2.0 protected-resource metadata
 // (RFC 9728) document so MCP clients can discover the authorization server.
 // The resource URL is computed from the incoming request so deployments
@@ -341,7 +355,9 @@ func (h *Handler) protectedResourceMetadata() http.Handler {
 func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", h.healthz)
-	mux.Handle("/.well-known/oauth-protected-resource", h.protectedResourceMetadata())
+	if h.authValidator != nil {
+		mux.Handle("/.well-known/oauth-protected-resource", h.protectedResourceMetadata())
+	}
 	mcpHandler := auth.MiddlewareWithOptions(h.authValidator, "/.well-known/oauth-protected-resource", auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})(http.HandlerFunc(h.invokeUpstream))
 	mux.Handle("/mcp/", mcpHandler)
 	mux.HandleFunc("/api/v1/invocations", h.invocations)
@@ -359,6 +375,9 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/api/v1/admin/policy", h.adminPolicy)
 	mux.HandleFunc("/api/v1/external/invocations", h.externalInvocations)
 	mux.HandleFunc("/api/v1/external/invocations/", h.externalInvocationDetail)
+	apiKeyMW := auth.APIKeyMiddleware(h.apiKeyAuth)
+	mux.Handle("/agent_ids", apiKeyMW(http.HandlerFunc(h.agentIDs)))
+	mux.Handle("/invocations/", apiKeyMW(http.HandlerFunc(h.invocationsByAgentID)))
 	mux.HandleFunc("/ui", h.uiIndex)
 	mux.Handle("/ui/", http.StripPrefix("/ui/", h.spaFileServer()))
 	mux.HandleFunc("/", h.root)
@@ -610,6 +629,78 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		w.WriteHeader(status)
 		_, _ = w.Write(forwarded.Body)
 	}
+}
+
+// agentIDs returns the distinct agent IDs that have submitted invocations.
+// Protected by the API key middleware.
+func (h *Handler) agentIDs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	ids, err := h.svc.ListAgentIDs(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if ids == nil {
+		ids = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": ids})
+}
+
+// invocationsByAgentID returns a paginated list of invocations for the given
+// agent_id. Supports optional `start_date` and `end_date` query parameters
+// (RFC3339). Protected by the API key middleware.
+func (h *Handler) invocationsByAgentID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	agentID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/invocations/"), "/")
+	if agentID == "" {
+		writeError(w, http.StatusBadRequest, "agent_id is required")
+		return
+	}
+	filter := invocation.InvocationListFilter{
+		Offset:  readUintQuery(r, "offset", 0),
+		Limit:   readUintQuery(r, "limit", 50),
+		AgentID: agentID,
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("start_date")); raw != "" {
+		t, err := parseDateParam(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid start_date: "+err.Error())
+			return
+		}
+		filter.StartDate = &t
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("end_date")); raw != "" {
+		t, err := parseDateParam(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid end_date: "+err.Error())
+			return
+		}
+		filter.EndDate = &t
+	}
+	resp, err := h.svc.List(r.Context(), filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// parseDateParam accepts RFC3339 timestamps as well as YYYY-MM-DD dates
+// (interpreted as UTC midnight).
+func parseDateParam(value string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, value); err == nil {
+		return t.UTC(), nil
+	}
+	if t, err := time.Parse("2006-01-02", value); err == nil {
+		return t.UTC(), nil
+	}
+	return time.Time{}, fmt.Errorf("expected RFC3339 timestamp or YYYY-MM-DD date")
 }
 
 func (h *Handler) adminInvocations(w http.ResponseWriter, r *http.Request) {
@@ -1413,10 +1504,11 @@ func readUintQuery(r *http.Request, key string, fallback uint64) uint64 {
 }
 
 type ServerAdminService struct {
-	repo      serverRepo
-	oauthRepo *store.OAuthRepo
-	client    *mcp.Client
-	timeout   time.Duration
+	repo          serverRepo
+	oauthRepo     *store.OAuthRepo
+	client        *mcp.Client
+	timeout       time.Duration
+	publicBaseURL string
 }
 
 type serverRepo interface {
@@ -1428,8 +1520,8 @@ type serverRepo interface {
 	DisableServer(ctx context.Context, name string) error
 }
 
-func NewServerAdminService(repo serverRepo, oauthRepo *store.OAuthRepo, client *mcp.Client, timeout time.Duration) *ServerAdminService {
-	return &ServerAdminService{repo: repo, oauthRepo: oauthRepo, client: client, timeout: timeout}
+func NewServerAdminService(repo serverRepo, oauthRepo *store.OAuthRepo, client *mcp.Client, timeout time.Duration, publicBaseURL string) *ServerAdminService {
+	return &ServerAdminService{repo: repo, oauthRepo: oauthRepo, client: client, timeout: timeout, publicBaseURL: strings.TrimRight(strings.TrimSpace(publicBaseURL), "/")}
 }
 
 func (s *ServerAdminService) List(ctx context.Context, filter mcp.ServerFilter) (ServerListResponse, error) {
@@ -1439,7 +1531,7 @@ func (s *ServerAdminService) List(ctx context.Context, filter mcp.ServerFilter) 
 	}
 	servers := make([]AdminServer, 0, len(items))
 	for _, item := range items {
-		servers = append(servers, toAdminServer(item))
+		servers = append(servers, s.adminViewWithGrantedScopes(ctx, item))
 	}
 	return ServerListResponse{Items: servers, Total: total, Offset: filter.Offset, Limit: normalizeLimit(filter.Limit, 50)}, nil
 }
@@ -1449,7 +1541,19 @@ func (s *ServerAdminService) Get(ctx context.Context, name string) (AdminServer,
 	if err != nil {
 		return AdminServer{}, err
 	}
-	return toAdminServer(upstream), nil
+	return s.adminViewWithGrantedScopes(ctx, upstream), nil
+}
+
+// adminViewWithGrantedScopes is toAdminServer + an overlay of the actual
+// scope string the AS granted on the latest successful token exchange.
+// Pulled separately from oauth_credentials.scope so the UI can show both
+// what we requested and what's actually live.
+func (s *ServerAdminService) adminViewWithGrantedScopes(ctx context.Context, upstream mcp.Upstream) AdminServer {
+	view := toAdminServer(upstream)
+	if cred, err := s.oauthRepo.GetCredential(ctx, upstream.Name); err == nil {
+		view.OAuthGrantedScopes = cred.Scope
+	}
+	return view
 }
 
 func (s *ServerAdminService) Upsert(ctx context.Context, name string, req AdminServerUpsertRequest) (AdminServer, error) {
@@ -1525,7 +1629,7 @@ func (s *ServerAdminService) Upsert(ctx context.Context, name string, req AdminS
 	if err := s.repo.UpsertServer(ctx, upstream); err != nil {
 		return AdminServer{}, err
 	}
-	return toAdminServer(upstream), nil
+	return s.adminViewWithGrantedScopes(ctx, upstream), nil
 }
 
 func (s *ServerAdminService) Delete(ctx context.Context, name string, disable bool) error {
@@ -1578,7 +1682,11 @@ func (s *ServerAdminService) StartConnect(ctx context.Context, name string, appB
 	if err != nil {
 		return OAuthConnectStartResponse{}, err
 	}
-	redirectURI := strings.TrimRight(appBaseURL, "/") + "/api/v1/admin/oauth/callback"
+	redirectBaseURL := strings.TrimRight(appBaseURL, "/")
+	if s.publicBaseURL != "" {
+		redirectBaseURL = s.publicBaseURL
+	}
+	redirectURI := redirectBaseURL + "/api/v1/admin/oauth/callback"
 	connectReq, err := provider.BuildConnectRequest(ctx, upstream, redirectURI, stateToken)
 	if err != nil {
 		return OAuthConnectStartResponse{}, err

@@ -35,6 +35,13 @@ $('#show-disabled-servers').addEventListener('change', () => {
   loadServers();
 });
 $('#server-mode').addEventListener('change', updateServerModeFields);
+$('#server-oauth-use-default-scopes').addEventListener('change', (event) => {
+  const checked = event.target.checked;
+  $('#server-oauth-scopes-row').style.display = checked ? 'none' : '';
+  if (checked) {
+    $('#server-oauth-scopes').value = '';
+  }
+});
 $('#server-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   await saveServer();
@@ -421,7 +428,15 @@ function fillServerForm(detail) {
     : '';
   $('#server-oauth-authorize-url').value = detail.oauth_authorize_url || '';
   $('#server-oauth-token-url').value = detail.oauth_token_url || '';
-  $('#server-oauth-scopes').value = detail.oauth_scopes || '';
+  const scopes = (detail.oauth_scopes || '').trim();
+  $('#server-oauth-scopes').value = scopes;
+  $('#server-oauth-use-default-scopes').checked = scopes === '';
+  $('#server-oauth-scopes-row').style.display = scopes === '' ? 'none' : '';
+  const granted = $('#server-oauth-granted-scopes');
+  if (granted) {
+    granted.value = detail.oauth_granted_scopes || '';
+    $('#server-oauth-granted-scopes-row').style.display = detail.oauth_granted_scopes ? '' : 'none';
+  }
   updateServerModeFields();
 }
 
@@ -461,6 +476,11 @@ function startNewServer() {
   $('#server-enabled').checked = true;
   $('#server-mode').value = 'http';
   $('#toggle-server-enabled').textContent = 'Disable';
+  $('#server-oauth-use-default-scopes').checked = true;
+  $('#server-oauth-scopes-row').style.display = 'none';
+  $('#server-oauth-scopes').value = '';
+  const grantedRow = $('#server-oauth-granted-scopes-row');
+  if (grantedRow) grantedRow.style.display = 'none';
   applyConnectButtonState({ mode: 'http', base_url: '', oauth_provider_id: '' });
   $('#server-badges').innerHTML = [renderBadge('unknown'), renderBadge('unknown'), renderBadge('not_tested', 'neutral')].join('');
   $('#server-detail-summary').innerHTML = '<div><strong>Status:</strong> Create and test a server to see readiness and auth state.</div>';

@@ -636,7 +636,45 @@ func applyInvocationFilter(builder sq.SelectBuilder, countBuilder sq.SelectBuild
 		builder = builder.Where(sq.Eq{"agent_id": filter.AgentID})
 		countBuilder = countBuilder.Where(sq.Eq{"agent_id": filter.AgentID})
 	}
+	if filter.StartDate != nil {
+		builder = builder.Where(sq.GtOrEq{"submitted_at": *filter.StartDate})
+		countBuilder = countBuilder.Where(sq.GtOrEq{"submitted_at": *filter.StartDate})
+	}
+	if filter.EndDate != nil {
+		builder = builder.Where(sq.LtOrEq{"submitted_at": *filter.EndDate})
+		countBuilder = countBuilder.Where(sq.LtOrEq{"submitted_at": *filter.EndDate})
+	}
 	return builder, countBuilder
+}
+
+// ListAgentIDs returns the distinct non-null/non-empty agent_id values
+// observed in the invocations table.
+func (r *InvocationRepo) ListAgentIDs(ctx context.Context) ([]string, error) {
+	query, args, err := r.sb.Select("DISTINCT agent_id").
+		From("invocations").
+		Where(sq.NotEq{"agent_id": nil}).
+		Where(sq.NotEq{"agent_id": ""}).
+		OrderBy("agent_id ASC").
+		ToSql()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var agentID sql.NullString
+		if err := rows.Scan(&agentID); err != nil {
+			return nil, err
+		}
+		if agentID.Valid && agentID.String != "" {
+			out = append(out, agentID.String)
+		}
+	}
+	return out, rows.Err()
 }
 
 func countRows(ctx context.Context, db *sql.DB, builder sq.SelectBuilder) (int, error) {

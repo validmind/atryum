@@ -104,7 +104,7 @@ func main() {
 			log.Printf("agent sync failed: %v", err)
 		}
 	}
-	resolver := mcp.NewResolver(serverRepo, cfg)
+	resolver := mcp.NewResolver(serverRepo, cfg).WithCredentials(credentialAdapter{repo: oauthRepo})
 	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
 		log.Fatalf("bootstrap servers: %v", err)
 	}
@@ -137,7 +137,7 @@ func main() {
 	}
 
 	service := invocation.NewService(invRepo, eventRepo, resolver, client, policyRegistry, time.Duration(cfg.Defaults.RequestTimeoutSeconds)*time.Second, rulesRepo, invAgents, invEvaluator, cfg.AIEvaluation.ConstitutionFieldKey)
-	serverAdmin := api.NewServerAdminService(serverRepo, oauthRepo, client, 5*time.Second)
+	serverAdmin := api.NewServerAdminService(serverRepo, oauthRepo, client, 5*time.Second, cfg.Server.PublicBaseURL)
 	handler := api.NewHandler(service, serverAdmin, policyRegistry, rulesRepo, agentsRepo, syncAgents, backendClient)
 
 	authValidator, err := auth.NewValidator(cfg.Auth, nil)
@@ -149,6 +149,12 @@ func main() {
 		log.Printf("inbound auth enabled (%d issuer(s))", len(authValidator.Configs()))
 	} else {
 		log.Printf("inbound auth disabled (no [[auth]] section configured)")
+	}
+	handler.SetAPIKeyAuth(cfg.APIKey)
+	if cfg.APIKey.Enabled() {
+		log.Printf("api key auth enabled for /invocations/{agent_id} and /agent_ids")
+	} else {
+		log.Printf("api key auth NOT configured: /invocations/{agent_id} and /agent_ids will refuse all requests")
 	}
 	authDebugSkipVerify := cfg.AuthDebug.SkipVerify || truthyEnv("ATRYUM_AUTH_DEBUG_SKIP_VERIFY")
 	if authDebugSkipVerify {
@@ -215,4 +221,19 @@ func (e *evaluatorAdapter) EvaluateToolCall(ctx context.Context, req invocation.
 func truthyEnv(name string) bool {
 	value := os.Getenv(name)
 	return value == "1" || value == "true" || value == "TRUE" || value == "yes" || value == "YES"
+}
+
+// credentialAdapter bridges store.OAuthRepo into the narrow
+// mcp.CredentialStore interface the resolver consumes. Keeps the mcp
+// package independent of the concrete OAuthRepo/OAuthCredential types.
+type credentialAdapter struct {
+	repo *store.OAuthRepo
+}
+
+func (a credentialAdapter) GetCredential(ctx context.Context, serverName string) (mcp.AccessTokenView, error) {
+	cred, err := a.repo.GetCredential(ctx, serverName)
+	if err != nil {
+		return mcp.AccessTokenView{}, err
+	}
+	return mcp.AccessTokenView{AccessToken: cred.AccessToken}, nil
 }

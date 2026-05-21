@@ -22,6 +22,10 @@ type Config struct {
 	// facing /mcp/ routes remain anonymous.
 	Auth      []auth.Config   `toml:"auth"`
 	AuthDebug AuthDebugConfig `toml:"auth_debug"`
+	// APIKey protects the read-only reporting endpoints
+	// (GET /invocations/{agent_id}, GET /agent_ids). When key or secret is
+	// empty, those endpoints refuse every request.
+	APIKey auth.APIKeyConfig `toml:"api_key"`
 }
 
 // AIEvaluationConfig configures the AI Evaluation rule type.
@@ -60,10 +64,11 @@ type PolicyConfig struct {
 }
 
 type ServerConfig struct {
-	ListenAddr   string `toml:"listen_addr"`
-	DatabasePath string `toml:"database_path"`
-	DatabaseURL  string `toml:"database_url"`
-	LogLevel     string `toml:"log_level"`
+	ListenAddr    string `toml:"listen_addr"`
+	PublicBaseURL string `toml:"public_base_url"`
+	DatabasePath  string `toml:"database_path"`
+	DatabaseURL   string `toml:"database_url"`
+	LogLevel      string `toml:"log_level"`
 }
 
 type DefaultsConfig struct {
@@ -80,6 +85,16 @@ type UpstreamConfig struct {
 	Command        string            `toml:"command"`
 	Args           []string          `toml:"args"`
 	Env            map[string]string `toml:"env"`
+	// Optional pre-shared OAuth credentials. Only consulted on the
+	// bootstrap path (empty DB) — once a row exists in mcp_servers these
+	// are ignored and the admin form / DCR take over. Use for ASes that
+	// don't support Dynamic Client Registration (Slack, GitHub OAuth
+	// Apps, etc.) where the admin has registered a client out-of-band.
+	OAuthClientID     string `toml:"oauth_client_id"`
+	OAuthClientSecret string `toml:"oauth_client_secret"`
+	OAuthAuthorizeURL string `toml:"oauth_authorize_url"`
+	OAuthTokenURL     string `toml:"oauth_token_url"`
+	OAuthScopes       string `toml:"oauth_scopes"`
 }
 
 func Load(path string) (Config, error) {

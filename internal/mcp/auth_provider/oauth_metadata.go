@@ -348,26 +348,25 @@ func strategyProvider(upstream mcp.Upstream) (Provider, error) {
 	}
 }
 
+// defaultScopes picks a sensible scope default for OIDC-style ASes only.
+// For pure-OAuth ASes (Slack, GitHub, etc.) the right behavior is to send
+// no scope parameter at all and let the AS grant whatever scopes the
+// registered client app declared — picking an arbitrary subset of
+// scopes_supported (as we used to) silently truncates consent to the
+// first few scopes alphabetically and confuses everyone. Admins who want
+// to scope down explicitly can fill in the manual OAuth form.
 func defaultScopes(scopes []string) []string {
-	preferred := []string{"openid", "profile", "email"}
-	out := make([]string, 0, len(preferred))
 	available := make(map[string]struct{}, len(scopes))
 	for _, scope := range scopes {
 		available[scope] = struct{}{}
 	}
-	for _, scope := range preferred {
+	if _, ok := available["openid"]; !ok {
+		return nil
+	}
+	out := []string{"openid"}
+	for _, scope := range []string{"profile", "email"} {
 		if _, ok := available[scope]; ok {
 			out = append(out, scope)
-		}
-	}
-	if len(out) == 0 {
-		for _, scope := range scopes {
-			if strings.TrimSpace(scope) != "" {
-				out = append(out, scope)
-			}
-			if len(out) == 3 {
-				break
-			}
 		}
 	}
 	return out
