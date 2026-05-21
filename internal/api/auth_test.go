@@ -248,7 +248,7 @@ func TestMCPNoValidatorPreservesAnonymousAccess(t *testing.T) {
 }
 
 func TestProtectedResourceMetadataNotServedWhenAuthDisabled(t *testing.T) {
-	h := NewHandler(&stubService{}, stubServerService{}, nil, nil)
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource", nil)
 	req.Host = "atryum.example"
 	w := httptest.NewRecorder()
