@@ -16,6 +16,7 @@ import (
 
 	"atryum/internal/auth"
 	"atryum/internal/invocation"
+	"atryum/internal/store"
 )
 
 // jwksHandler serves a minimal JWKS document for the given RSA public key so
@@ -175,6 +176,46 @@ func TestMCPAcceptsValidTokenAndPlumbsAgentID(t *testing.T) {
 	id := auth.AgentIDFromContext(svc.invokedCtx)
 	if id != "agent-007" {
 		t.Fatalf("expected agent_id agent-007 on invoke ctx, got %q", id)
+	}
+}
+
+func TestAgentRulesRequiresAuthAndUsesTokenAgentID(t *testing.T) {
+	rig := newAuthTestRig(t)
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "own-rule", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentIDPattern: "agent-007", Enabled: true, Order: 0},
+		{ID: "other-rule", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentIDPattern: "other", Enabled: true, Order: 1},
+	}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules)
+	h.SetAuthValidator(rig.v)
+	handler := h.Routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?source=amp&tool=Read", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without bearer, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	tok := rig.sign(t, defaultClaims())
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?agent_id=other&source=amp&tool=Read", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 with bearer, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.AgentID != "agent-007" {
+		t.Fatalf("expected token agent_id to win, got %q", resp.AgentID)
+	}
+	if resp.Action != invocation.RuleActionAutoApprove {
+		t.Fatalf("expected own rule action, got %q", resp.Action)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].ID != "own-rule" {
+		t.Fatalf("expected only own rule, got %#v", resp.Items)
 	}
 }
 

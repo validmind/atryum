@@ -150,7 +150,13 @@ ATRYUM_POSTGRES_TESTS=1 ATRYUM_POSTGRES_TEST_DSN="postgresql://postgres:password
 Public:
 - `POST /mcp/:server`
 - `POST /api/v1/invocations`
+- `GET /api/v1/agent/rules?server=&source=&tool=&agent_id=&request_id=` - returns enabled approval rules applicable to the caller; protected by the same bearer auth as `/mcp/` when auth is configured
 - `GET /healthz`
+
+MCP clients connected through `/mcp/` also see a synthetic `atryum.rules.get`
+tool in `tools/list`. It returns the same rules payload without creating an
+approval-gated invocation, so agents can inspect their rule environment before
+choosing which tool to call.
 
 Admin APIs:
 - `GET /api/v1/admin/invocations?offset=0&limit=50&server=&tool=&status=`
