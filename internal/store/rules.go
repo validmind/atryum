@@ -16,17 +16,22 @@ import (
 // ServerPatterns and ToolPatterns are serialized as JSON arrays in the
 // server_pattern / tool_pattern TEXT columns; an empty slice means "match all".
 // AgentIDPattern is the literal authenticated agent_id (or "*"/"" for any).
+// ModelConfigCUID references the VM agent model configuration for ai_evaluation rules.
+// AgentCUIDs is a JSON-encoded list of Atryum agent CUIDs the rule applies to;
+// an empty slice means "match all agents".
 type Rule struct {
-	ID             string
-	Action         string
-	ServerPatterns []string
-	ToolPatterns   []string
-	AgentIDPattern string
-	Description    string
-	Enabled        bool
-	Order          int
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID              string
+	Action          string
+	ServerPatterns  []string
+	ToolPatterns    []string
+	AgentIDPattern  string
+	ModelConfigCUID string
+	AgentCUIDs      []string
+	Description     string
+	Enabled         bool
+	Order           int
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // RulesRepo provides CRUD and ordering operations for approval_rules.
@@ -45,12 +50,13 @@ func NewRulesRepoWithDialect(db *sql.DB, dialect Dialect) *RulesRepo {
 
 var ruleColumns = []string{
 	"id", "action", "server_pattern", "tool_pattern", "agent_id_pattern",
+	"model_config_cuid", "agent_cuids",
 	"description", "enabled", "rule_order", "created_at", "updated_at",
 }
 
 func (r *RulesRepo) Create(ctx context.Context, rule Rule) error {
 	now := time.Now().UTC()
-	serverJSON, toolJSON, err := encodeRulePatterns(rule)
+	serverJSON, toolJSON, agentCUIDsJSON, err := encodeRulePatterns(rule)
 	if err != nil {
 		return err
 	}
@@ -58,6 +64,7 @@ func (r *RulesRepo) Create(ctx context.Context, rule Rule) error {
 		Columns(ruleColumns...).
 		Values(
 			rule.ID, rule.Action, serverJSON, toolJSON, rule.AgentIDPattern,
+			emptyToNil(rule.ModelConfigCUID), agentCUIDsJSON,
 			emptyToNil(rule.Description), boolToInt(rule.Enabled), rule.Order, now, now,
 		).ToSql()
 	if err != nil {
@@ -119,7 +126,7 @@ func (r *RulesRepo) NextOrder(ctx context.Context) (int, error) {
 
 func (r *RulesRepo) Update(ctx context.Context, rule Rule) error {
 	now := time.Now().UTC()
-	serverJSON, toolJSON, err := encodeRulePatterns(rule)
+	serverJSON, toolJSON, agentCUIDsJSON, err := encodeRulePatterns(rule)
 	if err != nil {
 		return err
 	}
@@ -128,6 +135,8 @@ func (r *RulesRepo) Update(ctx context.Context, rule Rule) error {
 		Set("server_pattern", serverJSON).
 		Set("tool_pattern", toolJSON).
 		Set("agent_id_pattern", rule.AgentIDPattern).
+		Set("model_config_cuid", emptyToNil(rule.ModelConfigCUID)).
+		Set("agent_cuids", agentCUIDsJSON).
 		Set("description", emptyToNil(rule.Description)).
 		Set("enabled", boolToInt(rule.Enabled)).
 		Set("updated_at", now).
@@ -264,17 +273,19 @@ func (r *RulesRepo) Move(ctx context.Context, id string, direction string) ([]Ru
 
 func scanRule(scanner interface{ Scan(dest ...any) error }) (Rule, error) {
 	var rule Rule
-	var serverJSON, toolJSON string
-	var description sql.NullString
+	var serverJSON, toolJSON, agentCUIDsJSON string
+	var modelConfigCUID, description sql.NullString
 	var enabled int
 	if err := scanner.Scan(
 		&rule.ID, &rule.Action, &serverJSON, &toolJSON, &rule.AgentIDPattern,
+		&modelConfigCUID, &agentCUIDsJSON,
 		&description, &enabled, &rule.Order, &rule.CreatedAt, &rule.UpdatedAt,
 	); err != nil {
 		return Rule{}, err
 	}
 	rule.Enabled = enabled == 1
 	rule.Description = description.String
+	rule.ModelConfigCUID = modelConfigCUID.String
 	if err := json.Unmarshal([]byte(serverJSON), &rule.ServerPatterns); err != nil {
 		rule.ServerPatterns = []string{}
 	}
@@ -286,6 +297,14 @@ func scanRule(scanner interface{ Scan(dest ...any) error }) (Rule, error) {
 	}
 	if rule.ToolPatterns == nil {
 		rule.ToolPatterns = []string{}
+	}
+	if agentCUIDsJSON != "" {
+		if err := json.Unmarshal([]byte(agentCUIDsJSON), &rule.AgentCUIDs); err != nil {
+			rule.AgentCUIDs = []string{}
+		}
+	}
+	if rule.AgentCUIDs == nil {
+		rule.AgentCUIDs = []string{}
 	}
 	return rule, nil
 }
@@ -301,12 +320,14 @@ func (r *RulesRepo) ListApprovalRules(ctx context.Context) ([]invocation.Approva
 	out := make([]invocation.ApprovalRule, 0, len(rules))
 	for _, rule := range rules {
 		out = append(out, invocation.ApprovalRule{
-			ID:             rule.ID,
-			Action:         rule.Action,
-			ServerPatterns: rule.ServerPatterns,
-			ToolPatterns:   rule.ToolPatterns,
-			AgentIDPattern: rule.AgentIDPattern,
-			Enabled:        rule.Enabled,
+			ID:              rule.ID,
+			Action:          rule.Action,
+			ServerPatterns:  rule.ServerPatterns,
+			ToolPatterns:    rule.ToolPatterns,
+			AgentIDPattern:  rule.AgentIDPattern,
+			ModelConfigCUID: rule.ModelConfigCUID,
+			AgentCUIDs:      rule.AgentCUIDs,
+			Enabled:         rule.Enabled,
 		})
 	}
 	return out, nil
@@ -351,7 +372,7 @@ func (r *RulesRepo) InsertBefore(ctx context.Context, anchorID string, rule Rule
 	// Insert the new rule at insertOrder.
 	rule.Order = insertOrder
 	now := time.Now().UTC()
-	serverJSON, toolJSON, err := encodeRulePatterns(rule)
+	serverJSON, toolJSON, agentCUIDsJSON, err := encodeRulePatterns(rule)
 	if err != nil {
 		return err
 	}
@@ -359,6 +380,7 @@ func (r *RulesRepo) InsertBefore(ctx context.Context, anchorID string, rule Rule
 		Columns(ruleColumns...).
 		Values(
 			rule.ID, rule.Action, serverJSON, toolJSON, rule.AgentIDPattern,
+			emptyToNil(rule.ModelConfigCUID), agentCUIDsJSON,
 			emptyToNil(rule.Description), boolToInt(rule.Enabled), rule.Order, now, now,
 		).ToSql()
 	if err != nil {
@@ -371,7 +393,7 @@ func (r *RulesRepo) InsertBefore(ctx context.Context, anchorID string, rule Rule
 	return tx.Commit()
 }
 
-func encodeRulePatterns(rule Rule) (serverJSON string, toolJSON string, err error) {
+func encodeRulePatterns(rule Rule) (serverJSON string, toolJSON string, agentCUIDsJSON string, err error) {
 	sp := rule.ServerPatterns
 	if sp == nil {
 		sp = []string{}
@@ -380,13 +402,21 @@ func encodeRulePatterns(rule Rule) (serverJSON string, toolJSON string, err erro
 	if tp == nil {
 		tp = []string{}
 	}
+	ac := rule.AgentCUIDs
+	if ac == nil {
+		ac = []string{}
+	}
 	spBytes, e := json.Marshal(sp)
 	if e != nil {
-		return "", "", e
+		return "", "", "", e
 	}
 	tpBytes, e := json.Marshal(tp)
 	if e != nil {
-		return "", "", e
+		return "", "", "", e
 	}
-	return string(spBytes), string(tpBytes), nil
+	acBytes, e := json.Marshal(ac)
+	if e != nil {
+		return "", "", "", e
+	}
+	return string(spBytes), string(tpBytes), string(acBytes), nil
 }

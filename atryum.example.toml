@@ -29,8 +29,26 @@ machine_key = ""
 machine_secret = ""
 connection_timeout_seconds = 5
 
+# Optional agent sync configuration. When base_url is set in [backend] and
+# both org_cuid and record_type_cuid are provided, Atryum fetches all active
+# inventory models (agents) for that org + primary record type at startup and
+# prints their cuid, name, description, and agent_ids (from agent_ids_field_name).
+#
+# [agent_sync]
+# org_cuid = ""
+# agent_record_type_slug = ""
+
 [defaults]
 request_timeout_seconds = 30
+
+# AI Evaluation rule type configuration.
+# When an approval rule uses the "ai_evaluation" action, Atryum calls the
+# ValidMind backend to have the LLM evaluate whether to approve or deny the
+# tool call. The constitution is fetched from the agent's VM inventory model
+# custom fields using the key below.
+#
+# [ai_evaluation]
+# constitution_field_key = "constitution"
 
 # Static API key/secret pair that protects the read-only invocation reporting
 # endpoints (GET /invocations/{agent_id}, GET /agent_ids). Callers must send

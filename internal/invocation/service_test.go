@@ -29,12 +29,25 @@ func TestInvokeAndInspectHTTP(t *testing.T) {
 		}
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode: %v", err)
+			t.Errorf("decode: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
-		if body["method"] != "tools/call" {
-			t.Fatalf("expected tools/call, got %#v", body["method"])
+		switch body["method"] {
+		case "initialize":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      body["id"],
+				"result":  map[string]any{"serverInfo": map[string]any{"name": "fake-github", "version": "0.1.0"}, "capabilities": map[string]any{}},
+			})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/call":
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"content": []map[string]any{{"type": "text", "text": "ok"}}}})
+		default:
+			t.Errorf("unexpected method: %v", body["method"])
+			w.WriteHeader(http.StatusBadRequest)
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"content": []map[string]any{{"type": "text", "text": "ok"}}}})
 	}))
 	defer upstream.Close()
 
@@ -194,19 +207,23 @@ func newTestService(t *testing.T, cfg config.Config) *invocation.Service {
 	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	return invocation.NewService(store.NewInvocationRepo(db), store.NewEventRepo(db), resolver, mcp.NewHTTPClient(), policy.AlwaysApproveProvider{}, 5*time.Second, nil)
+	return invocation.NewService(store.NewInvocationRepo(db), store.NewEventRepo(db), resolver, mcp.NewHTTPClient(), policy.AlwaysApproveProvider{}, 5*time.Second, nil, nil, nil, "")
 }
 
 func approveNextInvocation(t *testing.T, service *invocation.Service, delay time.Duration) {
 	time.Sleep(delay)
 	list, err := service.List(context.Background(), invocation.InvocationListFilter{Limit: 10})
+	// Return silently when there are no pending invocations — this is expected
+	// when AlwaysApproveProvider completes the invocation before this goroutine
+	// runs. Calling t.Errorf after the test has completed causes a panic.
 	if err != nil || len(list.Items) == 0 {
-		// Log instead of Fatalf — this runs in a goroutine and the parent test
-		// may have already finished, which would cause a panic.
-		t.Errorf("list invocations: %v", err)
 		return
 	}
-	if err := service.Approve(context.Background(), list.Items[0].InvocationID); err != nil {
+	pending := list.Items[0]
+	if pending.Status != invocation.StatusPendingApproval {
+		return
+	}
+	if err := service.Approve(context.Background(), pending.InvocationID); err != nil {
 		t.Errorf("approve invocation: %v", err)
 	}
 }
