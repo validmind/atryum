@@ -272,7 +272,7 @@ func TestMCPRulesToolReturnsApplicableRulesWithoutInvocation(t *testing.T) {
 		{ID: "read-auto", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Read"}, AgentIDPattern: "*", Enabled: true, Order: 0},
 	}}
 	svc := &stubService{}
-	h := NewHandler(svc, stubServerService{}, nil, rules)
+	h := NewHandler(svc, stubServerService{}, nil, rules, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"atryum.rules.get","arguments":{"tool":"Read"}}}`))
 	w := httptest.NewRecorder()
 
@@ -309,7 +309,7 @@ func TestAgentRulesListsApplicableRulesAndDisposition(t *testing.T) {
 		{ID: "fallback-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, AgentIDPattern: "*", Enabled: true, Order: 2},
 		{ID: "disabled", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Bash"}, AgentIDPattern: "agent-007", Enabled: false, Order: 3},
 	}}
-	h := NewHandler(&stubService{}, stubServerService{}, nil, rules)
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?agent_id=agent-007&source=amp&tool=Read", nil)
 	w := httptest.NewRecorder()
 
@@ -345,7 +345,7 @@ func TestMCPToolsListAnnotatesEffectiveAction(t *testing.T) {
 		{ID: "bash-deny", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Bash"}, AgentIDPattern: "*", Enabled: true, Order: 1},
 	}}
 	svc := &stubService{tools: []mcp.Tool{{Name: "Read", Description: "read a file"}, {Name: "Bash", Description: "run a shell command"}, {Name: "Other"}}}
-	h := NewHandler(svc, stubServerService{}, nil, rules)
+	h := NewHandler(svc, stubServerService{}, nil, rules, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
 	w := httptest.NewRecorder()
 
@@ -407,7 +407,7 @@ func TestMCPToolsCallDenialIncludesRulesContext(t *testing.T) {
 		SubmittedAt: now, CompletedAt: &now,
 		Error: json.RawMessage(`{"content":[{"type":"text","text":"Tool call denied by approval rule (auto_deny)."}],"isError":true}`),
 	}}
-	h := NewHandler(svc, stubServerService{}, nil, rules)
+	h := NewHandler(svc, stubServerService{}, nil, rules, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"Bash","arguments":{"cmd":"ls"}}}`))
 	w := httptest.NewRecorder()
 

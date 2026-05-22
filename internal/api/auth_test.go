@@ -185,7 +185,7 @@ func TestAgentRulesRequiresAuthAndUsesTokenAgentID(t *testing.T) {
 		{ID: "own-rule", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentIDPattern: "agent-007", Enabled: true, Order: 0},
 		{ID: "other-rule", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentIDPattern: "other", Enabled: true, Order: 1},
 	}}
-	h := NewHandler(&stubService{}, stubServerService{}, nil, rules)
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil)
 	h.SetAuthValidator(rig.v)
 	handler := h.Routes()
 
