@@ -7,3 +7,5 @@ atryum.toml
 atryum.db
 .codex
 __inspiration
+docker-compose.override.yml
+opencode-state

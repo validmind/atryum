@@ -55,10 +55,6 @@ func (r *AgentsRepo) Upsert(ctx context.Context, agent AgentRecord) error {
 	if agentIDs == "" {
 		agentIDs = "[]"
 	}
-	enabled := 1
-	if !agent.Enabled {
-		enabled = 0
-	}
 	syncedAt := agent.SyncedAt
 	if syncedAt.IsZero() {
 		syncedAt = time.Now().UTC()
@@ -74,7 +70,7 @@ func (r *AgentsRepo) Upsert(ctx context.Context, agent AgentRecord) error {
 			agent.VMName,
 			emptyToNil(agent.VMDescription),
 			agentIDs,
-			enabled,
+			agent.Enabled,
 			syncedAt,
 		).
 		Suffix(`ON CONFLICT (vm_cuid) DO UPDATE SET
@@ -125,12 +121,8 @@ func (r *AgentsRepo) UpdateAgentIDs(ctx context.Context, id string, agentIDs str
 
 // UpdateEnabled sets the enabled flag for the agent with the given id.
 func (r *AgentsRepo) UpdateEnabled(ctx context.Context, id string, enabled bool) error {
-	enabledVal := 1
-	if !enabled {
-		enabledVal = 0
-	}
 	query, args, err := r.sb.Update("agents").
-		Set("enabled", enabledVal).
+		Set("enabled", enabled).
 		Where(sq.Eq{"id": id}).
 		ToSql()
 	if err != nil {
@@ -190,15 +182,13 @@ func (r *AgentsRepo) List(ctx context.Context) ([]AgentRecord, error) {
 func scanAgent(scanner interface{ Scan(dest ...any) error }) (AgentRecord, error) {
 	var a AgentRecord
 	var vmDescription sql.NullString
-	var enabled int
 	if err := scanner.Scan(
 		&a.ID, &a.VMOrganizationCUID, &a.VMOrganizationName,
 		&a.VMCUID, &a.VMName, &vmDescription,
-		&a.AgentIDs, &enabled, &a.SyncedAt,
+		&a.AgentIDs, &a.Enabled, &a.SyncedAt,
 	); err != nil {
 		return AgentRecord{}, err
 	}
 	a.VMDescription = vmDescription.String
-	a.Enabled = enabled == 1
 	return a, nil
 }
