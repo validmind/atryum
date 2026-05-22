@@ -291,6 +291,41 @@ func parseAgentIDs(raw string) []string {
 	return ids
 }
 
+const agentRulesToolName = "atryum.rules.get"
+
+// atryumInitializeInstructions is returned in the MCP `initialize` result so
+// MCP clients can surface it to the model as system-level guidance. The goal
+// is to make the agent aware that approval rules govern tool access and that
+// it should consult `atryum.rules.get` before choosing tools.
+const atryumInitializeInstructions = "This MCP server (atryum) gates tool calls through approval rules. " +
+	"Before calling any tool, call the `atryum.rules.get` tool to retrieve the rules that apply to you " +
+	"and the effective action (`auto_approve`, `human_approval`, or `auto_deny`) for a given server/tool. " +
+	"Prefer tools that resolve to `auto_approve`. Tools that resolve to `human_approval` will block until a " +
+	"human responds; tools that resolve to `auto_deny` will be rejected. " +
+	"Pass the target `server` (or `source`) and `tool` arguments to `atryum.rules.get` to get a disposition."
+
+type AgentRule struct {
+	ID             string   `json:"id"`
+	Action         string   `json:"action"`
+	ServerPatterns []string `json:"server_patterns"`
+	ToolPatterns   []string `json:"tool_patterns"`
+	AgentIDPattern string   `json:"agent_id_pattern"`
+	Description    string   `json:"description,omitempty"`
+	Order          int      `json:"order"`
+}
+
+type AgentRulesResponse struct {
+	AgentID       string      `json:"agent_id,omitempty"`
+	Server        string      `json:"server,omitempty"`
+	Tool          string      `json:"tool,omitempty"`
+	DefaultAction string      `json:"default_action"`
+	Action        string      `json:"action,omitempty"`
+	MatchedRuleID *string     `json:"matched_rule_id,omitempty"`
+	Items         []AgentRule `json:"items"`
+}
+
+var agentRulesToolInputSchema = json.RawMessage(`{"type":"object","properties":{"server":{"type":"string","description":"MCP server/upstream name to evaluate"},"source":{"type":"string","description":"External executor source to evaluate, such as amp"},"tool":{"type":"string","description":"Tool name to evaluate"}},"additionalProperties":false}`)
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 type jsonRPCRequest struct {
@@ -373,6 +408,8 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/api/v1/admin/model-configs", h.adminModelConfigs)
 	mux.HandleFunc("/api/v1/admin/oauth/callback", h.oauthCallback)
 	mux.HandleFunc("/api/v1/admin/policy", h.adminPolicy)
+	agentRulesHandler := auth.MiddlewareWithOptions(h.authValidator, "/.well-known/oauth-protected-resource", auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})(http.HandlerFunc(h.agentRules))
+	mux.Handle("/api/v1/agent/rules", agentRulesHandler)
 	mux.HandleFunc("/api/v1/external/invocations", h.externalInvocations)
 	mux.HandleFunc("/api/v1/external/invocations/", h.externalInvocationDetail)
 	apiKeyMW := auth.APIKeyMiddleware(h.apiKeyAuth)
@@ -496,6 +533,80 @@ func (h *Handler) invocations(w http.ResponseWriter, r *http.Request) {
 	h.handleInvocation(w, r, "")
 }
 
+func (h *Handler) agentRules(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.rulesRepo == nil {
+		writeJSON(w, http.StatusOK, AgentRulesResponse{DefaultAction: invocation.RuleActionHumanApproval, Items: []AgentRule{}})
+		return
+	}
+
+	agentID := auth.AgentIDFromContext(r.Context())
+	if agentID == "" {
+		agentID = strings.TrimSpace(r.URL.Query().Get("agent_id"))
+	}
+	if agentID == "" {
+		agentID = strings.TrimSpace(r.URL.Query().Get("request_id"))
+	}
+	server := strings.TrimSpace(r.URL.Query().Get("server"))
+	if server == "" {
+		server = strings.TrimSpace(r.URL.Query().Get("source"))
+	}
+	tool := strings.TrimSpace(r.URL.Query().Get("tool"))
+
+	resp, err := h.buildAgentRulesResponse(r.Context(), agentID, server, tool)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, tool string) (AgentRulesResponse, error) {
+	resp := AgentRulesResponse{
+		AgentID:       agentID,
+		Server:        server,
+		Tool:          tool,
+		DefaultAction: invocation.RuleActionHumanApproval,
+		Items:         []AgentRule{},
+	}
+	if h.rulesRepo == nil {
+		return resp, nil
+	}
+
+	rules, err := h.rulesRepo.List(ctx)
+	if err != nil {
+		return AgentRulesResponse{}, err
+	}
+
+	for _, rule := range rules {
+		if !rule.Enabled || !apiMatchAgentIDPattern(rule.AgentIDPattern, agentID) {
+			continue
+		}
+		resp.Items = append(resp.Items, AgentRule{
+			ID:             rule.ID,
+			Action:         rule.Action,
+			ServerPatterns: rule.ServerPatterns,
+			ToolPatterns:   rule.ToolPatterns,
+			AgentIDPattern: rule.AgentIDPattern,
+			Description:    rule.Description,
+			Order:          rule.Order,
+		})
+		if resp.Action == "" && server != "" && tool != "" &&
+			apiMatchPatterns(rule.ServerPatterns, server) &&
+			apiMatchPatterns(rule.ToolPatterns, tool) {
+			resp.Action = rule.Action
+			if rule.ID != "" {
+				id := rule.ID
+				resp.MatchedRuleID = &id
+			}
+		}
+	}
+	return resp, nil
+}
+
 func (h *Handler) handleInvocation(w http.ResponseWriter, r *http.Request, server string) {
 	var req invocation.CreateInvocationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -552,6 +663,7 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			"capabilities": map[string]any{
 				"tools": map[string]any{},
 			},
+			"instructions": atryumInitializeInstructions,
 		}
 		h.writeRPCResult(w, req.ID, result)
 	case "notifications/initialized":
@@ -568,8 +680,10 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			h.writeRPCError(w, req.ID, -32000, err.Error())
 			return
 		}
+		tools = appendAtryumTools(tools)
 		_ = h.emitTraceEvent(r.Context(), server, "mcp.tools.list", map[string]any{"tool_count": len(tools), "request_id": requestID})
-		h.writeRPCResult(w, req.ID, map[string]any{"tools": tools})
+		annotated := h.annotateToolsWithPolicy(r.Context(), server, tools)
+		h.writeRPCResult(w, req.ID, map[string]any{"tools": annotated})
 	case "tools/call":
 		var params struct {
 			Name      string         `json:"name"`
@@ -577,6 +691,16 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		}
 		if err := json.Unmarshal(req.Params, &params); err != nil {
 			h.writeRPCError(w, req.ID, -32602, "invalid params")
+			return
+		}
+		if params.Name == agentRulesToolName {
+			result, err := h.callAgentRulesTool(r.Context(), server, params.Arguments)
+			if err != nil {
+				h.writeRPCError(w, req.ID, -32000, err.Error())
+				return
+			}
+			_ = h.emitTraceEvent(r.Context(), server, "mcp.tools.call", map[string]any{"request_id": requestID, "status": "succeeded", "tool": params.Name})
+			h.writeRPCResult(w, req.ID, result)
 			return
 		}
 		callServer := server
@@ -600,7 +724,11 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		tracePayload := map[string]any{"request_id": requestID, "status": resp.Status, "invocation_id": resp.InvocationID, "tool": params.Name}
 		_ = h.emitTraceEvent(r.Context(), server, "mcp.tools.call", tracePayload)
 		if len(resp.Error) > 0 {
-			h.writeRPCResult(w, req.ID, normalizeToolCallResult(resp.Error, true))
+			result := normalizeToolCallResult(resp.Error, true)
+			if resp.Status == invocation.StatusDenied {
+				result = h.appendRulesContextToToolResult(r.Context(), result, callServer, params.Name)
+			}
+			h.writeRPCResult(w, req.ID, result)
 			return
 		}
 		h.writeRPCResult(w, req.ID, normalizeToolCallResult(resp.Result, false))
@@ -701,6 +829,201 @@ func parseDateParam(value string) (time.Time, error) {
 		return t.UTC(), nil
 	}
 	return time.Time{}, fmt.Errorf("expected RFC3339 timestamp or YYYY-MM-DD date")
+}
+
+func apiMatchPatterns(patterns []string, value string) bool {
+	if len(patterns) == 0 {
+		return true
+	}
+	for _, pattern := range patterns {
+		if pattern == "*" || pattern == value {
+			return true
+		}
+	}
+	return false
+}
+
+func apiMatchAgentIDPattern(pattern, agentID string) bool {
+	return pattern == "" || pattern == "*" || pattern == agentID
+}
+
+// annotatedTool is the on-the-wire shape used for tools/list when atryum is
+// able to compute a per-tool policy disposition. It mirrors mcp.Tool but adds
+// an `annotations` block plus a description prefix so models that ignore
+// unknown fields still see the policy hint inline.
+type annotatedTool struct {
+	Name        string             `json:"name"`
+	Description string             `json:"description,omitempty"`
+	InputSchema json.RawMessage    `json:"inputSchema,omitempty"`
+	Annotations *atryumAnnotations `json:"annotations,omitempty"`
+}
+
+type atryumAnnotations struct {
+	Atryum atryumToolPolicy `json:"atryum"`
+}
+
+type atryumToolPolicy struct {
+	EffectiveAction string `json:"effective_action"`
+	MatchedRuleID   string `json:"matched_rule_id,omitempty"`
+}
+
+// annotateToolsWithPolicy decorates each tool with its effective approval
+// disposition for the current agent so the model sees the policy at the moment
+// it picks a tool. Annotation requires both rulesRepo and a concrete server;
+// in aggregate mode (server == "") we cannot reliably attribute tools to a
+// server, so we return the tools unchanged.
+func (h *Handler) annotateToolsWithPolicy(ctx context.Context, server string, tools []mcp.Tool) []any {
+	out := make([]any, len(tools))
+	if h.rulesRepo == nil || strings.TrimSpace(server) == "" {
+		for i, t := range tools {
+			out[i] = t
+		}
+		return out
+	}
+	rules, err := h.rulesRepo.List(ctx)
+	if err != nil {
+		for i, t := range tools {
+			out[i] = t
+		}
+		return out
+	}
+	agentID := auth.AgentIDFromContext(ctx)
+	for i, t := range tools {
+		if t.Name == agentRulesToolName {
+			out[i] = t
+			continue
+		}
+		action, matched := effectiveActionForTool(rules, server, t.Name, agentID)
+		desc := t.Description
+		if action != "" {
+			prefix := "[atryum policy: " + action + "] "
+			if desc == "" {
+				desc = strings.TrimSpace(prefix)
+			} else {
+				desc = prefix + desc
+			}
+		}
+		out[i] = annotatedTool{
+			Name:        t.Name,
+			Description: desc,
+			InputSchema: t.InputSchema,
+			Annotations: &atryumAnnotations{Atryum: atryumToolPolicy{
+				EffectiveAction: action,
+				MatchedRuleID:   matched,
+			}},
+		}
+	}
+	return out
+}
+
+// effectiveActionForTool returns the action of the first enabled rule that
+// matches (server, tool, agentID), mirroring invocation.matchRule semantics.
+// When no rule matches, it returns RuleActionHumanApproval (the default).
+func effectiveActionForTool(rules []store.Rule, server, tool, agentID string) (string, string) {
+	for _, r := range rules {
+		if !r.Enabled {
+			continue
+		}
+		if !apiMatchPatterns(r.ServerPatterns, server) {
+			continue
+		}
+		if !apiMatchPatterns(r.ToolPatterns, tool) {
+			continue
+		}
+		if !apiMatchAgentIDPattern(r.AgentIDPattern, agentID) {
+			continue
+		}
+		return r.Action, r.ID
+	}
+	return invocation.RuleActionHumanApproval, ""
+}
+
+// appendRulesContextToToolResult adds an extra text content block to a denied
+// tool call result describing the applicable rules and effective action, so
+// the model can learn the policy through feedback instead of having to call
+// atryum.rules.get explicitly.
+func (h *Handler) appendRulesContextToToolResult(ctx context.Context, result any, server, tool string) any {
+	if h.rulesRepo == nil {
+		return result
+	}
+	rulesResp, err := h.buildAgentRulesResponse(ctx, auth.AgentIDFromContext(ctx), server, tool)
+	if err != nil {
+		return result
+	}
+	body, err := json.MarshalIndent(rulesResp, "", "  ")
+	if err != nil {
+		return result
+	}
+	m, ok := result.(map[string]any)
+	if !ok {
+		return result
+	}
+	rulesText := "Atryum approval rules applicable to this call:\n" + string(body)
+	if existing, ok := m["content"].([]map[string]any); ok {
+		m["content"] = append(existing, map[string]any{"type": "text", "text": rulesText})
+		return m
+	}
+	if existing, ok := m["content"].([]any); ok {
+		m["content"] = append(existing, map[string]any{"type": "text", "text": rulesText})
+		return m
+	}
+	m["content"] = []map[string]any{{"type": "text", "text": rulesText}}
+	return m
+}
+
+func appendAtryumTools(tools []mcp.Tool) []mcp.Tool {
+	for _, tool := range tools {
+		if tool.Name == agentRulesToolName {
+			return tools
+		}
+	}
+	return append(tools, mcp.Tool{
+		Name:        agentRulesToolName,
+		Description: "Return the approval rules and effective action for this agent. Call this before choosing tools so you can prefer auto_approve tools and avoid tools that require human_approval or auto_deny.",
+		InputSchema: agentRulesToolInputSchema,
+	})
+}
+
+func (h *Handler) callAgentRulesTool(ctx context.Context, currentServer string, args map[string]any) (map[string]any, error) {
+	server := strings.TrimSpace(currentServer)
+	if server == "" {
+		server = stringArg(args, "server")
+	}
+	if server == "" {
+		server = stringArg(args, "source")
+	}
+	tool := stringArg(args, "tool")
+	resp, err := h.buildAgentRulesResponse(ctx, auth.AgentIDFromContext(ctx), server, tool)
+	if err != nil {
+		return nil, err
+	}
+	body, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"content": []map[string]any{{
+			"type": "text",
+			"text": string(body),
+		}},
+		"isError": false,
+	}, nil
+}
+
+func stringArg(args map[string]any, name string) string {
+	if args == nil {
+		return ""
+	}
+	value, ok := args[name]
+	if !ok {
+		return ""
+	}
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	default:
+		return strings.TrimSpace(fmt.Sprint(v))
+	}
 }
 
 func (h *Handler) adminInvocations(w http.ResponseWriter, r *http.Request) {

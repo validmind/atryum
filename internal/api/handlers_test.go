@@ -11,6 +11,7 @@ import (
 
 	"atryum/internal/invocation"
 	"atryum/internal/mcp"
+	"atryum/internal/store"
 )
 
 type stubService struct {
@@ -90,6 +91,31 @@ func (stubServerService) CompleteConnect(context.Context, string, string, string
 	return OAuthConnectStatusResponse{}, nil
 }
 
+type stubRulesRepo struct {
+	rules []store.Rule
+	err   error
+}
+
+func (s *stubRulesRepo) Create(context.Context, store.Rule) error { return nil }
+func (s *stubRulesRepo) Get(_ context.Context, id string) (store.Rule, error) {
+	for _, rule := range s.rules {
+		if rule.ID == id {
+			return rule, nil
+		}
+	}
+	return store.Rule{}, nil
+}
+func (s *stubRulesRepo) List(context.Context) ([]store.Rule, error) {
+	return s.rules, s.err
+}
+func (s *stubRulesRepo) NextOrder(context.Context) (int, error)   { return len(s.rules), nil }
+func (s *stubRulesRepo) Update(context.Context, store.Rule) error { return nil }
+func (s *stubRulesRepo) Delete(context.Context, string) error     { return nil }
+func (s *stubRulesRepo) Move(context.Context, string, string) ([]store.Rule, error) {
+	return s.rules, nil
+}
+func (s *stubRulesRepo) InsertBefore(context.Context, string, store.Rule) error { return nil }
+
 func TestMCPInitializeNegotiatesProtocolVersion(t *testing.T) {
 	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}`))
@@ -112,6 +138,10 @@ func TestMCPInitializeNegotiatesProtocolVersion(t *testing.T) {
 	result := resp["result"].(map[string]any)
 	if result["protocolVersion"] != "2025-11-25" {
 		t.Fatalf("expected protocol version 2025-11-25, got %#v", result["protocolVersion"])
+	}
+	instructions, ok := result["instructions"].(string)
+	if !ok || !strings.Contains(instructions, "atryum.rules.get") {
+		t.Fatalf("expected initialize instructions to mention atryum.rules.get, got %#v", result["instructions"])
 	}
 }
 
@@ -209,6 +239,9 @@ func TestMCPToolsList(t *testing.T) {
 	if !strings.Contains(w.Body.String(), `"demo_tool"`) {
 		t.Fatalf("expected tools list, got %s", w.Body.String())
 	}
+	if !strings.Contains(w.Body.String(), `"atryum.rules.get"`) {
+		t.Fatalf("expected synthetic rules tool, got %s", w.Body.String())
+	}
 }
 
 func TestMCPToolsCallInterceptsInvocation(t *testing.T) {
@@ -231,6 +264,176 @@ func TestMCPToolsCallInterceptsInvocation(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), `"text":"ok"`) {
 		t.Fatalf("expected tool result, got %s", w.Body.String())
+	}
+}
+
+func TestMCPRulesToolReturnsApplicableRulesWithoutInvocation(t *testing.T) {
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "read-auto", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Read"}, AgentIDPattern: "*", Enabled: true, Order: 0},
+	}}
+	svc := &stubService{}
+	h := NewHandler(svc, stubServerService{}, nil, rules, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"atryum.rules.get","arguments":{"tool":"Read"}}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if svc.invokedReq != nil {
+		t.Fatalf("rules tool should not create invocation, got %#v", svc.invokedReq)
+	}
+	var rpcResp struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &rpcResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(rpcResp.Result.Content) != 1 {
+		t.Fatalf("expected one content item, got %#v", rpcResp.Result.Content)
+	}
+	if !strings.Contains(rpcResp.Result.Content[0].Text, `"read-auto"`) || !strings.Contains(rpcResp.Result.Content[0].Text, `"action": "auto_approve"`) {
+		t.Fatalf("expected rules payload in tool result, got %s", rpcResp.Result.Content[0].Text)
+	}
+}
+
+func TestAgentRulesListsApplicableRulesAndDisposition(t *testing.T) {
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "other-agent", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentIDPattern: "agent-other", Enabled: true, Order: 0},
+		{ID: "read-auto", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentIDPattern: "agent-007", Description: "Read is safe", Enabled: true, Order: 1},
+		{ID: "fallback-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, AgentIDPattern: "*", Enabled: true, Order: 2},
+		{ID: "disabled", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Bash"}, AgentIDPattern: "agent-007", Enabled: false, Order: 3},
+	}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?agent_id=agent-007&source=amp&tool=Read", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.AgentID != "agent-007" {
+		t.Fatalf("expected agent_id agent-007, got %q", resp.AgentID)
+	}
+	if resp.Action != invocation.RuleActionAutoApprove {
+		t.Fatalf("expected auto approve disposition, got %q", resp.Action)
+	}
+	if resp.MatchedRuleID == nil || *resp.MatchedRuleID != "read-auto" {
+		t.Fatalf("expected matched rule read-auto, got %#v", resp.MatchedRuleID)
+	}
+	if len(resp.Items) != 2 {
+		t.Fatalf("expected two applicable rules, got %#v", resp.Items)
+	}
+	if resp.Items[0].ID != "read-auto" || resp.Items[1].ID != "fallback-human" {
+		t.Fatalf("unexpected applicable rules order: %#v", resp.Items)
+	}
+}
+
+func TestMCPToolsListAnnotatesEffectiveAction(t *testing.T) {
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "read-auto", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Read"}, AgentIDPattern: "*", Enabled: true, Order: 0},
+		{ID: "bash-deny", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Bash"}, AgentIDPattern: "*", Enabled: true, Order: 1},
+	}}
+	svc := &stubService{tools: []mcp.Tool{{Name: "Read", Description: "read a file"}, {Name: "Bash", Description: "run a shell command"}, {Name: "Other"}}}
+	h := NewHandler(svc, stubServerService{}, nil, rules, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	var rpcResp struct {
+		Result struct {
+			Tools []struct {
+				Name        string `json:"name"`
+				Description string `json:"description"`
+				Annotations *struct {
+					Atryum struct {
+						EffectiveAction string `json:"effective_action"`
+						MatchedRuleID   string `json:"matched_rule_id"`
+					} `json:"atryum"`
+				} `json:"annotations"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &rpcResp); err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]int{}
+	for i, t := range rpcResp.Result.Tools {
+		byName[t.Name] = i
+	}
+	readTool := rpcResp.Result.Tools[byName["Read"]]
+	if readTool.Annotations == nil || readTool.Annotations.Atryum.EffectiveAction != invocation.RuleActionAutoApprove {
+		t.Fatalf("Read tool annotations: %#v", readTool.Annotations)
+	}
+	if readTool.Annotations.Atryum.MatchedRuleID != "read-auto" {
+		t.Fatalf("Read matched rule: %q", readTool.Annotations.Atryum.MatchedRuleID)
+	}
+	if !strings.HasPrefix(readTool.Description, "[atryum policy: auto_approve]") {
+		t.Fatalf("Read description prefix: %q", readTool.Description)
+	}
+	bashTool := rpcResp.Result.Tools[byName["Bash"]]
+	if bashTool.Annotations == nil || bashTool.Annotations.Atryum.EffectiveAction != invocation.RuleActionAutoDeny {
+		t.Fatalf("Bash tool annotations: %#v", bashTool.Annotations)
+	}
+	otherTool := rpcResp.Result.Tools[byName["Other"]]
+	if otherTool.Annotations == nil || otherTool.Annotations.Atryum.EffectiveAction != invocation.RuleActionHumanApproval {
+		t.Fatalf("Other tool annotations: %#v", otherTool.Annotations)
+	}
+	rulesTool := rpcResp.Result.Tools[byName["atryum.rules.get"]]
+	if rulesTool.Annotations != nil {
+		t.Fatalf("synthetic rules tool should not be annotated, got %#v", rulesTool.Annotations)
+	}
+}
+
+func TestMCPToolsCallDenialIncludesRulesContext(t *testing.T) {
+	now := time.Now().UTC()
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "bash-deny", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Bash"}, AgentIDPattern: "*", Enabled: true, Order: 0},
+	}}
+	svc := &stubService{invoke: invocation.InvocationResponse{
+		InvocationID: "inv_denied", ServerName: "demo", ToolName: "Bash",
+		Status:      invocation.StatusDenied,
+		SubmittedAt: now, CompletedAt: &now,
+		Error: json.RawMessage(`{"content":[{"type":"text","text":"Tool call denied by approval rule (auto_deny)."}],"isError":true}`),
+	}}
+	h := NewHandler(svc, stubServerService{}, nil, rules, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"Bash","arguments":{"cmd":"ls"}}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	var rpcResp struct {
+		Result struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+			IsError bool `json:"isError"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &rpcResp); err != nil {
+		t.Fatal(err)
+	}
+	if !rpcResp.Result.IsError {
+		t.Fatalf("expected isError=true, got %#v", rpcResp.Result)
+	}
+	if len(rpcResp.Result.Content) < 2 {
+		t.Fatalf("expected denial text plus rules context, got %#v", rpcResp.Result.Content)
+	}
+	last := rpcResp.Result.Content[len(rpcResp.Result.Content)-1].Text
+	if !strings.Contains(last, "Atryum approval rules") || !strings.Contains(last, "bash-deny") {
+		t.Fatalf("expected rules context in denial result, got %q", last)
 	}
 }
 
