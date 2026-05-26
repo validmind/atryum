@@ -188,6 +188,14 @@ function toolResult(event) {
   return event.tool_response || event.toolResponse || event.output || event.result;
 }
 
+function isFailedResult(result) {
+  if (!result || typeof result !== "object") return false;
+  if (result.isError === true) return true;
+  if (result.success === false) return true;
+  if (result.error != null) return true;
+  return false;
+}
+
 async function handlePreToolUse(event) {
   const submitted = await submit(event);
   const id = toolUseID(event);
@@ -226,15 +234,16 @@ async function handlePostToolUse(event) {
   }
   await deleteInvocation(id);
   const status = event.tool_response_status || event.status;
-  if (status === "error") {
+  const result = toolResult(event);
+  if (status === "error" || isFailedResult(result)) {
     await patchExecution(invocationId, {
       execution_status: "failed",
-      error: toolResult(event),
+      error: result,
     });
   } else {
     await patchExecution(invocationId, {
       execution_status: "completed",
-      result: toolResult(event),
+      result,
     });
   }
   jsonOut({});
