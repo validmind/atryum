@@ -1,0 +1,12 @@
+{
+  "name": "atryum",
+  "displayName": "Atryum",
+  "description": "Gate Cursor agent tool calls through Atryum approval.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Atryum"
+  },
+  "license": "MIT",
+  "category": "Security",
+  "hooks": "hooks.example.json"
+}
