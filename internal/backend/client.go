@@ -16,6 +16,9 @@ const connectionPath = "/internal/v1/atryum/connection"
 const agentsPath = "/internal/v1/atryum/agents"
 const modelConfigsPath = "/internal/v1/atryum/model-configs"
 const evaluatePath = "/internal/v1/atryum/evaluate"
+const organizationsPath = "/internal/v1/atryum/organizations"
+const primaryRecordTypesPath = "/internal/v1/atryum/primary-record-types"
+const customFieldsPath = "/internal/v1/atryum/custom-fields"
 
 type ConnectionResponse struct {
 	OK              bool   `json:"ok"`
@@ -138,6 +141,147 @@ func (c *Client) FetchModelConfigs(ctx context.Context) (ModelConfigsResponse, e
 	var payload ModelConfigsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return ModelConfigsResponse{}, fmt.Errorf("decode model-configs response: %w", err)
+	}
+	return payload, nil
+}
+
+// VMOrg represents an organization returned by the backend discovery API.
+type VMOrg struct {
+	CUID string `json:"cuid"`
+	Name string `json:"name"`
+}
+
+// VMOrgsResponse is the response envelope for the organizations endpoint.
+type VMOrgsResponse struct {
+	Items []VMOrg `json:"items"`
+	Total int     `json:"total"`
+}
+
+// VMRecordType represents a primary record type returned by the backend discovery API.
+type VMRecordType struct {
+	CUID string `json:"cuid"`
+	Slug string `json:"slug"`
+	Name string `json:"name"`
+}
+
+// VMRecordTypesResponse is the response envelope for the primary-record-types endpoint.
+type VMRecordTypesResponse struct {
+	Items []VMRecordType `json:"items"`
+	Total int            `json:"total"`
+}
+
+// VMCustomField represents a custom field definition returned by the backend discovery API.
+type VMCustomField struct {
+	Key       string `json:"key"`
+	Name      string `json:"name"`
+	FieldType string `json:"field_type"`
+}
+
+// VMCustomFieldsResponse is the response envelope for the custom-fields endpoint.
+type VMCustomFieldsResponse struct {
+	Items []VMCustomField `json:"items"`
+	Total int             `json:"total"`
+}
+
+// FetchOrganizations retrieves all organizations from the backend.
+func (c *Client) FetchOrganizations(ctx context.Context) (VMOrgsResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+organizationsPath, nil)
+	if err != nil {
+		return VMOrgsResponse{}, fmt.Errorf("build organizations request: %w", err)
+	}
+	req.Header.Set("X-MACHINE-KEY", c.machineKey)
+	req.Header.Set("X-MACHINE-SECRET", c.machineSecret)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return VMOrgsResponse{}, fmt.Errorf("call organizations endpoint: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return VMOrgsResponse{}, fmt.Errorf("organizations endpoint returned %s", resp.Status)
+	}
+
+	var payload VMOrgsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return VMOrgsResponse{}, fmt.Errorf("decode organizations response: %w", err)
+	}
+	return payload, nil
+}
+
+// FetchPrimaryRecordTypes retrieves primary record types for the given org.
+func (c *Client) FetchPrimaryRecordTypes(ctx context.Context, orgCUID string) (VMRecordTypesResponse, error) {
+	u, err := url.Parse(c.baseURL + primaryRecordTypesPath)
+	if err != nil {
+		return VMRecordTypesResponse{}, fmt.Errorf("build primary-record-types URL: %w", err)
+	}
+	q := u.Query()
+	q.Set("org_cuid", orgCUID)
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return VMRecordTypesResponse{}, fmt.Errorf("build primary-record-types request: %w", err)
+	}
+	req.Header.Set("X-MACHINE-KEY", c.machineKey)
+	req.Header.Set("X-MACHINE-SECRET", c.machineSecret)
+	req.Header.Set("X-Org-CUID", orgCUID)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return VMRecordTypesResponse{}, fmt.Errorf("call primary-record-types endpoint: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return VMRecordTypesResponse{}, fmt.Errorf("primary-record-types endpoint returned %s", resp.Status)
+	}
+
+	var payload VMRecordTypesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return VMRecordTypesResponse{}, fmt.Errorf("decode primary-record-types response: %w", err)
+	}
+	return payload, nil
+}
+
+// FetchCustomFields retrieves custom field definitions from the backend for the
+// given org, optionally filtered to a specific primary record type slug.
+func (c *Client) FetchCustomFields(ctx context.Context, orgCUID, primaryRecordTypeSlug string) (VMCustomFieldsResponse, error) {
+	u, err := url.Parse(c.baseURL + customFieldsPath)
+	if err != nil {
+		return VMCustomFieldsResponse{}, fmt.Errorf("build custom-fields URL: %w", err)
+	}
+	q := u.Query()
+	q.Set("org_cuid", orgCUID)
+	if primaryRecordTypeSlug != "" {
+		q.Set("primary_record_type_slug", primaryRecordTypeSlug)
+	}
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return VMCustomFieldsResponse{}, fmt.Errorf("build custom-fields request: %w", err)
+	}
+	req.Header.Set("X-MACHINE-KEY", c.machineKey)
+	req.Header.Set("X-MACHINE-SECRET", c.machineSecret)
+	req.Header.Set("X-Org-CUID", orgCUID)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return VMCustomFieldsResponse{}, fmt.Errorf("call custom-fields endpoint: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return VMCustomFieldsResponse{}, fmt.Errorf("custom-fields endpoint returned %s", resp.Status)
+	}
+
+	var payload VMCustomFieldsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return VMCustomFieldsResponse{}, fmt.Errorf("decode custom-fields response: %w", err)
 	}
 	return payload, nil
 }
