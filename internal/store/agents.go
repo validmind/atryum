@@ -168,10 +168,16 @@ func (r *AgentsRepo) DeleteAll(ctx context.Context) error {
 
 // List returns all agent records ordered by vm_name.
 func (r *AgentsRepo) List(ctx context.Context) ([]AgentRecord, error) {
-	query, args, err := r.sb.Select(agentColumns...).
-		From("agents").
-		OrderBy("vm_name ASC").
-		ToSql()
+	return r.list(ctx, r.sb.Select(agentColumns...).From("agents").OrderBy("vm_name ASC"))
+}
+
+// ListEnabled returns only enabled agent records ordered by vm_name.
+func (r *AgentsRepo) ListEnabled(ctx context.Context) ([]AgentRecord, error) {
+	return r.list(ctx, r.sb.Select(agentColumns...).From("agents").Where(sq.Eq{"enabled": true}).OrderBy("vm_name ASC"))
+}
+
+func (r *AgentsRepo) list(ctx context.Context, b sq.SelectBuilder) ([]AgentRecord, error) {
+	query, args, err := b.ToSql()
 	if err != nil {
 		return nil, err
 	}
