@@ -12,7 +12,7 @@
 #   ./keycloak/setup-realm.sh
 #
 # Env overrides:
-#   KC_URL       (default http://localhost:8088)
+#   KC_URL       (default http://localhost:8089)
 #   KC_ADMIN     (default admin)
 #   KC_PASSWORD  (default admin)
 #   REALM        (default atryum)
@@ -26,7 +26,7 @@
 
 set -euo pipefail
 
-KC_URL="${KC_URL:-http://localhost:8088}"
+KC_URL="${KC_URL:-http://localhost:8089}"
 KC_ADMIN="${KC_ADMIN:-admin}"
 KC_PASSWORD="${KC_PASSWORD:-admin}"
 REALM="${REALM:-atryum}"
@@ -43,7 +43,7 @@ need jq
 log() { printf "\033[1;36m==>\033[0m %s\n" "$*"; }
 warn() { printf "\033[1;33m!!\033[0m %s\n" "$*" >&2; }
 
-# Step 1 — UI: http://localhost:8088 → log in as admin/admin
+# Step 1 — UI: http://localhost:8089 → log in as admin/admin
 log "Acquiring admin token..."
 TOKEN=$(curl -fsS -X POST "${KC_URL}/realms/master/protocol/openid-connect/token" \
   -d "client_id=admin-cli&grant_type=password&username=${KC_ADMIN}&password=${KC_PASSWORD}" \
@@ -294,7 +294,7 @@ cat <<EOF
 
   Atryum config (atryum.toml):
     [[auth]]
-    issuer         = "http://keycloak:8088/realms/${REALM}"   # use docker hostname
+    issuer         = "http://keycloak:8089/realms/${REALM}"   # use docker hostname
     audience       = "${AUDIENCE}"
     required_scope = "${SCOPE_NAME}"
     agent_id_claim = "client_id"

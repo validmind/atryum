@@ -28,11 +28,11 @@ services:
   #
   # The script is idempotent — re-run it manually any time to reconcile drift:
   #   ./keycloak/setup-realm.sh
-  # Login is admin/admin at http://localhost:8088.
+  # Login is admin/admin at http://localhost:8089.
   keycloak:
     profiles: ["dev"]
     image: quay.io/keycloak/keycloak:26.0
-    command: ["start-dev", "--http-port=8088"]
+    command: ["start-dev", "--http-port=8089"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
@@ -40,7 +40,7 @@ services:
       KC_HTTP_ENABLED: "true"
       KC_HEALTH_ENABLED: "true"
     ports:
-      - "8088:8088"
+      - "8089:8089"
     volumes:
       - keycloak_data:/opt/keycloak/data
       # Drop *.json realm exports here to auto-import on first run:
@@ -66,7 +66,7 @@ services:
       keycloak:
         condition: service_healthy
     environment:
-      KC_URL: http://keycloak:8088
+      KC_URL: http://keycloak:8089
       KC_ADMIN: admin
       KC_PASSWORD: admin
       REALM: atryum
