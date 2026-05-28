@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "command": "ATRYUM_HOOK_HOST=cursor ATRYUM_HOOK_EVENT=preToolUse ATRYUM_SOURCE=cursor node ~/.atryum/hooks/atryum-hook.mjs"
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "command": "ATRYUM_HOOK_HOST=cursor ATRYUM_HOOK_EVENT=postToolUse ATRYUM_SOURCE=cursor node ~/.atryum/hooks/atryum-hook.mjs"
+      }
+    ]
+  }
+}
