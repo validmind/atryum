@@ -145,6 +145,9 @@ func main() {
 	}
 
 	service := invocation.NewService(invRepo, eventRepo, resolver, client, policyRegistry, time.Duration(cfg.Defaults.RequestTimeoutSeconds)*time.Second, rulesRepo, invAgents, invEvaluator, &syncSettingsAdapter{repo: agentSyncSettingsRepo})
+	if backendClient != nil {
+		service.SetInvocationSummarizer(&summaryAdapter{client: backendClient})
+	}
 	serverAdmin := api.NewServerAdminService(serverRepo, oauthRepo, client, 5*time.Second, cfg.Server.PublicBaseURL)
 	handler := api.NewHandler(service, serverAdmin, policyRegistry, rulesRepo, agentsRepo, agentSyncSettingsRepo, syncAgents, backendClient)
 
@@ -217,6 +220,11 @@ func (a *syncSettingsAdapter) ConstitutionFieldKey(ctx context.Context) string {
 	return s.ConstitutionFieldKey
 }
 
+func (a *syncSettingsAdapter) SummarySettings(ctx context.Context) (string, string) {
+	s, _ := a.repo.Get(ctx)
+	return s.OrgCUID, s.SummaryModelConfigCUID
+}
+
 // evaluatorAdapter bridges backendclient.Client → invocation.EvaluatorClient.
 type evaluatorAdapter struct {
 	client *backendclient.Client
@@ -241,6 +249,23 @@ func (e *evaluatorAdapter) EvaluateToolCall(ctx context.Context, req invocation.
 		Reason:     resp.Reason,
 		Confidence: resp.Confidence,
 	}, nil
+}
+
+// summaryAdapter bridges backendclient.Client → invocation.SummaryClient.
+type summaryAdapter struct {
+	client *backendclient.Client
+}
+
+func (s *summaryAdapter) SummarizeInvocation(ctx context.Context, req invocation.SummaryRequest) (invocation.SummaryResponse, error) {
+	resp, err := s.client.SummarizeInvocation(ctx, backendclient.SummarizeInvocationRequest{
+		ModelConfigCUID: req.ModelConfigCUID,
+		OrgCUID:         req.OrgCUID,
+		Invocation:      req.Invocation,
+	})
+	if err != nil {
+		return invocation.SummaryResponse{}, err
+	}
+	return invocation.SummaryResponse{Summary: resp.Summary}, nil
 }
 
 func truthyEnv(name string) bool {

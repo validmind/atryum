@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -248,6 +249,67 @@ func TestSetSummaryPersistsSummaryAndRecordsEvent(t *testing.T) {
 	}
 }
 
+func TestSubmitPendingApprovalAutomaticallySummarizesInvocation(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := store.InitDB(db); err != nil {
+		t.Fatal(err)
+	}
+	invRepo := store.NewInvocationRepo(db)
+	eventRepo := store.NewEventRepo(db)
+	service := invocation.NewService(invRepo, eventRepo, nil, nil, nil, 5*time.Second, nil, nil, nil, summarySettingsStub{
+		orgCUID:         " org_123 ",
+		modelConfigCUID: " model_123 ",
+	})
+	summarizer := &summaryClientStub{summary: "Run shell command ls."}
+	service.SetInvocationSummarizer(summarizer)
+
+	resp, err := service.Submit(context.Background(), invocation.ExternalSubmitRequest{
+		Source: "amp",
+		Tool:   "bash",
+		Input:  map[string]any{"cmd": "ls"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusPendingApproval {
+		t.Fatalf("expected pending approval, got %s", resp.Status)
+	}
+
+	var got invocation.InvocationResponse
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got, err = service.Get(context.Background(), resp.InvocationID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Summary == "Run shell command ls." {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got.Summary != "Run shell command ls." {
+		t.Fatalf("expected automatic summary, got %q", got.Summary)
+	}
+	summaryReq := summarizer.request()
+	if summaryReq.ModelConfigCUID != "model_123" {
+		t.Fatalf("model_config_cuid = %q", summaryReq.ModelConfigCUID)
+	}
+	if summaryReq.OrgCUID != "org_123" {
+		t.Fatalf("org_cuid = %q", summaryReq.OrgCUID)
+	}
+	if summaryReq.Invocation["invocation_id"] != resp.InvocationID {
+		t.Fatalf("backend invocation payload = %#v", summaryReq.Invocation)
+	}
+	input, ok := summaryReq.Invocation["input"].(map[string]any)
+	if !ok || input["cmd"] != "ls" {
+		t.Fatalf("backend invocation input = %#v", summaryReq.Invocation["input"])
+	}
+}
+
 func newTestService(t *testing.T, cfg config.Config) *invocation.Service {
 	t.Helper()
 	db, err := sql.Open("sqlite", ":memory:")
@@ -264,6 +326,38 @@ func newTestService(t *testing.T, cfg config.Config) *invocation.Service {
 		t.Fatal(err)
 	}
 	return invocation.NewService(store.NewInvocationRepo(db), store.NewEventRepo(db), resolver, mcp.NewHTTPClient(), policy.AlwaysApproveProvider{}, 5*time.Second, nil, nil, nil, nil)
+}
+
+type summaryClientStub struct {
+	mu      sync.Mutex
+	summary string
+	req     invocation.SummaryRequest
+}
+
+func (s *summaryClientStub) SummarizeInvocation(_ context.Context, req invocation.SummaryRequest) (invocation.SummaryResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.req = req
+	return invocation.SummaryResponse{Summary: s.summary}, nil
+}
+
+func (s *summaryClientStub) request() invocation.SummaryRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.req
+}
+
+type summarySettingsStub struct {
+	orgCUID         string
+	modelConfigCUID string
+}
+
+func (s summarySettingsStub) ConstitutionFieldKey(context.Context) string {
+	return ""
+}
+
+func (s summarySettingsStub) SummarySettings(context.Context) (string, string) {
+	return s.orgCUID, s.modelConfigCUID
 }
 
 func approveNextInvocation(t *testing.T, service *invocation.Service, delay time.Duration) {
