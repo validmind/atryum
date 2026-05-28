@@ -36,6 +36,14 @@ type EvaluatorClient interface {
 	EvaluateToolCall(ctx context.Context, req EvaluateRequest) (EvaluateResponse, error)
 }
 
+// SyncSettingsProvider lets the invocation service read the current agent sync
+// configuration on demand without importing the store package. The service
+// calls ConstitutionFieldKey on every AI evaluation so that changes saved via
+// the Settings UI are picked up immediately without a restart.
+type SyncSettingsProvider interface {
+	ConstitutionFieldKey(ctx context.Context) string
+}
+
 // EvaluateRequest mirrors backend.EvaluateRequest so the service package does
 // not import the backend package directly.
 type EvaluateRequest struct {
@@ -86,18 +94,18 @@ type upstreamClient interface {
 }
 
 type Service struct {
-	invocations          invocationRepo
-	events               eventRepo
-	resolver             resolver
-	client               upstreamClient
-	policy               policy.Provider
-	rules                rulesStore // nil = no rule evaluation
-	agents               AgentLookup
-	evaluator            EvaluatorClient
-	constitutionFieldKey string
-	defaultTimeout       time.Duration
-	mu                   sync.Mutex
-	pendingApprovals     map[string]chan approvalDecision
+	invocations   invocationRepo
+	events        eventRepo
+	resolver      resolver
+	client        upstreamClient
+	policy        policy.Provider
+	rules         rulesStore // nil = no rule evaluation
+	agents        AgentLookup
+	evaluator     EvaluatorClient
+	syncSettings  SyncSettingsProvider // nil = no constitution lookup
+	defaultTimeout time.Duration
+	mu             sync.Mutex
+	pendingApprovals map[string]chan approvalDecision
 }
 
 func NewService(
@@ -110,20 +118,20 @@ func NewService(
 	rules rulesStore,
 	agents AgentLookup,
 	evaluator EvaluatorClient,
-	constitutionFieldKey string,
+	syncSettings SyncSettingsProvider,
 ) *Service {
 	return &Service{
-		invocations:          inv,
-		events:               evt,
-		resolver:             resolver,
-		client:               client,
-		policy:               policyProvider,
-		rules:                rules,
-		agents:               agents,
-		evaluator:            evaluator,
-		constitutionFieldKey: constitutionFieldKey,
-		defaultTimeout:       defaultTimeout,
-		pendingApprovals:     make(map[string]chan approvalDecision),
+		invocations:      inv,
+		events:           evt,
+		resolver:         resolver,
+		client:           client,
+		policy:           policyProvider,
+		rules:            rules,
+		agents:           agents,
+		evaluator:        evaluator,
+		syncSettings:     syncSettings,
+		defaultTimeout:   defaultTimeout,
+		pendingApprovals: make(map[string]chan approvalDecision),
 	}
 }
 
@@ -287,6 +295,11 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 		}
 	}
 
+	constitutionFieldKey := ""
+	if s.syncSettings != nil {
+		constitutionFieldKey = s.syncSettings.ConstitutionFieldKey(ctx)
+	}
+
 	slog.Info("ai_evaluation: calling LLM",
 		"rule_id", rule.ID,
 		"server", serverName,
@@ -295,7 +308,7 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 		"agent_vm_cuid", agentVMCUID,
 		"org_cuid", orgCUID,
 		"model_config_cuid", rule.ModelConfigCUID,
-		"constitution_field_key", s.constitutionFieldKey,
+		"constitution_field_key", constitutionFieldKey,
 	)
 
 	evalCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -305,7 +318,7 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 		ModelConfigCUID:      rule.ModelConfigCUID,
 		OrgCUID:              orgCUID,
 		AgentVMCUID:          agentVMCUID,
-		ConstitutionFieldKey: s.constitutionFieldKey,
+		ConstitutionFieldKey: constitutionFieldKey,
 		ServerName:           serverName,
 		ToolName:             toolName,
 		ToolArgs:             toolArgs,

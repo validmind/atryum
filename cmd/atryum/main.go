@@ -144,8 +144,7 @@ func main() {
 		invEvaluator = &evaluatorAdapter{client: backendClient}
 	}
 
-	serviceSettings, _ := agentSyncSettingsRepo.Get(context.Background())
-	service := invocation.NewService(invRepo, eventRepo, resolver, client, policyRegistry, time.Duration(cfg.Defaults.RequestTimeoutSeconds)*time.Second, rulesRepo, invAgents, invEvaluator, serviceSettings.ConstitutionFieldKey)
+	service := invocation.NewService(invRepo, eventRepo, resolver, client, policyRegistry, time.Duration(cfg.Defaults.RequestTimeoutSeconds)*time.Second, rulesRepo, invAgents, invEvaluator, &syncSettingsAdapter{repo: agentSyncSettingsRepo})
 	serverAdmin := api.NewServerAdminService(serverRepo, oauthRepo, client, 5*time.Second, cfg.Server.PublicBaseURL)
 	handler := api.NewHandler(service, serverAdmin, policyRegistry, rulesRepo, agentsRepo, agentSyncSettingsRepo, syncAgents, backendClient)
 
@@ -204,6 +203,18 @@ func (a *agentsLookupAdapter) GetByAgentID(ctx context.Context, agentID string) 
 		return invocation.AgentRecord{}, err
 	}
 	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID}, nil
+}
+
+// syncSettingsAdapter bridges store.AgentSyncSettingsRepo → invocation.SyncSettingsProvider.
+// ConstitutionFieldKey is read from the DB on every call so that changes saved
+// via the Settings UI take effect immediately without a restart.
+type syncSettingsAdapter struct {
+	repo *store.AgentSyncSettingsRepo
+}
+
+func (a *syncSettingsAdapter) ConstitutionFieldKey(ctx context.Context) string {
+	s, _ := a.repo.Get(ctx)
+	return s.ConstitutionFieldKey
 }
 
 // evaluatorAdapter bridges backendclient.Client → invocation.EvaluatorClient.
