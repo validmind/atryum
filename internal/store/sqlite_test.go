@@ -41,8 +41,8 @@ func TestInitDB_FreshDatabase(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 10 {
-		t.Fatalf("expected 10 migrations, got %d", count)
+	if count != 11 {
+		t.Fatalf("expected 11 migrations, got %d", count)
 	}
 
 	// Verify all tables exist
@@ -70,8 +70,8 @@ func TestInitDB_Idempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 10 {
-		t.Fatalf("expected 10 migrations after double init, got %d", count)
+	if count != 11 {
+		t.Fatalf("expected 11 migrations after double init, got %d", count)
 	}
 }
 
@@ -671,3 +671,48 @@ func TestServerRepo_DeleteNoRows(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+func TestAgentSyncSettingsRepo_UpsertOnEmptyTable(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+	if err := InitDB(db); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+
+	// Delete the seed row if it exists
+	db.Exec(`DELETE FROM agent_sync_settings`)
+
+	repo := NewAgentSyncSettingsRepo(db)
+	ctx := context.Background()
+
+	// Get on empty table should return empty settings, not an error
+	s, err := repo.Get(ctx)
+	if err != nil {
+		t.Fatalf("Get on empty table: %v", err)
+	}
+	if s.OrgCUID != "" {
+		t.Fatalf("expected empty OrgCUID, got %q", s.OrgCUID)
+	}
+
+	// Save should create the row
+	err = repo.Save(ctx, AgentSyncSettings{
+		OrgCUID:             "org-abc",
+		AgentRecordTypeSlug: "ai-agents",
+		ConstitutionFieldKey: "constitution",
+	})
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Get should now return the saved values
+	s, err = repo.Get(ctx)
+	if err != nil {
+		t.Fatalf("Get after Save: %v", err)
+	}
+	if s.OrgCUID != "org-abc" {
+		t.Fatalf("expected OrgCUID=org-abc, got %q", s.OrgCUID)
+	}
+	if s.AgentRecordTypeSlug != "ai-agents" {
+		t.Fatalf("expected AgentRecordTypeSlug=ai-agents, got %q", s.AgentRecordTypeSlug)
+	}
+}

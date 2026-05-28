@@ -74,22 +74,29 @@ type agentsRepo interface {
 	Get(ctx context.Context, id string) (store.AgentRecord, error)
 	UpdateEnabled(ctx context.Context, id string, enabled bool) error
 	UpdateAgentIDs(ctx context.Context, id string, agentIDs string) error
+	DeleteAll(ctx context.Context) error
+}
+
+type agentSyncSettingsRepo interface {
+	Get(ctx context.Context) (store.AgentSyncSettings, error)
+	Save(ctx context.Context, s store.AgentSyncSettings) error
 }
 
 type Handler struct {
-	svc             service
-	serverSvc       serverService
-	policyRegistry  *policy.Registry
-	rulesRepo       rulesRepo
-	agentsRepo      agentsRepo
-	backendClient   *backendclient.Client
-	syncAgentsFn    func(ctx context.Context) error
-	forwarder       mcpEnvelopeForwarder
-	staticHTTP      http.Handler
-	debug           bool
-	authDebugSkip   bool
-	authValidator   *auth.Validator
-	apiKeyAuth      auth.APIKeyConfig
+	svc                   service
+	serverSvc             serverService
+	policyRegistry        *policy.Registry
+	rulesRepo             rulesRepo
+	agentsRepo            agentsRepo
+	agentSyncSettingsRepo agentSyncSettingsRepo
+	backendClient         *backendclient.Client
+	syncAgentsFn          func(ctx context.Context) error
+	forwarder             mcpEnvelopeForwarder
+	staticHTTP            http.Handler
+	debug                 bool
+	authDebugSkip         bool
+	authValidator         *auth.Validator
+	apiKeyAuth            auth.APIKeyConfig
 }
 
 type PolicyStatusResponse struct {
@@ -346,7 +353,7 @@ type invocationStreamEnvelope struct {
 	Items []invocation.InvocationResponse `json:"items"`
 }
 
-func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Registry, rules rulesRepo, agents agentsRepo, syncAgents func(ctx context.Context) error, bc *backendclient.Client) *Handler {
+func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Registry, rules rulesRepo, agents agentsRepo, agentSyncSettings agentSyncSettingsRepo, syncAgents func(ctx context.Context) error, bc *backendclient.Client) *Handler {
 	staticSub, err := fs.Sub(webFS, "web")
 	if err != nil {
 		panic(err)
@@ -356,7 +363,7 @@ func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Reg
 	if f, ok := svc.(mcpEnvelopeForwarder); ok {
 		forwarder = f
 	}
-	return &Handler{svc: svc, serverSvc: serverSvc, policyRegistry: policyRegistry, rulesRepo: rules, agentsRepo: agents, backendClient: bc, syncAgentsFn: syncAgents, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug}
+	return &Handler{svc: svc, serverSvc: serverSvc, policyRegistry: policyRegistry, rulesRepo: rules, agentsRepo: agents, agentSyncSettingsRepo: agentSyncSettings, backendClient: bc, syncAgentsFn: syncAgents, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug}
 }
 
 // SetAuthValidator installs the inbound auth validator. When non-nil, the
@@ -406,6 +413,10 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/api/v1/admin/agents", h.adminAgents)
 	mux.HandleFunc("/api/v1/admin/agents/", h.adminAgentDetail)
 	mux.HandleFunc("/api/v1/admin/model-configs", h.adminModelConfigs)
+	mux.HandleFunc("/api/v1/admin/settings", h.adminSettings)
+	mux.HandleFunc("/api/v1/admin/vm/organizations", h.adminVMOrganizations)
+	mux.HandleFunc("/api/v1/admin/vm/record-types", h.adminVMRecordTypes)
+	mux.HandleFunc("/api/v1/admin/vm/custom-fields", h.adminVMCustomFields)
 	mux.HandleFunc("/api/v1/admin/oauth/callback", h.oauthCallback)
 	mux.HandleFunc("/api/v1/admin/policy", h.adminPolicy)
 	agentRulesHandler := auth.MiddlewareWithOptions(h.authValidator, "/.well-known/oauth-protected-resource", auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})(http.HandlerFunc(h.agentRules))
@@ -1634,6 +1645,214 @@ func (h *Handler) adminModelConfigs(w http.ResponseWriter, r *http.Request) {
 		items = append(items, AdminModelConfig{CUID: c.CUID, Name: c.Name})
 	}
 	writeJSON(w, http.StatusOK, ModelConfigListResponse{Items: items, Total: len(items)})
+}
+
+// ─── Agent Sync Settings handlers ────────────────────────────────────────────
+
+// AgentSyncSettingsResponse is the JSON shape returned by GET /admin/settings
+// and PUT /admin/settings. SyncError is non-empty when the post-save agent
+// sync failed; settings are persisted regardless.
+type AgentSyncSettingsResponse struct {
+	OrgCUID              string `json:"org_cuid"`
+	AgentRecordTypeSlug  string `json:"agent_record_type_slug"`
+	ConstitutionFieldKey string `json:"constitution_field_key"`
+	UpdatedAt            string `json:"updated_at,omitempty"`
+	SyncError            string `json:"sync_error,omitempty"`
+}
+
+// AgentSyncSettingsInput is the JSON body accepted by PUT /admin/settings.
+type AgentSyncSettingsInput struct {
+	OrgCUID             string `json:"org_cuid"`
+	AgentRecordTypeSlug string `json:"agent_record_type_slug"`
+	ConstitutionFieldKey string `json:"constitution_field_key"`
+}
+
+func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
+	if h.agentSyncSettingsRepo == nil {
+		writeError(w, http.StatusServiceUnavailable, "settings not available")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		s, err := h.agentSyncSettingsRepo.Get(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to read settings: "+err.Error())
+			return
+		}
+		resp := AgentSyncSettingsResponse{
+			OrgCUID:             s.OrgCUID,
+			AgentRecordTypeSlug: s.AgentRecordTypeSlug,
+			ConstitutionFieldKey: s.ConstitutionFieldKey,
+		}
+		if !s.UpdatedAt.IsZero() {
+			resp.UpdatedAt = s.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z")
+		}
+		writeJSON(w, http.StatusOK, resp)
+	case http.MethodPut:
+		var input AgentSyncSettingsInput
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+		// Read current settings to detect whether the org or record type changed.
+		current, err := h.agentSyncSettingsRepo.Get(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to read current settings: "+err.Error())
+			return
+		}
+		orgChanged := current.OrgCUID != "" && current.OrgCUID != input.OrgCUID
+		slugChanged := current.AgentRecordTypeSlug != "" && current.AgentRecordTypeSlug != input.AgentRecordTypeSlug
+		if (orgChanged || slugChanged) && h.agentsRepo != nil {
+			if delErr := h.agentsRepo.DeleteAll(r.Context()); delErr != nil {
+				writeError(w, http.StatusInternalServerError, "failed to delete agents: "+delErr.Error())
+				return
+			}
+		}
+		if err := h.agentSyncSettingsRepo.Save(r.Context(), store.AgentSyncSettings{
+			OrgCUID:              input.OrgCUID,
+			AgentRecordTypeSlug:  input.AgentRecordTypeSlug,
+			ConstitutionFieldKey: input.ConstitutionFieldKey,
+		}); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to save settings: "+err.Error())
+			return
+		}
+		// Trigger an agent sync whenever the new settings include a complete
+		// org + record-type pair, so the agent list is immediately up-to-date.
+		syncErr := ""
+		if h.syncAgentsFn != nil && input.OrgCUID != "" && input.AgentRecordTypeSlug != "" {
+			if err := h.syncAgentsFn(r.Context()); err != nil {
+				// Non-fatal: settings are already saved; surface the error to the
+				// caller so the UI can show a warning rather than blocking the save.
+				syncErr = err.Error()
+			}
+		}
+		s, err := h.agentSyncSettingsRepo.Get(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to read saved settings: "+err.Error())
+			return
+		}
+		log.Printf("[adminSettings] GET after save: org_cuid=%q record_type=%q", s.OrgCUID, s.AgentRecordTypeSlug)
+		resp := AgentSyncSettingsResponse{
+			OrgCUID:              s.OrgCUID,
+			AgentRecordTypeSlug:  s.AgentRecordTypeSlug,
+			ConstitutionFieldKey: s.ConstitutionFieldKey,
+			SyncError:            syncErr,
+		}
+		if !s.UpdatedAt.IsZero() {
+			resp.UpdatedAt = s.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z")
+		}
+		writeJSON(w, http.StatusOK, resp)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+// ─── VM Discovery proxy handlers ─────────────────────────────────────────────
+
+type VMOrgItem struct {
+	CUID string `json:"cuid"`
+	Name string `json:"name"`
+}
+
+type VMOrgListResponse struct {
+	Items []VMOrgItem `json:"items"`
+	Total int         `json:"total"`
+}
+
+type VMRecordTypeItem struct {
+	CUID string `json:"cuid"`
+	Slug string `json:"slug"`
+	Name string `json:"name"`
+}
+
+type VMRecordTypeListResponse struct {
+	Items []VMRecordTypeItem `json:"items"`
+	Total int                `json:"total"`
+}
+
+type VMCustomFieldItem struct {
+	Key       string `json:"key"`
+	Name      string `json:"name"`
+	FieldType string `json:"field_type"`
+}
+
+type VMCustomFieldListResponse struct {
+	Items []VMCustomFieldItem `json:"items"`
+	Total int                 `json:"total"`
+}
+
+func (h *Handler) adminVMOrganizations(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.backendClient == nil {
+		writeError(w, http.StatusServiceUnavailable, "backend not configured")
+		return
+	}
+	resp, err := h.backendClient.FetchOrganizations(r.Context())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "failed to fetch organizations: "+err.Error())
+		return
+	}
+	items := make([]VMOrgItem, 0, len(resp.Items))
+	for _, o := range resp.Items {
+		items = append(items, VMOrgItem{CUID: o.CUID, Name: o.Name})
+	}
+	writeJSON(w, http.StatusOK, VMOrgListResponse{Items: items, Total: len(items)})
+}
+
+func (h *Handler) adminVMRecordTypes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.backendClient == nil {
+		writeError(w, http.StatusServiceUnavailable, "backend not configured")
+		return
+	}
+	orgCUID := r.URL.Query().Get("org_cuid")
+	if orgCUID == "" {
+		writeError(w, http.StatusBadRequest, "org_cuid query parameter is required")
+		return
+	}
+	resp, err := h.backendClient.FetchPrimaryRecordTypes(r.Context(), orgCUID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "failed to fetch record types: "+err.Error())
+		return
+	}
+	items := make([]VMRecordTypeItem, 0, len(resp.Items))
+	for _, rt := range resp.Items {
+		items = append(items, VMRecordTypeItem{CUID: rt.CUID, Slug: rt.Slug, Name: rt.Name})
+	}
+	writeJSON(w, http.StatusOK, VMRecordTypeListResponse{Items: items, Total: len(items)})
+}
+
+func (h *Handler) adminVMCustomFields(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.backendClient == nil {
+		writeError(w, http.StatusServiceUnavailable, "backend not configured")
+		return
+	}
+	orgCUID := r.URL.Query().Get("org_cuid")
+	if orgCUID == "" {
+		writeError(w, http.StatusBadRequest, "org_cuid query parameter is required")
+		return
+	}
+	slug := r.URL.Query().Get("primary_record_type_slug")
+	resp, err := h.backendClient.FetchCustomFields(r.Context(), orgCUID, slug)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "failed to fetch custom fields: "+err.Error())
+		return
+	}
+	items := make([]VMCustomFieldItem, 0, len(resp.Items))
+	for _, cf := range resp.Items {
+		items = append(items, VMCustomFieldItem{Key: cf.Key, Name: cf.Name, FieldType: cf.FieldType})
+	}
+	writeJSON(w, http.StatusOK, VMCustomFieldListResponse{Items: items, Total: len(items)})
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

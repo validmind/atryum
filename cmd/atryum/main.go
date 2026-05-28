@@ -64,21 +64,25 @@ func main() {
 	oauthRepo := store.NewOAuthRepoWithDialect(db, dialect)
 	rulesRepo := store.NewRulesRepoWithDialect(db, dialect)
 	agentsRepo := store.NewAgentsRepoWithDialect(db, dialect)
+	agentSyncSettingsRepo := store.NewAgentSyncSettingsRepoWithDialect(db, dialect)
 
 	// syncAgents is the shared sync function used both at startup and via the
 	// admin API POST /api/v1/admin/agents/sync endpoint.
+	// org_cuid and agent_record_type_slug are read exclusively from the DB
+	// (configured via the Settings UI).
 	syncAgents := func(ctx context.Context) error {
 		if backendClient == nil {
 			return fmt.Errorf("backend not configured")
 		}
-		if cfg.AgentSync.OrgCUID == "" || cfg.AgentSync.AgentRecordTypeSlug == "" {
-			return fmt.Errorf("agent_sync org_cuid and agent_record_type_slug must be set")
+		settings, _ := agentSyncSettingsRepo.Get(ctx)
+		if settings.OrgCUID == "" || settings.AgentRecordTypeSlug == "" {
+			return fmt.Errorf("agent sync requires org_cuid and agent_record_type_slug — configure them in the Settings UI")
 		}
-		agentsResp, err := backendClient.FetchAgents(ctx, cfg.AgentSync.OrgCUID, cfg.AgentSync.AgentRecordTypeSlug)
+		agentsResp, err := backendClient.FetchAgents(ctx, settings.OrgCUID, settings.AgentRecordTypeSlug)
 		if err != nil {
 			return fmt.Errorf("fetch agents: %w", err)
 		}
-		log.Printf("agent sync: fetched %d agent(s) for org=%s (%s) record_type=%s", agentsResp.Total, agentsResp.OrgCUID, agentsResp.OrgName, cfg.AgentSync.AgentRecordTypeSlug)
+		log.Printf("agent sync: fetched %d agent(s) for org=%s (%s) record_type=%s", agentsResp.Total, agentsResp.OrgCUID, agentsResp.OrgName, settings.AgentRecordTypeSlug)
 		syncedAt := time.Now().UTC()
 		for _, a := range agentsResp.Results {
 			description, _ := a.CustomFields["description"].(string)
@@ -99,9 +103,13 @@ func main() {
 		return nil
 	}
 
-	if backendClient != nil && cfg.AgentSync.OrgCUID != "" && cfg.AgentSync.AgentRecordTypeSlug != "" {
-		if err := syncAgents(context.Background()); err != nil {
-			log.Printf("agent sync failed: %v", err)
+	// Attempt startup sync when DB settings are already configured.
+	{
+		startupSettings, _ := agentSyncSettingsRepo.Get(context.Background())
+		if backendClient != nil && startupSettings.OrgCUID != "" && startupSettings.AgentRecordTypeSlug != "" {
+			if err := syncAgents(context.Background()); err != nil {
+				log.Printf("agent sync failed: %v", err)
+			}
 		}
 	}
 	resolver := mcp.NewResolver(serverRepo, cfg).WithCredentials(credentialAdapter{repo: oauthRepo})
@@ -136,9 +144,9 @@ func main() {
 		invEvaluator = &evaluatorAdapter{client: backendClient}
 	}
 
-	service := invocation.NewService(invRepo, eventRepo, resolver, client, policyRegistry, time.Duration(cfg.Defaults.RequestTimeoutSeconds)*time.Second, rulesRepo, invAgents, invEvaluator, cfg.AIEvaluation.ConstitutionFieldKey)
+	service := invocation.NewService(invRepo, eventRepo, resolver, client, policyRegistry, time.Duration(cfg.Defaults.RequestTimeoutSeconds)*time.Second, rulesRepo, invAgents, invEvaluator, &syncSettingsAdapter{repo: agentSyncSettingsRepo})
 	serverAdmin := api.NewServerAdminService(serverRepo, oauthRepo, client, 5*time.Second, cfg.Server.PublicBaseURL)
-	handler := api.NewHandler(service, serverAdmin, policyRegistry, rulesRepo, agentsRepo, syncAgents, backendClient)
+	handler := api.NewHandler(service, serverAdmin, policyRegistry, rulesRepo, agentsRepo, agentSyncSettingsRepo, syncAgents, backendClient)
 
 	authValidator, err := auth.NewValidator(cfg.Auth, nil)
 	if err != nil {
@@ -195,6 +203,18 @@ func (a *agentsLookupAdapter) GetByAgentID(ctx context.Context, agentID string) 
 		return invocation.AgentRecord{}, err
 	}
 	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID}, nil
+}
+
+// syncSettingsAdapter bridges store.AgentSyncSettingsRepo → invocation.SyncSettingsProvider.
+// ConstitutionFieldKey is read from the DB on every call so that changes saved
+// via the Settings UI take effect immediately without a restart.
+type syncSettingsAdapter struct {
+	repo *store.AgentSyncSettingsRepo
+}
+
+func (a *syncSettingsAdapter) ConstitutionFieldKey(ctx context.Context) string {
+	s, _ := a.repo.Get(ctx)
+	return s.ConstitutionFieldKey
 }
 
 // evaluatorAdapter bridges backendclient.Client → invocation.EvaluatorClient.

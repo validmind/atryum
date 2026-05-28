@@ -61,6 +61,12 @@ func OpenDatabase(databaseURL, databasePath string) (*sql.DB, Dialect, error) {
 	if err != nil {
 		return nil, "", err
 	}
+	// SQLite does not support concurrent writers. Limiting to a single
+	// connection serialises all reads and writes through the same handle so
+	// that writes are immediately visible to subsequent reads.
+	if target.Dialect == DialectSQLite {
+		db.SetMaxOpenConns(1)
+	}
 	return db, target.Dialect, nil
 }
 

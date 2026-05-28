@@ -10,13 +10,11 @@ import (
 )
 
 type Config struct {
-	Server       ServerConfig       `toml:"server"`
-	Backend      BackendConfig      `toml:"backend"`
-	AgentSync    AgentSyncConfig    `toml:"agent_sync"`
-	AIEvaluation AIEvaluationConfig `toml:"ai_evaluation"`
-	Defaults     DefaultsConfig     `toml:"defaults"`
-	Policy       PolicyConfig       `toml:"policy"`
-	Upstreams    []UpstreamConfig   `toml:"upstreams"`
+	Server    ServerConfig     `toml:"server"`
+	Backend   BackendConfig    `toml:"backend"`
+	Defaults  DefaultsConfig   `toml:"defaults"`
+	Policy    PolicyConfig     `toml:"policy"`
+	Upstreams []UpstreamConfig `toml:"upstreams"`
 	// Auth holds zero or more inbound OAuth bearer-token validators
 	// (e.g. one entry for Keycloak, one for Auth0). When empty, the agent-
 	// facing /mcp/ routes remain anonymous.
@@ -28,21 +26,6 @@ type Config struct {
 	APIKey auth.APIKeyConfig `toml:"api_key"`
 }
 
-// AIEvaluationConfig configures the AI Evaluation rule type.
-// ConstitutionFieldKey is the key in the VM inventory model's custom_fields
-// map that holds the agent's constitution (governing rules for LLM evaluation).
-type AIEvaluationConfig struct {
-	ConstitutionFieldKey string `toml:"constitution_field_key"`
-}
-
-// AgentSyncConfig configures startup agent (inventory model) fetching from the
-// ValidMind backend. All fields are optional; the fetch is skipped when either
-// OrgCUID or RecordTypeCUID is empty.
-type AgentSyncConfig struct {
-	OrgCUID             string `toml:"org_cuid"`
-	AgentRecordTypeSlug string `toml:"agent_record_type_slug"`
-}
-
 // BackendConfig configures Atryum's startup connection check to the ValidMind
 // backend. Environment variables override TOML when set.
 type BackendConfig struct {
@@ -50,6 +33,10 @@ type BackendConfig struct {
 	MachineKey            string `toml:"machine_key"`
 	MachineSecret         string `toml:"machine_secret"`
 	ConnectionTimeoutSecs int    `toml:"connection_timeout_seconds"`
+	// EvaluateTimeoutSecs is the HTTP timeout for /evaluate calls, which invoke
+	// an LLM and can take much longer than a normal API round-trip. Defaults to
+	// 120 seconds when unset or zero.
+	EvaluateTimeoutSecs int `toml:"evaluate_timeout_seconds"`
 }
 
 // AuthDebugConfig contains local-only auth debugging switches.
@@ -133,5 +120,13 @@ func (c *BackendConfig) ApplyEnv() {
 	}
 	if c.ConnectionTimeoutSecs <= 0 {
 		c.ConnectionTimeoutSecs = 5
+	}
+	if value := os.Getenv("ATRYUM_BACKEND_EVALUATE_TIMEOUT_SECONDS"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			c.EvaluateTimeoutSecs = parsed
+		}
+	}
+	if c.EvaluateTimeoutSecs <= 0 {
+		c.EvaluateTimeoutSecs = 120
 	}
 }

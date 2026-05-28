@@ -154,6 +154,18 @@ func (r *AgentsRepo) GetByAgentID(ctx context.Context, agentID string) (AgentRec
 	return scanAgent(r.db.QueryRowContext(ctx, query, agentID))
 }
 
+// DeleteAll removes every agent record from the table. Used when the sync
+// org or record type changes so stale agents from the previous configuration
+// do not linger.
+func (r *AgentsRepo) DeleteAll(ctx context.Context) error {
+	query, args, err := r.sb.Delete("agents").ToSql()
+	if err != nil {
+		return fmt.Errorf("build agents delete: %w", err)
+	}
+	_, err = r.db.ExecContext(ctx, query, args...)
+	return err
+}
+
 // List returns all agent records ordered by vm_name.
 func (r *AgentsRepo) List(ctx context.Context) ([]AgentRecord, error) {
 	query, args, err := r.sb.Select(agentColumns...).
