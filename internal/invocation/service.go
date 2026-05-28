@@ -111,6 +111,7 @@ type approvalDecision struct {
 type invocationRepo interface {
 	Create(ctx context.Context, inv Invocation) error
 	UpdateResult(ctx context.Context, inv Invocation) error
+	UpdateSummary(ctx context.Context, id string, summary string) error
 	Get(ctx context.Context, id string) (Invocation, error)
 	GetByIdempotencyKey(ctx context.Context, key string) (Invocation, error)
 	List(ctx context.Context, filter InvocationListFilter) ([]Invocation, int, error)
@@ -960,8 +961,34 @@ func (s *Service) Events(ctx context.Context, invocationID string, filter EventL
 	return EventListResponse{Items: out, Total: total, Offset: filter.Offset, Limit: normalizedLimit(filter.Limit, 200)}, nil
 }
 
+// SetSummary persists an LLM-generated summary for the invocation and records
+// a lifecycle event. Callers (handlers) are responsible for producing the
+// summary text; the service simply stores it and surfaces it via Get/List.
+func (s *Service) SetSummary(ctx context.Context, invocationID string, summary string) (InvocationResponse, error) {
+	if invocationID == "" {
+		return InvocationResponse{}, fmt.Errorf("invocation_id is required")
+	}
+	if err := s.invocations.UpdateSummary(ctx, invocationID, summary); err != nil {
+		return InvocationResponse{}, err
+	}
+	inv, err := s.invocations.Get(ctx, invocationID)
+	if err != nil {
+		return InvocationResponse{}, err
+	}
+	_ = s.events.Create(ctx, Event{
+		InvocationID: invocationID,
+		EventType:    "invocation.summarized",
+		Payload:      mustJSON(map[string]any{"summary": summary}),
+		CreatedAt:    time.Now().UTC(),
+	})
+	return s.toResponse(inv), nil
+}
+
 func (s *Service) toResponse(inv Invocation) InvocationResponse {
 	resp := InvocationResponse{InvocationID: inv.InvocationID, ServerName: inv.Upstream, ToolName: inv.Tool, Status: inv.Status, Approval: inv.Approval, MatchedRuleID: inv.MatchedRuleID, AgentID: inv.AgentID, RequestID: inv.RequestID, SubmittedAt: inv.SubmittedAt, CompletedAt: inv.CompletedAt}
+	if inv.Summary != nil {
+		resp.Summary = *inv.Summary
+	}
 	if len(inv.Input) > 0 {
 		resp.Input = json.RawMessage(inv.Input)
 	}

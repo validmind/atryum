@@ -58,6 +58,9 @@ func (s *stubService) Deny(context.Context, string, string) error { return nil }
 func (s *stubService) Submit(context.Context, invocation.ExternalSubmitRequest) (invocation.InvocationResponse, error) {
 	return invocation.InvocationResponse{}, nil
 }
+func (s *stubService) SetSummary(context.Context, string, string) (invocation.InvocationResponse, error) {
+	return invocation.InvocationResponse{}, nil
+}
 func (s *stubService) RecordExecution(context.Context, string, invocation.ExternalExecutionUpdate) (invocation.InvocationResponse, error) {
 	return invocation.InvocationResponse{}, nil
 }

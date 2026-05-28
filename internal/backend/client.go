@@ -16,6 +16,7 @@ const connectionPath = "/internal/v1/atryum/connection"
 const agentsPath = "/internal/v1/atryum/agents"
 const modelConfigsPath = "/internal/v1/atryum/model-configs"
 const evaluatePath = "/internal/v1/atryum/evaluate"
+const summarizeInvocationPath = "/internal/v1/atryum/summarize-invocation"
 const organizationsPath = "/internal/v1/atryum/organizations"
 const primaryRecordTypesPath = "/internal/v1/atryum/primary-record-types"
 const customFieldsPath = "/internal/v1/atryum/custom-fields"
@@ -346,6 +347,61 @@ func (c *Client) EvaluateToolCall(ctx context.Context, req EvaluateRequest) (Eva
 	var payload EvaluateResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return EvaluateResponse{}, fmt.Errorf("decode evaluate response: %w", err)
+	}
+	return payload, nil
+}
+
+// SummarizeInvocationRequest is sent to the VM backend to ask an LLM to
+// produce a short human-readable summary of a single invocation.
+type SummarizeInvocationRequest struct {
+	ModelConfigCUID string         `json:"model_config_cuid"`
+	OrgCUID         string         `json:"org_cuid,omitempty"`
+	Invocation      map[string]any `json:"invocation"`
+}
+
+// SummarizeInvocationResponse is the result returned by the VM backend after
+// LLM summarization.
+type SummarizeInvocationResponse struct {
+	Summary string `json:"summary"`
+}
+
+// SummarizeInvocation calls the VM backend's summarize-invocation endpoint and
+// returns the produced summary.
+func (c *Client) SummarizeInvocation(ctx context.Context, req SummarizeInvocationRequest) (SummarizeInvocationResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return SummarizeInvocationResponse{}, fmt.Errorf("marshal summarize-invocation request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(
+		ctx, http.MethodPost, c.baseURL+summarizeInvocationPath,
+		strings.NewReader(string(body)),
+	)
+	if err != nil {
+		return SummarizeInvocationResponse{}, fmt.Errorf("build summarize-invocation request: %w", err)
+	}
+	httpReq.Header.Set("X-MACHINE-KEY", c.machineKey)
+	httpReq.Header.Set("X-MACHINE-SECRET", c.machineSecret)
+	if req.OrgCUID != "" {
+		httpReq.Header.Set("X-Org-CUID", req.OrgCUID)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+
+	// Reuse the longer-timeout client since this is an LLM completion call.
+	resp, err := c.evaluateClient.Do(httpReq)
+	if err != nil {
+		return SummarizeInvocationResponse{}, fmt.Errorf("call summarize-invocation endpoint: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return SummarizeInvocationResponse{}, fmt.Errorf("summarize-invocation endpoint returned %s", resp.Status)
+	}
+
+	var payload SummarizeInvocationResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return SummarizeInvocationResponse{}, fmt.Errorf("decode summarize-invocation response: %w", err)
 	}
 	return payload, nil
 }

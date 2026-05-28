@@ -41,6 +41,7 @@ type service interface {
 	Deny(ctx context.Context, invocationID string, message string) error
 	Submit(ctx context.Context, req invocation.ExternalSubmitRequest) (invocation.InvocationResponse, error)
 	RecordExecution(ctx context.Context, invocationID string, update invocation.ExternalExecutionUpdate) (invocation.InvocationResponse, error)
+	SetSummary(ctx context.Context, invocationID string, summary string) (invocation.InvocationResponse, error)
 }
 
 type mcpEnvelopeForwarder interface {
@@ -1170,6 +1171,16 @@ func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
+	if strings.HasSuffix(trimmed, "/summarize") {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id := strings.TrimSuffix(trimmed, "/summarize")
+		id = strings.TrimSuffix(id, "/")
+		h.summarizeInvocation(w, r, id)
+		return
+	}
 	if strings.HasSuffix(trimmed, "/deny") {
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -1234,6 +1245,105 @@ func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// SummarizeInvocationRequest is the JSON body accepted by
+// POST /api/v1/admin/invocations/{id}/summarize.
+type SummarizeInvocationRequest struct {
+	ModelConfigCUID string `json:"model_config_cuid"`
+}
+
+// SummarizeInvocationResponse is the JSON shape returned by
+// POST /api/v1/admin/invocations/{id}/summarize.
+type SummarizeInvocationResponse struct {
+	InvocationID string `json:"invocation_id"`
+	Summary      string `json:"summary"`
+}
+
+// summarizeInvocation loads the invocation by id, forwards it to the VM
+// backend's /summarize-invocation endpoint, and returns the LLM-generated
+// summary.
+func (h *Handler) summarizeInvocation(w http.ResponseWriter, r *http.Request, id string) {
+	if id == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	h.debugf("summarizing invocation %s", id)
+	if h.backendClient == nil {
+		writeError(w, http.StatusServiceUnavailable, "backend not configured")
+		return
+	}
+
+	var req SummarizeInvocationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	modelConfigCUID := strings.TrimSpace(req.ModelConfigCUID)
+	if modelConfigCUID == "" {
+		writeError(w, http.StatusBadRequest, "model_config_cuid is required")
+		return
+	}
+
+	inv, err := h.svc.Get(r.Context(), id)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if err == sql.ErrNoRows {
+			status = http.StatusNotFound
+		}
+		log.Printf("[summarizeInvocation] load invocation %s failed: %v", id, err)
+		writeError(w, status, err.Error())
+		return
+	}
+
+	// Round-trip via JSON so the backend sees the same shape as the admin
+	// detail endpoint (input/result/error are json.RawMessage on the wire).
+	raw, err := json.Marshal(inv)
+	if err != nil {
+		log.Printf("[summarizeInvocation] encode invocation %s failed: %v", id, err)
+		writeError(w, http.StatusInternalServerError, "failed to encode invocation: "+err.Error())
+		return
+	}
+	var invMap map[string]any
+	if err := json.Unmarshal(raw, &invMap); err != nil {
+		log.Printf("[summarizeInvocation] normalize invocation %s failed: %v", id, err)
+		writeError(w, http.StatusInternalServerError, "failed to normalize invocation: "+err.Error())
+		return
+	}
+
+	orgCUID := ""
+	if h.agentSyncSettingsRepo != nil {
+		if s, sErr := h.agentSyncSettingsRepo.Get(r.Context()); sErr == nil {
+			orgCUID = s.OrgCUID
+		} else {
+			log.Printf("[summarizeInvocation] read agent_sync_settings failed: %v", sErr)
+		}
+	}
+
+	resp, err := h.backendClient.SummarizeInvocation(r.Context(), backendclient.SummarizeInvocationRequest{
+		ModelConfigCUID: modelConfigCUID,
+		OrgCUID:         orgCUID,
+		Invocation:      invMap,
+	})
+	if err != nil {
+		log.Printf("[summarizeInvocation] backend call failed for invocation %s (model_config_cuid=%s): %v", id, modelConfigCUID, err)
+		writeError(w, http.StatusBadGateway, "failed to summarize invocation: "+err.Error())
+		return
+	}
+
+	// Persist the generated summary on the invocation row so subsequent
+	// Get/List calls expose it and the UI can render it without re-calling the LLM.
+	updated, err := h.svc.SetSummary(r.Context(), inv.InvocationID, resp.Summary)
+	if err != nil {
+		log.Printf("[summarizeInvocation] persist summary for invocation %s failed: %v", id, err)
+		writeError(w, http.StatusInternalServerError, "failed to persist summary: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, SummarizeInvocationResponse{
+		InvocationID: updated.InvocationID,
+		Summary:      updated.Summary,
+	})
 }
 
 func (h *Handler) adminServers(w http.ResponseWriter, r *http.Request) {
