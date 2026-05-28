@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	backendclient "atryum/internal/backend"
 	"atryum/internal/invocation"
 	"atryum/internal/mcp"
 	"atryum/internal/store"
@@ -18,6 +19,10 @@ type stubService struct {
 	tools    []mcp.Tool
 	invoke   invocation.InvocationResponse
 	invErr   error
+	getErr   error
+	setResp  invocation.InvocationResponse
+	setID    string
+	setText  string
 	listErr  error
 	upstream mcp.Upstream
 	forward  mcp.ForwardResult
@@ -41,8 +46,8 @@ func (s *stubService) ListAllTools(context.Context) ([]mcp.Tool, error) {
 func (s *stubService) ResolveToolServer(_ context.Context, _ string) (string, error) {
 	return s.upstream.Name, nil
 }
-func (s *stubService) Get(context.Context, string) (invocation.InvocationResponse, error) {
-	return s.invoke, nil
+func (s *stubService) Get(_ context.Context, _ string) (invocation.InvocationResponse, error) {
+	return s.invoke, s.getErr
 }
 func (s *stubService) List(context.Context, invocation.InvocationListFilter) (invocation.InvocationListResponse, error) {
 	return invocation.InvocationListResponse{Items: []invocation.InvocationResponse{s.invoke}, Total: 1, Limit: 50}, nil
@@ -58,8 +63,15 @@ func (s *stubService) Deny(context.Context, string, string) error { return nil }
 func (s *stubService) Submit(context.Context, invocation.ExternalSubmitRequest) (invocation.InvocationResponse, error) {
 	return invocation.InvocationResponse{}, nil
 }
-func (s *stubService) SetSummary(context.Context, string, string) (invocation.InvocationResponse, error) {
-	return invocation.InvocationResponse{}, nil
+func (s *stubService) SetSummary(_ context.Context, id string, summary string) (invocation.InvocationResponse, error) {
+	s.setID = id
+	s.setText = summary
+	if s.setResp.InvocationID != "" {
+		return s.setResp, nil
+	}
+	resp := s.invoke
+	resp.Summary = summary
+	return resp, nil
 }
 func (s *stubService) RecordExecution(context.Context, string, invocation.ExternalExecutionUpdate) (invocation.InvocationResponse, error) {
 	return invocation.InvocationResponse{}, nil
@@ -119,6 +131,17 @@ func (s *stubRulesRepo) Move(context.Context, string, string) ([]store.Rule, err
 }
 func (s *stubRulesRepo) InsertBefore(context.Context, string, store.Rule) error { return nil }
 
+type stubSummarizer struct {
+	req  backendclient.SummarizeInvocationRequest
+	resp backendclient.SummarizeInvocationResponse
+	err  error
+}
+
+func (s *stubSummarizer) SummarizeInvocation(_ context.Context, req backendclient.SummarizeInvocationRequest) (backendclient.SummarizeInvocationResponse, error) {
+	s.req = req
+	return s.resp, s.err
+}
+
 func TestMCPInitializeNegotiatesProtocolVersion(t *testing.T) {
 	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}`))
@@ -145,6 +168,71 @@ func TestMCPInitializeNegotiatesProtocolVersion(t *testing.T) {
 	instructions, ok := result["instructions"].(string)
 	if !ok || !strings.Contains(instructions, "atryum.rules.get") {
 		t.Fatalf("expected initialize instructions to mention atryum.rules.get, got %#v", result["instructions"])
+	}
+}
+
+func TestSummarizeInvocationPersistsBackendSummary(t *testing.T) {
+	now := time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
+	svc := &stubService{invoke: invocation.InvocationResponse{
+		InvocationID: "inv_123",
+		ServerName:   "demo",
+		ToolName:     "read_file",
+		Status:       invocation.StatusSucceeded,
+		Input:        json.RawMessage(`{"path":"/tmp/a"}`),
+		Result:       json.RawMessage(`{"content":"hello"}`),
+		SubmittedAt:  now,
+		CompletedAt:  &now,
+	}}
+	summarizer := &stubSummarizer{resp: backendclient.SummarizeInvocationResponse{Summary: "Read /tmp/a and returned hello."}}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil)
+	h.summarizeClient = summarizer
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/invocations/inv_123/summarize", strings.NewReader(`{"model_config_cuid":" model_abc "}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if summarizer.req.ModelConfigCUID != "model_abc" {
+		t.Fatalf("model_config_cuid = %q", summarizer.req.ModelConfigCUID)
+	}
+	if summarizer.req.Invocation["invocation_id"] != "inv_123" {
+		t.Fatalf("backend invocation payload = %#v", summarizer.req.Invocation)
+	}
+	input, ok := summarizer.req.Invocation["input"].(map[string]any)
+	if !ok || input["path"] != "/tmp/a" {
+		t.Fatalf("backend invocation input = %#v", summarizer.req.Invocation["input"])
+	}
+	if svc.setID != "inv_123" || svc.setText != "Read /tmp/a and returned hello." {
+		t.Fatalf("SetSummary called with id=%q summary=%q", svc.setID, svc.setText)
+	}
+	var resp SummarizeInvocationResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.InvocationID != "inv_123" || resp.Summary != "Read /tmp/a and returned hello." {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func TestInvocationSignatureChangesWhenSummaryChanges(t *testing.T) {
+	now := time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
+	base := []invocation.InvocationResponse{{
+		InvocationID: "inv_123",
+		Status:       invocation.StatusSucceeded,
+		CompletedAt:  &now,
+	}}
+	withSummary := []invocation.InvocationResponse{{
+		InvocationID: "inv_123",
+		Status:       invocation.StatusSucceeded,
+		CompletedAt:  &now,
+		Summary:      "Read /tmp/a.",
+	}}
+
+	if invocationSignature(base) == invocationSignature(withSummary) {
+		t.Fatal("expected summary-only update to change invocation signature")
 	}
 }
 

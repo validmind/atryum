@@ -48,6 +48,10 @@ type mcpEnvelopeForwarder interface {
 	ForwardEnvelope(ctx context.Context, upstream mcp.Upstream, envelope mcp.Envelope, protocolVersion string) (mcp.ForwardResult, error)
 }
 
+type invocationSummarizer interface {
+	SummarizeInvocation(ctx context.Context, req backendclient.SummarizeInvocationRequest) (backendclient.SummarizeInvocationResponse, error)
+}
+
 type serverService interface {
 	List(ctx context.Context, filter mcp.ServerFilter) (ServerListResponse, error)
 	Get(ctx context.Context, name string) (AdminServer, error)
@@ -91,6 +95,7 @@ type Handler struct {
 	agentsRepo            agentsRepo
 	agentSyncSettingsRepo agentSyncSettingsRepo
 	backendClient         *backendclient.Client
+	summarizeClient       invocationSummarizer
 	syncAgentsFn          func(ctx context.Context) error
 	forwarder             mcpEnvelopeForwarder
 	staticHTTP            http.Handler
@@ -364,7 +369,7 @@ func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Reg
 	if f, ok := svc.(mcpEnvelopeForwarder); ok {
 		forwarder = f
 	}
-	return &Handler{svc: svc, serverSvc: serverSvc, policyRegistry: policyRegistry, rulesRepo: rules, agentsRepo: agents, agentSyncSettingsRepo: agentSyncSettings, backendClient: bc, syncAgentsFn: syncAgents, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug}
+	return &Handler{svc: svc, serverSvc: serverSvc, policyRegistry: policyRegistry, rulesRepo: rules, agentsRepo: agents, agentSyncSettingsRepo: agentSyncSettings, backendClient: bc, summarizeClient: bc, syncAgentsFn: syncAgents, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug}
 }
 
 // SetAuthValidator installs the inbound auth validator. When non-nil, the
@@ -1269,7 +1274,7 @@ func (h *Handler) summarizeInvocation(w http.ResponseWriter, r *http.Request, id
 		return
 	}
 	h.debugf("summarizing invocation %s", id)
-	if h.backendClient == nil {
+	if h.summarizeClient == nil {
 		writeError(w, http.StatusServiceUnavailable, "backend not configured")
 		return
 	}
@@ -1320,7 +1325,7 @@ func (h *Handler) summarizeInvocation(w http.ResponseWriter, r *http.Request, id
 		}
 	}
 
-	resp, err := h.backendClient.SummarizeInvocation(r.Context(), backendclient.SummarizeInvocationRequest{
+	resp, err := h.summarizeClient.SummarizeInvocation(r.Context(), backendclient.SummarizeInvocationRequest{
 		ModelConfigCUID: modelConfigCUID,
 		OrgCUID:         orgCUID,
 		Invocation:      invMap,
@@ -1772,8 +1777,8 @@ type AgentSyncSettingsResponse struct {
 
 // AgentSyncSettingsInput is the JSON body accepted by PUT /admin/settings.
 type AgentSyncSettingsInput struct {
-	OrgCUID             string `json:"org_cuid"`
-	AgentRecordTypeSlug string `json:"agent_record_type_slug"`
+	OrgCUID              string `json:"org_cuid"`
+	AgentRecordTypeSlug  string `json:"agent_record_type_slug"`
 	ConstitutionFieldKey string `json:"constitution_field_key"`
 }
 
@@ -1790,8 +1795,8 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resp := AgentSyncSettingsResponse{
-			OrgCUID:             s.OrgCUID,
-			AgentRecordTypeSlug: s.AgentRecordTypeSlug,
+			OrgCUID:              s.OrgCUID,
+			AgentRecordTypeSlug:  s.AgentRecordTypeSlug,
 			ConstitutionFieldKey: s.ConstitutionFieldKey,
 		}
 		if !s.UpdatedAt.IsZero() {
@@ -2708,7 +2713,7 @@ func invocationSignature(items []invocation.InvocationResponse) string {
 		if item.CompletedAt != nil {
 			completed = item.CompletedAt.UTC().Format(time.RFC3339Nano)
 		}
-		parts = append(parts, item.InvocationID+"|"+string(item.Status)+"|"+completed)
+		parts = append(parts, item.InvocationID+"|"+string(item.Status)+"|"+completed+"|"+item.Summary)
 	}
 	return strings.Join(parts, ",")
 }

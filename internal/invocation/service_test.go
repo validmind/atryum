@@ -192,6 +192,62 @@ func TestServerStatusPersistsAfterUpdate(t *testing.T) {
 	}
 }
 
+func TestSetSummaryPersistsSummaryAndRecordsEvent(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := store.InitDB(db); err != nil {
+		t.Fatal(err)
+	}
+	invRepo := store.NewInvocationRepo(db)
+	eventRepo := store.NewEventRepo(db)
+	service := invocation.NewService(invRepo, eventRepo, nil, nil, policy.AlwaysApproveProvider{}, 5*time.Second, nil, nil, nil, nil)
+	now := time.Now().UTC()
+	inv := invocation.Invocation{
+		InvocationID: "inv-summary",
+		Tool:         "read_file",
+		Upstream:     "demo",
+		Status:       invocation.StatusSucceeded,
+		Input:        []byte(`{"path":"/tmp/a"}`),
+		SubmittedAt:  now,
+		CompletedAt:  &now,
+	}
+	if err := invRepo.Create(context.Background(), inv); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := service.SetSummary(context.Background(), "inv-summary", "Read /tmp/a.")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if resp.InvocationID != "inv-summary" || resp.Summary != "Read /tmp/a." {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+	stored, err := invRepo.Get(context.Background(), "inv-summary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Summary == nil || *stored.Summary != "Read /tmp/a." {
+		t.Fatalf("stored summary = %#v", stored.Summary)
+	}
+	events, err := service.Events(context.Background(), "inv-summary", invocation.EventListFilter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events.Items) != 1 {
+		t.Fatalf("expected one event, got %d", len(events.Items))
+	}
+	if events.Items[0].Type != "invocation.summarized" {
+		t.Fatalf("event type = %q", events.Items[0].Type)
+	}
+	if !jsonContains(events.Items[0].Data, `"summary":"Read /tmp/a."`) {
+		t.Fatalf("event payload = %s", string(events.Items[0].Data))
+	}
+}
+
 func newTestService(t *testing.T, cfg config.Config) *invocation.Service {
 	t.Helper()
 	db, err := sql.Open("sqlite", ":memory:")
