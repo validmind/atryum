@@ -1279,16 +1279,16 @@ func (h *Handler) summarizeInvocation(w http.ResponseWriter, r *http.Request, id
 		return
 	}
 
+	// Body is optional; when present it may override the model config from
+	// settings. Empty body or empty model_config_cuid means "use settings".
 	var req SummarizeInvocationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json")
-		return
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
 	}
 	modelConfigCUID := strings.TrimSpace(req.ModelConfigCUID)
-	if modelConfigCUID == "" {
-		writeError(w, http.StatusBadRequest, "model_config_cuid is required")
-		return
-	}
 
 	inv, err := h.svc.Get(r.Context(), id)
 	if err != nil {
@@ -1320,9 +1320,17 @@ func (h *Handler) summarizeInvocation(w http.ResponseWriter, r *http.Request, id
 	if h.agentSyncSettingsRepo != nil {
 		if s, sErr := h.agentSyncSettingsRepo.Get(r.Context()); sErr == nil {
 			orgCUID = s.OrgCUID
+			if modelConfigCUID == "" {
+				modelConfigCUID = strings.TrimSpace(s.SummaryModelConfigCUID)
+			}
 		} else {
 			log.Printf("[summarizeInvocation] read agent_sync_settings failed: %v", sErr)
 		}
+	}
+
+	if modelConfigCUID == "" {
+		writeError(w, http.StatusBadRequest, "summary model configuration is not set; configure one on the Settings page")
+		return
 	}
 
 	resp, err := h.summarizeClient.SummarizeInvocation(r.Context(), backendclient.SummarizeInvocationRequest{
@@ -1768,18 +1776,20 @@ func (h *Handler) adminModelConfigs(w http.ResponseWriter, r *http.Request) {
 // and PUT /admin/settings. SyncError is non-empty when the post-save agent
 // sync failed; settings are persisted regardless.
 type AgentSyncSettingsResponse struct {
-	OrgCUID              string `json:"org_cuid"`
-	AgentRecordTypeSlug  string `json:"agent_record_type_slug"`
-	ConstitutionFieldKey string `json:"constitution_field_key"`
-	UpdatedAt            string `json:"updated_at,omitempty"`
-	SyncError            string `json:"sync_error,omitempty"`
+	OrgCUID                string `json:"org_cuid"`
+	AgentRecordTypeSlug    string `json:"agent_record_type_slug"`
+	ConstitutionFieldKey   string `json:"constitution_field_key"`
+	SummaryModelConfigCUID string `json:"summary_model_config_cuid"`
+	UpdatedAt              string `json:"updated_at,omitempty"`
+	SyncError              string `json:"sync_error,omitempty"`
 }
 
 // AgentSyncSettingsInput is the JSON body accepted by PUT /admin/settings.
 type AgentSyncSettingsInput struct {
-	OrgCUID              string `json:"org_cuid"`
-	AgentRecordTypeSlug  string `json:"agent_record_type_slug"`
-	ConstitutionFieldKey string `json:"constitution_field_key"`
+	OrgCUID                string `json:"org_cuid"`
+	AgentRecordTypeSlug    string `json:"agent_record_type_slug"`
+	ConstitutionFieldKey   string `json:"constitution_field_key"`
+	SummaryModelConfigCUID string `json:"summary_model_config_cuid"`
 }
 
 func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
@@ -1795,9 +1805,10 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resp := AgentSyncSettingsResponse{
-			OrgCUID:              s.OrgCUID,
-			AgentRecordTypeSlug:  s.AgentRecordTypeSlug,
-			ConstitutionFieldKey: s.ConstitutionFieldKey,
+			OrgCUID:                s.OrgCUID,
+			AgentRecordTypeSlug:    s.AgentRecordTypeSlug,
+			ConstitutionFieldKey:   s.ConstitutionFieldKey,
+			SummaryModelConfigCUID: s.SummaryModelConfigCUID,
 		}
 		if !s.UpdatedAt.IsZero() {
 			resp.UpdatedAt = s.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z")
@@ -1824,9 +1835,10 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if err := h.agentSyncSettingsRepo.Save(r.Context(), store.AgentSyncSettings{
-			OrgCUID:              input.OrgCUID,
-			AgentRecordTypeSlug:  input.AgentRecordTypeSlug,
-			ConstitutionFieldKey: input.ConstitutionFieldKey,
+			OrgCUID:                input.OrgCUID,
+			AgentRecordTypeSlug:    input.AgentRecordTypeSlug,
+			ConstitutionFieldKey:   input.ConstitutionFieldKey,
+			SummaryModelConfigCUID: input.SummaryModelConfigCUID,
 		}); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to save settings: "+err.Error())
 			return
@@ -1848,10 +1860,11 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		log.Printf("[adminSettings] GET after save: org_cuid=%q record_type=%q", s.OrgCUID, s.AgentRecordTypeSlug)
 		resp := AgentSyncSettingsResponse{
-			OrgCUID:              s.OrgCUID,
-			AgentRecordTypeSlug:  s.AgentRecordTypeSlug,
-			ConstitutionFieldKey: s.ConstitutionFieldKey,
-			SyncError:            syncErr,
+			OrgCUID:                s.OrgCUID,
+			AgentRecordTypeSlug:    s.AgentRecordTypeSlug,
+			ConstitutionFieldKey:   s.ConstitutionFieldKey,
+			SummaryModelConfigCUID: s.SummaryModelConfigCUID,
+			SyncError:              syncErr,
 		}
 		if !s.UpdatedAt.IsZero() {
 			resp.UpdatedAt = s.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z")
