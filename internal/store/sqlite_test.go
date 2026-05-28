@@ -758,9 +758,10 @@ func TestAgentSyncSettingsRepo_UpsertOnEmptyTable(t *testing.T) {
 
 	// Save should create the row
 	err = repo.Save(ctx, AgentSyncSettings{
-		OrgCUID:              "org-abc",
-		AgentRecordTypeSlug:  "ai-agents",
-		ConstitutionFieldKey: "constitution",
+		OrgCUID:                "org-abc",
+		AgentRecordTypeSlug:    "ai-agents",
+		ConstitutionFieldKey:   "constitution",
+		SummaryModelConfigCUID: "model-abc",
 	})
 	if err != nil {
 		t.Fatalf("Save: %v", err)
@@ -776,5 +777,8 @@ func TestAgentSyncSettingsRepo_UpsertOnEmptyTable(t *testing.T) {
 	}
 	if s.AgentRecordTypeSlug != "ai-agents" {
 		t.Fatalf("expected AgentRecordTypeSlug=ai-agents, got %q", s.AgentRecordTypeSlug)
+	}
+	if s.SummaryModelConfigCUID != "model-abc" {
+		t.Fatalf("expected SummaryModelConfigCUID=model-abc, got %q", s.SummaryModelConfigCUID)
 	}
 }

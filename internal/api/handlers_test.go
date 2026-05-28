@@ -142,6 +142,19 @@ func (s *stubSummarizer) SummarizeInvocation(_ context.Context, req backendclien
 	return s.resp, s.err
 }
 
+type stubAgentSyncSettingsRepo struct {
+	settings store.AgentSyncSettings
+}
+
+func (s *stubAgentSyncSettingsRepo) Get(context.Context) (store.AgentSyncSettings, error) {
+	return s.settings, nil
+}
+
+func (s *stubAgentSyncSettingsRepo) Save(_ context.Context, settings store.AgentSyncSettings) error {
+	s.settings = settings
+	return nil
+}
+
 func TestMCPInitializeNegotiatesProtocolVersion(t *testing.T) {
 	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}`))
@@ -214,6 +227,44 @@ func TestSummarizeInvocationPersistsBackendSummary(t *testing.T) {
 	}
 	if resp.InvocationID != "inv_123" || resp.Summary != "Read /tmp/a and returned hello." {
 		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func TestSummarizeInvocationUsesSettingsModelConfigWhenRequestBodyEmpty(t *testing.T) {
+	now := time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
+	svc := &stubService{invoke: invocation.InvocationResponse{
+		InvocationID: "inv_123",
+		ServerName:   "demo",
+		ToolName:     "read_file",
+		Status:       invocation.StatusSucceeded,
+		Input:        json.RawMessage(`{"path":"/tmp/a"}`),
+		Result:       json.RawMessage(`{"content":"hello"}`),
+		SubmittedAt:  now,
+		CompletedAt:  &now,
+	}}
+	settings := &stubAgentSyncSettingsRepo{settings: store.AgentSyncSettings{
+		OrgCUID:                "org_abc",
+		SummaryModelConfigCUID: " model_from_settings ",
+	}}
+	summarizer := &stubSummarizer{resp: backendclient.SummarizeInvocationResponse{Summary: "Read /tmp/a."}}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, settings, nil, nil)
+	h.summarizeClient = summarizer
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/invocations/inv_123/summarize", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if summarizer.req.ModelConfigCUID != "model_from_settings" {
+		t.Fatalf("model_config_cuid = %q", summarizer.req.ModelConfigCUID)
+	}
+	if summarizer.req.OrgCUID != "org_abc" {
+		t.Fatalf("org_cuid = %q", summarizer.req.OrgCUID)
+	}
+	if svc.setID != "inv_123" || svc.setText != "Read /tmp/a." {
+		t.Fatalf("SetSummary called with id=%q summary=%q", svc.setID, svc.setText)
 	}
 }
 
