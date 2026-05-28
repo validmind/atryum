@@ -53,10 +53,12 @@ type ModelConfigsResponse struct {
 }
 
 type Client struct {
-	baseURL       string
-	machineKey    string
-	machineSecret string
-	httpClient    *http.Client
+	baseURL        string
+	machineKey     string
+	machineSecret  string
+	httpClient     *http.Client
+	// evaluateClient uses a longer timeout suitable for LLM completion calls.
+	evaluateClient *http.Client
 }
 
 func NewClient(cfg config.BackendConfig) (*Client, error) {
@@ -72,10 +74,11 @@ func NewClient(cfg config.BackendConfig) (*Client, error) {
 	}
 
 	return &Client{
-		baseURL:       strings.TrimRight(baseURL, "/"),
-		machineKey:    strings.TrimSpace(cfg.MachineKey),
-		machineSecret: strings.TrimSpace(cfg.MachineSecret),
-		httpClient:    &http.Client{Timeout: time.Duration(cfg.ConnectionTimeoutSecs) * time.Second},
+		baseURL:        strings.TrimRight(baseURL, "/"),
+		machineKey:     strings.TrimSpace(cfg.MachineKey),
+		machineSecret:  strings.TrimSpace(cfg.MachineSecret),
+		httpClient:     &http.Client{Timeout: time.Duration(cfg.ConnectionTimeoutSecs) * time.Second},
+		evaluateClient: &http.Client{Timeout: time.Duration(cfg.EvaluateTimeoutSecs) * time.Second},
 	}, nil
 }
 
@@ -328,7 +331,7 @@ func (c *Client) EvaluateToolCall(ctx context.Context, req EvaluateRequest) (Eva
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
 
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := c.evaluateClient.Do(httpReq)
 	if err != nil {
 		return EvaluateResponse{}, fmt.Errorf("call evaluate endpoint: %w", err)
 	}

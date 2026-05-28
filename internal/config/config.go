@@ -33,6 +33,10 @@ type BackendConfig struct {
 	MachineKey            string `toml:"machine_key"`
 	MachineSecret         string `toml:"machine_secret"`
 	ConnectionTimeoutSecs int    `toml:"connection_timeout_seconds"`
+	// EvaluateTimeoutSecs is the HTTP timeout for /evaluate calls, which invoke
+	// an LLM and can take much longer than a normal API round-trip. Defaults to
+	// 120 seconds when unset or zero.
+	EvaluateTimeoutSecs int `toml:"evaluate_timeout_seconds"`
 }
 
 // AuthDebugConfig contains local-only auth debugging switches.
@@ -116,5 +120,13 @@ func (c *BackendConfig) ApplyEnv() {
 	}
 	if c.ConnectionTimeoutSecs <= 0 {
 		c.ConnectionTimeoutSecs = 5
+	}
+	if value := os.Getenv("ATRYUM_BACKEND_EVALUATE_TIMEOUT_SECONDS"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			c.EvaluateTimeoutSecs = parsed
+		}
+	}
+	if c.EvaluateTimeoutSecs <= 0 {
+		c.EvaluateTimeoutSecs = 120
 	}
 }
