@@ -33,14 +33,17 @@ type rulesStore interface {
 	ListApprovalRules(ctx context.Context) ([]ApprovalRule, error)
 }
 
-// matchRule returns the first enabled rule that matches the given invocation
-// parameters, or nil if no rule matches (fall back to human approval).
-// The agentID is the authenticated agent identity (empty when auth is
-// disabled — callers fall back to request_id for parity with pre-auth behavior).
+// matchRules returns all enabled rules that match the given invocation parameters,
+// preserving their stored order (priority order). Callers iterate through the slice
+// and stop at the first rule that produces a final verdict; an empty slice means no
+// rule matches and the caller should fall back to the global policy.
+//
+// The agentID is the authenticated agent identity (empty when auth is disabled —
+// callers fall back to request_id for parity with pre-auth behavior).
 // The agentCUID is the Atryum-local agent record CUID used by ai_evaluation rules.
-func matchRule(rules []ApprovalRule, server, tool, agentID, agentCUID string) *ApprovalRule {
-	for i := range rules {
-		r := &rules[i]
+func matchRules(rules []ApprovalRule, server, tool, agentID, agentCUID string) []ApprovalRule {
+	var matched []ApprovalRule
+	for _, r := range rules {
 		if !r.Enabled {
 			continue
 		}
@@ -56,9 +59,9 @@ func matchRule(rules []ApprovalRule, server, tool, agentID, agentCUID string) *A
 		if !matchAgentCUIDs(r.AgentCUIDs, agentCUID) {
 			continue
 		}
-		return r
+		matched = append(matched, r)
 	}
-	return nil
+	return matched
 }
 
 // matchAgentCUIDs returns true when cuids is empty (match all) or contains agentCUID.

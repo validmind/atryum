@@ -32,6 +32,20 @@
 - {Condition requiring human review or escalation}
 - {Condition requiring human review or escalation}
 
+### Human approval required when
+<!-- The LLM-as-judge will route the invocation to the human approval queue
+     when any of these conditions are met. Remove this section if every
+     case is fully handled by the permission tiers below. -->
+- {Condition that requires a human sign-off before the tool call executes}
+- {Condition that requires a human sign-off before the tool call executes}
+
+### Defer to next rule when
+<!-- The LLM-as-judge will pass evaluation to the next matching approval rule
+     when any of these conditions are met, rather than making a final decision.
+     Use sparingly — prefer explicit approve/deny/human-approval tiers. -->
+- {Condition where this constitution has no opinion and should defer}
+- {Condition where this constitution has no opinion and should defer}
+
 ---
 
 ## Permissions

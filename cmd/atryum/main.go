@@ -236,7 +236,7 @@ func (e *evaluatorAdapter) EvaluateToolCall(ctx context.Context, req invocation.
 	if err != nil {
 		return invocation.EvaluateResponse{}, err
 	}
-	return invocation.EvaluateResponse{Approved: resp.Approved, Reason: resp.Reason}, nil
+	return invocation.EvaluateResponse{Verdict: resp.Verdict, Reason: resp.Reason}, nil
 }
 
 func truthyEnv(name string) bool {
