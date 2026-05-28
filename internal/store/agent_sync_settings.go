@@ -48,11 +48,16 @@ func (r *AgentSyncSettingsRepo) Get(ctx context.Context) (AgentSyncSettings, err
 		Where(sq.Eq{"id": 1}).
 		ToSql()
 	if err != nil {
+		log.Printf("[agent_sync_settings] Get: build query error: %v", err)
 		return AgentSyncSettings{}, fmt.Errorf("build agent_sync_settings select: %w", err)
 	}
 	s, err := scanAgentSyncSettings(r.db.QueryRowContext(ctx, query, args...))
 	if err == sql.ErrNoRows {
+		log.Printf("[agent_sync_settings] Get: no settings configured yet")
 		return AgentSyncSettings{}, nil
+	}
+	if err != nil {
+		log.Printf("[agent_sync_settings] Get: scan error: %v", err)
 	}
 	return s, err
 }
