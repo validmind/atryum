@@ -47,4 +47,7 @@ connection_timeout_seconds = 7
 	if cfg.Backend.ConnectionTimeoutSecs != 7 {
 		t.Fatalf("Backend.ConnectionTimeoutSecs = %d", cfg.Backend.ConnectionTimeoutSecs)
 	}
+	if cfg.Defaults.ApprovalReuseWindowSeconds != 10 {
+		t.Fatalf("Defaults.ApprovalReuseWindowSeconds = %d", cfg.Defaults.ApprovalReuseWindowSeconds)
+	}
 }

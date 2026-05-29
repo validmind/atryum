@@ -34,6 +34,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
+	if cfg.Defaults.ApprovalReuseWindowSeconds <= 0 {
+		log.Printf("WARNING: defaults.approval_reuse_window_seconds must be greater than 0; got %d, using the default approval reuse window", cfg.Defaults.ApprovalReuseWindowSeconds)
+	}
 	backendClient, err := backendclient.NewClient(cfg.Backend)
 	if err != nil {
 		log.Fatalf("backend config: %v", err)

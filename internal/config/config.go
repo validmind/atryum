@@ -96,7 +96,8 @@ func Load(path string) (Config, error) {
 			ConnectionTimeoutSecs: 5,
 		},
 		Defaults: DefaultsConfig{
-			RequestTimeoutSeconds: 30,
+			RequestTimeoutSeconds:      30,
+			ApprovalReuseWindowSeconds: 10,
 		},
 	}
 	_, err := toml.DecodeFile(path, &cfg)
