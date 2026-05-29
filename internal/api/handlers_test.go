@@ -155,6 +155,34 @@ func (s *stubAgentSyncSettingsRepo) Save(_ context.Context, settings store.Agent
 	return nil
 }
 
+type stubAgentsRepo struct {
+	records []store.AgentRecord
+	err     error
+}
+
+func (s *stubAgentsRepo) List(context.Context) ([]store.AgentRecord, error) {
+	return s.records, s.err
+}
+func (s *stubAgentsRepo) ListEnabled(context.Context) ([]store.AgentRecord, error) {
+	var out []store.AgentRecord
+	for _, r := range s.records {
+		if r.Enabled {
+			out = append(out, r)
+		}
+	}
+	return out, s.err
+}
+func (s *stubAgentsRepo) Get(context.Context, string) (store.AgentRecord, error) {
+	return store.AgentRecord{}, nil
+}
+func (s *stubAgentsRepo) UpdateEnabled(context.Context, string, bool) error { return nil }
+func (s *stubAgentsRepo) UpdateAgentIDs(context.Context, string, string) error {
+	return nil
+}
+func (s *stubAgentsRepo) DeleteAll(context.Context) error {
+	return nil
+}
+
 func TestMCPInitializeNegotiatesProtocolVersion(t *testing.T) {
 	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}`))
@@ -181,6 +209,38 @@ func TestMCPInitializeNegotiatesProtocolVersion(t *testing.T) {
 	instructions, ok := result["instructions"].(string)
 	if !ok || !strings.Contains(instructions, "atryum.rules.get") {
 		t.Fatalf("expected initialize instructions to mention atryum.rules.get, got %#v", result["instructions"])
+	}
+}
+
+func TestAgentIDsUsesAgentsTable(t *testing.T) {
+	agents := &stubAgentsRepo{records: []store.AgentRecord{
+		{ID: "agent_a", AgentIDs: `["worker-1","worker-2","worker-1",""]`, Enabled: true},
+		{ID: "agent_b", AgentIDs: `["disabled-worker"]`, Enabled: false},
+		{ID: "agent_c", AgentIDs: `[" worker-3 "]`, Enabled: true},
+	}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, agents, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/agent_ids", nil)
+	w := httptest.NewRecorder()
+
+	h.agentIDs(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Items []string `json:"items"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"worker-1", "worker-2", "worker-3"}
+	if len(resp.Items) != len(want) {
+		t.Fatalf("expected %v, got %v", want, resp.Items)
+	}
+	for i := range want {
+		if resp.Items[i] != want[i] {
+			t.Fatalf("expected %v, got %v", want, resp.Items)
+		}
 	}
 }
 

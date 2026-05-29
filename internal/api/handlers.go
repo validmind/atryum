@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -76,6 +77,7 @@ type rulesRepo interface {
 
 type agentsRepo interface {
 	List(ctx context.Context) ([]store.AgentRecord, error)
+	ListEnabled(ctx context.Context) ([]store.AgentRecord, error)
 	Get(ctx context.Context, id string) (store.AgentRecord, error)
 	UpdateEnabled(ctx context.Context, id string, enabled bool) error
 	UpdateAgentIDs(ctx context.Context, id string, agentIDs string) error
@@ -776,22 +778,44 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 	}
 }
 
-// agentIDs returns the distinct agent IDs that have submitted invocations.
+// agentIDs returns the distinct enabled agent IDs configured on synced agents.
 // Protected by the API key middleware.
 func (h *Handler) agentIDs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	ids, err := h.svc.ListAgentIDs(r.Context())
+	if h.agentsRepo == nil {
+		writeError(w, http.StatusServiceUnavailable, "agents repository not configured")
+		return
+	}
+	records, err := h.agentsRepo.ListEnabled(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if ids == nil {
-		ids = []string{}
-	}
+	ids := agentIDsFromRecords(records)
 	writeJSON(w, http.StatusOK, map[string]any{"items": ids})
+}
+
+func agentIDsFromRecords(records []store.AgentRecord) []string {
+	seen := make(map[string]struct{})
+	ids := []string{}
+	for _, record := range records {
+		for _, id := range parseAgentIDs(record.AgentIDs) {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // invocationsByAgentID returns a paginated list of invocations for the given
