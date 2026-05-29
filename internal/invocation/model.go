@@ -20,12 +20,13 @@ const (
 )
 
 type Approval struct {
-	Status     string  `json:"status"`
-	RequestID  *string `json:"request_id,omitempty"`
-	ExpiresAt  *string `json:"expires_at,omitempty"`
-	Reason     *string `json:"reason,omitempty"`
-	ActorID    *string `json:"actor_id,omitempty"`
-	DecisionAt *string `json:"decision_at,omitempty"`
+	Status          string   `json:"status"`
+	RequestID       *string  `json:"request_id,omitempty"`
+	ExpiresAt       *string  `json:"expires_at,omitempty"`
+	Reason          *string  `json:"reason,omitempty"`
+	ActorID         *string  `json:"actor_id,omitempty"`
+	DecisionAt      *string  `json:"decision_at,omitempty"`
+	ConfidenceScore *float64 `json:"confidence_score,omitempty"`
 }
 
 type Invocation struct {
@@ -99,7 +100,8 @@ type ExternalSubmitRequest struct {
 
 // ExternalExecutionUpdate is sent by the external executor to report on a
 // pending or completed run. ExecutionStatus is one of:
-//   running | completed | failed | cancelled
+//
+//	running | completed | failed | cancelled
 type ExternalExecutionUpdate struct {
 	ExecutionStatus string          `json:"execution_status"`
 	Result          json.RawMessage `json:"result,omitempty"`

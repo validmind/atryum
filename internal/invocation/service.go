@@ -46,6 +46,14 @@ func humanDecisionStatus(current *Approval, approved bool) string {
 	return "denied"
 }
 
+func newApproval(status, reason string, confidence *float64) *Approval {
+	return &Approval{
+		Status:          status,
+		Reason:          stringPtr(reason),
+		ConfidenceScore: confidence,
+	}
+}
+
 // AgentLookup is the minimal interface required by the invocation service to
 // resolve an agent's VM CUID from its runtime agent ID.
 type AgentLookup interface {
@@ -90,8 +98,9 @@ type EvaluateRequest struct {
 // EvaluateResponse mirrors backend.EvaluateResponse.
 // Verdict is one of: "approved", "denied", "human_approval", "next_rule".
 type EvaluateResponse struct {
-	Verdict string `json:"verdict"`
-	Reason  string `json:"reason"`
+	Verdict    string   `json:"verdict"`
+	Reason     string   `json:"reason"`
+	Confidence *float64 `json:"confidence,omitempty"`
 }
 
 type approvalDecision struct {
@@ -125,17 +134,17 @@ type upstreamClient interface {
 }
 
 type Service struct {
-	invocations   invocationRepo
-	events        eventRepo
-	resolver      resolver
-	client        upstreamClient
-	policy        policy.Provider
-	rules         rulesStore // nil = no rule evaluation
-	agents        AgentLookup
-	evaluator     EvaluatorClient
-	syncSettings  SyncSettingsProvider // nil = no constitution lookup
-	defaultTimeout time.Duration
-	mu             sync.Mutex
+	invocations      invocationRepo
+	events           eventRepo
+	resolver         resolver
+	client           upstreamClient
+	policy           policy.Provider
+	rules            rulesStore // nil = no rule evaluation
+	agents           AgentLookup
+	evaluator        EvaluatorClient
+	syncSettings     SyncSettingsProvider // nil = no constitution lookup
+	defaultTimeout   time.Duration
+	mu               sync.Mutex
 	pendingApprovals map[string]chan approvalDecision
 }
 
@@ -219,6 +228,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	// Both resolve to a policy.Decision so the rest of the flow is uniform.
 	var decision policy.Decision
 	var matchedRuleID *string
+	var aiConfidence *float64
 	ruleMatched := false
 	if s.rules != nil {
 		if approvalRules, err := s.rules.ListApprovalRules(ctx); err == nil {
@@ -239,7 +249,11 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 				case RuleActionAutoApprove:
 					decision = policy.Decision{Disposition: policy.DispositionAuto, Reason: "matched approval rule (auto_approve)"}
 				case RuleActionAIEvaluation:
-					decision = s.runAIEvaluation(ctx, &r, upstream.Name, req.Tool, req.Input, agentID)
+					var conf *float64
+					decision, conf = s.runAIEvaluation(ctx, &r, upstream.Name, req.Tool, req.Input, agentID)
+					if decision.Disposition != dispositionContinue {
+						aiConfidence = conf
+					}
 				default:
 					decision = policy.Decision{Disposition: policy.DispositionHuman, Reason: "matched approval rule (human_approval)"}
 				}
@@ -268,7 +282,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	if decision.Disposition == policy.DispositionHuman || decision.Disposition == policy.DispositionWorkflow || decision.Disposition == dispositionAIEscalated {
 		inv.MatchedRuleID = matchedRuleID
 		if decision.Disposition == dispositionAIEscalated {
-			inv.Approval = &Approval{Status: "ai_escalated", Reason: stringPtr(decision.Reason)}
+			inv.Approval = newApproval("ai_escalated", decision.Reason, aiConfidence)
 		}
 		_ = s.invocations.UpdateResult(ctx, inv)
 	}
@@ -291,9 +305,9 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 
 	switch decision.Disposition {
 	case policy.DispositionNever:
-		return s.denyByPolicy(ctx, inv, decision.Reason)
+		return s.denyByPolicy(ctx, inv, decision.Reason, aiConfidence)
 	case policy.DispositionAuto:
-		return s.executeNow(ctx, inv, upstream, req, decision.Reason)
+		return s.executeNow(ctx, inv, upstream, req, decision.Reason, aiConfidence)
 	default:
 		// DispositionHuman, DispositionWorkflow, and dispositionAIEscalated all gate
 		// on a human decision. AI-escalated invocations are already tagged on inv.Approval
@@ -322,11 +336,11 @@ func (s *Service) resolveAgentRecord(ctx context.Context, agentID string) AgentR
 // runAIEvaluation calls the VM backend's evaluate endpoint and translates the
 // LLM verdict into a policy.Decision. On any error or if the evaluator is not
 // configured, it falls back to DispositionHuman so no invocation is silently lost.
-func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serverName, toolName string, toolArgs map[string]any, agentID string) policy.Decision {
+func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serverName, toolName string, toolArgs map[string]any, agentID string) (policy.Decision, *float64) {
 	if s.evaluator == nil {
 		slog.Warn("ai_evaluation rule matched but no evaluator configured; falling back to human_approval",
 			"rule_id", rule.ID, "tool", toolName, "server", serverName)
-		return policy.Decision{Disposition: policy.DispositionHuman, Reason: "ai_evaluation: evaluator not configured (falling back to human_approval)"}
+		return policy.Decision{Disposition: policy.DispositionHuman, Reason: "ai_evaluation: evaluator not configured (falling back to human_approval)"}, nil
 	}
 
 	// Resolve the agent's VM CUID and org CUID so the constitution can be
@@ -374,7 +388,7 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 	if err != nil {
 		slog.Error("ai_evaluation: LLM evaluation failed; falling back to human_approval",
 			"rule_id", rule.ID, "tool", toolName, "error", err)
-		return policy.Decision{Disposition: policy.DispositionHuman, Reason: "ai_evaluation: LLM call failed (falling back to human_approval)"}
+		return policy.Decision{Disposition: policy.DispositionHuman, Reason: "ai_evaluation: LLM call failed (falling back to human_approval)"}, nil
 	}
 
 	slog.Info("ai_evaluation: result",
@@ -384,26 +398,27 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 		"tool", toolName,
 		"agent_id", agentID,
 		"reason", resp.Reason,
+		"confidence", resp.Confidence,
 	)
 
 	switch resp.Verdict {
 	case "approved":
-		return policy.Decision{Disposition: policy.DispositionAuto, Reason: "ai_evaluation approved: " + resp.Reason}
+		return policy.Decision{Disposition: policy.DispositionAuto, Reason: "ai_evaluation approved: " + resp.Reason}, resp.Confidence
 	case "denied":
-		return policy.Decision{Disposition: policy.DispositionNever, Reason: "ai_evaluation denied: " + resp.Reason}
+		return policy.Decision{Disposition: policy.DispositionNever, Reason: "ai_evaluation denied: " + resp.Reason}, resp.Confidence
 	case "human_approval":
-		return policy.Decision{Disposition: dispositionAIEscalated, Reason: "ai_evaluation requires human approval: " + resp.Reason}
+		return policy.Decision{Disposition: dispositionAIEscalated, Reason: "ai_evaluation requires human approval: " + resp.Reason}, resp.Confidence
 	default: // "next_rule" or any unrecognised value
-		return policy.Decision{Disposition: dispositionContinue, Reason: "ai_evaluation deferred to next rule: " + resp.Reason}
+		return policy.Decision{Disposition: dispositionContinue, Reason: "ai_evaluation deferred to next rule: " + resp.Reason}, resp.Confidence
 	}
 }
 
 // denyByPolicy hard-denies the call without execution.
-func (s *Service) denyByPolicy(ctx context.Context, inv Invocation, reason string) (InvocationResponse, error) {
+func (s *Service) denyByPolicy(ctx context.Context, inv Invocation, reason string, confidence *float64) (InvocationResponse, error) {
 	completed := time.Now().UTC()
 	inv.Status = StatusDenied
 	inv.CompletedAt = &completed
-	inv.Approval = &Approval{Status: "auto_denied", Reason: stringPtr(reason)}
+	inv.Approval = newApproval("auto_denied", reason, confidence)
 	msg := "Tool call hard-denied by policy."
 	if reason != "" {
 		msg += " Reason: " + reason
@@ -420,9 +435,9 @@ func (s *Service) denyByPolicy(ctx context.Context, inv Invocation, reason strin
 }
 
 // executeNow runs the tool call immediately without waiting for human approval.
-func (s *Service) executeNow(ctx context.Context, inv Invocation, upstream mcp.Upstream, req CreateInvocationRequest, reason string) (InvocationResponse, error) {
+func (s *Service) executeNow(ctx context.Context, inv Invocation, upstream mcp.Upstream, req CreateInvocationRequest, reason string, confidence *float64) (InvocationResponse, error) {
 	inv.Status = StatusExecuting
-	inv.Approval = &Approval{Status: "auto_approved", Reason: stringPtr(reason)}
+	inv.Approval = newApproval("auto_approved", reason, confidence)
 	if err := s.invocations.UpdateResult(ctx, inv); err != nil {
 		return InvocationResponse{}, err
 	}
@@ -461,7 +476,7 @@ func (s *Service) waitForHumanApproval(ctx context.Context, inv Invocation, upst
 		Payload: mustJSON(map[string]any{
 			"tool": req.Tool, "upstream": upstream.Name,
 			"request_id": req.RequestID,
-			"input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input),
+			"input":      json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input),
 		}),
 		CreatedAt: time.Now().UTC(),
 	})
@@ -669,6 +684,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	}
 	ruleAction := ""
 	var resolvedAIDecision *policy.Decision
+	var resolvedAIConfidence *float64
 	if s.rules != nil {
 		if approvalRules, err := s.rules.ListApprovalRules(ctx); err == nil {
 			user := agentID
@@ -678,7 +694,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 			for _, rule := range matchRules(approvalRules, source, req.Tool, user, agentRec.ID) {
 				r := rule
 				if r.Action == RuleActionAIEvaluation {
-					d := s.runAIEvaluation(ctx, &r, source, req.Tool, req.Input, agentID)
+					d, conf := s.runAIEvaluation(ctx, &r, source, req.Tool, req.Input, agentID)
 					if d.Disposition == dispositionContinue {
 						slog.Info("ai_evaluation: LLM deferred to next rule; continuing rule iteration",
 							"rule_id", r.ID, "server", source, "tool", req.Tool)
@@ -686,6 +702,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 					}
 					ruleAction = r.Action
 					resolvedAIDecision = &d
+					resolvedAIConfidence = conf
 					break
 				}
 				ruleAction = r.Action
@@ -740,7 +757,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		}
 		if aiDecision.Disposition == policy.DispositionAuto {
 			inv.Status = StatusApproved
-			inv.Approval = &Approval{Status: "auto_approved", Reason: stringPtr(aiDecision.Reason)}
+			inv.Approval = newApproval("auto_approved", aiDecision.Reason, resolvedAIConfidence)
 			if err := s.invocations.UpdateResult(ctx, inv); err != nil {
 				return InvocationResponse{}, err
 			}
@@ -751,7 +768,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 			completed := time.Now().UTC()
 			inv.Status = StatusDenied
 			inv.CompletedAt = &completed
-			inv.Approval = &Approval{Status: "auto_denied", Reason: stringPtr(aiDecision.Reason)}
+			inv.Approval = newApproval("auto_denied", aiDecision.Reason, resolvedAIConfidence)
 			inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": "Tool call denied by AI evaluation. Reason: " + aiDecision.Reason}}, "isError": true})
 			_ = s.invocations.UpdateResult(context.Background(), inv)
 			_ = s.events.Create(context.Background(), Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"reason": aiDecision.Reason, "disposition": "never"}), CreatedAt: completed})
@@ -760,7 +777,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		// Tag AI-escalated invocations before falling through to human approval so the
 		// UI can distinguish them from direct human_approval rules.
 		if aiDecision.Disposition == dispositionAIEscalated {
-			inv.Approval = &Approval{Status: "ai_escalated", Reason: stringPtr(aiDecision.Reason)}
+			inv.Approval = newApproval("ai_escalated", aiDecision.Reason, resolvedAIConfidence)
 		}
 		// Fall through to human approval for human_approval verdict or unexpected fallback.
 	}
