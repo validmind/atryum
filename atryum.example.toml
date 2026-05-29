@@ -37,9 +37,9 @@ request_timeout_seconds = 30
 # They no longer need to be configured here.
 
 # Static API key/secret pair that protects the read-only invocation reporting
-# endpoint (GET /invocations/{agent_id}). Callers must send both `X-API-Key`
-# and `X-API-Secret` headers matching these values. When either field is empty,
-# that endpoint refuses every request with 503.
+# endpoints (GET /invocations/{agent_id}, GET /agent_ids). Callers must send
+# both `X-API-Key` and `X-API-Secret` headers matching these values. When
+# either field is empty, those endpoints refuse every request with 503.
 [api_key]
 key = ""
 secret = ""
