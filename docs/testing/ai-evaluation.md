@@ -15,9 +15,17 @@ This guide walks through manually testing the AI Evaluation rule type end-to-end
 
 ## Step 1 — Configure `atryum.toml`
 
-You need three sections populated: `[[auth]]`, `[agent_sync]`, and `[ai_evaluation]`.
+`atryum.toml` only needs two sections for AI Evaluation: `[backend]` (ValidMind credentials) and `[[auth]]` (JWT validation). Agent sync and constitution settings have moved to the UI — see **Step 1b** below.
 
 ```toml
+# ValidMind backend connection (machine-user credentials).
+[backend]
+base_url       = "https://api.your-validmind-instance.ai"
+machine_key    = "<your-machine-key>"
+machine_secret = "<your-machine-secret>"
+connection_timeout_seconds = 5
+evaluate_timeout_seconds   = 120   # allow enough time for LLM evaluation
+
 # Validates bearer tokens issued by your IDP.
 # Add one [[auth]] block per issuer you want to accept.
 [[auth]]
@@ -28,27 +36,40 @@ audience       = "https://api.your-validmind-instance.ai"
 # jwks_url     = "https://your-tenant.us.auth0.com/.well-known/jwks.json"
 required_scope = ""
 agent_id_claim = "sub"   # claim that carries the agent's unique identity
-
-# Fetches active Inventory Model records from the backend at startup.
-[agent_sync]
-org_cuid               = "<your-org-cuid>"          # e.g. cl1gr2aiu000309ih76g9cvix
-agent_record_type_slug = "ai-agents"                # primary record type slug in VM
-
-# Tells Atryum which custom field on the Inventory Model holds the constitution.
-[ai_evaluation]
-constitution_field_key = "constitution"
 ```
+
+---
+
+## Step 1b — Configure Agent Sync in the UI
+
+The organization, record type, and constitution field are now configured in the Atryum UI under **Settings → Agent Record Sync**. This replaces the old `[agent_sync]` and `[ai_evaluation]` TOML sections.
+
+1. Open the Atryum UI and navigate to **Settings**.
+2. Under **Agent Record Sync**, fill in the three fields:
+
+   | Field | What to enter |
+   |---|---|
+   | **Organization** | Select the ValidMind organization whose agent records should be synced |
+   | **Record Type** | Select the primary record type that identifies agent inventory models (e.g. `ai-agents`) |
+   | **Constitution Field** | Select the custom field key on inventory models that stores the constitution text (e.g. `constitution`) |
+
+   The dropdowns are cascading — selecting an organization loads its record types; selecting a record type loads the custom fields available on that type.
+
+3. Click **Save Settings**. Atryum will immediately sync agent records from the selected org and record type and confirm with a toast notification.
+
+> **Note:** Changing the organization or record type deletes and re-syncs all agent records. Atryum will prompt you to confirm before proceeding.
+
 ---
 
 ## Step 2 — Restart Atryum
 
-Stop and restart the Atryum server. On startup it will:
+Stop and restart the Atryum server so it picks up the `atryum.toml` changes. On startup it will:
 
 1. Verify the backend connection using your machine-user credentials.
-2. Fetch all active Inventory Model records for the configured org and record type slug.
+2. Fetch all active Inventory Model records for the org and record type configured in Settings (Step 1b).
 3. Log each fetched agent: `agent cuid=… name="…" description="…"`.
 
-Confirm the agents appear in the startup log before proceeding.
+Confirm the agents appear in the startup log before proceeding. Agent sync settings saved in the UI persist across restarts — you do not need to re-enter them.
 
 ---
 
@@ -72,7 +93,65 @@ Atryum will now recognise bearer tokens issued for that user as belonging to thi
 
 ---
 
-## Step 5 — Create an AI Evaluation Approval Rule
+## Step 5 — Author the Agent Constitution
+
+The constitution is stored as a custom field (key = `constitution_field_key`) on the agent's Inventory Model in ValidMind. It is free-form Markdown, but the LLM-as-judge recognises the following sections to decide its verdict:
+
+### Permission tiers (tool-level)
+
+| Tier | Verdict | When to use |
+|------|---------|-------------|
+| **Auto** | `approved` | Low-risk, read-only actions the agent may perform silently |
+| **Approve** | `human_approval` | Risky or sensitive actions that require a human sign-off |
+| **Never** | `denied` | Prohibited actions — hard block, no exceptions |
+
+### `### Human approval required when`
+
+List conditions under which the LLM should route the invocation to the human approval queue instead of deciding automatically. The judge returns `human_approval` when any condition is met.
+
+```markdown
+### Human approval required when
+- The SQL query modifies data (INSERT, UPDATE, DELETE, DROP, …)
+- The request targets a table not explicitly listed in the constitution
+- The query returns more than 10,000 rows
+```
+
+### `### Defer to next rule when`
+
+List conditions under which the LLM should pass evaluation to the next matching approval rule rather than making a final decision. The judge returns `next_rule` when any condition is met. Use sparingly — prefer explicit tiers above.
+
+```markdown
+### Defer to next rule when
+- The tool is not a database tool (let downstream rules handle it)
+```
+
+### Constitution chain and precedence
+
+If the agent's Inventory Model has upstream dependencies, Atryum collects constitutions from the entire chain (most-upstream ancestor first, this agent last) and presents them all to the LLM. The judge applies these precedence rules:
+
+1. **Downstream wins**: later constitutions in the chain are more specific and override earlier ones when they conflict.
+2. **Explicit delegation is honoured**: if an upstream says "downstream constitutions may override this", a downstream grant (even conditional) replaces the upstream rule.
+3. **Most specific match first**: apply the innermost rule that covers the action; fall back to upstream only when no downstream constitution addresses it.
+4. **Grants override blanket denials**: a downstream "allow with human approval" beats an upstream "deny all".
+
+**Example:**
+
+```
+[Upstream agent]
+Deny all Postgres queries. Downstream constitutions may override this.
+
+---
+
+[This agent]
+### Human approval required when
+- The query is a read-only SELECT on the inventory_models table
+```
+
+Result: `human_approval` (downstream grant overrides upstream blanket denial).
+
+---
+
+## Step 6 — Create an AI Evaluation Approval Rule
 
 1. In the Atryum UI, go to **Rules** and click **New Rule**.
 2. Fill in the rule:
@@ -87,17 +166,28 @@ Atryum will now recognise bearer tokens issued for that user as belonging to thi
 
 3. Save the rule.
 
+### Chaining rules with `next_rule`
+
+You can stack multiple AI Evaluation rules in priority order. When the LLM returns `next_rule`, Atryum advances to the next matching rule rather than making a final decision. If all matching rules defer, the invocation falls back to human approval.
+
 ---
 
-## Step 6 — Trigger an Invocation and Observe the Evaluation
+## Step 7 — Trigger an Invocation and Observe the Evaluation
 
 Send a tool call through Atryum using a bearer token issued for the agent identity created in Step 3. The flow is:
 
 1. Atryum receives the invocation and matches it to the AI Evaluation rule.
 2. It resolves the agent's Inventory Model CUID and org CUID from the stored record.
 3. It calls `POST /internal/v1/atryum/evaluate` on the ValidMind backend with the agent details, constitution field key, and tool call context.
-4. The backend fetches the constitution from the Inventory Model's custom fields, builds a prompt, and asks the configured LLM to approve or deny.
-5. Atryum receives `{ approved, reason }` and either auto-approves (executes the tool) or auto-denies (returns an error to the caller).
+4. The backend fetches the constitution chain from the Inventory Model's custom fields, builds a prompt with precedence rules, and asks the configured LLM for a verdict.
+5. Atryum receives `{ verdict, reason }` and routes the invocation accordingly:
+
+   | Verdict | Disposition | UI outcome |
+   |---------|-------------|------------|
+   | `approved` | Auto-execute | `Succeeded` · **AI Evaluation** badge (purple) |
+   | `denied` | Hard deny | `Denied` · **AI Evaluation** badge (purple) |
+   | `human_approval` | Human queue | `Pending` · **AI Escalated** badge (yellow); after decision: **AI Escalated** + **Human** |
+   | `next_rule` | Continue to next rule | *(internal — not a final state)* |
 
 In the Atryum UI, open **Invocations** to see the outcome and the disposition reason logged against the invocation.
 
@@ -111,3 +201,5 @@ In the Atryum UI, open **Invocations** to see the outcome and the disposition re
 | Rule never matches | Agent IDs field is empty, the user's `sub` doesn't match `agent_id_claim`, or the bearer token is not being sent by the agent |
 | Evaluation falls back to `human_approval` | `constitution_field_key` doesn't match the custom field name in VM, or the LLM call failed (check logs) |
 | 403 from `/evaluate` | `org_cuid` in the request doesn't match the agent's organization in ValidMind |
+| Upstream deny overrides downstream grant | Backend not yet redeployed with the precedence-rules prompt update; check that `verdict` (not `approved`) is present in the `/evaluate` response |
+| `next_rule` never advances | Rules are not stacked in priority order, or the constitution does not contain a `### Defer to next rule when` section |

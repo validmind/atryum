@@ -928,7 +928,7 @@ func (h *Handler) annotateToolsWithPolicy(ctx context.Context, server string, to
 }
 
 // effectiveActionForTool returns the action of the first enabled rule that
-// matches (server, tool, agentID), mirroring invocation.matchRule semantics.
+// matches (server, tool, agentID), mirroring invocation.matchRules priority order.
 // When no rule matches, it returns RuleActionHumanApproval (the default).
 func effectiveActionForTool(rules []store.Rule, server, tool, agentID string) (string, string) {
 	for _, r := range rules {

@@ -303,9 +303,10 @@ type EvaluateRequest struct {
 }
 
 // EvaluateResponse is the result returned by the VM backend after LLM evaluation.
+// Verdict is one of: "approved", "denied", "human_approval", "next_rule".
 type EvaluateResponse struct {
-	Approved bool   `json:"approved"`
-	Reason   string `json:"reason"`
+	Verdict string `json:"verdict"`
+	Reason  string `json:"reason"`
 }
 
 // EvaluateToolCall calls the VM backend's evaluate endpoint and returns whether
