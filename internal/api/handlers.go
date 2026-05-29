@@ -41,10 +41,15 @@ type service interface {
 	Deny(ctx context.Context, invocationID string, message string) error
 	Submit(ctx context.Context, req invocation.ExternalSubmitRequest) (invocation.InvocationResponse, error)
 	RecordExecution(ctx context.Context, invocationID string, update invocation.ExternalExecutionUpdate) (invocation.InvocationResponse, error)
+	SetSummary(ctx context.Context, invocationID string, summary string) (invocation.InvocationResponse, error)
 }
 
 type mcpEnvelopeForwarder interface {
 	ForwardEnvelope(ctx context.Context, upstream mcp.Upstream, envelope mcp.Envelope, protocolVersion string) (mcp.ForwardResult, error)
+}
+
+type invocationSummarizer interface {
+	SummarizeInvocation(ctx context.Context, req backendclient.SummarizeInvocationRequest) (backendclient.SummarizeInvocationResponse, error)
 }
 
 type serverService interface {
@@ -90,6 +95,7 @@ type Handler struct {
 	agentsRepo            agentsRepo
 	agentSyncSettingsRepo agentSyncSettingsRepo
 	backendClient         *backendclient.Client
+	summarizeClient       invocationSummarizer
 	syncAgentsFn          func(ctx context.Context) error
 	forwarder             mcpEnvelopeForwarder
 	staticHTTP            http.Handler
@@ -363,7 +369,7 @@ func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Reg
 	if f, ok := svc.(mcpEnvelopeForwarder); ok {
 		forwarder = f
 	}
-	return &Handler{svc: svc, serverSvc: serverSvc, policyRegistry: policyRegistry, rulesRepo: rules, agentsRepo: agents, agentSyncSettingsRepo: agentSyncSettings, backendClient: bc, syncAgentsFn: syncAgents, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug}
+	return &Handler{svc: svc, serverSvc: serverSvc, policyRegistry: policyRegistry, rulesRepo: rules, agentsRepo: agents, agentSyncSettingsRepo: agentSyncSettings, backendClient: bc, summarizeClient: bc, syncAgentsFn: syncAgents, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug}
 }
 
 // SetAuthValidator installs the inbound auth validator. When non-nil, the
@@ -1170,6 +1176,16 @@ func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
+	if strings.HasSuffix(trimmed, "/summarize") {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id := strings.TrimSuffix(trimmed, "/summarize")
+		id = strings.TrimSuffix(id, "/")
+		h.summarizeInvocation(w, r, id)
+		return
+	}
 	if strings.HasSuffix(trimmed, "/deny") {
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -1234,6 +1250,113 @@ func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// SummarizeInvocationRequest is the JSON body accepted by
+// POST /api/v1/admin/invocations/{id}/summarize.
+type SummarizeInvocationRequest struct {
+	ModelConfigCUID string `json:"model_config_cuid"`
+}
+
+// SummarizeInvocationResponse is the JSON shape returned by
+// POST /api/v1/admin/invocations/{id}/summarize.
+type SummarizeInvocationResponse struct {
+	InvocationID string `json:"invocation_id"`
+	Summary      string `json:"summary"`
+}
+
+// summarizeInvocation loads the invocation by id, forwards it to the VM
+// backend's /summarize-invocation endpoint, and returns the LLM-generated
+// summary.
+func (h *Handler) summarizeInvocation(w http.ResponseWriter, r *http.Request, id string) {
+	if id == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	h.debugf("summarizing invocation %s", id)
+	if h.summarizeClient == nil {
+		writeError(w, http.StatusServiceUnavailable, "backend not configured")
+		return
+	}
+
+	// Body is optional; when present it may override the model config from
+	// settings. Empty body or empty model_config_cuid means "use settings".
+	var req SummarizeInvocationRequest
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+	}
+	modelConfigCUID := strings.TrimSpace(req.ModelConfigCUID)
+
+	inv, err := h.svc.Get(r.Context(), id)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if err == sql.ErrNoRows {
+			status = http.StatusNotFound
+		}
+		log.Printf("[summarizeInvocation] load invocation %s failed: %v", id, err)
+		writeError(w, status, err.Error())
+		return
+	}
+
+	// Round-trip via JSON so the backend sees the same shape as the admin
+	// detail endpoint (input/result/error are json.RawMessage on the wire).
+	raw, err := json.Marshal(inv)
+	if err != nil {
+		log.Printf("[summarizeInvocation] encode invocation %s failed: %v", id, err)
+		writeError(w, http.StatusInternalServerError, "failed to encode invocation: "+err.Error())
+		return
+	}
+	var invMap map[string]any
+	if err := json.Unmarshal(raw, &invMap); err != nil {
+		log.Printf("[summarizeInvocation] normalize invocation %s failed: %v", id, err)
+		writeError(w, http.StatusInternalServerError, "failed to normalize invocation: "+err.Error())
+		return
+	}
+
+	orgCUID := ""
+	if h.agentSyncSettingsRepo != nil {
+		if s, sErr := h.agentSyncSettingsRepo.Get(r.Context()); sErr == nil {
+			orgCUID = s.OrgCUID
+			if modelConfigCUID == "" {
+				modelConfigCUID = strings.TrimSpace(s.SummaryModelConfigCUID)
+			}
+		} else {
+			log.Printf("[summarizeInvocation] read agent_sync_settings failed: %v", sErr)
+		}
+	}
+
+	if modelConfigCUID == "" {
+		writeError(w, http.StatusBadRequest, "summary model configuration is not set; configure one on the Settings page")
+		return
+	}
+
+	resp, err := h.summarizeClient.SummarizeInvocation(r.Context(), backendclient.SummarizeInvocationRequest{
+		ModelConfigCUID: modelConfigCUID,
+		OrgCUID:         orgCUID,
+		Invocation:      invMap,
+	})
+	if err != nil {
+		log.Printf("[summarizeInvocation] backend call failed for invocation %s (model_config_cuid=%s): %v", id, modelConfigCUID, err)
+		writeError(w, http.StatusBadGateway, "failed to summarize invocation: "+err.Error())
+		return
+	}
+
+	// Persist the generated summary on the invocation row so subsequent
+	// Get/List calls expose it and the UI can render it without re-calling the LLM.
+	updated, err := h.svc.SetSummary(r.Context(), inv.InvocationID, resp.Summary)
+	if err != nil {
+		log.Printf("[summarizeInvocation] persist summary for invocation %s failed: %v", id, err)
+		writeError(w, http.StatusInternalServerError, "failed to persist summary: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, SummarizeInvocationResponse{
+		InvocationID: updated.InvocationID,
+		Summary:      updated.Summary,
+	})
 }
 
 func (h *Handler) adminServers(w http.ResponseWriter, r *http.Request) {
@@ -1653,18 +1776,20 @@ func (h *Handler) adminModelConfigs(w http.ResponseWriter, r *http.Request) {
 // and PUT /admin/settings. SyncError is non-empty when the post-save agent
 // sync failed; settings are persisted regardless.
 type AgentSyncSettingsResponse struct {
-	OrgCUID              string `json:"org_cuid"`
-	AgentRecordTypeSlug  string `json:"agent_record_type_slug"`
-	ConstitutionFieldKey string `json:"constitution_field_key"`
-	UpdatedAt            string `json:"updated_at,omitempty"`
-	SyncError            string `json:"sync_error,omitempty"`
+	OrgCUID                string `json:"org_cuid"`
+	AgentRecordTypeSlug    string `json:"agent_record_type_slug"`
+	ConstitutionFieldKey   string `json:"constitution_field_key"`
+	SummaryModelConfigCUID string `json:"summary_model_config_cuid"`
+	UpdatedAt              string `json:"updated_at,omitempty"`
+	SyncError              string `json:"sync_error,omitempty"`
 }
 
 // AgentSyncSettingsInput is the JSON body accepted by PUT /admin/settings.
 type AgentSyncSettingsInput struct {
-	OrgCUID             string `json:"org_cuid"`
-	AgentRecordTypeSlug string `json:"agent_record_type_slug"`
-	ConstitutionFieldKey string `json:"constitution_field_key"`
+	OrgCUID                string `json:"org_cuid"`
+	AgentRecordTypeSlug    string `json:"agent_record_type_slug"`
+	ConstitutionFieldKey   string `json:"constitution_field_key"`
+	SummaryModelConfigCUID string `json:"summary_model_config_cuid"`
 }
 
 func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
@@ -1680,9 +1805,10 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resp := AgentSyncSettingsResponse{
-			OrgCUID:             s.OrgCUID,
-			AgentRecordTypeSlug: s.AgentRecordTypeSlug,
-			ConstitutionFieldKey: s.ConstitutionFieldKey,
+			OrgCUID:                s.OrgCUID,
+			AgentRecordTypeSlug:    s.AgentRecordTypeSlug,
+			ConstitutionFieldKey:   s.ConstitutionFieldKey,
+			SummaryModelConfigCUID: s.SummaryModelConfigCUID,
 		}
 		if !s.UpdatedAt.IsZero() {
 			resp.UpdatedAt = s.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z")
@@ -1709,9 +1835,10 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if err := h.agentSyncSettingsRepo.Save(r.Context(), store.AgentSyncSettings{
-			OrgCUID:              input.OrgCUID,
-			AgentRecordTypeSlug:  input.AgentRecordTypeSlug,
-			ConstitutionFieldKey: input.ConstitutionFieldKey,
+			OrgCUID:                input.OrgCUID,
+			AgentRecordTypeSlug:    input.AgentRecordTypeSlug,
+			ConstitutionFieldKey:   input.ConstitutionFieldKey,
+			SummaryModelConfigCUID: input.SummaryModelConfigCUID,
 		}); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to save settings: "+err.Error())
 			return
@@ -1733,10 +1860,11 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		log.Printf("[adminSettings] GET after save: org_cuid=%q record_type=%q", s.OrgCUID, s.AgentRecordTypeSlug)
 		resp := AgentSyncSettingsResponse{
-			OrgCUID:              s.OrgCUID,
-			AgentRecordTypeSlug:  s.AgentRecordTypeSlug,
-			ConstitutionFieldKey: s.ConstitutionFieldKey,
-			SyncError:            syncErr,
+			OrgCUID:                s.OrgCUID,
+			AgentRecordTypeSlug:    s.AgentRecordTypeSlug,
+			ConstitutionFieldKey:   s.ConstitutionFieldKey,
+			SummaryModelConfigCUID: s.SummaryModelConfigCUID,
+			SyncError:              syncErr,
 		}
 		if !s.UpdatedAt.IsZero() {
 			resp.UpdatedAt = s.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z")
@@ -2598,7 +2726,7 @@ func invocationSignature(items []invocation.InvocationResponse) string {
 		if item.CompletedAt != nil {
 			completed = item.CompletedAt.UTC().Format(time.RFC3339Nano)
 		}
-		parts = append(parts, item.InvocationID+"|"+string(item.Status)+"|"+completed)
+		parts = append(parts, item.InvocationID+"|"+string(item.Status)+"|"+completed+"|"+item.Summary)
 	}
 	return strings.Join(parts, ",")
 }

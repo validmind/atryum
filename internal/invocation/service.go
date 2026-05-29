@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -74,12 +75,19 @@ type EvaluatorClient interface {
 	EvaluateToolCall(ctx context.Context, req EvaluateRequest) (EvaluateResponse, error)
 }
 
+// SummaryClient is the minimal interface required by the invocation service to
+// call the VM backend for an invocation summary.
+type SummaryClient interface {
+	SummarizeInvocation(ctx context.Context, req SummaryRequest) (SummaryResponse, error)
+}
+
 // SyncSettingsProvider lets the invocation service read the current agent sync
 // configuration on demand without importing the store package. The service
 // calls ConstitutionFieldKey on every AI evaluation so that changes saved via
 // the Settings UI are picked up immediately without a restart.
 type SyncSettingsProvider interface {
 	ConstitutionFieldKey(ctx context.Context) string
+	SummarySettings(ctx context.Context) (orgCUID string, modelConfigCUID string)
 }
 
 // EvaluateRequest mirrors backend.EvaluateRequest so the service package does
@@ -103,6 +111,19 @@ type EvaluateResponse struct {
 	Confidence *float64 `json:"confidence,omitempty"`
 }
 
+// SummaryRequest mirrors backend.SummarizeInvocationRequest so the service
+// package does not import the backend package directly.
+type SummaryRequest struct {
+	ModelConfigCUID string         `json:"model_config_cuid"`
+	OrgCUID         string         `json:"org_cuid,omitempty"`
+	Invocation      map[string]any `json:"invocation"`
+}
+
+// SummaryResponse mirrors backend.SummarizeInvocationResponse.
+type SummaryResponse struct {
+	Summary string `json:"summary"`
+}
+
 type approvalDecision struct {
 	approved bool
 	message  string
@@ -111,6 +132,7 @@ type approvalDecision struct {
 type invocationRepo interface {
 	Create(ctx context.Context, inv Invocation) error
 	UpdateResult(ctx context.Context, inv Invocation) error
+	UpdateSummary(ctx context.Context, id string, summary string) error
 	Get(ctx context.Context, id string) (Invocation, error)
 	GetByIdempotencyKey(ctx context.Context, key string) (Invocation, error)
 	List(ctx context.Context, filter InvocationListFilter) ([]Invocation, int, error)
@@ -142,6 +164,7 @@ type Service struct {
 	rules            rulesStore // nil = no rule evaluation
 	agents           AgentLookup
 	evaluator        EvaluatorClient
+	summarizer       SummaryClient
 	syncSettings     SyncSettingsProvider // nil = no constitution lookup
 	defaultTimeout   time.Duration
 	mu               sync.Mutex
@@ -173,6 +196,12 @@ func NewService(
 		defaultTimeout:   defaultTimeout,
 		pendingApprovals: make(map[string]chan approvalDecision),
 	}
+}
+
+// SetInvocationSummarizer installs the optional backend summarizer used to
+// summarize invocations automatically when they enter human approval.
+func (s *Service) SetInvocationSummarizer(client SummaryClient) {
+	s.summarizer = client
 }
 
 func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (InvocationResponse, error) {
@@ -480,6 +509,7 @@ func (s *Service) waitForHumanApproval(ctx context.Context, inv Invocation, upst
 		}),
 		CreatedAt: time.Now().UTC(),
 	})
+	s.summarizePendingApproval(inv.InvocationID)
 
 	select {
 	case d := <-ch:
@@ -788,7 +818,63 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		return InvocationResponse{}, err
 	}
 	_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.pending_approval", Payload: mustJSON(receivedPayload), CreatedAt: time.Now().UTC()})
+	s.summarizePendingApproval(inv.InvocationID)
 	return s.toResponse(inv), nil
+}
+
+func (s *Service) summarizePendingApproval(invocationID string) {
+	if s.summarizer == nil || invocationID == "" {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		orgCUID := ""
+		modelConfigCUID := ""
+		if s.syncSettings != nil {
+			orgCUID, modelConfigCUID = s.syncSettings.SummarySettings(ctx)
+			orgCUID = strings.TrimSpace(orgCUID)
+			modelConfigCUID = strings.TrimSpace(modelConfigCUID)
+		}
+		if modelConfigCUID == "" {
+			slog.Debug("invocation summary skipped: summary model config is not set", "invocation_id", invocationID)
+			return
+		}
+
+		inv, err := s.invocations.Get(ctx, invocationID)
+		if err != nil {
+			slog.Warn("invocation summary skipped: load invocation failed", "invocation_id", invocationID, "error", err)
+			return
+		}
+		if inv.Summary != nil && *inv.Summary != "" {
+			return
+		}
+
+		raw, err := json.Marshal(s.toResponse(inv))
+		if err != nil {
+			slog.Warn("invocation summary skipped: encode invocation failed", "invocation_id", invocationID, "error", err)
+			return
+		}
+		var invMap map[string]any
+		if err := json.Unmarshal(raw, &invMap); err != nil {
+			slog.Warn("invocation summary skipped: normalize invocation failed", "invocation_id", invocationID, "error", err)
+			return
+		}
+
+		resp, err := s.summarizer.SummarizeInvocation(ctx, SummaryRequest{
+			ModelConfigCUID: modelConfigCUID,
+			OrgCUID:         orgCUID,
+			Invocation:      invMap,
+		})
+		if err != nil {
+			slog.Warn("invocation summary failed", "invocation_id", invocationID, "model_config_cuid", modelConfigCUID, "error", err)
+			return
+		}
+		if _, err := s.SetSummary(ctx, invocationID, resp.Summary); err != nil {
+			slog.Warn("invocation summary persist failed", "invocation_id", invocationID, "error", err)
+		}
+	}()
 }
 
 // RecordExecution updates an externally-executed invocation with the outcome
@@ -960,8 +1046,34 @@ func (s *Service) Events(ctx context.Context, invocationID string, filter EventL
 	return EventListResponse{Items: out, Total: total, Offset: filter.Offset, Limit: normalizedLimit(filter.Limit, 200)}, nil
 }
 
+// SetSummary persists an LLM-generated summary for the invocation and records
+// a lifecycle event. Callers (handlers) are responsible for producing the
+// summary text; the service simply stores it and surfaces it via Get/List.
+func (s *Service) SetSummary(ctx context.Context, invocationID string, summary string) (InvocationResponse, error) {
+	if invocationID == "" {
+		return InvocationResponse{}, fmt.Errorf("invocation_id is required")
+	}
+	if err := s.invocations.UpdateSummary(ctx, invocationID, summary); err != nil {
+		return InvocationResponse{}, err
+	}
+	inv, err := s.invocations.Get(ctx, invocationID)
+	if err != nil {
+		return InvocationResponse{}, err
+	}
+	_ = s.events.Create(ctx, Event{
+		InvocationID: invocationID,
+		EventType:    "invocation.summarized",
+		Payload:      mustJSON(map[string]any{"summary": summary}),
+		CreatedAt:    time.Now().UTC(),
+	})
+	return s.toResponse(inv), nil
+}
+
 func (s *Service) toResponse(inv Invocation) InvocationResponse {
 	resp := InvocationResponse{InvocationID: inv.InvocationID, ServerName: inv.Upstream, ToolName: inv.Tool, Status: inv.Status, Approval: inv.Approval, MatchedRuleID: inv.MatchedRuleID, AgentID: inv.AgentID, RequestID: inv.RequestID, SubmittedAt: inv.SubmittedAt, CompletedAt: inv.CompletedAt}
+	if inv.Summary != nil {
+		resp.Summary = *inv.Summary
+	}
 	if len(inv.Input) > 0 {
 		resp.Input = json.RawMessage(inv.Input)
 	}

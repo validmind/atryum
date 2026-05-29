@@ -249,7 +249,7 @@ async function loadInvocations() {
 }
 
 function applyInvocationStreamData(items) {
-  const signature = JSON.stringify(items.map((item) => [item.invocation_id, item.status, item.completed_at || '']));
+  const signature = JSON.stringify(items.map((item) => [item.invocation_id, item.status, item.completed_at || '', item.summary || '']));
   const changed = signature !== state.lastInvocationSignature;
   state.lastInvocationSignature = signature;
   if (!changed) {

@@ -41,8 +41,8 @@ func TestInitDB_FreshDatabase(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 11 {
-		t.Fatalf("expected 11 migrations, got %d", count)
+	if count != 13 {
+		t.Fatalf("expected 13 migrations, got %d", count)
 	}
 
 	// Verify all tables exist
@@ -70,8 +70,8 @@ func TestInitDB_Idempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 11 {
-		t.Fatalf("expected 11 migrations after double init, got %d", count)
+	if count != 13 {
+		t.Fatalf("expected 13 migrations after double init, got %d", count)
 	}
 }
 
@@ -170,6 +170,68 @@ func TestInvocationRepo_CRUD(t *testing.T) {
 	}
 	if got3.InvocationID != "inv-2" {
 		t.Errorf("idem key mismatch: %s", got3.InvocationID)
+	}
+}
+
+func TestInvocationRepo_UpdateSummary(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+	if err := InitDB(db); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	repo := NewInvocationRepo(db)
+	ctx := context.Background()
+	inv := invocation.Invocation{
+		InvocationID:   "inv-summary",
+		Tool:           "read_file",
+		Upstream:       "github",
+		Status:         "completed",
+		Input:          []byte(`{"path":"/tmp/test"}`),
+		IdempotencyKey: strPtr("summary-key"),
+		SubmittedAt:    time.Now().UTC(),
+	}
+	if err := repo.Create(ctx, inv); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := repo.UpdateSummary(ctx, "inv-summary", "Read /tmp/test."); err != nil {
+		t.Fatalf("UpdateSummary: %v", err)
+	}
+
+	got, err := repo.Get(ctx, "inv-summary")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Summary == nil || *got.Summary != "Read /tmp/test." {
+		t.Fatalf("Get summary = %#v", got.Summary)
+	}
+	byKey, err := repo.GetByIdempotencyKey(ctx, "summary-key")
+	if err != nil {
+		t.Fatalf("GetByIdempotencyKey: %v", err)
+	}
+	if byKey.Summary == nil || *byKey.Summary != "Read /tmp/test." {
+		t.Fatalf("GetByIdempotencyKey summary = %#v", byKey.Summary)
+	}
+	items, total, err := repo.List(ctx, invocation.InvocationListFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if total != 1 || len(items) != 1 {
+		t.Fatalf("List total=%d len=%d", total, len(items))
+	}
+	if items[0].Summary == nil || *items[0].Summary != "Read /tmp/test." {
+		t.Fatalf("List summary = %#v", items[0].Summary)
+	}
+
+	if err := repo.UpdateSummary(ctx, "inv-summary", ""); err != nil {
+		t.Fatalf("UpdateSummary clear: %v", err)
+	}
+	cleared, err := repo.Get(ctx, "inv-summary")
+	if err != nil {
+		t.Fatalf("Get after clear: %v", err)
+	}
+	if cleared.Summary != nil {
+		t.Fatalf("expected cleared summary, got %#v", cleared.Summary)
 	}
 }
 
@@ -696,9 +758,10 @@ func TestAgentSyncSettingsRepo_UpsertOnEmptyTable(t *testing.T) {
 
 	// Save should create the row
 	err = repo.Save(ctx, AgentSyncSettings{
-		OrgCUID:             "org-abc",
-		AgentRecordTypeSlug: "ai-agents",
-		ConstitutionFieldKey: "constitution",
+		OrgCUID:                "org-abc",
+		AgentRecordTypeSlug:    "ai-agents",
+		ConstitutionFieldKey:   "constitution",
+		SummaryModelConfigCUID: "model-abc",
 	})
 	if err != nil {
 		t.Fatalf("Save: %v", err)
@@ -714,5 +777,8 @@ func TestAgentSyncSettingsRepo_UpsertOnEmptyTable(t *testing.T) {
 	}
 	if s.AgentRecordTypeSlug != "ai-agents" {
 		t.Fatalf("expected AgentRecordTypeSlug=ai-agents, got %q", s.AgentRecordTypeSlug)
+	}
+	if s.SummaryModelConfigCUID != "model-abc" {
+		t.Fatalf("expected SummaryModelConfigCUID=model-abc, got %q", s.SummaryModelConfigCUID)
 	}
 }

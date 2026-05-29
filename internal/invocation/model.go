@@ -42,6 +42,7 @@ type Invocation struct {
 	Input          []byte     `json:"-"`
 	Response       []byte     `json:"-"`
 	Error          []byte     `json:"-"`
+	Summary        *string    `json:"summary,omitempty"`
 	SubmittedAt    time.Time  `json:"submitted_at"`
 	CompletedAt    *time.Time `json:"completed_at,omitempty"`
 }
@@ -123,6 +124,7 @@ type InvocationResponse struct {
 	CompletedAt   *time.Time      `json:"completed_at,omitempty"`
 	Result        json.RawMessage `json:"result,omitempty"`
 	Error         json.RawMessage `json:"error,omitempty"`
+	Summary       string          `json:"summary,omitempty"`
 }
 
 type InvocationListResponse struct {
