@@ -30,6 +30,8 @@ const dispositionContinue policy.Disposition = "continue"
 // direct human_approval rule or an error fallback.
 const dispositionAIEscalated policy.Disposition = "ai_escalated"
 
+const defaultApprovalReuseWindow = 10 * time.Second
+
 // humanDecisionStatus returns the approval status string to write when a human
 // approves or denies an invocation. If the invocation was AI-escalated the composite
 // statuses ("ai_escalated_approved" / "ai_escalated_denied") preserve the origin so
@@ -135,6 +137,7 @@ type invocationRepo interface {
 	UpdateSummary(ctx context.Context, id string, summary string) error
 	Get(ctx context.Context, id string) (Invocation, error)
 	GetByIdempotencyKey(ctx context.Context, key string) (Invocation, error)
+	FindRecentExplicitApproval(ctx context.Context, agentID string, upstream string, tool string, since time.Time) (Invocation, error)
 	List(ctx context.Context, filter InvocationListFilter) ([]Invocation, int, error)
 	ListAgentIDs(ctx context.Context) ([]string, error)
 }
@@ -156,19 +159,20 @@ type upstreamClient interface {
 }
 
 type Service struct {
-	invocations      invocationRepo
-	events           eventRepo
-	resolver         resolver
-	client           upstreamClient
-	policy           policy.Provider
-	rules            rulesStore // nil = no rule evaluation
-	agents           AgentLookup
-	evaluator        EvaluatorClient
-	summarizer       SummaryClient
-	syncSettings     SyncSettingsProvider // nil = no constitution lookup
-	defaultTimeout   time.Duration
-	mu               sync.Mutex
-	pendingApprovals map[string]chan approvalDecision
+	invocations         invocationRepo
+	events              eventRepo
+	resolver            resolver
+	client              upstreamClient
+	policy              policy.Provider
+	rules               rulesStore // nil = no rule evaluation
+	agents              AgentLookup
+	evaluator           EvaluatorClient
+	summarizer          SummaryClient
+	syncSettings        SyncSettingsProvider // nil = no constitution lookup
+	defaultTimeout      time.Duration
+	approvalReuseWindow time.Duration
+	mu                  sync.Mutex
+	pendingApprovals    map[string]chan approvalDecision
 }
 
 func NewService(
@@ -178,23 +182,28 @@ func NewService(
 	client upstreamClient,
 	policyProvider policy.Provider,
 	defaultTimeout time.Duration,
+	approvalReuseWindow time.Duration,
 	rules rulesStore,
 	agents AgentLookup,
 	evaluator EvaluatorClient,
 	syncSettings SyncSettingsProvider,
 ) *Service {
+	if approvalReuseWindow <= 0 {
+		approvalReuseWindow = defaultApprovalReuseWindow
+	}
 	return &Service{
-		invocations:      inv,
-		events:           evt,
-		resolver:         resolver,
-		client:           client,
-		policy:           policyProvider,
-		rules:            rules,
-		agents:           agents,
-		evaluator:        evaluator,
-		syncSettings:     syncSettings,
-		defaultTimeout:   defaultTimeout,
-		pendingApprovals: make(map[string]chan approvalDecision),
+		invocations:         inv,
+		events:              evt,
+		resolver:            resolver,
+		client:              client,
+		policy:              policyProvider,
+		rules:               rules,
+		agents:              agents,
+		evaluator:           evaluator,
+		syncSettings:        syncSettings,
+		defaultTimeout:      defaultTimeout,
+		approvalReuseWindow: approvalReuseWindow,
+		pendingApprovals:    make(map[string]chan approvalDecision),
 	}
 }
 
@@ -251,6 +260,31 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	}
 	if err := s.invocations.Create(ctx, inv); err != nil {
 		return InvocationResponse{}, err
+	}
+	if agentID != "" {
+		if approved, err := s.invocations.FindRecentExplicitApproval(ctx, agentID, upstream.Name, req.Tool, now.Add(-s.approvalReuseWindow)); err == nil {
+			reason := "reused explicit approval from " + approved.InvocationID
+			_ = s.events.Create(ctx, Event{
+				InvocationID: inv.InvocationID,
+				EventType:    "invocation.received",
+				Payload: mustJSON(map[string]any{
+					"tool":               req.Tool,
+					"upstream":           upstream.Name,
+					"request_id":         req.RequestID,
+					"input":              json.RawMessage(inv.Input),
+					"arguments":          json.RawMessage(inv.Input),
+					"agent_id":           agentID,
+					"disposition":        string(policy.DispositionAuto),
+					"disposition_reason": reason,
+					"reused_approval_id": approved.InvocationID,
+				}),
+				CreatedAt: now,
+			})
+			return s.executeNow(ctx, inv, upstream, req, reason)
+		} else if err != sql.ErrNoRows {
+			slog.Warn("could not check for reusable prior approval; continuing normal policy evaluation",
+				"agent_id", agentID, "server", upstream.Name, "tool", req.Tool, "error", err)
+		}
 	}
 
 	// Determine disposition: check rules first (fine-grained), then fall back to policy (global).

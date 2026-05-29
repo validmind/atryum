@@ -59,7 +59,8 @@ type ServerConfig struct {
 }
 
 type DefaultsConfig struct {
-	RequestTimeoutSeconds int `toml:"request_timeout_seconds"`
+	RequestTimeoutSeconds      int `toml:"request_timeout_seconds"`
+	ApprovalReuseWindowSeconds int `toml:"approval_reuse_window_seconds"`
 }
 
 type UpstreamConfig struct {

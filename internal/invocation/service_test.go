@@ -325,7 +325,7 @@ func newTestService(t *testing.T, cfg config.Config) *invocation.Service {
 	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	return invocation.NewService(store.NewInvocationRepo(db), store.NewEventRepo(db), resolver, mcp.NewHTTPClient(), policy.AlwaysApproveProvider{}, 5*time.Second, nil, nil, nil, nil)
+	return invocation.NewService(store.NewInvocationRepo(db), store.NewEventRepo(db), resolver, mcp.NewHTTPClient(), policy.AlwaysApproveProvider{}, 5*time.Second, 0, nil, nil, nil, nil)
 }
 
 type summaryClientStub struct {

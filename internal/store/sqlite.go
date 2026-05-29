@@ -14,8 +14,9 @@ import (
 )
 
 type InvocationRepo struct {
-	db *sql.DB
-	sb sq.StatementBuilderType
+	db      *sql.DB
+	sb      sq.StatementBuilderType
+	dialect Dialect
 }
 type EventRepo struct {
 	db *sql.DB
@@ -60,7 +61,7 @@ func NewServerRepo(db *sql.DB) *ServerRepo { return NewServerRepoWithDialect(db,
 func NewOAuthRepo(db *sql.DB) *OAuthRepo   { return NewOAuthRepoWithDialect(db, DialectSQLite) }
 
 func NewInvocationRepoWithDialect(db *sql.DB, dialect Dialect) *InvocationRepo {
-	return &InvocationRepo{db: db, sb: statementBuilderForDialect(dialect)}
+	return &InvocationRepo{db: db, sb: statementBuilderForDialect(dialect), dialect: dialect}
 }
 func NewEventRepoWithDialect(db *sql.DB, dialect Dialect) *EventRepo {
 	return &EventRepo{db: db, sb: statementBuilderForDialect(dialect)}
@@ -138,6 +139,33 @@ func (r *InvocationRepo) GetByIdempotencyKey(ctx context.Context, key string) (i
 	}
 	row := r.db.QueryRowContext(ctx, query, args...)
 	return scanInvocation(row)
+}
+
+func (r *InvocationRepo) FindRecentExplicitApproval(ctx context.Context, agentID string, upstream string, tool string, since time.Time) (invocation.Invocation, error) {
+	query, args, err := r.sb.Select("invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at", "matched_rule_id", "agent_id").
+		From("invocations").
+		Where(sq.Eq{
+			"agent_id":      agentID,
+			"upstream_name": upstream,
+			"tool_name":     tool,
+			"status":        []invocation.Status{invocation.StatusApproved, invocation.StatusExecuting},
+		}).
+		Where(sq.GtOrEq{"submitted_at": since}).
+		Where(explicitApprovalStatusPredicate(r.dialect)).
+		OrderBy("submitted_at DESC").
+		Limit(1).
+		ToSql()
+	if err != nil {
+		return invocation.Invocation{}, err
+	}
+	return scanInvocation(r.db.QueryRowContext(ctx, query, args...))
+}
+
+func explicitApprovalStatusPredicate(dialect Dialect) sq.Sqlizer {
+	if dialect == DialectPostgres {
+		return sq.Expr("(approval_json::jsonb ->> 'status') IN ('approved', 'ai_escalated_approved')")
+	}
+	return sq.Expr("json_extract(approval_json, '$.status') IN ('approved', 'ai_escalated_approved')")
 }
 
 func (r *InvocationRepo) List(ctx context.Context, filter invocation.InvocationListFilter) ([]invocation.Invocation, int, error) {
@@ -256,28 +284,28 @@ func (r *ServerRepo) UpsertServer(ctx context.Context, upstream mcp.Upstream) er
 	now := time.Now().UTC()
 
 	updateMap := map[string]interface{}{
-		"mode":                 string(upstream.Mode),
-		"base_url":             emptyToNil(upstream.BaseURL),
-		"auth_token":           emptyToNil(upstream.AuthToken),
-		"timeout_seconds":      int(upstream.Timeout / time.Second),
-		"command":              emptyToNil(upstream.Command),
-		"args_json":            argsJSON,
-		"env_json":             envJSON,
-		"enabled":              boolToInt(upstream.Enabled),
-		"auth_type":            string(upstream.Status.AuthType),
-		"connection_status":    string(upstream.Status.ConnectionStatus),
-		"auth_status":          string(upstream.Status.AuthStatus),
-		"reauth_needed":        boolToInt(upstream.Status.ReauthNeeded),
-		"last_checked_at":      upstream.Status.LastCheckedAt,
-		"last_check_ok":        boolToInt(upstream.Status.LastCheckOK),
-		"last_error_summary":   emptyToNil(derefString(upstream.Status.LastErrorSummary)),
-		"action_required":      emptyToNil(derefString(upstream.Status.ActionRequired)),
-		"oauth_provider_id":    emptyToNil(upstream.OAuthProviderID),
-		"oauth_provider_label": emptyToNil(upstream.OAuthProviderLabel),
-		"oauth_authorize_url":  emptyToNil(upstream.OAuthAuthorizeURL),
-		"oauth_token_url":      emptyToNil(upstream.OAuthTokenURL),
-		"oauth_client_id":      emptyToNil(upstream.OAuthClientID),
-		"oauth_client_secret":  emptyToNil(upstream.OAuthClientSecret),
+		"mode":                      string(upstream.Mode),
+		"base_url":                  emptyToNil(upstream.BaseURL),
+		"auth_token":                emptyToNil(upstream.AuthToken),
+		"timeout_seconds":           int(upstream.Timeout / time.Second),
+		"command":                   emptyToNil(upstream.Command),
+		"args_json":                 argsJSON,
+		"env_json":                  envJSON,
+		"enabled":                   boolToInt(upstream.Enabled),
+		"auth_type":                 string(upstream.Status.AuthType),
+		"connection_status":         string(upstream.Status.ConnectionStatus),
+		"auth_status":               string(upstream.Status.AuthStatus),
+		"reauth_needed":             boolToInt(upstream.Status.ReauthNeeded),
+		"last_checked_at":           upstream.Status.LastCheckedAt,
+		"last_check_ok":             boolToInt(upstream.Status.LastCheckOK),
+		"last_error_summary":        emptyToNil(derefString(upstream.Status.LastErrorSummary)),
+		"action_required":           emptyToNil(derefString(upstream.Status.ActionRequired)),
+		"oauth_provider_id":         emptyToNil(upstream.OAuthProviderID),
+		"oauth_provider_label":      emptyToNil(upstream.OAuthProviderLabel),
+		"oauth_authorize_url":       emptyToNil(upstream.OAuthAuthorizeURL),
+		"oauth_token_url":           emptyToNil(upstream.OAuthTokenURL),
+		"oauth_client_id":           emptyToNil(upstream.OAuthClientID),
+		"oauth_client_secret":       emptyToNil(upstream.OAuthClientSecret),
 		"oauth_scopes":              emptyToNil(upstream.OAuthScopes),
 		"oauth_client_registration": emptyToNil(string(upstream.OAuthClientRegistration)),
 		"updated_at":                now,

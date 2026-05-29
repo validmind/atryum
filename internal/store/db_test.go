@@ -123,6 +123,32 @@ func TestStatementBuilderForDialectUsesDialectPlaceholders(t *testing.T) {
 	}
 }
 
+func TestExplicitApprovalStatusPredicateUsesDialectSQL(t *testing.T) {
+	sqliteSQL, _, err := statementBuilderForDialect(DialectSQLite).
+		Select("*").
+		From("invocations").
+		Where(explicitApprovalStatusPredicate(DialectSQLite)).
+		ToSql()
+	if err != nil {
+		t.Fatalf("sqlite ToSql: %v", err)
+	}
+	if !contains(sqliteSQL, "json_extract(approval_json, '$.status')") {
+		t.Fatalf("sqlite SQL should use json_extract, got %s", sqliteSQL)
+	}
+
+	postgresSQL, _, err := statementBuilderForDialect(DialectPostgres).
+		Select("*").
+		From("invocations").
+		Where(explicitApprovalStatusPredicate(DialectPostgres)).
+		ToSql()
+	if err != nil {
+		t.Fatalf("postgres ToSql: %v", err)
+	}
+	if !contains(postgresSQL, "approval_json::jsonb ->> 'status'") || contains(postgresSQL, "json_extract") {
+		t.Fatalf("postgres SQL should use jsonb extraction only, got %s", postgresSQL)
+	}
+}
+
 func contains(s, substr string) bool {
 	for i := 0; i+len(substr) <= len(s); i++ {
 		if s[i:i+len(substr)] == substr {
