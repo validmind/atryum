@@ -137,7 +137,7 @@ type invocationRepo interface {
 	UpdateSummary(ctx context.Context, id string, summary string) error
 	Get(ctx context.Context, id string) (Invocation, error)
 	GetByIdempotencyKey(ctx context.Context, key string) (Invocation, error)
-	FindRecentExplicitApproval(ctx context.Context, agentID string, upstream string, tool string, since time.Time) (Invocation, error)
+	FindRecentExplicitApproval(ctx context.Context, agentID string, upstream string, tool string, input []byte, since time.Time) (Invocation, error)
 	List(ctx context.Context, filter InvocationListFilter) ([]Invocation, int, error)
 	ListAgentIDs(ctx context.Context) ([]string, error)
 }
@@ -262,7 +262,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		return InvocationResponse{}, err
 	}
 	if agentID != "" {
-		if approved, err := s.invocations.FindRecentExplicitApproval(ctx, agentID, upstream.Name, req.Tool, now.Add(-s.approvalReuseWindow)); err == nil {
+		if approved, err := s.invocations.FindRecentExplicitApproval(ctx, agentID, upstream.Name, req.Tool, inv.Input, now.Add(-s.approvalReuseWindow)); err == nil {
 			reason := "reused explicit approval from " + approved.InvocationID
 			_ = s.events.Create(ctx, Event{
 				InvocationID: inv.InvocationID,
@@ -280,7 +280,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 				}),
 				CreatedAt: now,
 			})
-			return s.executeNow(ctx, inv, upstream, req, reason)
+			return s.executeNow(ctx, inv, upstream, req, reason, nil)
 		} else if err != sql.ErrNoRows {
 			slog.Warn("could not check for reusable prior approval; continuing normal policy evaluation",
 				"agent_id", agentID, "server", upstream.Name, "tool", req.Tool, "error", err)

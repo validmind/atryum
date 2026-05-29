@@ -141,14 +141,15 @@ func (r *InvocationRepo) GetByIdempotencyKey(ctx context.Context, key string) (i
 	return scanInvocation(row)
 }
 
-func (r *InvocationRepo) FindRecentExplicitApproval(ctx context.Context, agentID string, upstream string, tool string, since time.Time) (invocation.Invocation, error) {
-	query, args, err := r.sb.Select("invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at", "matched_rule_id", "agent_id").
+func (r *InvocationRepo) FindRecentExplicitApproval(ctx context.Context, agentID string, upstream string, tool string, input []byte, since time.Time) (invocation.Invocation, error) {
+	query, args, err := r.sb.Select("invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at", "matched_rule_id", "agent_id", "summary").
 		From("invocations").
 		Where(sq.Eq{
 			"agent_id":      agentID,
 			"upstream_name": upstream,
 			"tool_name":     tool,
-			"status":        []invocation.Status{invocation.StatusApproved, invocation.StatusExecuting},
+			"request_json":  string(input),
+			"status":        []invocation.Status{invocation.StatusApproved, invocation.StatusExecuting, invocation.StatusSucceeded},
 		}).
 		Where(sq.GtOrEq{"submitted_at": since}).
 		Where(explicitApprovalStatusPredicate(r.dialect)).

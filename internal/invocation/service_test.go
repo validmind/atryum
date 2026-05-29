@@ -204,7 +204,7 @@ func TestSetSummaryPersistsSummaryAndRecordsEvent(t *testing.T) {
 	}
 	invRepo := store.NewInvocationRepo(db)
 	eventRepo := store.NewEventRepo(db)
-	service := invocation.NewService(invRepo, eventRepo, nil, nil, policy.AlwaysApproveProvider{}, 5*time.Second, nil, nil, nil, nil)
+	service := invocation.NewService(invRepo, eventRepo, nil, nil, policy.AlwaysApproveProvider{}, 5*time.Second, 0, nil, nil, nil, nil)
 	now := time.Now().UTC()
 	inv := invocation.Invocation{
 		InvocationID: "inv-summary",
@@ -260,7 +260,7 @@ func TestSubmitPendingApprovalAutomaticallySummarizesInvocation(t *testing.T) {
 	}
 	invRepo := store.NewInvocationRepo(db)
 	eventRepo := store.NewEventRepo(db)
-	service := invocation.NewService(invRepo, eventRepo, nil, nil, nil, 5*time.Second, nil, nil, nil, summarySettingsStub{
+	service := invocation.NewService(invRepo, eventRepo, nil, nil, nil, 5*time.Second, 0, nil, nil, nil, summarySettingsStub{
 		orgCUID:         " org_123 ",
 		modelConfigCUID: " model_123 ",
 	})

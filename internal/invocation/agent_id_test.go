@@ -117,7 +117,7 @@ func TestInvokeUsesAuthenticatedAgentIDForRulesAndEvents(t *testing.T) {
 	}
 }
 
-func TestInvokeReusesRecentExplicitExternalApprovalForSameAgentServerAndTool(t *testing.T) {
+func TestInvokeReusesRecentExplicitExternalApprovalForSameAgentServerToolAndArguments(t *testing.T) {
 	var upstreamCalls int
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamCalls++
@@ -163,9 +163,12 @@ func TestInvokeReusesRecentExplicitExternalApprovalForSameAgentServerAndTool(t *
 	if _, err := svc.RecordExecution(context.Background(), submitted.InvocationID, invocation.ExternalExecutionUpdate{ExecutionStatus: "running"}); err != nil {
 		t.Fatalf("RecordExecution running: %v", err)
 	}
+	if _, err := svc.RecordExecution(context.Background(), submitted.InvocationID, invocation.ExternalExecutionUpdate{ExecutionStatus: "completed", Result: json.RawMessage(`{"ok":true}`)}); err != nil {
+		t.Fatalf("RecordExecution completed: %v", err)
+	}
 
 	reused, err := svc.Invoke(ctx, invocation.CreateInvocationRequest{
-		Server: "demo", Tool: "demo_tool", Input: map[string]any{"x": 2},
+		Server: "demo", Tool: "demo_tool", Input: map[string]any{"x": 1},
 	})
 	if err != nil {
 		t.Fatalf("Invoke with reusable approval: %v", err)
@@ -180,9 +183,19 @@ func TestInvokeReusesRecentExplicitExternalApprovalForSameAgentServerAndTool(t *
 		t.Fatal("expected MCP upstream to be invoked")
 	}
 
+	changedArgs, err := svc.Invoke(ctx, invocation.CreateInvocationRequest{
+		Server: "demo", Tool: "demo_tool", Input: map[string]any{"x": 2},
+	})
+	if err != nil {
+		t.Fatalf("Invoke with changed args: %v", err)
+	}
+	if changedArgs.Status != invocation.StatusDenied {
+		t.Fatalf("expected changed args to follow deny policy, got %s", changedArgs.Status)
+	}
+
 	otherCtx := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "agent-008", Issuer: "https://idp.test"})
 	denied, err := svc.Invoke(otherCtx, invocation.CreateInvocationRequest{
-		Server: "demo", Tool: "demo_tool", Input: map[string]any{"x": 3},
+		Server: "demo", Tool: "demo_tool", Input: map[string]any{"x": 1},
 	})
 	if err != nil {
 		t.Fatalf("Invoke with other agent: %v", err)
