@@ -53,10 +53,10 @@ type ModelConfigsResponse struct {
 }
 
 type Client struct {
-	baseURL        string
-	machineKey     string
-	machineSecret  string
-	httpClient     *http.Client
+	baseURL       string
+	machineKey    string
+	machineSecret string
+	httpClient    *http.Client
 	// evaluateClient uses a longer timeout suitable for LLM completion calls.
 	evaluateClient *http.Client
 }
@@ -305,8 +305,9 @@ type EvaluateRequest struct {
 // EvaluateResponse is the result returned by the VM backend after LLM evaluation.
 // Verdict is one of: "approved", "denied", "human_approval", "next_rule".
 type EvaluateResponse struct {
-	Verdict string `json:"verdict"`
-	Reason  string `json:"reason"`
+	Verdict    string   `json:"verdict"`
+	Reason     string   `json:"reason"`
+	Confidence *float64 `json:"confidence,omitempty"`
 }
 
 // EvaluateToolCall calls the VM backend's evaluate endpoint and returns whether
