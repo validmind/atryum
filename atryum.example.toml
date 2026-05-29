@@ -31,6 +31,7 @@ connection_timeout_seconds = 5
 
 [defaults]
 request_timeout_seconds = 30
+approval_reuse_window_seconds = 10
 
 # Agent sync and AI evaluation settings (org, record type, constitution field)
 # are managed through the Atryum Settings UI and stored in the database.
