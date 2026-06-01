@@ -385,18 +385,37 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 	agentVMCUID := ""
 	orgCUID := ""
 	if s.agents != nil && agentID != "" {
-		if rec, err := s.agents.GetByAgentID(ctx, agentID); err == nil {
-			agentVMCUID = rec.VMCUID
-			orgCUID = rec.VMOrganizationCUID
-		} else {
-			slog.Warn("ai_evaluation: could not resolve agent VM CUID; proceeding without constitution",
-				"agent_id", agentID, "error", err)
+		rec, err := s.agents.GetByAgentID(ctx, agentID)
+		if err != nil {
+			slog.Error("ai_evaluation: could not resolve agent record; denying tool call",
+				"rule_id", rule.ID, "agent_id", agentID, "tool", toolName, "error", err)
+			return policy.Decision{
+				Disposition: policy.DispositionNever,
+				Reason:      "ai_evaluation denied: no agent identity (could not resolve agent record)",
+			}, nil
 		}
+		agentVMCUID = rec.VMCUID
+		orgCUID = rec.VMOrganizationCUID
 	}
 
 	constitutionFieldKey := ""
 	if s.syncSettings != nil {
 		constitutionFieldKey = s.syncSettings.ConstitutionFieldKey(ctx)
+	}
+
+	if agentVMCUID == "" || constitutionFieldKey == "" {
+		slog.Error("ai_evaluation: missing agent or constitution context; denying tool call",
+			"rule_id", rule.ID,
+			"server", serverName,
+			"tool", toolName,
+			"agent_id", agentID,
+			"agent_vm_cuid", agentVMCUID,
+			"constitution_field_key", constitutionFieldKey,
+		)
+		return policy.Decision{
+			Disposition: policy.DispositionNever,
+			Reason:      "ai_evaluation denied: no constitution available for this agent",
+		}, nil
 	}
 
 	slog.Info("ai_evaluation: calling LLM",
