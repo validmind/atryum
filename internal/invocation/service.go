@@ -249,6 +249,14 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	if agentID != "" {
 		inv.AgentID = &agentID
 	}
+	if req.ClientName != "" {
+		v := req.ClientName
+		inv.ClientName = &v
+	}
+	if req.ClientVersion != "" {
+		v := req.ClientVersion
+		inv.ClientVersion = &v
+	}
 	if err := s.invocations.Create(ctx, inv); err != nil {
 		return InvocationResponse{}, err
 	}
@@ -701,10 +709,28 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		RequestID:      req.RequestID,
 		IdempotencyKey: req.IdempotencyKey,
 		Tool:           req.Tool,
-		Upstream:       source,
-		Status:         StatusReceived,
-		Input:          inputJSON,
-		SubmittedAt:    now,
+		// Upstream is intentionally left empty for external/non-MCP
+		// invocations — the harness ran the tool itself, there is no
+		// MCP server in the loop. The UI renders an empty server as
+		// "none". The harness identity is recorded as ClientName below
+		// so it shows up in the Agent column instead.
+		Upstream:    "",
+		Status:      StatusReceived,
+		Input:       inputJSON,
+		SubmittedAt: now,
+	}
+	// Prefer explicit ClientName/ClientVersion from the request; fall back
+	// to Source when the caller didn't tell us anything more specific.
+	if cn := req.ClientName; cn != "" {
+		v := cn
+		inv.ClientName = &v
+	} else if source != "" && source != "external" {
+		s := source
+		inv.ClientName = &s
+	}
+	if cv := req.ClientVersion; cv != "" {
+		v := cv
+		inv.ClientVersion = &v
 	}
 	if agentID != "" {
 		inv.AgentID = &agentID
@@ -1015,7 +1041,8 @@ func (s *Service) Get(ctx context.Context, id string) (InvocationResponse, error
 	if err != nil {
 		return InvocationResponse{}, err
 	}
-	return s.toResponse(inv), nil
+	resp := s.toResponse(inv)
+	return resp, nil
 }
 
 func (s *Service) ListAgentIDs(ctx context.Context) ([]string, error) {
@@ -1073,6 +1100,12 @@ func (s *Service) toResponse(inv Invocation) InvocationResponse {
 	resp := InvocationResponse{InvocationID: inv.InvocationID, ServerName: inv.Upstream, ToolName: inv.Tool, Status: inv.Status, Approval: inv.Approval, MatchedRuleID: inv.MatchedRuleID, AgentID: inv.AgentID, RequestID: inv.RequestID, SubmittedAt: inv.SubmittedAt, CompletedAt: inv.CompletedAt}
 	if inv.Summary != nil {
 		resp.Summary = *inv.Summary
+	}
+	if inv.ClientName != nil {
+		resp.AgentClientName = inv.ClientName
+	}
+	if inv.ClientVersion != nil {
+		resp.AgentClientVersion = inv.ClientVersion
 	}
 	if len(inv.Input) > 0 {
 		resp.Input = json.RawMessage(inv.Input)
