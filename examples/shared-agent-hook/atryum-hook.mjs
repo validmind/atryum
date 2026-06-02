@@ -21,6 +21,12 @@ const HOST = (process.env.ATRYUM_HOOK_HOST || "claude").toLowerCase();
 const STATE_DIR =
   process.env.ATRYUM_STATE_DIR ||
   path.join(os.homedir(), ".atryum", "agent-hook-state");
+// Self-declared agent identity sent to Atryum as the invocation `agent_id`.
+// When this string is listed in an Agent Record's `agent_ids` array in the
+// Atryum UI, invocations from this hook get tagged to that Agent Record
+// (so agent-scoped approval rules apply). Not authenticated — for verified
+// identity use OAuth. Default: empty (no agent tagging).
+const AGENT_ID = process.env.ATRYUM_AGENT_ID || "";
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -128,6 +134,7 @@ async function submit(event) {
       input,
       request_id: id,
       thread_id: event.session_id || event.sessionId || undefined,
+      agent_id: AGENT_ID || undefined,
     }),
   });
   if (!res.ok) {

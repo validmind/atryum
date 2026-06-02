@@ -116,6 +116,13 @@ type ExternalSubmitRequest struct {
 	// doubles as the approval-rule matching key.
 	ClientName    string `json:"client_name,omitempty"`
 	ClientVersion string `json:"client_version,omitempty"`
+	// AgentID is a self-declared runtime agent identifier (e.g. an amp
+	// session id, or a stable harness identity). When no OAuth identity is
+	// attached to the request (the external endpoint is anonymous), this
+	// field is used to tag the invocation and to resolve the Agent Record
+	// via the agents.agent_ids array. A verified OAuth identity in the
+	// request context always wins. Optional.
+	AgentID string `json:"agent_id,omitempty"`
 }
 
 // ExternalExecutionUpdate is sent by the external executor to report on a

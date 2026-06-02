@@ -219,6 +219,60 @@ func TestInvokeWithoutAuthFallsBackToRequestIDForRules(t *testing.T) {
 	}
 }
 
+// External (non-MCP) callers like the amp-plugin example don't run behind
+// the auth middleware today, so there is no identity in context. They can
+// instead self-declare via the new `agent_id` field on ExternalSubmitRequest,
+// which Submit must promote onto the invocation row so the Agent column /
+// agents.agent_ids resolution / agent-scoped rule matching all light up.
+// A verified OAuth identity in context still wins when both are present.
+func TestExternalSubmitUsesSelfDeclaredAgentIDWhenNoAuthIdentity(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := store.InitDB(db); err != nil {
+		t.Fatal(err)
+	}
+	svc := invocation.NewService(
+		store.NewInvocationRepo(db), store.NewEventRepo(db), nil,
+		nil, policy.AlwaysApproveProvider{},
+		5*time.Second, nil, nil, nil, nil,
+	)
+
+	// No auth identity in context — self-declared agent_id should be used.
+	resp, err := svc.Submit(context.Background(), invocation.ExternalSubmitRequest{
+		Source:  "amp",
+		Tool:    "bash",
+		Input:   map[string]any{"cmd": "ls"},
+		AgentID: "amp-local",
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if resp.AgentID == nil || *resp.AgentID != "amp-local" {
+		t.Fatalf("expected agent_id=amp-local from body, got %v", resp.AgentID)
+	}
+
+	// Verified OAuth identity in context wins over the body, so a hostile
+	// caller can't claim someone else's agent_id when auth is enforced.
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{
+		AgentID: "verified-007", Issuer: "https://idp.test",
+	})
+	resp2, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{
+		Source:  "amp",
+		Tool:    "bash",
+		Input:   map[string]any{"cmd": "ls"},
+		AgentID: "spoofed-id",
+	})
+	if err != nil {
+		t.Fatalf("Submit with auth: %v", err)
+	}
+	if resp2.AgentID == nil || *resp2.AgentID != "verified-007" {
+		t.Fatalf("expected verified agent_id to win over body; got %v", resp2.AgentID)
+	}
+}
+
 func eventsAsJSON(items []invocation.EventResponse) string {
 	b, _ := json.Marshal(items)
 	return string(b)
