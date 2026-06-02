@@ -660,6 +660,9 @@ func applyInvocationFilter(builder sq.SelectBuilder, countBuilder sq.SelectBuild
 	if filter.AgentID != "" {
 		builder = builder.Where(sq.Eq{"agent_id": filter.AgentID})
 		countBuilder = countBuilder.Where(sq.Eq{"agent_id": filter.AgentID})
+	} else if len(filter.AgentIDs) > 0 {
+		builder = builder.Where(sq.Eq{"agent_id": filter.AgentIDs})
+		countBuilder = countBuilder.Where(sq.Eq{"agent_id": filter.AgentIDs})
 	}
 	if filter.ClientName != "" {
 		builder = builder.Where(sq.Eq{"client_name": filter.ClientName})

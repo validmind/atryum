@@ -80,6 +80,7 @@ type agentsRepo interface {
 	List(ctx context.Context) ([]store.AgentRecord, error)
 	ListEnabled(ctx context.Context) ([]store.AgentRecord, error)
 	Get(ctx context.Context, id string) (store.AgentRecord, error)
+	GetByVMCUID(ctx context.Context, vmCUID string) (store.AgentRecord, error)
 	UpdateEnabled(ctx context.Context, id string, enabled bool) error
 	UpdateAgentIDs(ctx context.Context, id string, agentIDs string) error
 	DeleteAll(ctx context.Context) error
@@ -450,6 +451,7 @@ func (h *Handler) Routes() http.Handler {
 	apiKeyMW := auth.APIKeyMiddleware(h.apiKeyAuth)
 	mux.Handle("/agent_ids", apiKeyMW(http.HandlerFunc(h.agentIDs)))
 	mux.Handle("/invocations/", apiKeyMW(http.HandlerFunc(h.invocationsByAgentID)))
+	mux.Handle("/models/", apiKeyMW(http.HandlerFunc(h.invocationsByVMCUID)))
 	mux.HandleFunc("/ui", h.uiIndex)
 	mux.Handle("/ui/", http.StripPrefix("/ui/", h.spaFileServer()))
 	mux.HandleFunc("/", h.root)
@@ -879,6 +881,77 @@ func (h *Handler) invocationsByAgentID(w http.ResponseWriter, r *http.Request) {
 	resp, err := h.svc.List(r.Context(), filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// invocationsByVMCUID returns a paginated list of invocations for all runtime
+// agent IDs mapped to the given ValidMind inventory model CUID. The vm_cuid is
+// taken from the path segment after "/models/" (e.g. "/models/mdl_abc/invocations").
+// Protected by the API key middleware.
+func (h *Handler) invocationsByVMCUID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	// Path is /models/{vm_cuid}/invocations
+	trimmed := strings.TrimPrefix(r.URL.Path, "/models/")
+	vmCUID := strings.TrimSuffix(trimmed, "/invocations")
+	vmCUID = strings.Trim(vmCUID, "/")
+	if vmCUID == "" {
+		writeError(w, http.StatusBadRequest, "vm_cuid is required")
+		return
+	}
+	if h.agentsRepo == nil {
+		writeError(w, http.StatusServiceUnavailable, "agents repository not configured")
+		return
+	}
+	record, err := h.agentsRepo.GetByVMCUID(r.Context(), vmCUID)
+	if err != nil {
+		if err.Error() == "sql: no rows in result set" || strings.Contains(err.Error(), "no rows") {
+			writeError(w, http.StatusNotFound, "no agent record found for vm_cuid")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to look up agent record")
+		return
+	}
+	agentIDs := parseAgentIDs(record.AgentIDs)
+	if len(agentIDs) == 0 {
+		// Agent record exists but has no runtime IDs assigned yet — return empty list.
+		limit := readUintQuery(r, "limit", 50)
+		writeJSON(w, http.StatusOK, invocation.InvocationListResponse{
+			Items:  []invocation.InvocationResponse{},
+			Total:  0,
+			Offset: readUintQuery(r, "offset", 0),
+			Limit:  limit,
+		})
+		return
+	}
+	filter := invocation.InvocationListFilter{
+		Offset:   readUintQuery(r, "offset", 0),
+		Limit:    readUintQuery(r, "limit", 50),
+		AgentIDs: agentIDs,
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("start_date")); raw != "" {
+		t, err := parseDateParam(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid start_date: "+err.Error())
+			return
+		}
+		filter.StartDate = &t
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("end_date")); raw != "" {
+		t, err := parseDateParam(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid end_date: "+err.Error())
+			return
+		}
+		filter.EndDate = &t
+	}
+	resp, err := h.svc.List(r.Context(), filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list invocations")
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)

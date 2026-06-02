@@ -68,6 +68,7 @@ type InvocationListFilter struct {
 	Tool       string
 	Status     string
 	AgentID    string
+	AgentIDs   []string // when set, filters to invocations whose agent_id is in this list
 	ClientName string
 	StartDate  *time.Time
 	EndDate    *time.Time
