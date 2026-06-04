@@ -1,243 +1,175 @@
 # Atryum
 
-A local-first Go proof of concept for mediating MCP tool calls. Atryum accepts invocation requests, forwards arbitrary tool names to configured upstream MCP servers, and records durable invocation state plus lifecycle events in SQLite by default, with optional PostgreSQL support.
+Atryum is a permissions gateway for AI agents. It sits between an agent harness and the tools that harness wants to call, intercepts each tool invocation, evaluates it against configured rules, and either auto-approves, auto-denies, or routes it to a human for approval. Every decision and every outcome is recorded as a durable invocation with a full lifecycle event log.
 
-## Features
+Atryum runs standalone and enforces locally. It is the open-source nervous system: the interception path, the rule engine, the approval UI, and the audit store. Higher-order policy reasoning (an agent registry, per-agent charters, LLM-as-judge evaluation) lives in ValidMind, the commercial product that consumes Atryum's surface.
 
-- Go binary configured by TOML for process/bootstrap settings only
-- Main public endpoint preserved: `POST /mcp/{server}`
-- `/mcp/{server}` now supports a minimal MCP-over-HTTP JSON-RPC surface for Claude/MCP clients
-- SQLite-backed runtime MCP server registry via `mcp_servers` by default; PostgreSQL is selectable with `server.database_url`
-- Admin APIs for servers, invocations, and invocation events
-- Generic connection/auth status surfaced for MCP servers, including reauth-needed state
-- Minimal built-in web UI served from the Go binary at `/ui/` for creating, editing, enabling/disabling, testing, and deleting server connections
-- Invocation UI renders MCP text content in a human-friendly view alongside raw JSON and refreshes live
-- Invocation APIs surface stored input arguments in invocation detail/list responses and invocation event payloads for approval inspection
-- SQLite-backed durable invocation state and lifecycle events by default; PostgreSQL is supported via pgx stdlib
-- Request ID and idempotency key support
-- Supports both HTTP upstreams and stdio-launched MCP servers
-- Business-level tool failures are recorded as failed invocations
+## How agents reach Atryum
 
-## MCP proxy support
+Atryum mediates two kinds of tool calls:
 
-`POST /mcp/{server}` accepts JSON-RPC 2.0 MCP-style requests.
+- **Pre-tool hooks from agent harnesses.** Managed harnesses (Claude Code, Cursor, amp) and autonomous ones (Microsoft Foundry, custom orchestrators) post their intended tool call to `POST /api/v1/external/invocations` (when the harness executes the tool itself) or `POST /api/v1/invocations` (when Atryum should execute it). The harness blocks on the response and only proceeds if Atryum returns an approved status. In the hook path Atryum never touches the tool — it just answers "may this call happen."
+- **Direct MCP proxying.** Agents that speak MCP connect to `POST /mcp/{server}` as their MCP endpoint. Atryum implements the JSON-RPC surface (`initialize`, `notifications/initialized`, `tools/list`, `tools/call`) and proxies calls to the configured upstream — HTTP or stdio. Because Atryum is the MCP client to the upstream, it holds the credentials (OAuth tokens, bearer tokens, custom headers) and the agent never sees them. The same approval engine runs on every `tools/call`.
 
-Currently implemented methods:
-- `initialize`
-- `notifications/initialized`
-- `tools/list`
-- `tools/call`
+The two paths converge on a single service so rules, audit, and the UI work identically regardless of how the call arrived.
 
-Behavior:
-- `initialize` returns Atryum server info/capabilities
-- `tools/list` resolves the DB-backed server and asks the upstream for its tools where practical
-- `tools/call` proxies to the upstream while reusing Atryum invocation logging, so admin/UI visibility remains intact
-- responses from `/mcp/{server}` are MCP-compatible JSON-RPC responses, not the custom invocation envelope
+## The rule engine
 
-The older custom/testing invocation path remains available at:
-- `POST /api/v1/invocations`
+Rules live in the `approval_rules` table and are evaluated in priority order (lowest `rule_order` first). Each rule has:
 
-## Debug logging
+- **Match dimensions** — server patterns, tool patterns, agent ID pattern (the authenticated identity from the harness's JWT), and agent record IDs. An empty list or `"*"` means "match any."
+- **Action** — one of:
+  - `auto_approve` — execute immediately, record as auto-approved.
+  - `auto_deny` — refuse the call, record the reason.
+  - `human_approval` — park in `pending_approval`; a human approves or denies via the UI/API.
+- **Order** — first matching rule wins. If no rule matches, the configured default policy provider decides (`always_approve`, `manual_approval`, or `always_deny`; `manual_approval` is the recommended default — it fails closed).
 
-Set:
+## Invocation lifecycle
 
-```bash
-ATRYUM_MCP_DEBUG=1
+Every tool call is a durable invocation row with status transitions logged as `invocation_events`:
+
+```
+received → executing → succeeded | failed
+        ↘ pending_approval → approved → executing → succeeded | failed
+                          ↘ denied
+                          ↘ expired
+                          ↘ cancelled
 ```
 
-to log concise MCP proxy activity in local run output. Current debug logging includes:
-- server name
-- method name
-- request id
-- transport mode
-- duration
-- concise result/error info
+The approval record tracks status (auto_approved, auto_denied, approved, denied), reason, actor (for human decisions), and decision timestamp. The matched rule's ID is recorded alongside for audit.
 
-Secrets are not intentionally logged.
+External invocations (the hook path where the harness executes the tool itself) have additional `running`, `completed`, `failed`, `cancelled` execution states reported via `PATCH /api/v1/external/invocations/{id}`.
 
-## Docker Compose
+## Agent identity
 
-Two profiles, mutually exclusive (postgres always runs):
+Three pieces of identity travel with every invocation:
 
-```bash
-docker compose --profile dev up    # Go server + Vite dev frontend (HMR on :5175)
-docker compose --profile prod up   # Single Go binary with embedded prod UI (:8080)
+- **Authenticated agent ID** — the `sub` (or configured claim) on the bearer token presented by the harness. Used for `agent_id_pattern` matching.
+- **Agent record** — an optional local row in the `agents` table that maps one or more authenticated agent IDs to a named agent for organizational rule targeting.
+- **Client info** — `clientInfo.name` and `clientInfo.version` from the MCP `initialize` handshake (e.g., `claude-code 1.2.3`, `cursor 0.42`, `amp 0.0.1234`). Captured even when auth is disabled, so anonymous traffic is still attributable to a harness.
+
+Auth is OIDC-based and supports multiple authorization servers concurrently (Keycloak, Auth0, etc.) — see `[[auth]]` blocks. API-key-protected legacy endpoints (`/agent_ids`, `/invocations/{agent_id}`) exist for tooling that hasn't moved to bearer tokens yet.
+
+## HTTP surface
+
+Public (auth-protected when `[[auth]]` is configured):
+
+- `POST /mcp/{server}` — MCP JSON-RPC. `tools/list` annotates each tool with its policy disposition for the calling agent; a synthetic `atryum.rules.get` tool lets an agent inspect its applicable rules before deciding what to call.
+- `GET /mcp/{server}` — Streamable HTTP / legacy SSE channel for MCP clients that need a long-lived event stream.
+- `POST /api/v1/invocations` — direct invocation (Atryum executes).
+- `POST /api/v1/external/invocations`, `PATCH /api/v1/external/invocations/{id}` — hook path (harness executes, Atryum gates and records).
+- `GET /api/v1/agent/rules` — agent-facing rule introspection.
+- `GET /healthz` — liveness.
+
+Admin (UI and operators):
+
+- `/api/v1/admin/invocations`, `/{id}`, `/{id}/events`, `/{id}/approve`, `/{id}/deny`, `/stream` (SSE)
+- `/api/v1/admin/servers`, `/{name}`, `/{name}/test`, `/{name}/connect`, `/{name}/connect/status`
+- `/api/v1/admin/rules`, `/{id}` (including reorder/move)
+- `/api/v1/admin/agents`, `/{id}`
+- `/api/v1/admin/settings`, `/api/v1/admin/policy`
+- `/api/v1/admin/oauth/callback` — OAuth callback for upstream MCP server connect flows
+
+## Frontend
+
+The repo currently embeds a minimal built-in React UI under `internal/api/web` served at `/ui/`. The standalone Atryum frontend (in the sibling `frontend/` repo under `src/atryum/`) is being pulled into this repo to replace the embedded UI as the open-source frontend. It covers servers, rules, invocations (list + detail with live SSE updates), agent records, and settings.
+
+The embedded invocation view subscribes to the admin SSE stream, updates list/detail/event views live, surfaces stored input arguments, and renders MCP-style text content in a friendly view alongside raw JSON.
+
+## Storage
+
+SQLite by default, PostgreSQL optional via `server.database_url`. Both are first-class — migrations live in `internal/store/migrations/` and apply at startup. Core tables:
+
+- `mcp_servers` — upstream connection settings and generic auth/connection status, including `connection_status`, `auth_status`, `reauth_needed`, `auth_type`, `last_checked_at`, `last_check_ok`, `last_error_summary`, and `action_required`.
+- `oauth_credentials` and related OAuth client registration tables — tokens and client registrations held by Atryum on behalf of agents.
+- `invocations` — durable per-call state, including matched rule, agent identity, harness clientInfo, approval record, and request/response/error payloads.
+- `invocation_events` — append-only lifecycle events.
+- `approval_rules` — the rule engine.
+- `agents` — local agent records and their authenticated-ID mappings.
+
+## Config
+
+A single TOML file configures process and bootstrap settings; runtime entities (servers, rules, agents) live in the database and are managed via the UI/API.
+
+```toml
+[server]
+listen_addr     = ":8080"
+database_path   = "./atryum.db"   # or set database_url for Postgres
+database_url    = ""              # postgres://, postgresql://, sqlite://, file:, or a SQLite path
+log_level       = "info"
+
+[defaults]
+request_timeout_seconds = 30
+
+[backend]                         # optional ValidMind backend credential check
+base_url = ""
+machine_key = ""
+machine_secret = ""
+connection_timeout_seconds = 5
+
+[[auth]]                           # optional — repeatable per authorization server
+issuer    = "https://keycloak.example/realms/agents"
+audience  = "atryum"
+# jwks_uri, agent_id_claim, etc.
+
+[[upstreams]]                      # bootstrap-only: seeds mcp_servers on first run
+name         = "local-reference"
+base_url     = "http://localhost:9000"
+enabled      = true
 ```
 
-- **dev** (`Dockerfile`): backend at `:8080`, separate Vite dev server at `:5175`, source bind-mounted from `../frontend`. Use this for active development.
-- **prod** (`Dockerfile.prod`): multi-stage build — Vite builds the React app, Go embeds the output via `//go:embed` and serves the SPA from `/ui/` (with router fallback). One binary, one port. `atryum.toml` is baked into the image.
+After first-run bootstrap, edit MCP servers through the UI/API; TOML `[[upstreams]]` is ignored once `mcp_servers` has rows. Disabled servers remain visible in the UI so disabling a server does not make it disappear.
 
-Bare `docker compose up` only starts postgres. Run `docker compose down -v` between profile switches if you hit port or network weirdness.
+`server.database_url` selects the storage provider by URL scheme. `postgres://` and `postgresql://` use PostgreSQL via pgx stdlib; `sqlite://`, `file:`, an empty URL, or a bare path use SQLite. Normal tests do not require PostgreSQL; run the optional store integration test with `ATRYUM_POSTGRES_TESTS=1 go test ./internal/store`.
 
+When `backend.base_url` is empty, the ValidMind backend connection check is skipped for local standalone runs. When it is set, startup fails if credentials are missing or `GET /internal/v1/atryum/connection` is rejected. Environment variables override TOML: `VM_BASE_URL`, `VM_MACHINE_KEY`, `VM_MACHINE_SECRET`, and `VM_CONNECTION_TIMEOUT_SECONDS`.
 
-## Auth debug mode
+## Running
 
-For local OAuth troubleshooting, Atryum can completely bypass inbound auth on
-`/mcp/`:
+Single-binary Go service.
+
+```bash
+go run ./cmd/atryum -config atryum.toml
+```
+
+Docker Compose has two mutually-exclusive profiles (Postgres always runs):
+
+```bash
+docker compose --profile dev  up    # backend :8080 + Vite dev frontend :5175
+docker compose --profile prod up    # one binary, embedded UI :8080
+```
+
+`docker compose up` alone starts only Postgres. Use `docker compose down -v` between profile switches if you hit port or network state weirdness.
+
+## Debugging
+
+```bash
+ATRYUM_MCP_DEBUG=1                                # concise MCP proxy activity
+ATRYUM_AUTH_DEBUG_SKIP_VERIFY=1                   # local only — bypass inbound auth on /mcp/
+```
+
+Or in TOML:
 
 ```toml
 [auth_debug]
 skip_verify = true
 ```
 
-or:
+When `skip_verify` is on, no bearer is required, no claims are parsed, and no agent identity is set on the request. Local debugging only — do not enable in shared environments.
 
-```bash
-ATRYUM_AUTH_DEBUG_SKIP_VERIFY=1 go run ./cmd/atryum -config atryum.auth0.toml
-```
+## Server connection management
 
-When enabled, the `Authorization` header is ignored entirely on `/mcp/`: no
-bearer token is required, no claims are parsed, and no agent identity is set
-on the request context. Requests reach the upstream MCP server as if no
-`[[auth]]` section had been configured.
+Runtime server resolution uses the `mcp_servers` table as the source of truth. Manage MCP server connections through the built-in UI at `/ui/` or the admin server APIs under `/api/v1/admin/servers`; do not treat TOML as the normal place to add or edit runtime MCP servers after bootstrap.
 
-This is only for local debugging. Do not enable it in shared or production
-environments.
+For HTTP-mode servers that use hosted OAuth, Atryum owns the browser connect flow. Admins enter the server URL, Atryum detects or assigns an auth provider where practical, and the UI shows provider/status plus `Connect` / `Reconnect`. OAuth tokens are stored separately, callback completion updates server auth status fields in the database, and missing or expired OAuth auth fails fast with actionable status fields. Current pragmatic provider support includes `github_hosted` for GitHub-style hosted HTTP servers plus a generic provider framework for future providers and discovery work.
 
-## Backend connection check
+`POST /api/v1/admin/servers/{name}/test` updates server connection/auth status fields and returns the latest snapshot.
 
-Atryum can verify its ValidMind backend machine-user credentials during
-startup:
+## How it differs from "just an MCP proxy"
 
-```toml
-[backend]
-base_url = "https://api.example.validmind.ai"
-machine_key = "replace-me"
-machine_secret = "replace-me"
-connection_timeout_seconds = 5
-```
+A plain MCP proxy forwards JSON-RPC and maybe logs it. Atryum's value is what happens between receipt and forward:
 
-The same values can be supplied with environment variables, which override
-TOML: `VM_BASE_URL`, `VM_MACHINE_KEY`, `VM_MACHINE_SECRET`, and
-`VM_CONNECTION_TIMEOUT_SECONDS`.
-
-When `backend.base_url` is empty, the check is skipped for local standalone
-runs. When it is set, startup fails if credentials are missing or the backend
-rejects `GET /internal/v1/atryum/connection`.
-
-## Database configuration
-
-SQLite remains the default storage provider:
-
-```toml
-[server]
-database_path = "./atryum.db"
-database_url = ""
-```
-
-Set `server.database_url` to select a provider by URL scheme:
-- `postgres://` or `postgresql://` uses PostgreSQL via pgx stdlib
-- `sqlite://`, `file:`, no scheme, or an empty URL uses SQLite
-
-Optional local PostgreSQL test/dev DSN:
-
-```toml
-[server]
-database_url = "postgresql://postgres:password@127.0.0.1:5432/postgres"
-```
-
-Normal tests do not require PostgreSQL. To run the optional PostgreSQL integration test locally:
-
-```bash
-ATRYUM_POSTGRES_TESTS=1 go test ./internal/store
-# optionally override the DSN:
-ATRYUM_POSTGRES_TESTS=1 ATRYUM_POSTGRES_TEST_DSN="postgresql://postgres:password@127.0.0.1:5432/postgres" go test ./internal/store
-```
-
-## Endpoints
-
-Public:
-- `POST /mcp/:server`
-- `POST /api/v1/invocations`
-- `GET /api/v1/agent/rules?server=&source=&tool=&agent_id=&request_id=` - returns enabled approval rules applicable to the caller; protected by the same bearer auth as `/mcp/` when auth is configured
-- `GET /healthz`
-
-MCP clients connected through `/mcp/` also see a synthetic `atryum.rules.get`
-tool in `tools/list`. It returns the same rules payload without creating an
-approval-gated invocation, so agents can inspect their rule environment before
-choosing which tool to call.
-
-Admin APIs:
-- `GET /api/v1/admin/invocations?offset=0&limit=50&server=&tool=&status=`
-- `GET /api/v1/admin/invocations/stream`
-- `GET /api/v1/admin/invocations/:id`
-- `GET /api/v1/admin/invocations/:id/events?offset=0&limit=200`
-- `GET /api/v1/admin/servers?offset=0&limit=50&enabled=`
-- `GET /api/v1/admin/servers/:name`
-- `POST /api/v1/admin/servers`
-- `PUT /api/v1/admin/servers/:name`
-- `DELETE /api/v1/admin/servers/:name`
-- `DELETE /api/v1/admin/servers/:name?mode=disable`
-- `POST /api/v1/admin/servers/:name/test`
-- `POST /api/v1/admin/servers/:name/connect`
-- `GET /api/v1/admin/servers/:name/connect/status`
-- `GET /api/v1/admin/oauth/callback`
-
-UI:
-- `GET /ui/`
-
-## Built-in UI invocation improvements
-
-The invocations page now:
-- subscribes to a simple SSE stream for live invocation updates
-- updates the invocation list live without a manual refresh
-- refreshes selected invocation detail/events on incoming updates
-- surfaces stored invocation input arguments in the invocation payload and event payload views
-- renders human-friendly text boxes when invocation result/error/event JSON contains MCP-style text content such as `{ "type": "text", "text": "..." }`
-- preserves line breaks in those extracted text blocks while still showing the raw JSON below
-- keeps raw/friendly selection and friendly expand/collapse state stable across live updates
-
-## Managing server connections
-
-Runtime server resolution uses the `mcp_servers` SQLite table as the source of truth.
-
-Manage MCP server connections through:
-- the built-in UI at `/ui/`
-- the admin server APIs under `/api/v1/admin/servers`
-
-Do not treat TOML as the normal place to add or edit runtime MCP servers.
-
-In the built-in UI, disabled servers are now shown by default so disabling a server does not make it appear to disappear.
-
-## OAuth-style connect/reconnect flow
-
-For HTTP-mode servers that use hosted OAuth, Atryum owns the browser connect flow.
-
-The normal UI path is now URL-first and provider-driven:
-- admins enter the server URL
-- Atryum detects or assigns an auth provider where practical
-- the UI shows provider/status plus `Connect` / `Reconnect`
-- the normal UI does not require admins to fill in raw authorize/token URLs or scopes
-
-Runtime behavior:
-- connection metadata lives in `mcp_servers`
-- OAuth tokens are stored separately in SQLite
-- `Connect` / `Reconnect` is launched from the built-in UI
-- callback completion updates server auth status fields in the DB
-- missing/expired OAuth auth fails fast with actionable `auth_status` / `reauth_needed` / `action_required`
-
-Current pragmatic provider support:
-- `github_hosted` for GitHub-style hosted HTTP servers detected from URL
-- a generic provider framework exists for future providers/discovery work
-
-## Server auth and connection status semantics
-
-Each server now exposes generic status metadata suitable for current token/stdio servers and future hosted or OAuth-like servers:
-- `connection_status`
-- `auth_status`
-- `reauth_needed`
-- `auth_type`
-- `last_checked_at`
-- `last_check_ok`
-- `last_error_summary`
-- `action_required`
-
-`POST /api/v1/admin/servers/{name}/test` updates these fields in the DB and returns the latest status snapshot.
-
-## Remaining TOML/bootstrap behavior
-
-`[[upstreams]]` entries are bootstrap-only:
-- if `mcp_servers` is empty at startup, Atryum seeds it from TOML once for convenience
-- if `mcp_servers` already has rows, TOML upstreams are ignored for runtime resolution
-
-After bootstrap, server changes should be made through the UI/API, not by editing TOML.
+- **Credentials never leave Atryum.** The agent gets the result; the upstream gets a credentialed call; the agent never holds the OAuth token.
+- **Every call is a decision, not a pass-through.** Rules match on agent identity, server, tool, and arguments; the decision and its rationale are recorded.
+- **The hook path covers what MCP doesn't.** Harness-local tools (file edits, shell, in-process functions) are mediated through the same rule engine via pre-tool hooks, so a single policy spans MCP and non-MCP tools.
+- **Audit is the storage layer, not a side channel.** Invocations and their event streams are the canonical state; the UI, the SSE stream, and the per-agent listing are all just views over the same durable rows.
