@@ -108,9 +108,8 @@ connection_timeout_seconds = 5
 ```
 
 The same values can be supplied with environment variables, which override
-TOML: `ATRYUM_BACKEND_BASE_URL`, `ATRYUM_MACHINE_KEY`,
-`ATRYUM_MACHINE_SECRET`, and
-`ATRYUM_BACKEND_CONNECTION_TIMEOUT_SECONDS`.
+TOML: `VM_BASE_URL`, `VM_MACHINE_KEY`, `VM_MACHINE_SECRET`, and
+`VM_CONNECTION_TIMEOUT_SECONDS`.
 
 When `backend.base_url` is empty, the check is skipped for local standalone
 runs. When it is set, startup fails if credentials are missing or the backend

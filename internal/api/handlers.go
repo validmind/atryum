@@ -2006,8 +2006,10 @@ type VMOrgItem struct {
 }
 
 type VMOrgListResponse struct {
-	Items []VMOrgItem `json:"items"`
-	Total int         `json:"total"`
+	Items     []VMOrgItem `json:"items"`
+	Total     int         `json:"total"`
+	AuthMode  string      `json:"auth_mode,omitempty"`
+	SingleOrg bool        `json:"single_org,omitempty"`
 }
 
 type VMRecordTypeItem struct {
@@ -2050,7 +2052,7 @@ func (h *Handler) adminVMOrganizations(w http.ResponseWriter, r *http.Request) {
 	for _, o := range resp.Items {
 		items = append(items, VMOrgItem{CUID: o.CUID, Name: o.Name})
 	}
-	writeJSON(w, http.StatusOK, VMOrgListResponse{Items: items, Total: len(items)})
+	writeJSON(w, http.StatusOK, VMOrgListResponse{Items: items, Total: len(items), AuthMode: resp.AuthMode, SingleOrg: resp.SingleOrg})
 }
 
 func (h *Handler) adminVMRecordTypes(w http.ResponseWriter, r *http.Request) {

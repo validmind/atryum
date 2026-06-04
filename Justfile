@@ -1,6 +1,7 @@
 set shell := ["bash", "-cu"]
 
 config := "./atryum.toml"
+frontend_dir := "../frontend"
 
 # List justfile targets
 default:
@@ -33,6 +34,35 @@ fmt:
 
 # Go fmt and test
 check: fmt test
+
+# Build local atryum binary with the currently embedded web assets
+build:
+	CGO_ENABLED=0 go build -o ./atryum ./cmd/atryum
+
+# Build local production-like atryum binary with the sibling frontend embedded
+build-prod:
+	#!/usr/bin/env bash
+	set -euo pipefail
+	repo_dir="$(pwd)"
+	frontend_dir="{{frontend_dir}}"
+	tmp_dir="$(mktemp -d)"
+	cleanup() {
+	  rm -rf "$tmp_dir"
+	}
+	trap cleanup EXIT
+
+	(cd "$frontend_dir" && npm run build:atryum)
+	mkdir -p "$tmp_dir/atryum"
+	rsync -a --delete \
+	  --exclude .git \
+	  --exclude /atryum \
+	  --exclude /atryum.db \
+	  "$repo_dir/" "$tmp_dir/atryum/"
+	rm -rf "$tmp_dir/atryum/internal/api/web"
+	mkdir -p "$tmp_dir/atryum/internal/api/web"
+	cp -R "$frontend_dir/build-atryum/." "$tmp_dir/atryum/internal/api/web/"
+	mv "$tmp_dir/atryum/internal/api/web/atryum.html" "$tmp_dir/atryum/internal/api/web/index.html"
+	(cd "$tmp_dir/atryum" && CGO_ENABLED=0 go build -o "$repo_dir/atryum" ./cmd/atryum)
 
 # Run atryum process locally
 run:

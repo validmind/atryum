@@ -43,7 +43,11 @@ func main() {
 		if err != nil {
 			log.Fatalf("backend connection check: %v", err)
 		}
-		log.Printf("backend connection verified for service=%s machine_user_cuid=%s", resp.ServiceName, resp.MachineUserCUID)
+		if backendClient.AuthMode() == "api_key" {
+			log.Printf("backend connection verified with API credentials for org=%s (%s)", resp.OrgCUID, resp.OrgName)
+		} else {
+			log.Printf("backend connection verified for service=%s machine_user_cuid=%s", resp.ServiceName, resp.MachineUserCUID)
+		}
 	} else {
 		log.Printf("backend connection check skipped (backend.base_url not configured)")
 	}

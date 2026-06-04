@@ -23,8 +23,11 @@ const customFieldsPath = "/internal/v1/atryum/custom-fields"
 
 type ConnectionResponse struct {
 	OK              bool   `json:"ok"`
+	AuthMode        string `json:"auth_mode"`
 	MachineUserCUID string `json:"machine_user_cuid"`
 	ServiceName     string `json:"service_name"`
+	OrgCUID         string `json:"org_cuid"`
+	OrgName         string `json:"org_name"`
 }
 
 // Agent represents an inventory model record returned by the backend.
@@ -54,10 +57,11 @@ type ModelConfigsResponse struct {
 }
 
 type Client struct {
-	baseURL       string
-	machineKey    string
-	machineSecret string
-	httpClient    *http.Client
+	baseURL    string
+	authMode   string
+	authKey    string
+	authSecret string
+	httpClient *http.Client
 	// evaluateClient uses a longer timeout suitable for LLM completion calls.
 	evaluateClient *http.Client
 }
@@ -67,8 +71,28 @@ func NewClient(cfg config.BackendConfig) (*Client, error) {
 	if baseURL == "" {
 		return nil, nil
 	}
-	if strings.TrimSpace(cfg.MachineKey) == "" || strings.TrimSpace(cfg.MachineSecret) == "" {
-		return nil, fmt.Errorf("backend machine credentials are required when backend.base_url is configured")
+	machineKey := strings.TrimSpace(cfg.MachineKey)
+	machineSecret := strings.TrimSpace(cfg.MachineSecret)
+	apiKey := strings.TrimSpace(cfg.APIKey)
+	apiSecret := strings.TrimSpace(cfg.APISecret)
+	authMode := ""
+	authKey := ""
+	authSecret := ""
+	switch {
+	case machineKey != "" && machineSecret != "":
+		authMode = "machine_user"
+		authKey = machineKey
+		authSecret = machineSecret
+	case machineKey != "" || machineSecret != "":
+		return nil, fmt.Errorf("backend machine credentials require both machine_key and machine_secret")
+	case apiKey != "" && apiSecret != "":
+		authMode = "api_key"
+		authKey = apiKey
+		authSecret = apiSecret
+	case apiKey != "" || apiSecret != "":
+		return nil, fmt.Errorf("backend API credentials require both api_key and api_secret")
+	default:
+		return nil, fmt.Errorf("backend credentials are required when backend.base_url is configured")
 	}
 	if _, err := url.ParseRequestURI(baseURL); err != nil {
 		return nil, fmt.Errorf("backend base_url is invalid: %w", err)
@@ -76,11 +100,29 @@ func NewClient(cfg config.BackendConfig) (*Client, error) {
 
 	return &Client{
 		baseURL:        strings.TrimRight(baseURL, "/"),
-		machineKey:     strings.TrimSpace(cfg.MachineKey),
-		machineSecret:  strings.TrimSpace(cfg.MachineSecret),
+		authMode:       authMode,
+		authKey:        authKey,
+		authSecret:     authSecret,
 		httpClient:     &http.Client{Timeout: time.Duration(cfg.ConnectionTimeoutSecs) * time.Second},
 		evaluateClient: &http.Client{Timeout: time.Duration(cfg.EvaluateTimeoutSecs) * time.Second},
 	}, nil
+}
+
+func (c *Client) AuthMode() string {
+	if c == nil {
+		return ""
+	}
+	return c.authMode
+}
+
+func (c *Client) setAuthHeaders(req *http.Request) {
+	if c.authMode == "api_key" {
+		req.Header.Set("X-API-KEY", c.authKey)
+		req.Header.Set("X-API-SECRET", c.authSecret)
+		return
+	}
+	req.Header.Set("X-MACHINE-KEY", c.authKey)
+	req.Header.Set("X-MACHINE-SECRET", c.authSecret)
 }
 
 // FetchAgents retrieves active inventory model agents from the backend for the
@@ -92,7 +134,9 @@ func (c *Client) FetchAgents(ctx context.Context, orgCUID, agentRecordTypeSlug s
 		return AgentsResponse{}, fmt.Errorf("build agents URL: %w", err)
 	}
 	q := u.Query()
-	q.Set("org_cuid", orgCUID)
+	if orgCUID != "" {
+		q.Set("org_cuid", orgCUID)
+	}
 	q.Set("primary_record_type_slug", agentRecordTypeSlug)
 	u.RawQuery = q.Encode()
 
@@ -100,9 +144,10 @@ func (c *Client) FetchAgents(ctx context.Context, orgCUID, agentRecordTypeSlug s
 	if err != nil {
 		return AgentsResponse{}, fmt.Errorf("build agents request: %w", err)
 	}
-	req.Header.Set("X-MACHINE-KEY", c.machineKey)
-	req.Header.Set("X-MACHINE-SECRET", c.machineSecret)
-	req.Header.Set("X-Org-CUID", orgCUID)
+	c.setAuthHeaders(req)
+	if orgCUID != "" {
+		req.Header.Set("X-Org-CUID", orgCUID)
+	}
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.httpClient.Do(req)
@@ -128,8 +173,7 @@ func (c *Client) FetchModelConfigs(ctx context.Context) (ModelConfigsResponse, e
 	if err != nil {
 		return ModelConfigsResponse{}, fmt.Errorf("build model-configs request: %w", err)
 	}
-	req.Header.Set("X-MACHINE-KEY", c.machineKey)
-	req.Header.Set("X-MACHINE-SECRET", c.machineSecret)
+	c.setAuthHeaders(req)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.httpClient.Do(req)
@@ -157,8 +201,10 @@ type VMOrg struct {
 
 // VMOrgsResponse is the response envelope for the organizations endpoint.
 type VMOrgsResponse struct {
-	Items []VMOrg `json:"items"`
-	Total int     `json:"total"`
+	Items     []VMOrg `json:"items"`
+	Total     int     `json:"total"`
+	AuthMode  string  `json:"auth_mode,omitempty"`
+	SingleOrg bool    `json:"single_org,omitempty"`
 }
 
 // VMRecordType represents a primary record type returned by the backend discovery API.
@@ -193,8 +239,7 @@ func (c *Client) FetchOrganizations(ctx context.Context) (VMOrgsResponse, error)
 	if err != nil {
 		return VMOrgsResponse{}, fmt.Errorf("build organizations request: %w", err)
 	}
-	req.Header.Set("X-MACHINE-KEY", c.machineKey)
-	req.Header.Set("X-MACHINE-SECRET", c.machineSecret)
+	c.setAuthHeaders(req)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.httpClient.Do(req)
@@ -221,16 +266,19 @@ func (c *Client) FetchPrimaryRecordTypes(ctx context.Context, orgCUID string) (V
 		return VMRecordTypesResponse{}, fmt.Errorf("build primary-record-types URL: %w", err)
 	}
 	q := u.Query()
-	q.Set("org_cuid", orgCUID)
+	if orgCUID != "" {
+		q.Set("org_cuid", orgCUID)
+	}
 	u.RawQuery = q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return VMRecordTypesResponse{}, fmt.Errorf("build primary-record-types request: %w", err)
 	}
-	req.Header.Set("X-MACHINE-KEY", c.machineKey)
-	req.Header.Set("X-MACHINE-SECRET", c.machineSecret)
-	req.Header.Set("X-Org-CUID", orgCUID)
+	c.setAuthHeaders(req)
+	if orgCUID != "" {
+		req.Header.Set("X-Org-CUID", orgCUID)
+	}
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.httpClient.Do(req)
@@ -258,7 +306,9 @@ func (c *Client) FetchCustomFields(ctx context.Context, orgCUID, primaryRecordTy
 		return VMCustomFieldsResponse{}, fmt.Errorf("build custom-fields URL: %w", err)
 	}
 	q := u.Query()
-	q.Set("org_cuid", orgCUID)
+	if orgCUID != "" {
+		q.Set("org_cuid", orgCUID)
+	}
 	if primaryRecordTypeSlug != "" {
 		q.Set("primary_record_type_slug", primaryRecordTypeSlug)
 	}
@@ -268,9 +318,10 @@ func (c *Client) FetchCustomFields(ctx context.Context, orgCUID, primaryRecordTy
 	if err != nil {
 		return VMCustomFieldsResponse{}, fmt.Errorf("build custom-fields request: %w", err)
 	}
-	req.Header.Set("X-MACHINE-KEY", c.machineKey)
-	req.Header.Set("X-MACHINE-SECRET", c.machineSecret)
-	req.Header.Set("X-Org-CUID", orgCUID)
+	c.setAuthHeaders(req)
+	if orgCUID != "" {
+		req.Header.Set("X-Org-CUID", orgCUID)
+	}
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.httpClient.Do(req)
@@ -326,8 +377,7 @@ func (c *Client) EvaluateToolCall(ctx context.Context, req EvaluateRequest) (Eva
 	if err != nil {
 		return EvaluateResponse{}, fmt.Errorf("build evaluate request: %w", err)
 	}
-	httpReq.Header.Set("X-MACHINE-KEY", c.machineKey)
-	httpReq.Header.Set("X-MACHINE-SECRET", c.machineSecret)
+	c.setAuthHeaders(httpReq)
 	if req.OrgCUID != "" {
 		httpReq.Header.Set("X-Org-CUID", req.OrgCUID)
 	}
@@ -380,8 +430,7 @@ func (c *Client) SummarizeInvocation(ctx context.Context, req SummarizeInvocatio
 	if err != nil {
 		return SummarizeInvocationResponse{}, fmt.Errorf("build summarize-invocation request: %w", err)
 	}
-	httpReq.Header.Set("X-MACHINE-KEY", c.machineKey)
-	httpReq.Header.Set("X-MACHINE-SECRET", c.machineSecret)
+	c.setAuthHeaders(httpReq)
 	if req.OrgCUID != "" {
 		httpReq.Header.Set("X-Org-CUID", req.OrgCUID)
 	}
@@ -411,8 +460,7 @@ func (c *Client) CheckConnection(ctx context.Context) (ConnectionResponse, error
 	if err != nil {
 		return ConnectionResponse{}, fmt.Errorf("build backend connection request: %w", err)
 	}
-	req.Header.Set("X-MACHINE-KEY", c.machineKey)
-	req.Header.Set("X-MACHINE-SECRET", c.machineSecret)
+	c.setAuthHeaders(req)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.httpClient.Do(req)

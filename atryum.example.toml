@@ -16,17 +16,31 @@ log_level = "info"
 
 [backend]
 # Optional ValidMind backend connection check. When base_url is set, Atryum
-# verifies these machine-user credentials at startup by calling:
+# verifies credentials at startup by calling:
 # GET /internal/v1/atryum/connection
 #
+# Machine-user credentials are preferred when configured. If machine_key and
+# machine_secret are both empty, Atryum uses normal user API credentials instead.
+# User API credentials are bound to a single organization, so the Settings UI
+# will use that organization automatically.
+#
+# base_url defaults to https://app.prod.validmind.ai/ when omitted or when no
+# TOML file is present. Set base_url = "" only when you want to disable the
+# ValidMind backend integration entirely.
+#
 # Environment variables override these TOML values:
-# ATRYUM_BACKEND_BASE_URL
-# ATRYUM_MACHINE_KEY
-# ATRYUM_MACHINE_SECRET
-# ATRYUM_BACKEND_CONNECTION_TIMEOUT_SECONDS
-base_url = ""
+# VM_BASE_URL
+# VM_MACHINE_KEY
+# VM_MACHINE_SECRET
+# VM_API_KEY
+# VM_API_SECRET
+# VM_CONNECTION_TIMEOUT_SECONDS
+# VM_EVALUATE_TIMEOUT_SECONDS
+base_url = "https://app.prod.validmind.ai/"
 machine_key = ""
 machine_secret = ""
+api_key = ""
+api_secret = ""
 connection_timeout_seconds = 5
 
 [defaults]

@@ -48,3 +48,28 @@ connection_timeout_seconds = 7
 		t.Fatalf("Backend.ConnectionTimeoutSecs = %d", cfg.Backend.ConnectionTimeoutSecs)
 	}
 }
+
+func TestLoadMissingConfigUsesDefaultsAndEnv(t *testing.T) {
+	t.Setenv("VM_API_KEY", "env-api-key")
+	t.Setenv("VM_API_SECRET", "env-api-secret")
+
+	cfg, err := Load(filepath.Join(t.TempDir(), "missing.toml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Server.ListenAddr != ":8080" {
+		t.Fatalf("ListenAddr = %q", cfg.Server.ListenAddr)
+	}
+	if cfg.Server.DatabasePath != "./atryum.db" {
+		t.Fatalf("DatabasePath = %q", cfg.Server.DatabasePath)
+	}
+	if cfg.Backend.BaseURL != DefaultBackendBaseURL {
+		t.Fatalf("Backend.BaseURL = %q", cfg.Backend.BaseURL)
+	}
+	if cfg.Backend.APIKey != "env-api-key" {
+		t.Fatalf("Backend.APIKey = %q", cfg.Backend.APIKey)
+	}
+	if cfg.Backend.APISecret != "env-api-secret" {
+		t.Fatalf("Backend.APISecret = %q", cfg.Backend.APISecret)
+	}
+}

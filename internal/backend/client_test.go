@@ -27,6 +27,22 @@ func TestNewClientRequiresCredentialsWhenBackendConfigured(t *testing.T) {
 	}
 }
 
+func TestNewClientPrefersMachineCredentialsOverAPIKeyCredentials(t *testing.T) {
+	client, err := NewClient(config.BackendConfig{
+		BaseURL:       "http://backend.test",
+		MachineKey:    "machine-key",
+		MachineSecret: "machine-secret",
+		APIKey:        "api-key",
+		APISecret:     "api-secret",
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if client.AuthMode() != "machine_user" {
+		t.Fatalf("AuthMode = %q", client.AuthMode())
+	}
+}
+
 func TestCheckConnectionSendsMachineCredentials(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != connectionPath {
@@ -57,6 +73,40 @@ func TestCheckConnectionSendsMachineCredentials(t *testing.T) {
 		t.Fatalf("CheckConnection: %v", err)
 	}
 	if !resp.OK || resp.MachineUserCUID != "cmu123" || resp.ServiceName != "atryum" {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func TestCheckConnectionSendsAPIKeyCredentialsWhenMachineCredentialsAbsent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-API-KEY"); got != "api-key" {
+			t.Errorf("X-API-KEY = %q", got)
+		}
+		if got := r.Header.Get("X-API-SECRET"); got != "api-secret" {
+			t.Errorf("X-API-SECRET = %q", got)
+		}
+		if got := r.Header.Get("X-MACHINE-KEY"); got != "" {
+			t.Errorf("X-MACHINE-KEY = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"auth_mode":"api_key","org_cuid":"org123","org_name":"Demo Org"}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(config.BackendConfig{
+		BaseURL:   server.URL,
+		APIKey:    "api-key",
+		APISecret: "api-secret",
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	resp, err := client.CheckConnection(context.Background())
+	if err != nil {
+		t.Fatalf("CheckConnection: %v", err)
+	}
+	if resp.AuthMode != "api_key" || resp.OrgCUID != "org123" {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 }
