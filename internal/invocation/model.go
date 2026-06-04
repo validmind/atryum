@@ -30,15 +30,15 @@ type Approval struct {
 }
 
 type Invocation struct {
-	InvocationID   string     `json:"invocation_id"`
-	RequestID      *string    `json:"request_id,omitempty"`
-	IdempotencyKey *string    `json:"idempotency_key,omitempty"`
-	Tool           string     `json:"tool"`
-	Upstream       string     `json:"upstream"`
-	Status         Status     `json:"status"`
-	Approval       *Approval  `json:"approval"`
-	MatchedRuleID  *string    `json:"matched_rule_id,omitempty"`
-	AgentID        *string    `json:"agent_id,omitempty"`
+	InvocationID   string    `json:"invocation_id"`
+	RequestID      *string   `json:"request_id,omitempty"`
+	IdempotencyKey *string   `json:"idempotency_key,omitempty"`
+	Tool           string    `json:"tool"`
+	Upstream       string    `json:"upstream"`
+	Status         Status    `json:"status"`
+	Approval       *Approval `json:"approval"`
+	MatchedRuleID  *string   `json:"matched_rule_id,omitempty"`
+	AgentID        *string   `json:"agent_id,omitempty"`
 	// ClientName / ClientVersion mirror the MCP `initialize.clientInfo`
 	// the harness reported on the connection that issued this invocation.
 	// Captured even when auth is disabled (no agent_id) so the UI can still
@@ -67,8 +67,7 @@ type InvocationListFilter struct {
 	Server     string
 	Tool       string
 	Status     string
-	AgentID    string
-	AgentIDs   []string // when set, filters to invocations whose agent_id is in this list
+	AgentIDs   []string // filters to invocations whose agent_id is in this list
 	ClientName string
 	StartDate  *time.Time
 	EndDate    *time.Time
@@ -131,13 +130,13 @@ type ExternalExecutionUpdate struct {
 }
 
 type InvocationResponse struct {
-	InvocationID  string          `json:"invocation_id"`
-	ServerName    string          `json:"server_name"`
-	ToolName      string          `json:"tool_name"`
-	Status        Status          `json:"status"`
-	Approval      *Approval       `json:"approval"`
-	MatchedRuleID *string         `json:"matched_rule_id,omitempty"`
-	AgentID       *string         `json:"agent_id,omitempty"`
+	InvocationID  string    `json:"invocation_id"`
+	ServerName    string    `json:"server_name"`
+	ToolName      string    `json:"tool_name"`
+	Status        Status    `json:"status"`
+	Approval      *Approval `json:"approval"`
+	MatchedRuleID *string   `json:"matched_rule_id,omitempty"`
+	AgentID       *string   `json:"agent_id,omitempty"`
 	// AgentClientName / AgentClientVersion identify the MCP client software
 	// (e.g. "amp", "cursor", "claude-code") captured from the most recent
 	// `initialize` handshake associated with this AgentID. They describe the

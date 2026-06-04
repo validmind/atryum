@@ -858,9 +858,9 @@ func (h *Handler) invocationsByAgentID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	filter := invocation.InvocationListFilter{
-		Offset:  readUintQuery(r, "offset", 0),
-		Limit:   readUintQuery(r, "limit", 50),
-		AgentID: agentID,
+		Offset:   readUintQuery(r, "offset", 0),
+		Limit:    readUintQuery(r, "limit", 50),
+		AgentIDs: []string{agentID},
 	}
 	if raw := strings.TrimSpace(r.URL.Query().Get("start_date")); raw != "" {
 		t, err := parseDateParam(raw)
