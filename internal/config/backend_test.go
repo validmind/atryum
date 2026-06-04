@@ -3,10 +3,12 @@ package config
 import "testing"
 
 func TestBackendConfigApplyEnvOverridesToml(t *testing.T) {
-	t.Setenv("ATRYUM_BACKEND_BASE_URL", "https://backend.example")
-	t.Setenv("ATRYUM_MACHINE_KEY", "env-key")
-	t.Setenv("ATRYUM_MACHINE_SECRET", "env-secret")
-	t.Setenv("ATRYUM_BACKEND_CONNECTION_TIMEOUT_SECONDS", "9")
+	t.Setenv("VM_BASE_URL", "https://backend.example")
+	t.Setenv("VM_MACHINE_KEY", "env-key")
+	t.Setenv("VM_MACHINE_SECRET", "env-secret")
+	t.Setenv("VM_API_KEY", "env-api-key")
+	t.Setenv("VM_API_SECRET", "env-api-secret")
+	t.Setenv("VM_CONNECTION_TIMEOUT_SECONDS", "9")
 
 	cfg := BackendConfig{
 		BaseURL:               "https://toml.example",
@@ -25,6 +27,12 @@ func TestBackendConfigApplyEnvOverridesToml(t *testing.T) {
 	}
 	if cfg.MachineSecret != "env-secret" {
 		t.Fatalf("MachineSecret = %q", cfg.MachineSecret)
+	}
+	if cfg.APIKey != "env-api-key" {
+		t.Fatalf("APIKey = %q", cfg.APIKey)
+	}
+	if cfg.APISecret != "env-api-secret" {
+		t.Fatalf("APISecret = %q", cfg.APISecret)
 	}
 	if cfg.ConnectionTimeoutSecs != 9 {
 		t.Fatalf("ConnectionTimeoutSecs = %d", cfg.ConnectionTimeoutSecs)

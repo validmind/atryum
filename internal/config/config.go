@@ -9,6 +9,8 @@ import (
 	"atryum/internal/auth"
 )
 
+const DefaultBackendBaseURL = "https://app.prod.validmind.ai/"
+
 type Config struct {
 	Server    ServerConfig     `toml:"server"`
 	Backend   BackendConfig    `toml:"backend"`
@@ -32,6 +34,8 @@ type BackendConfig struct {
 	BaseURL               string `toml:"base_url"`
 	MachineKey            string `toml:"machine_key"`
 	MachineSecret         string `toml:"machine_secret"`
+	APIKey                string `toml:"api_key"`
+	APISecret             string `toml:"api_secret"`
 	ConnectionTimeoutSecs int    `toml:"connection_timeout_seconds"`
 	// EvaluateTimeoutSecs is the HTTP timeout for /evaluate calls, which invoke
 	// an LLM and can take much longer than a normal API round-trip. Defaults to
@@ -92,6 +96,7 @@ func Load(path string) (Config, error) {
 			LogLevel:     "info",
 		},
 		Backend: BackendConfig{
+			BaseURL:               DefaultBackendBaseURL,
 			ConnectionTimeoutSecs: 5,
 		},
 		Defaults: DefaultsConfig{
@@ -99,21 +104,30 @@ func Load(path string) (Config, error) {
 		},
 	}
 	_, err := toml.DecodeFile(path, &cfg)
+	if err != nil && !os.IsNotExist(err) {
+		return cfg, err
+	}
 	cfg.Backend.ApplyEnv()
-	return cfg, err
+	return cfg, nil
 }
 
 func (c *BackendConfig) ApplyEnv() {
-	if value := os.Getenv("ATRYUM_BACKEND_BASE_URL"); value != "" {
+	if value := os.Getenv("VM_BASE_URL"); value != "" {
 		c.BaseURL = value
 	}
-	if value := os.Getenv("ATRYUM_MACHINE_KEY"); value != "" {
+	if value := os.Getenv("VM_MACHINE_KEY"); value != "" {
 		c.MachineKey = value
 	}
-	if value := os.Getenv("ATRYUM_MACHINE_SECRET"); value != "" {
+	if value := os.Getenv("VM_MACHINE_SECRET"); value != "" {
 		c.MachineSecret = value
 	}
-	if value := os.Getenv("ATRYUM_BACKEND_CONNECTION_TIMEOUT_SECONDS"); value != "" {
+	if value := os.Getenv("VM_API_KEY"); value != "" {
+		c.APIKey = value
+	}
+	if value := os.Getenv("VM_API_SECRET"); value != "" {
+		c.APISecret = value
+	}
+	if value := os.Getenv("VM_CONNECTION_TIMEOUT_SECONDS"); value != "" {
 		if parsed, err := strconv.Atoi(value); err == nil {
 			c.ConnectionTimeoutSecs = parsed
 		}
@@ -121,7 +135,7 @@ func (c *BackendConfig) ApplyEnv() {
 	if c.ConnectionTimeoutSecs <= 0 {
 		c.ConnectionTimeoutSecs = 5
 	}
-	if value := os.Getenv("ATRYUM_BACKEND_EVALUATE_TIMEOUT_SECONDS"); value != "" {
+	if value := os.Getenv("VM_EVALUATE_TIMEOUT_SECONDS"); value != "" {
 		if parsed, err := strconv.Atoi(value); err == nil {
 			c.EvaluateTimeoutSecs = parsed
 		}
