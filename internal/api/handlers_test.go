@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -156,8 +157,10 @@ func (s *stubAgentSyncSettingsRepo) Save(_ context.Context, settings store.Agent
 }
 
 type stubAgentsRepo struct {
-	records []store.AgentRecord
-	err     error
+	records     []store.AgentRecord
+	err         error
+	byVMCUID    map[string]store.AgentRecord
+	byVMCUIDErr map[string]error
 }
 
 func (s *stubAgentsRepo) List(context.Context) ([]store.AgentRecord, error) {
@@ -174,6 +177,19 @@ func (s *stubAgentsRepo) ListEnabled(context.Context) ([]store.AgentRecord, erro
 }
 func (s *stubAgentsRepo) Get(context.Context, string) (store.AgentRecord, error) {
 	return store.AgentRecord{}, nil
+}
+func (s *stubAgentsRepo) GetByVMCUID(_ context.Context, vmCUID string) (store.AgentRecord, error) {
+	if s.byVMCUIDErr != nil {
+		if err, ok := s.byVMCUIDErr[vmCUID]; ok {
+			return store.AgentRecord{}, err
+		}
+	}
+	if s.byVMCUID != nil {
+		if rec, ok := s.byVMCUID[vmCUID]; ok {
+			return rec, nil
+		}
+	}
+	return store.AgentRecord{}, fmt.Errorf("sql: no rows in result set")
 }
 func (s *stubAgentsRepo) UpdateEnabled(context.Context, string, bool) error { return nil }
 func (s *stubAgentsRepo) UpdateAgentIDs(context.Context, string, string) error {
@@ -671,6 +687,84 @@ func TestAdminInvocationsResponsesIncludeServerToolAndInput(t *testing.T) {
 		}
 		if !strings.Contains(w.Body.String(), `"input":{"issue":123,"verbose":true}`) {
 			t.Fatalf("expected input in detail response, got %s", w.Body.String())
+		}
+	})
+}
+
+// TestInvocationsByVMCUID tests the invocationsByVMCUID handler directly,
+// bypassing the API key middleware (same pattern as TestAgentIDsUsesAgentsTable).
+func TestInvocationsByVMCUID(t *testing.T) {
+	inv := invocation.InvocationResponse{
+		InvocationID: "inv_vm_1",
+		ServerName:   "amp",
+		ToolName:     "Read",
+		Status:       invocation.StatusSucceeded,
+	}
+	svc := &stubService{invoke: inv}
+
+	t.Run("returns invocations for known vm_cuid", func(t *testing.T) {
+		agents := &stubAgentsRepo{
+			byVMCUID: map[string]store.AgentRecord{
+				"mdl_abc": {ID: "agent_1", AgentIDs: `["worker-1"]`, Enabled: true},
+			},
+		}
+		h := NewHandler(svc, stubServerService{}, nil, nil, agents, nil, nil, nil)
+		req := httptest.NewRequest(http.MethodGet, "/models/mdl_abc/invocations", nil)
+		w := httptest.NewRecorder()
+		h.invocationsByVMCUID(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+		var resp invocation.InvocationListResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		if len(resp.Items) != 1 || resp.Items[0].InvocationID != "inv_vm_1" {
+			t.Fatalf("unexpected items: %+v", resp.Items)
+		}
+	})
+
+	t.Run("returns 404 for unknown vm_cuid", func(t *testing.T) {
+		agents := &stubAgentsRepo{} // byVMCUID is nil — stub returns no rows error
+		h := NewHandler(svc, stubServerService{}, nil, nil, agents, nil, nil, nil)
+		req := httptest.NewRequest(http.MethodGet, "/models/mdl_unknown/invocations", nil)
+		w := httptest.NewRecorder()
+		h.invocationsByVMCUID(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("returns empty list when agent has no agent_ids", func(t *testing.T) {
+		agents := &stubAgentsRepo{
+			byVMCUID: map[string]store.AgentRecord{
+				"mdl_noids": {ID: "agent_2", AgentIDs: `[]`, Enabled: true},
+			},
+		}
+		h := NewHandler(svc, stubServerService{}, nil, nil, agents, nil, nil, nil)
+		req := httptest.NewRequest(http.MethodGet, "/models/mdl_noids/invocations", nil)
+		w := httptest.NewRecorder()
+		h.invocationsByVMCUID(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+		var resp invocation.InvocationListResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		if len(resp.Items) != 0 || resp.Total != 0 {
+			t.Fatalf("expected empty list, got %+v", resp)
+		}
+	})
+
+	t.Run("returns 400 when vm_cuid missing from path", func(t *testing.T) {
+		agents := &stubAgentsRepo{}
+		h := NewHandler(svc, stubServerService{}, nil, nil, agents, nil, nil, nil)
+		req := httptest.NewRequest(http.MethodGet, "/models//invocations", nil)
+		w := httptest.NewRecorder()
+		h.invocationsByVMCUID(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d body=%s", w.Code, w.Body.String())
 		}
 	})
 }

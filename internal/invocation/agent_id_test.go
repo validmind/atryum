@@ -108,7 +108,7 @@ func TestInvokeUsesAuthenticatedAgentIDForRulesAndEvents(t *testing.T) {
 	if got.AgentID == nil || *got.AgentID != "agent-007" {
 		t.Fatalf("expected invocation.agent_id=agent-007, got %v", got.AgentID)
 	}
-	list, err := svc.List(context.Background(), invocation.InvocationListFilter{AgentID: "agent-007", Limit: 10})
+	list, err := svc.List(context.Background(), invocation.InvocationListFilter{AgentIDs: []string{"agent-007"}, Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}

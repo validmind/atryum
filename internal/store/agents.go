@@ -139,6 +139,20 @@ func (r *AgentsRepo) UpdateEnabled(ctx context.Context, id string, enabled bool)
 	return err
 }
 
+// GetByVMCUID returns the agent record for the given ValidMind inventory model
+// CUID. Returns sql.ErrNoRows when no match is found.
+func (r *AgentsRepo) GetByVMCUID(ctx context.Context, vmCUID string) (AgentRecord, error) {
+	query, args, err := r.sb.Select(agentColumns...).
+		From("agents").
+		Where(sq.Eq{"vm_cuid": vmCUID}).
+		Limit(1).
+		ToSql()
+	if err != nil {
+		return AgentRecord{}, err
+	}
+	return scanAgent(r.db.QueryRowContext(ctx, query, args...))
+}
+
 // GetByAgentID returns the agent record whose agent_ids JSON array contains the
 // given agentID string. Returns sql.ErrNoRows when no match is found.
 func (r *AgentsRepo) GetByAgentID(ctx context.Context, agentID string) (AgentRecord, error) {

@@ -281,7 +281,7 @@ func TestInvocationRepo_AgentIDPersistedAndFilterable(t *testing.T) {
 	}
 
 	// Filter by agent_id returns only the matching row.
-	invs, total, err := repo.List(ctx, invocation.InvocationListFilter{AgentID: "agent-007", Limit: 10})
+	invs, total, err := repo.List(ctx, invocation.InvocationListFilter{AgentIDs: []string{"agent-007"}, Limit: 10})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}

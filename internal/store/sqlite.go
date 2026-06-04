@@ -256,28 +256,28 @@ func (r *ServerRepo) UpsertServer(ctx context.Context, upstream mcp.Upstream) er
 	now := time.Now().UTC()
 
 	updateMap := map[string]interface{}{
-		"mode":                 string(upstream.Mode),
-		"base_url":             emptyToNil(upstream.BaseURL),
-		"auth_token":           emptyToNil(upstream.AuthToken),
-		"timeout_seconds":      int(upstream.Timeout / time.Second),
-		"command":              emptyToNil(upstream.Command),
-		"args_json":            argsJSON,
-		"env_json":             envJSON,
-		"enabled":              boolToInt(upstream.Enabled),
-		"auth_type":            string(upstream.Status.AuthType),
-		"connection_status":    string(upstream.Status.ConnectionStatus),
-		"auth_status":          string(upstream.Status.AuthStatus),
-		"reauth_needed":        boolToInt(upstream.Status.ReauthNeeded),
-		"last_checked_at":      upstream.Status.LastCheckedAt,
-		"last_check_ok":        boolToInt(upstream.Status.LastCheckOK),
-		"last_error_summary":   emptyToNil(derefString(upstream.Status.LastErrorSummary)),
-		"action_required":      emptyToNil(derefString(upstream.Status.ActionRequired)),
-		"oauth_provider_id":    emptyToNil(upstream.OAuthProviderID),
-		"oauth_provider_label": emptyToNil(upstream.OAuthProviderLabel),
-		"oauth_authorize_url":  emptyToNil(upstream.OAuthAuthorizeURL),
-		"oauth_token_url":      emptyToNil(upstream.OAuthTokenURL),
-		"oauth_client_id":      emptyToNil(upstream.OAuthClientID),
-		"oauth_client_secret":  emptyToNil(upstream.OAuthClientSecret),
+		"mode":                      string(upstream.Mode),
+		"base_url":                  emptyToNil(upstream.BaseURL),
+		"auth_token":                emptyToNil(upstream.AuthToken),
+		"timeout_seconds":           int(upstream.Timeout / time.Second),
+		"command":                   emptyToNil(upstream.Command),
+		"args_json":                 argsJSON,
+		"env_json":                  envJSON,
+		"enabled":                   boolToInt(upstream.Enabled),
+		"auth_type":                 string(upstream.Status.AuthType),
+		"connection_status":         string(upstream.Status.ConnectionStatus),
+		"auth_status":               string(upstream.Status.AuthStatus),
+		"reauth_needed":             boolToInt(upstream.Status.ReauthNeeded),
+		"last_checked_at":           upstream.Status.LastCheckedAt,
+		"last_check_ok":             boolToInt(upstream.Status.LastCheckOK),
+		"last_error_summary":        emptyToNil(derefString(upstream.Status.LastErrorSummary)),
+		"action_required":           emptyToNil(derefString(upstream.Status.ActionRequired)),
+		"oauth_provider_id":         emptyToNil(upstream.OAuthProviderID),
+		"oauth_provider_label":      emptyToNil(upstream.OAuthProviderLabel),
+		"oauth_authorize_url":       emptyToNil(upstream.OAuthAuthorizeURL),
+		"oauth_token_url":           emptyToNil(upstream.OAuthTokenURL),
+		"oauth_client_id":           emptyToNil(upstream.OAuthClientID),
+		"oauth_client_secret":       emptyToNil(upstream.OAuthClientSecret),
 		"oauth_scopes":              emptyToNil(upstream.OAuthScopes),
 		"oauth_client_registration": emptyToNil(string(upstream.OAuthClientRegistration)),
 		"updated_at":                now,
@@ -657,9 +657,9 @@ func applyInvocationFilter(builder sq.SelectBuilder, countBuilder sq.SelectBuild
 		builder = builder.Where(sq.Eq{"status": filter.Status})
 		countBuilder = countBuilder.Where(sq.Eq{"status": filter.Status})
 	}
-	if filter.AgentID != "" {
-		builder = builder.Where(sq.Eq{"agent_id": filter.AgentID})
-		countBuilder = countBuilder.Where(sq.Eq{"agent_id": filter.AgentID})
+	if len(filter.AgentIDs) > 0 {
+		builder = builder.Where(sq.Eq{"agent_id": filter.AgentIDs})
+		countBuilder = countBuilder.Where(sq.Eq{"agent_id": filter.AgentIDs})
 	}
 	if filter.ClientName != "" {
 		builder = builder.Where(sq.Eq{"client_name": filter.ClientName})
