@@ -12,14 +12,15 @@ import (
 	"atryum/internal/config"
 )
 
-const connectionPath = "/internal/v1/atryum/connection"
-const agentsPath = "/internal/v1/atryum/agents"
-const modelConfigsPath = "/internal/v1/atryum/model-configs"
-const evaluatePath = "/internal/v1/atryum/evaluate"
-const summarizeInvocationPath = "/internal/v1/atryum/summarize-invocation"
-const organizationsPath = "/internal/v1/atryum/organizations"
-const primaryRecordTypesPath = "/internal/v1/atryum/primary-record-types"
-const customFieldsPath = "/internal/v1/atryum/custom-fields"
+const atryumAPIPath = "/api/atryum/unstable"
+const connectionPath = atryumAPIPath + "/connection"
+const agentsPath = atryumAPIPath + "/agents"
+const modelConfigsPath = atryumAPIPath + "/model-configs"
+const evaluatePath = atryumAPIPath + "/evaluate"
+const summarizeInvocationPath = atryumAPIPath + "/summarize-invocation"
+const organizationsPath = atryumAPIPath + "/organizations"
+const primaryRecordTypesPath = atryumAPIPath + "/primary-record-types"
+const customFieldsPath = atryumAPIPath + "/custom-fields"
 
 type ConnectionResponse struct {
 	OK              bool   `json:"ok"`

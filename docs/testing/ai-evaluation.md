@@ -178,7 +178,7 @@ Send a tool call through Atryum using a bearer token issued for the agent identi
 
 1. Atryum receives the invocation and matches it to the AI Evaluation rule.
 2. It resolves the agent's Inventory Model CUID and org CUID from the stored record.
-3. It calls `POST /internal/v1/atryum/evaluate` on the ValidMind backend with the agent details, constitution field key, and tool call context.
+3. It calls `POST /api/atryum/unstable/evaluate` on the ValidMind backend with the agent details, constitution field key, and tool call context.
 4. The backend fetches the constitution chain from the Inventory Model's custom fields, builds a prompt with precedence rules, and asks the configured LLM for a verdict.
 5. Atryum receives `{ verdict, reason }` and routes the invocation accordingly:
 

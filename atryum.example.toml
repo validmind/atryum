@@ -17,7 +17,7 @@ log_level = "info"
 [backend]
 # Optional ValidMind backend connection check. When base_url is set, Atryum
 # verifies credentials at startup by calling:
-# GET /internal/v1/atryum/connection
+# GET /api/atryum/unstable/connection
 #
 # Machine-user credentials are preferred when configured. If machine_key and
 # machine_secret are both empty, Atryum uses normal user API credentials instead.
