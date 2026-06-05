@@ -30,7 +30,9 @@ func ProtectedResourceHandler(v *Validator, resource string) http.Handler {
 		scopes := map[string]struct{}{}
 		if v != nil {
 			for _, c := range v.Configs() {
-				issuers = append(issuers, c.Issuer)
+				if c.Issuer != "" {
+					issuers = append(issuers, c.Issuer)
+				}
 				if c.RequiredScope != "" {
 					scopes[c.RequiredScope] = struct{}{}
 				}

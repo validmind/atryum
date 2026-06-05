@@ -130,6 +130,48 @@ func TestValidatorMalformedToken(t *testing.T) {
 	}
 }
 
+func TestValidatorBearerAgentIDAcceptsUUID(t *testing.T) {
+	v, err := NewValidator([]Config{{
+		Enabled: true,
+		Type:    AuthTypeBearerAgentID,
+	}}, nil)
+	if err != nil {
+		t.Fatalf("NewValidator: %v", err)
+	}
+	const agentID = "550e8400-e29b-41d4-a716-446655440000"
+	id, err := v.Validate(context.Background(), agentID)
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if id.AgentID != agentID {
+		t.Fatalf("AgentID = %q", id.AgentID)
+	}
+	if id.Subject != agentID {
+		t.Fatalf("Subject = %q", id.Subject)
+	}
+	if id.Issuer != AuthTypeBearerAgentID {
+		t.Fatalf("Issuer = %q", id.Issuer)
+	}
+}
+
+func TestValidatorBearerAgentIDRejectsNonUUID(t *testing.T) {
+	v, err := NewValidator([]Config{{
+		Enabled: true,
+		Type:    AuthTypeBearerAgentID,
+	}}, nil)
+	if err != nil {
+		t.Fatalf("NewValidator: %v", err)
+	}
+	_, err = v.Validate(context.Background(), "not-a-jwt")
+	var ve *ValidationError
+	if !errors.As(err, &ve) || ve.Result != ResultInvalid {
+		t.Fatalf("expected ResultInvalid, got %v", err)
+	}
+	if !strings.Contains(ve.Description, "UUID") {
+		t.Fatalf("expected UUID description, got %q", ve.Description)
+	}
+}
+
 func TestValidatorExpiredToken(t *testing.T) {
 	idp := newTestIdP(t)
 	v := newValidatorForIdP(t, idp)
@@ -268,6 +310,44 @@ func TestValidatorValidToken(t *testing.T) {
 	}
 	if id.Issuer != "https://idp.example" {
 		t.Fatalf("Issuer = %q", id.Issuer)
+	}
+}
+
+func TestValidatorMixedBearerAgentIDAndJWT(t *testing.T) {
+	idp := newTestIdP(t)
+	v, err := NewValidator([]Config{
+		{
+			Enabled: true,
+			Type:    AuthTypeBearerAgentID,
+		},
+		{
+			Enabled:       true,
+			Issuer:        "https://idp.example/",
+			Audience:      "atryum",
+			JWKSURL:       idp.jwksURL(),
+			RequiredScope: "atryum:mcp",
+			AgentIDClaim:  "client_id",
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewValidator: %v", err)
+	}
+
+	const uuidAgentID = "550e8400-e29b-41d4-a716-446655440000"
+	uuidIdentity, err := v.Validate(context.Background(), uuidAgentID)
+	if err != nil {
+		t.Fatalf("Validate UUID: %v", err)
+	}
+	if uuidIdentity.AgentID != uuidAgentID {
+		t.Fatalf("UUID AgentID = %q", uuidIdentity.AgentID)
+	}
+
+	jwtIdentity, err := v.Validate(context.Background(), idp.sign(t, validClaims()))
+	if err != nil {
+		t.Fatalf("Validate JWT: %v", err)
+	}
+	if jwtIdentity.AgentID != "agent-1" {
+		t.Fatalf("JWT AgentID = %q", jwtIdentity.AgentID)
 	}
 }
 

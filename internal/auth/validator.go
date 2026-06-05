@@ -66,6 +66,14 @@ func NewValidator(configs []Config, client *http.Client) (*Validator, error) {
 		if !c.Enabled {
 			continue
 		}
+		switch c.Type {
+		case AuthTypeOAuthJWT:
+		case AuthTypeBearerAgentID:
+			enabled = append(enabled, c)
+			continue
+		default:
+			return nil, fmt.Errorf("auth: unknown type %q", c.Type)
+		}
 		if c.Issuer == "" {
 			return nil, fmt.Errorf("auth: issuer is required")
 		}
@@ -100,6 +108,14 @@ func (v *Validator) Validate(ctx context.Context, bearer string) (Identity, erro
 	bearer = strings.TrimSpace(bearer)
 	if bearer == "" {
 		return Identity{}, &ValidationError{Result: ResultMissing, Description: "missing bearer token"}
+	}
+	if v.hasBearerAgentIDConfig() {
+		if isUUIDBearer(bearer) {
+			return Identity{AgentID: bearer, Issuer: AuthTypeBearerAgentID, Subject: bearer}, nil
+		}
+		if !v.hasOAuthJWTConfig() {
+			return Identity{}, &ValidationError{Result: ResultInvalid, Description: "bearer token must be a UUID"}
+		}
 	}
 
 	// Pre-parse (unverified) just to determine which configured issuer this
@@ -177,6 +193,9 @@ func (v *Validator) Validate(ctx context.Context, bearer string) (Identity, erro
 
 func (v *Validator) matchConfig(issuer string, audienceClaim any) (Config, bool) {
 	for _, c := range v.configs {
+		if c.Type != AuthTypeOAuthJWT {
+			continue
+		}
 		if c.Issuer == issuer && audienceMatches(audienceClaim, c.Audience) {
 			return c, true
 		}
@@ -200,6 +219,43 @@ func audienceMatches(claim any, audience string) bool {
 		}
 	}
 	return false
+}
+
+func (v *Validator) hasBearerAgentIDConfig() bool {
+	for _, c := range v.configs {
+		if c.Type == AuthTypeBearerAgentID {
+			return true
+		}
+	}
+	return false
+}
+
+func (v *Validator) hasOAuthJWTConfig() bool {
+	for _, c := range v.configs {
+		if c.Type == AuthTypeOAuthJWT {
+			return true
+		}
+	}
+	return false
+}
+
+func isUUIDBearer(token string) bool {
+	if len(token) != 36 {
+		return false
+	}
+	for i, r := range token {
+		switch i {
+		case 8, 13, 18, 23:
+			if r != '-' {
+				return false
+			}
+		default:
+			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (v *Validator) cacheFor(ctx context.Context, cfg Config) (*keyCache, error) {

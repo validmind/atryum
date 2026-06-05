@@ -119,6 +119,7 @@ SHORTCUT_READONLY = "true"
 #
 # [[auth]]
 # enabled        = true
+# type           = "oauth_jwt"
 # issuer         = "https://keycloak.example/realms/atryum"
 # audience       = "atryum"
 # # jwks_url is optional. When omitted, OIDC discovery
@@ -128,8 +129,17 @@ SHORTCUT_READONLY = "true"
 # required_scope = "atryum:mcp"
 # agent_id_claim = "client_id"
 #
+# Local/testing fallback for clients that can send a bearer token but cannot
+# perform OAuth. Atryum requires the bearer value to be a UUID and uses that
+# UUID as the authenticated agent ID.
+#
+# [[auth]]
+# enabled = true
+# type    = "bearer_agent_id"
+#
 # [[auth]]
 # enabled        = true
+# type           = "oauth_jwt"
 # issuer         = "https://your-tenant.us.auth0.com/"
 # audience       = "https://atryum.example/mcp"
 # # Leave required_scope empty or omit it to allow tokens without a scope claim.
