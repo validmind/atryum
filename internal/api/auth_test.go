@@ -159,7 +159,9 @@ func TestMCPAcceptsValidTokenAndPlumbsAgentID(t *testing.T) {
 			Result: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`),
 		},
 	}
-	h := newAuthedHandler(t, svc, rig)
+	hdl := NewHandler(svc, stubServerService{}, nil, nil, nil, &stubAgentSyncSettingsRepo{settings: store.AgentSyncSettings{AnonymousAgentRecordCUID: "anon-agent"}}, nil, nil)
+	hdl.SetAuthValidator(rig.v)
+	h := hdl.Routes()
 
 	tok := rig.sign(t, defaultClaims())
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"demo_tool","arguments":{"a":1}}}`))
@@ -176,6 +178,60 @@ func TestMCPAcceptsValidTokenAndPlumbsAgentID(t *testing.T) {
 	id := auth.AgentIDFromContext(svc.invokedCtx)
 	if id != "agent-007" {
 		t.Fatalf("expected agent_id agent-007 on invoke ctx, got %q", id)
+	}
+}
+
+func TestMCPAnonymousDefaultAgentApplied(t *testing.T) {
+	now := time.Now().UTC()
+	svc := &stubService{
+		invoke: invocation.InvocationResponse{
+			InvocationID: "inv_1", ServerName: "demo", ToolName: "demo_tool",
+			Status: invocation.StatusSucceeded, SubmittedAt: now, CompletedAt: &now,
+			Result: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`),
+		},
+	}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, &stubAgentSyncSettingsRepo{settings: store.AgentSyncSettings{AnonymousAgentRecordCUID: " agent-record-x "}}, nil, nil).Routes()
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"demo_tool","arguments":{"a":1}}}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if svc.invokedReq == nil {
+		t.Fatal("expected service.Invoke to be called")
+	}
+	if got := auth.AgentIDFromContext(svc.invokedCtx); got != "agent-record-x" {
+		t.Fatalf("expected anonymous default agent-record-x, got %q", got)
+	}
+}
+
+func TestMCPAnonymousDefaultUnsetPreservesAnonymousToolsCall(t *testing.T) {
+	now := time.Now().UTC()
+	svc := &stubService{
+		invoke: invocation.InvocationResponse{
+			InvocationID: "inv_1", ServerName: "demo", ToolName: "demo_tool",
+			Status: invocation.StatusSucceeded, SubmittedAt: now, CompletedAt: &now,
+			Result: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`),
+		},
+	}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, &stubAgentSyncSettingsRepo{}, nil, nil).Routes()
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"demo_tool","arguments":{"a":1}}}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if svc.invokedReq == nil {
+		t.Fatal("expected service.Invoke to be called")
+	}
+	if got := auth.AgentIDFromContext(svc.invokedCtx); got != "" {
+		t.Fatalf("expected anonymous invoke ctx, got %q", got)
 	}
 }
 

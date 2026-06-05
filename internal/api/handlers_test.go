@@ -178,6 +178,19 @@ func (s *stubAgentsRepo) ListEnabled(context.Context) ([]store.AgentRecord, erro
 func (s *stubAgentsRepo) Get(context.Context, string) (store.AgentRecord, error) {
 	return store.AgentRecord{}, nil
 }
+func (s *stubAgentsRepo) GetByAgentID(_ context.Context, agentID string) (store.AgentRecord, error) {
+	for _, r := range s.records {
+		if r.ID == agentID {
+			return r, nil
+		}
+		for _, id := range parseAgentIDs(r.AgentIDs) {
+			if id == agentID {
+				return r, nil
+			}
+		}
+	}
+	return store.AgentRecord{}, fmt.Errorf("sql: no rows in result set")
+}
 func (s *stubAgentsRepo) GetByVMCUID(_ context.Context, vmCUID string) (store.AgentRecord, error) {
 	if s.byVMCUIDErr != nil {
 		if err, ok := s.byVMCUIDErr[vmCUID]; ok {

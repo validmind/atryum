@@ -36,13 +36,13 @@ func TestInitDB_FreshDatabase(t *testing.T) {
 		t.Fatalf("InitDB: %v", err)
 	}
 
-	// Verify schema_migrations table has 3 entries
+	// Verify schema_migrations table has all registered entries.
 	var count int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 14 {
-		t.Fatalf("expected 14 migrations, got %d", count)
+	if count != 15 {
+		t.Fatalf("expected 15 migrations, got %d", count)
 	}
 
 	// Verify all tables exist
@@ -70,8 +70,8 @@ func TestInitDB_Idempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 14 {
-		t.Fatalf("expected 14 migrations after double init, got %d", count)
+	if count != 15 {
+		t.Fatalf("expected 15 migrations after double init, got %d", count)
 	}
 }
 
@@ -752,16 +752,17 @@ func TestAgentSyncSettingsRepo_UpsertOnEmptyTable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get on empty table: %v", err)
 	}
-	if s.OrgCUID != "" {
-		t.Fatalf("expected empty OrgCUID, got %q", s.OrgCUID)
+	if s.OrgCUID != "" || s.AnonymousAgentRecordCUID != "" {
+		t.Fatalf("expected empty settings, got OrgCUID=%q AnonymousAgentRecordCUID=%q", s.OrgCUID, s.AnonymousAgentRecordCUID)
 	}
 
 	// Save should create the row
 	err = repo.Save(ctx, AgentSyncSettings{
-		OrgCUID:                "org-abc",
-		AgentRecordTypeSlug:    "ai-agents",
-		ConstitutionFieldKey:   "constitution",
-		SummaryModelConfigCUID: "model-abc",
+		OrgCUID:                  "org-abc",
+		AgentRecordTypeSlug:      "ai-agents",
+		ConstitutionFieldKey:     "constitution",
+		SummaryModelConfigCUID:   "model-abc",
+		AnonymousAgentRecordCUID: "agent-record-1",
 	})
 	if err != nil {
 		t.Fatalf("Save: %v", err)
@@ -780,5 +781,38 @@ func TestAgentSyncSettingsRepo_UpsertOnEmptyTable(t *testing.T) {
 	}
 	if s.SummaryModelConfigCUID != "model-abc" {
 		t.Fatalf("expected SummaryModelConfigCUID=model-abc, got %q", s.SummaryModelConfigCUID)
+	}
+	if s.AnonymousAgentRecordCUID != "agent-record-1" {
+		t.Fatalf("expected AnonymousAgentRecordCUID=agent-record-1, got %q", s.AnonymousAgentRecordCUID)
+	}
+}
+
+func TestAgentsRepo_GetByAgentIDMatchesRecordID(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+	if err := InitDB(db); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+
+	repo := NewAgentsRepo(db)
+	ctx := context.Background()
+	if err := repo.Upsert(ctx, AgentRecord{
+		ID:                 "agent-record-1",
+		VMOrganizationCUID: "org-1",
+		VMOrganizationName: "Org 1",
+		VMCUID:             "vm-agent-1",
+		VMName:             "Agent One",
+		AgentIDs:           "[]",
+		Enabled:            true,
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	got, err := repo.GetByAgentID(ctx, "agent-record-1")
+	if err != nil {
+		t.Fatalf("GetByAgentID by record id: %v", err)
+	}
+	if got.ID != "agent-record-1" || got.VMCUID != "vm-agent-1" {
+		t.Fatalf("unexpected agent record: %+v", got)
 	}
 }

@@ -153,17 +153,19 @@ func (r *AgentsRepo) GetByVMCUID(ctx context.Context, vmCUID string) (AgentRecor
 	return scanAgent(r.db.QueryRowContext(ctx, query, args...))
 }
 
-// GetByAgentID returns the agent record whose agent_ids JSON array contains the
-// given agentID string. Returns sql.ErrNoRows when no match is found.
+// GetByAgentID returns the agent record whose local id matches agentID or whose
+// agent_ids JSON array contains the given agentID string. Returns sql.ErrNoRows
+// when no match is found.
 func (r *AgentsRepo) GetByAgentID(ctx context.Context, agentID string) (AgentRecord, error) {
 	cols := strings.Join(agentColumns, ", ")
 	var query string
 	if r.dialect == DialectPostgres {
 		// PostgreSQL: use the @> containment operator on JSONB.
-		query = `SELECT ` + cols + ` FROM agents WHERE agent_ids @> to_jsonb($1::text)::jsonb LIMIT 1`
+		query = `SELECT ` + cols + ` FROM agents WHERE id = $1 OR agent_ids @> to_jsonb($1::text)::jsonb LIMIT 1`
 	} else {
 		// SQLite: use json_each to expand the array and match the value.
-		query = `SELECT ` + cols + ` FROM agents WHERE EXISTS (SELECT 1 FROM json_each(agent_ids) WHERE value = ?) LIMIT 1`
+		query = `SELECT ` + cols + ` FROM agents WHERE id = ? OR EXISTS (SELECT 1 FROM json_each(agent_ids) WHERE value = ?) LIMIT 1`
+		return scanAgent(r.db.QueryRowContext(ctx, query, agentID, agentID))
 	}
 	return scanAgent(r.db.QueryRowContext(ctx, query, agentID))
 }

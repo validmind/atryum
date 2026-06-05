@@ -10,19 +10,20 @@ import (
 	sq "github.com/Masterminds/squirrel"
 )
 
-// AgentSyncSettings holds the three configurable values that control agent
+// AgentSyncSettings holds the configurable values that control agent
 // synchronisation from the ValidMind backend. All fields are empty strings
 // when the user has not yet configured sync (i.e. no row exists yet).
 type AgentSyncSettings struct {
-	OrgCUID                string
-	AgentRecordTypeSlug    string
-	ConstitutionFieldKey   string
-	SummaryModelConfigCUID string
-	UpdatedAt              time.Time
+	OrgCUID                  string
+	AgentRecordTypeSlug      string
+	ConstitutionFieldKey     string
+	SummaryModelConfigCUID   string
+	AnonymousAgentRecordCUID string
+	UpdatedAt                time.Time
 }
 
 var agentSyncSettingsColumns = []string{
-	"org_cuid", "agent_record_type_slug", "constitution_field_key", "summary_model_config_cuid", "updated_at",
+	"org_cuid", "agent_record_type_slug", "constitution_field_key", "summary_model_config_cuid", "anonymous_agent_record_cuid", "updated_at",
 }
 
 // AgentSyncSettingsRepo provides read/write access to the singleton
@@ -63,7 +64,7 @@ func (r *AgentSyncSettingsRepo) Get(ctx context.Context) (AgentSyncSettings, err
 	return s, err
 }
 
-// Save persists all three fields using an upsert so the row is created on
+// Save persists all fields using an upsert so the row is created on
 // first save and updated on subsequent saves regardless of whether a row
 // already exists.
 func (r *AgentSyncSettingsRepo) Save(ctx context.Context, s AgentSyncSettings) error {
@@ -72,19 +73,20 @@ func (r *AgentSyncSettingsRepo) Save(ctx context.Context, s AgentSyncSettings) e
 	var args []any
 	if r.dialect == DialectPostgres {
 		// PostgreSQL upsert
-		query = `INSERT INTO agent_sync_settings (id, org_cuid, agent_record_type_slug, constitution_field_key, summary_model_config_cuid, updated_at)
-VALUES (1, $1, $2, $3, $4, $5)
+		query = `INSERT INTO agent_sync_settings (id, org_cuid, agent_record_type_slug, constitution_field_key, summary_model_config_cuid, anonymous_agent_record_cuid, updated_at)
+VALUES (1, $1, $2, $3, $4, $5, $6)
 ON CONFLICT (id) DO UPDATE SET
   org_cuid                  = EXCLUDED.org_cuid,
   agent_record_type_slug    = EXCLUDED.agent_record_type_slug,
   constitution_field_key    = EXCLUDED.constitution_field_key,
   summary_model_config_cuid = EXCLUDED.summary_model_config_cuid,
+  anonymous_agent_record_cuid = EXCLUDED.anonymous_agent_record_cuid,
   updated_at                = EXCLUDED.updated_at`
-		args = []any{s.OrgCUID, s.AgentRecordTypeSlug, s.ConstitutionFieldKey, s.SummaryModelConfigCUID, now}
+		args = []any{s.OrgCUID, s.AgentRecordTypeSlug, s.ConstitutionFieldKey, s.SummaryModelConfigCUID, s.AnonymousAgentRecordCUID, now}
 	} else {
 		// SQLite: INSERT OR REPLACE replaces the row when the primary key conflicts.
-		query = `INSERT OR REPLACE INTO agent_sync_settings (id, org_cuid, agent_record_type_slug, constitution_field_key, summary_model_config_cuid, updated_at) VALUES (1, ?, ?, ?, ?, ?)`
-		args = []any{s.OrgCUID, s.AgentRecordTypeSlug, s.ConstitutionFieldKey, s.SummaryModelConfigCUID, now}
+		query = `INSERT OR REPLACE INTO agent_sync_settings (id, org_cuid, agent_record_type_slug, constitution_field_key, summary_model_config_cuid, anonymous_agent_record_cuid, updated_at) VALUES (1, ?, ?, ?, ?, ?, ?)`
+		args = []any{s.OrgCUID, s.AgentRecordTypeSlug, s.ConstitutionFieldKey, s.SummaryModelConfigCUID, s.AnonymousAgentRecordCUID, now}
 	}
 	result, err := r.db.ExecContext(ctx, query, args...)
 	if err != nil {
@@ -103,6 +105,7 @@ func scanAgentSyncSettings(row interface{ Scan(dest ...any) error }) (AgentSyncS
 		&s.AgentRecordTypeSlug,
 		&s.ConstitutionFieldKey,
 		&s.SummaryModelConfigCUID,
+		&s.AnonymousAgentRecordCUID,
 		&s.UpdatedAt,
 	); err != nil {
 		return AgentSyncSettings{}, err

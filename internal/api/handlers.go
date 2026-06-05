@@ -80,6 +80,7 @@ type agentsRepo interface {
 	List(ctx context.Context) ([]store.AgentRecord, error)
 	ListEnabled(ctx context.Context) ([]store.AgentRecord, error)
 	Get(ctx context.Context, id string) (store.AgentRecord, error)
+	GetByAgentID(ctx context.Context, agentID string) (store.AgentRecord, error)
 	GetByVMCUID(ctx context.Context, vmCUID string) (store.AgentRecord, error)
 	UpdateEnabled(ctx context.Context, id string, enabled bool) error
 	UpdateAgentIDs(ctx context.Context, id string, agentIDs string) error
@@ -497,6 +498,7 @@ func (h *Handler) spaFileServer() http.Handler {
 }
 
 func (h *Handler) invokeUpstream(w http.ResponseWriter, r *http.Request) {
+	r = r.WithContext(h.withAnonymousDefault(r))
 	server := strings.TrimPrefix(r.URL.Path, "/mcp/")
 	server = strings.Trim(server, "/")
 
@@ -571,6 +573,7 @@ func (h *Handler) invocations(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) agentRules(w http.ResponseWriter, r *http.Request) {
+	ctx := h.withAnonymousDefault(r)
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -580,7 +583,7 @@ func (h *Handler) agentRules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agentID := auth.AgentIDFromContext(r.Context())
+	agentID := auth.AgentIDFromContext(ctx)
 	if agentID == "" {
 		agentID = strings.TrimSpace(r.URL.Query().Get("agent_id"))
 	}
@@ -593,12 +596,32 @@ func (h *Handler) agentRules(w http.ResponseWriter, r *http.Request) {
 	}
 	tool := strings.TrimSpace(r.URL.Query().Get("tool"))
 
-	resp, err := h.buildAgentRulesResponse(r.Context(), agentID, server, tool)
+	resp, err := h.buildAgentRulesResponse(ctx, agentID, server, tool)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) withAnonymousDefault(r *http.Request) context.Context {
+	ctx := r.Context()
+	if _, ok := auth.IdentityFromContext(ctx); ok {
+		return ctx
+	}
+	if h.agentSyncSettingsRepo == nil {
+		return ctx
+	}
+	s, err := h.agentSyncSettingsRepo.Get(ctx)
+	if err != nil {
+		log.Printf("[auth] anonymous default settings lookup failed: %v", err)
+		return ctx
+	}
+	agentIdentity := strings.TrimSpace(s.AnonymousAgentRecordCUID)
+	if agentIdentity == "" {
+		return ctx
+	}
+	return auth.WithIdentity(ctx, auth.Identity{AgentID: agentIdentity})
 }
 
 func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, tool string) (AgentRulesResponse, error) {
@@ -617,9 +640,15 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 	if err != nil {
 		return AgentRulesResponse{}, err
 	}
+	agentCUID := ""
+	if h.agentsRepo != nil && agentID != "" {
+		if rec, err := h.agentsRepo.GetByAgentID(ctx, agentID); err == nil {
+			agentCUID = rec.ID
+		}
+	}
 
 	for _, rule := range rules {
-		if !rule.Enabled || !apiMatchAgentIDPattern(rule.AgentIDPattern, agentID) {
+		if !rule.Enabled || !apiMatchAgentIDPattern(rule.AgentIDPattern, agentID) || !apiMatchAgentCUIDs(rule.AgentCUIDs, agentCUID) {
 			continue
 		}
 		resp.Items = append(resp.Items, AgentRule{
@@ -642,6 +671,18 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 		}
 	}
 	return resp, nil
+}
+
+func apiMatchAgentCUIDs(cuids []string, agentCUID string) bool {
+	if len(cuids) == 0 {
+		return true
+	}
+	for _, cuid := range cuids {
+		if cuid == agentCUID {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) handleInvocation(w http.ResponseWriter, r *http.Request, server string) {
@@ -1899,20 +1940,22 @@ func (h *Handler) adminModelConfigs(w http.ResponseWriter, r *http.Request) {
 // and PUT /admin/settings. SyncError is non-empty when the post-save agent
 // sync failed; settings are persisted regardless.
 type AgentSyncSettingsResponse struct {
-	OrgCUID                string `json:"org_cuid"`
-	AgentRecordTypeSlug    string `json:"agent_record_type_slug"`
-	ConstitutionFieldKey   string `json:"constitution_field_key"`
-	SummaryModelConfigCUID string `json:"summary_model_config_cuid"`
-	UpdatedAt              string `json:"updated_at,omitempty"`
-	SyncError              string `json:"sync_error,omitempty"`
+	OrgCUID                  string `json:"org_cuid"`
+	AgentRecordTypeSlug      string `json:"agent_record_type_slug"`
+	ConstitutionFieldKey     string `json:"constitution_field_key"`
+	SummaryModelConfigCUID   string `json:"summary_model_config_cuid"`
+	AnonymousAgentRecordCUID string `json:"anonymous_agent_record_cuid"`
+	UpdatedAt                string `json:"updated_at,omitempty"`
+	SyncError                string `json:"sync_error,omitempty"`
 }
 
 // AgentSyncSettingsInput is the JSON body accepted by PUT /admin/settings.
 type AgentSyncSettingsInput struct {
-	OrgCUID                string `json:"org_cuid"`
-	AgentRecordTypeSlug    string `json:"agent_record_type_slug"`
-	ConstitutionFieldKey   string `json:"constitution_field_key"`
-	SummaryModelConfigCUID string `json:"summary_model_config_cuid"`
+	OrgCUID                  string `json:"org_cuid"`
+	AgentRecordTypeSlug      string `json:"agent_record_type_slug"`
+	ConstitutionFieldKey     string `json:"constitution_field_key"`
+	SummaryModelConfigCUID   string `json:"summary_model_config_cuid"`
+	AnonymousAgentRecordCUID string `json:"anonymous_agent_record_cuid"`
 }
 
 func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
@@ -1928,10 +1971,11 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resp := AgentSyncSettingsResponse{
-			OrgCUID:                s.OrgCUID,
-			AgentRecordTypeSlug:    s.AgentRecordTypeSlug,
-			ConstitutionFieldKey:   s.ConstitutionFieldKey,
-			SummaryModelConfigCUID: s.SummaryModelConfigCUID,
+			OrgCUID:                  s.OrgCUID,
+			AgentRecordTypeSlug:      s.AgentRecordTypeSlug,
+			ConstitutionFieldKey:     s.ConstitutionFieldKey,
+			SummaryModelConfigCUID:   s.SummaryModelConfigCUID,
+			AnonymousAgentRecordCUID: s.AnonymousAgentRecordCUID,
 		}
 		if !s.UpdatedAt.IsZero() {
 			resp.UpdatedAt = s.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z")
@@ -1958,10 +2002,11 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if err := h.agentSyncSettingsRepo.Save(r.Context(), store.AgentSyncSettings{
-			OrgCUID:                input.OrgCUID,
-			AgentRecordTypeSlug:    input.AgentRecordTypeSlug,
-			ConstitutionFieldKey:   input.ConstitutionFieldKey,
-			SummaryModelConfigCUID: input.SummaryModelConfigCUID,
+			OrgCUID:                  input.OrgCUID,
+			AgentRecordTypeSlug:      input.AgentRecordTypeSlug,
+			ConstitutionFieldKey:     input.ConstitutionFieldKey,
+			SummaryModelConfigCUID:   input.SummaryModelConfigCUID,
+			AnonymousAgentRecordCUID: strings.TrimSpace(input.AnonymousAgentRecordCUID),
 		}); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to save settings: "+err.Error())
 			return
@@ -1983,11 +2028,12 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		log.Printf("[adminSettings] GET after save: org_cuid=%q record_type=%q", s.OrgCUID, s.AgentRecordTypeSlug)
 		resp := AgentSyncSettingsResponse{
-			OrgCUID:                s.OrgCUID,
-			AgentRecordTypeSlug:    s.AgentRecordTypeSlug,
-			ConstitutionFieldKey:   s.ConstitutionFieldKey,
-			SummaryModelConfigCUID: s.SummaryModelConfigCUID,
-			SyncError:              syncErr,
+			OrgCUID:                  s.OrgCUID,
+			AgentRecordTypeSlug:      s.AgentRecordTypeSlug,
+			ConstitutionFieldKey:     s.ConstitutionFieldKey,
+			SummaryModelConfigCUID:   s.SummaryModelConfigCUID,
+			AnonymousAgentRecordCUID: s.AnonymousAgentRecordCUID,
+			SyncError:                syncErr,
 		}
 		if !s.UpdatedAt.IsZero() {
 			resp.UpdatedAt = s.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z")
