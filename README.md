@@ -50,6 +50,10 @@ Three pieces of identity travel with every invocation:
 
 Auth is OIDC-based and supports multiple authorization servers concurrently (Keycloak, Auth0, etc.) — see `[[auth]]` blocks. API-key-protected legacy endpoints (`/agent_ids`, `/invocations/{agent_id}`) exist for tooling that hasn't moved to bearer tokens yet.
 
+For local no-auth MCP runs, when no `[[auth]]` blocks are configured, callers may provide a best-effort agent identity with `?agent_id=` on `/mcp/{server}` and `/api/v1/agent/rules`. For example: `http://localhost:8080/mcp/shortcut?agent_id=hunners-codex`. This ID is ignored as soon as inbound auth is configured.
+
+The Settings UI can also select a default ValidMind agent record. AI Evaluation uses that record when an incoming runtime agent ID is missing or does not map to a synced agent, allowing local no-auth runs to evaluate against a known constitution without adding TOML.
+
 ## HTTP surface
 
 Public (auth-protected when `[[auth]]` is configured):

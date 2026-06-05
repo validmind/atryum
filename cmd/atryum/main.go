@@ -329,6 +329,14 @@ func (a *agentsLookupAdapter) GetByAgentID(ctx context.Context, agentID string) 
 	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID}, nil
 }
 
+func (a *agentsLookupAdapter) GetByVMCUID(ctx context.Context, vmCUID string) (invocation.AgentRecord, error) {
+	rec, err := a.repo.GetByVMCUID(ctx, vmCUID)
+	if err != nil {
+		return invocation.AgentRecord{}, err
+	}
+	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID}, nil
+}
+
 // syncSettingsAdapter bridges store.AgentSyncSettingsRepo → invocation.SyncSettingsProvider.
 // ConstitutionFieldKey is read from the DB on every call so that changes saved
 // via the Settings UI take effect immediately without a restart.
@@ -339,6 +347,11 @@ type syncSettingsAdapter struct {
 func (a *syncSettingsAdapter) ConstitutionFieldKey(ctx context.Context) string {
 	s, _ := a.repo.Get(ctx)
 	return s.ConstitutionFieldKey
+}
+
+func (a *syncSettingsAdapter) DefaultAgentVMCUID(ctx context.Context) string {
+	s, _ := a.repo.Get(ctx)
+	return s.DefaultAgentVMCUID
 }
 
 func (a *syncSettingsAdapter) SummarySettings(ctx context.Context) (string, string) {

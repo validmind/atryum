@@ -59,6 +59,7 @@ func newApproval(status, reason string, confidence *float64) *Approval {
 // resolve an agent's VM CUID from its runtime agent ID.
 type AgentLookup interface {
 	GetByAgentID(ctx context.Context, agentID string) (AgentRecord, error)
+	GetByVMCUID(ctx context.Context, vmCUID string) (AgentRecord, error)
 }
 
 // AgentRecord is a lightweight copy of store.AgentRecord used within the
@@ -87,6 +88,7 @@ type SummaryClient interface {
 // the Settings UI are picked up immediately without a restart.
 type SyncSettingsProvider interface {
 	ConstitutionFieldKey(ctx context.Context) string
+	DefaultAgentVMCUID(ctx context.Context) string
 	SummarySettings(ctx context.Context) (orgCUID string, modelConfigCUID string)
 }
 
@@ -287,7 +289,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 					decision = policy.Decision{Disposition: policy.DispositionAuto, Reason: "matched approval rule (auto_approve)"}
 				case RuleActionAIEvaluation:
 					var conf *float64
-					decision, conf = s.runAIEvaluation(ctx, &r, upstream.Name, req.Tool, req.Input, agentID)
+					decision, conf = s.runAIEvaluation(ctx, &r, upstream.Name, req.Tool, req.Input, agentID, agentRec)
 					if decision.Disposition != dispositionContinue {
 						aiConfidence = conf
 					}
@@ -358,13 +360,28 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 // cannot be found or when agents lookup is not configured — callers treat an
 // empty ID as "match all agents" in rule filtering.
 func (s *Service) resolveAgentRecord(ctx context.Context, agentID string) AgentRecord {
-	if s.agents == nil || agentID == "" {
+	if s.agents == nil {
 		return AgentRecord{}
 	}
-	rec, err := s.agents.GetByAgentID(ctx, agentID)
-	if err != nil {
-		slog.Warn("could not resolve agent record for rule matching; agent-scoped rules will not match",
+	if agentID != "" {
+		rec, err := s.agents.GetByAgentID(ctx, agentID)
+		if err == nil {
+			return rec
+		}
+		slog.Warn("could not resolve agent record for runtime agent id; falling back to default agent record if configured",
 			"agent_id", agentID, "error", err)
+	}
+	defaultVMCUID := ""
+	if s.syncSettings != nil {
+		defaultVMCUID = strings.TrimSpace(s.syncSettings.DefaultAgentVMCUID(ctx))
+	}
+	if defaultVMCUID == "" {
+		return AgentRecord{}
+	}
+	rec, err := s.agents.GetByVMCUID(ctx, defaultVMCUID)
+	if err != nil {
+		slog.Warn("could not resolve default agent record",
+			"default_agent_vm_cuid", defaultVMCUID, "error", err)
 		return AgentRecord{}
 	}
 	return rec
@@ -373,7 +390,7 @@ func (s *Service) resolveAgentRecord(ctx context.Context, agentID string) AgentR
 // runAIEvaluation calls the VM backend's evaluate endpoint and translates the
 // LLM verdict into a policy.Decision. On any error or if the evaluator is not
 // configured, it falls back to DispositionHuman so no invocation is silently lost.
-func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serverName, toolName string, toolArgs map[string]any, agentID string) (policy.Decision, *float64) {
+func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serverName, toolName string, toolArgs map[string]any, agentID string, agentRec AgentRecord) (policy.Decision, *float64) {
 	if s.evaluator == nil {
 		slog.Warn("ai_evaluation rule matched but no evaluator configured; falling back to human_approval",
 			"rule_id", rule.ID, "tool", toolName, "server", serverName)
@@ -384,19 +401,8 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 	// fetched server-side and the request can be cross-validated against the org.
 	agentVMCUID := ""
 	orgCUID := ""
-	if s.agents != nil && agentID != "" {
-		rec, err := s.agents.GetByAgentID(ctx, agentID)
-		if err != nil {
-			slog.Error("ai_evaluation: could not resolve agent record; denying tool call",
-				"rule_id", rule.ID, "agent_id", agentID, "tool", toolName, "error", err)
-			return policy.Decision{
-				Disposition: policy.DispositionNever,
-				Reason:      "ai_evaluation denied: no agent identity (could not resolve agent record)",
-			}, nil
-		}
-		agentVMCUID = rec.VMCUID
-		orgCUID = rec.VMOrganizationCUID
-	}
+	agentVMCUID = agentRec.VMCUID
+	orgCUID = agentRec.VMOrganizationCUID
 
 	constitutionFieldKey := ""
 	if s.syncSettings != nil {
@@ -777,7 +783,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 			for _, rule := range matchRules(approvalRules, source, req.Tool, user, agentRec.ID) {
 				r := rule
 				if r.Action == RuleActionAIEvaluation {
-					d, conf := s.runAIEvaluation(ctx, &r, source, req.Tool, req.Input, agentID)
+					d, conf := s.runAIEvaluation(ctx, &r, source, req.Tool, req.Input, agentID, agentRec)
 					if d.Disposition == dispositionContinue {
 						slog.Info("ai_evaluation: LLM deferred to next rule; continuing rule iteration",
 							"rule_id", r.ID, "server", source, "tool", req.Tool)

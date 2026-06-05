@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"atryum/internal/auth"
 	backendclient "atryum/internal/backend"
 	"atryum/internal/invocation"
 	"atryum/internal/mcp"
@@ -482,6 +483,68 @@ func TestMCPToolsCallInterceptsInvocation(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), `"text":"ok"`) {
 		t.Fatalf("expected tool result, got %s", w.Body.String())
+	}
+}
+
+func TestMCPNoAuthAgentIDQueryHintSetsIdentity(t *testing.T) {
+	now := time.Now().UTC()
+	svc := &stubService{invoke: invocation.InvocationResponse{InvocationID: "inv_123", ServerName: "demo", ToolName: "demo_tool", Status: invocation.StatusSucceeded, SubmittedAt: now, CompletedAt: &now, Result: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`)}}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo?agent_id=hunners-codex", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"demo_tool","arguments":{}}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if svc.invokedCtx == nil {
+		t.Fatal("expected invocation context")
+	}
+	if got := auth.AgentIDFromContext(svc.invokedCtx); got != "hunners-codex" {
+		t.Fatalf("agent id = %q", got)
+	}
+}
+
+func TestMCPNoAuthAgentIDQueryHintRejectsInvalidCharacters(t *testing.T) {
+	now := time.Now().UTC()
+	svc := &stubService{invoke: invocation.InvocationResponse{InvocationID: "inv_123", ServerName: "demo", ToolName: "demo_tool", Status: invocation.StatusSucceeded, SubmittedAt: now, CompletedAt: &now, Result: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`)}}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo?agent_id=bad/agent", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"demo_tool","arguments":{}}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if svc.invokedCtx == nil {
+		t.Fatal("expected invocation context")
+	}
+	if got := auth.AgentIDFromContext(svc.invokedCtx); got != "" {
+		t.Fatalf("agent id = %q", got)
+	}
+}
+
+func TestMCPAgentIDQueryHintIgnoredWhenAuthConfigured(t *testing.T) {
+	now := time.Now().UTC()
+	svc := &stubService{invoke: invocation.InvocationResponse{InvocationID: "inv_123", ServerName: "demo", ToolName: "demo_tool", Status: invocation.StatusSucceeded, SubmittedAt: now, CompletedAt: &now, Result: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`)}}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil)
+	h.SetAuthValidator(&auth.Validator{})
+	h.SetAuthDebugSkipVerify(true)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo?agent_id=hunners-codex", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"demo_tool","arguments":{}}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if svc.invokedCtx == nil {
+		t.Fatal("expected invocation context")
+	}
+	if got := auth.AgentIDFromContext(svc.invokedCtx); got != "" {
+		t.Fatalf("agent id = %q", got)
 	}
 }
 

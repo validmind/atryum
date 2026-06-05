@@ -426,6 +426,7 @@ func (h *Handler) Routes() http.Handler {
 		mux.Handle("/.well-known/oauth-protected-resource", h.protectedResourceMetadata())
 	}
 	mcpHandler := auth.MiddlewareWithOptions(h.authValidator, "/.well-known/oauth-protected-resource", auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})(http.HandlerFunc(h.invokeUpstream))
+	mcpHandler = h.noAuthAgentIDHint(mcpHandler)
 	mux.Handle("/mcp/", mcpHandler)
 	mux.HandleFunc("/api/v1/invocations", h.invocations)
 	mux.HandleFunc("/api/v1/admin/invocations", h.adminInvocations)
@@ -445,6 +446,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/api/v1/admin/oauth/callback", h.oauthCallback)
 	mux.HandleFunc("/api/v1/admin/policy", h.adminPolicy)
 	agentRulesHandler := auth.MiddlewareWithOptions(h.authValidator, "/.well-known/oauth-protected-resource", auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})(http.HandlerFunc(h.agentRules))
+	agentRulesHandler = h.noAuthAgentIDHint(agentRulesHandler)
 	mux.Handle("/api/v1/agent/rules", agentRulesHandler)
 	mux.HandleFunc("/api/v1/external/invocations", h.externalInvocations)
 	mux.HandleFunc("/api/v1/external/invocations/", h.externalInvocationDetail)
@@ -456,6 +458,50 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("/ui/", http.StripPrefix("/ui/", h.spaFileServer()))
 	mux.HandleFunc("/", h.root)
 	return mux
+}
+
+func (h *Handler) noAuthAgentIDHint(next http.Handler) http.Handler {
+	if h.authValidator != nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		agentID := normalizeNoAuthAgentID(r.URL.Query().Get("agent_id"))
+		if agentID == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		identity := auth.Identity{
+			AgentID: agentID,
+			Issuer:  "atryum:no-auth",
+			Subject: agentID,
+		}
+		next.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), identity)))
+	})
+}
+
+func normalizeNoAuthAgentID(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 256 {
+		return ""
+	}
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' {
+			continue
+		}
+		if r >= 'A' && r <= 'Z' {
+			continue
+		}
+		if r >= '0' && r <= '9' {
+			continue
+		}
+		switch r {
+		case '.', '_', ':', '-':
+			continue
+		default:
+			return ""
+		}
+	}
+	return value
 }
 
 func (h *Handler) healthz(w http.ResponseWriter, _ *http.Request) {
@@ -581,10 +627,10 @@ func (h *Handler) agentRules(w http.ResponseWriter, r *http.Request) {
 	}
 
 	agentID := auth.AgentIDFromContext(r.Context())
-	if agentID == "" {
-		agentID = strings.TrimSpace(r.URL.Query().Get("agent_id"))
+	if agentID == "" && h.authValidator == nil {
+		agentID = normalizeNoAuthAgentID(r.URL.Query().Get("agent_id"))
 	}
-	if agentID == "" {
+	if agentID == "" && h.authValidator == nil {
 		agentID = strings.TrimSpace(r.URL.Query().Get("request_id"))
 	}
 	server := strings.TrimSpace(r.URL.Query().Get("server"))
@@ -1903,6 +1949,7 @@ type AgentSyncSettingsResponse struct {
 	AgentRecordTypeSlug    string `json:"agent_record_type_slug"`
 	ConstitutionFieldKey   string `json:"constitution_field_key"`
 	SummaryModelConfigCUID string `json:"summary_model_config_cuid"`
+	DefaultAgentVMCUID     string `json:"default_agent_vm_cuid"`
 	UpdatedAt              string `json:"updated_at,omitempty"`
 	SyncError              string `json:"sync_error,omitempty"`
 }
@@ -1913,6 +1960,7 @@ type AgentSyncSettingsInput struct {
 	AgentRecordTypeSlug    string `json:"agent_record_type_slug"`
 	ConstitutionFieldKey   string `json:"constitution_field_key"`
 	SummaryModelConfigCUID string `json:"summary_model_config_cuid"`
+	DefaultAgentVMCUID     string `json:"default_agent_vm_cuid"`
 }
 
 func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
@@ -1932,6 +1980,7 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 			AgentRecordTypeSlug:    s.AgentRecordTypeSlug,
 			ConstitutionFieldKey:   s.ConstitutionFieldKey,
 			SummaryModelConfigCUID: s.SummaryModelConfigCUID,
+			DefaultAgentVMCUID:     s.DefaultAgentVMCUID,
 		}
 		if !s.UpdatedAt.IsZero() {
 			resp.UpdatedAt = s.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z")
@@ -1962,6 +2011,7 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 			AgentRecordTypeSlug:    input.AgentRecordTypeSlug,
 			ConstitutionFieldKey:   input.ConstitutionFieldKey,
 			SummaryModelConfigCUID: input.SummaryModelConfigCUID,
+			DefaultAgentVMCUID:     input.DefaultAgentVMCUID,
 		}); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to save settings: "+err.Error())
 			return
@@ -1987,6 +2037,7 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 			AgentRecordTypeSlug:    s.AgentRecordTypeSlug,
 			ConstitutionFieldKey:   s.ConstitutionFieldKey,
 			SummaryModelConfigCUID: s.SummaryModelConfigCUID,
+			DefaultAgentVMCUID:     s.DefaultAgentVMCUID,
 			SyncError:              syncErr,
 		}
 		if !s.UpdatedAt.IsZero() {
