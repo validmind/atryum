@@ -1,0 +1,28 @@
+## Summary
+
+This PR adds a first-run focused CLI flow for Atryum and updates runtime entrypoints to match the new command structure.
+
+- Adds top-level command routing and global help: `run`, `setup`, `hooks`
+- Moves server startup flags under `atryum run` (including `--config`)
+- Adds config auto-discovery fallback (`./atryum.toml`, then user config dir)
+- Adds `atryum setup demo` to generate a minimal working config in user config dir
+- Adds `atryum setup mcp` to one-line add the `calc` stdio MCP server
+- Includes `calc` upstream by default in demo config for quickstart copy/paste
+- Adds `atryum setup validmind` prompts for:
+  - ValidMind base URL (default: `https://app.dev.vm.validmind.ai`)
+  - API key
+  - API secret
+- Adds `atryum hooks install|uninstall [-y|--yes] [cursor|claude-code]`
+  - Installs shared hook script
+  - Patches Cursor/Claude settings JSON
+  - Removes only Atryum hook entries on uninstall
+- Adds optional `atryum run --init-servers` to test all enabled MCP servers on startup and populate status fields
+- Updates Docker entrypoints and README run command to use `atryum run`
+
+## Why
+
+Quickstart users need a zoom-zoom path that works with copy/paste and minimal manual editing, while keeping optional startup behavior (`--init-servers`) opt-in.
+
+## Validation
+
+- `go test ./cmd/atryum`
