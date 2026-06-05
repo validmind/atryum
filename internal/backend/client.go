@@ -157,7 +157,7 @@ func (c *Client) FetchAgents(ctx context.Context, orgCUID, agentRecordTypeSlug s
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return AgentsResponse{}, fmt.Errorf("agents endpoint returned %s", resp.Status)
+		return AgentsResponse{}, fmt.Errorf("agents endpoint returned %s", responseStatus(resp))
 	}
 
 	var payload AgentsResponse
@@ -183,7 +183,7 @@ func (c *Client) FetchModelConfigs(ctx context.Context) (ModelConfigsResponse, e
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return ModelConfigsResponse{}, fmt.Errorf("model-configs endpoint returned %s", resp.Status)
+		return ModelConfigsResponse{}, fmt.Errorf("model-configs endpoint returned %s", responseStatus(resp))
 	}
 
 	var payload ModelConfigsResponse
@@ -249,7 +249,7 @@ func (c *Client) FetchOrganizations(ctx context.Context) (VMOrgsResponse, error)
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return VMOrgsResponse{}, fmt.Errorf("organizations endpoint returned %s", resp.Status)
+		return VMOrgsResponse{}, fmt.Errorf("organizations endpoint returned %s", responseStatus(resp))
 	}
 
 	var payload VMOrgsResponse
@@ -288,7 +288,7 @@ func (c *Client) FetchPrimaryRecordTypes(ctx context.Context, orgCUID string) (V
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return VMRecordTypesResponse{}, fmt.Errorf("primary-record-types endpoint returned %s", resp.Status)
+		return VMRecordTypesResponse{}, fmt.Errorf("primary-record-types endpoint returned %s", responseStatus(resp))
 	}
 
 	var payload VMRecordTypesResponse
@@ -331,7 +331,7 @@ func (c *Client) FetchCustomFields(ctx context.Context, orgCUID, primaryRecordTy
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return VMCustomFieldsResponse{}, fmt.Errorf("custom-fields endpoint returned %s", resp.Status)
+		return VMCustomFieldsResponse{}, fmt.Errorf("custom-fields endpoint returned %s", responseStatus(resp))
 	}
 
 	var payload VMCustomFieldsResponse
@@ -391,7 +391,7 @@ func (c *Client) EvaluateToolCall(ctx context.Context, req EvaluateRequest) (Eva
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return EvaluateResponse{}, fmt.Errorf("evaluate endpoint returned %s", resp.Status)
+		return EvaluateResponse{}, fmt.Errorf("evaluate endpoint returned %s", responseStatus(resp))
 	}
 
 	var payload EvaluateResponse
@@ -445,7 +445,7 @@ func (c *Client) SummarizeInvocation(ctx context.Context, req SummarizeInvocatio
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return SummarizeInvocationResponse{}, fmt.Errorf("summarize-invocation endpoint returned %s", resp.Status)
+		return SummarizeInvocationResponse{}, fmt.Errorf("summarize-invocation endpoint returned %s", responseStatus(resp))
 	}
 
 	var payload SummarizeInvocationResponse
@@ -470,7 +470,7 @@ func (c *Client) CheckConnection(ctx context.Context) (ConnectionResponse, error
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return ConnectionResponse{}, fmt.Errorf("backend connection endpoint returned %s", resp.Status)
+		return ConnectionResponse{}, fmt.Errorf("backend connection endpoint returned %s", responseStatus(resp))
 	}
 
 	var payload ConnectionResponse
@@ -481,4 +481,12 @@ func (c *Client) CheckConnection(ctx context.Context) (ConnectionResponse, error
 		return ConnectionResponse{}, fmt.Errorf("backend connection endpoint returned ok=false")
 	}
 	return payload, nil
+}
+
+func responseStatus(resp *http.Response) string {
+	status := resp.Status
+	if location := resp.Header.Get("Location"); location != "" {
+		status += " (Location: " + location + ")"
+	}
+	return status
 }
