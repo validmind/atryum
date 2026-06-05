@@ -3030,6 +3030,10 @@ func normalizeProtocolVersion(value string) string {
 	switch strings.TrimSpace(value) {
 	case mcp.MCPProtocolVersion2025:
 		return mcp.MCPProtocolVersion2025
+	case mcp.MCPProtocolVersion2025_06_18:
+		return mcp.MCPProtocolVersion2025_06_18
+	case mcp.MCPProtocolVersion2025_03_26:
+		return mcp.MCPProtocolVersion2025_03_26
 	case mcp.MCPProtocolVersion2024:
 		return mcp.MCPProtocolVersion2024
 	default:
