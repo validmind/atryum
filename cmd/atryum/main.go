@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -27,21 +30,61 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", "./atryum.toml", "path to TOML config")
-	flag.Parse()
+	if len(os.Args) <= 1 || os.Args[1] == "help" || os.Args[1] == "-h" || os.Args[1] == "--help" {
+		fmt.Println(globalUsage())
+		return
+	}
 
-	cfg, err := config.Load(*configPath)
+	var err error
+	switch os.Args[1] {
+	case "run":
+		err = runServer(os.Args[2:])
+	case "setup":
+		err = runSetup(os.Args[2:])
+	case "hooks":
+		err = runHooks(os.Args[2:])
+	default:
+		err = fmt.Errorf("unknown command %q\n%s", os.Args[1], globalUsage())
+	}
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		log.Fatal(err)
+	}
+}
+
+func runServer(args []string) error {
+	if hasHelpArg(args) {
+		fmt.Println(runUsage())
+		return nil
+	}
+
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	configPath := fs.String("config", "", "path to TOML config")
+	initServers := fs.Bool("init-servers", false, "test all enabled MCP servers on startup")
+	if err := fs.Parse(args); err != nil {
+		return errors.New(runUsage())
+	}
+	if len(fs.Args()) > 0 {
+		return fmt.Errorf("unexpected arguments: %v\n%s", fs.Args(), runUsage())
+	}
+
+	resolvedConfigPath, err := resolveStartupConfigPath(*configPath)
+	if err != nil {
+		return fmt.Errorf("resolve config path: %w", err)
+	}
+
+	cfg, err := config.Load(resolvedConfigPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
 	}
 	backendClient, err := backendclient.NewClient(cfg.Backend)
 	if err != nil {
-		log.Fatalf("backend config: %v", err)
+		return fmt.Errorf("backend config: %w", err)
 	}
 	if backendClient != nil {
 		resp, err := backendClient.CheckConnection(context.Background())
 		if err != nil {
-			log.Fatalf("backend connection check: %v", err)
+			return fmt.Errorf("backend connection check: %w", err)
 		}
 		if backendClient.AuthMode() == "api_key" {
 			log.Printf("backend connection verified with API credentials for org=%s (%s)", resp.OrgCUID, resp.OrgName)
@@ -54,12 +97,12 @@ func main() {
 
 	db, dialect, err := store.OpenDatabase(cfg.Server.DatabaseURL, cfg.Server.DatabasePath)
 	if err != nil {
-		log.Fatalf("open database: %v", err)
+		return fmt.Errorf("open database: %w", err)
 	}
 	defer db.Close()
 
 	if err := store.InitDBWithDialect(db, dialect); err != nil {
-		log.Fatalf("init db: %v", err)
+		return fmt.Errorf("init db: %w", err)
 	}
 
 	invRepo := store.NewInvocationRepoWithDialect(db, dialect)
@@ -118,7 +161,7 @@ func main() {
 	}
 	resolver := mcp.NewResolver(serverRepo, cfg).WithCredentials(credentialAdapter{repo: oauthRepo})
 	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
-		log.Fatalf("bootstrap servers: %v", err)
+		return fmt.Errorf("bootstrap servers: %w", err)
 	}
 	client := mcp.NewHTTPClient()
 
@@ -133,7 +176,7 @@ func main() {
 		providerID = "manual_approval"
 	}
 	if err := policyRegistry.SetActive(providerID); err != nil {
-		log.Fatalf("policy provider: %v", err)
+		return fmt.Errorf("policy provider: %w", err)
 	}
 	log.Printf("policy provider: %s", policyRegistry.Active().DisplayName())
 
@@ -153,11 +196,16 @@ func main() {
 		service.SetInvocationSummarizer(&summaryAdapter{client: backendClient})
 	}
 	serverAdmin := api.NewServerAdminService(serverRepo, oauthRepo, client, 5*time.Second, cfg.Server.PublicBaseURL)
+	if *initServers {
+		if err := initEnabledServerStatuses(context.Background(), serverRepo, serverAdmin); err != nil {
+			return fmt.Errorf("init servers: %w", err)
+		}
+	}
 	handler := api.NewHandler(service, serverAdmin, policyRegistry, rulesRepo, agentsRepo, agentSyncSettingsRepo, syncAgents, backendClient)
 
 	authValidator, err := auth.NewValidator(cfg.Auth, nil)
 	if err != nil {
-		log.Fatalf("auth: %v", err)
+		return fmt.Errorf("auth: %w", err)
 	}
 	if authValidator != nil {
 		handler.SetAuthValidator(authValidator)
@@ -197,6 +245,75 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
+	return nil
+}
+
+func initEnabledServerStatuses(ctx context.Context, repo *store.ServerRepo, serverAdmin *api.ServerAdminService) error {
+	enabled := true
+	const pageSize = 100
+	var offset uint64
+	for {
+		servers, total, err := repo.ListServers(ctx, mcp.ServerFilter{Enabled: &enabled, Offset: offset, Limit: pageSize})
+		if err != nil {
+			return err
+		}
+		if len(servers) == 0 {
+			break
+		}
+		for _, server := range servers {
+			result, err := serverAdmin.Test(ctx, server.Name)
+			if err != nil {
+				log.Printf("startup server init failed for %s: %v", server.Name, err)
+				continue
+			}
+			log.Printf("startup server init %s: ok=%t connection=%s auth=%s", server.Name, result.Ok, result.ConnectionStatus, result.AuthStatus)
+		}
+		offset += uint64(len(servers))
+		if int(offset) >= total {
+			break
+		}
+	}
+	return nil
+}
+
+func resolveStartupConfigPath(explicit string) (string, error) {
+	if explicit != "" {
+		return explicit, nil
+	}
+
+	if _, err := os.Stat("./atryum.toml"); err == nil {
+		return "./atryum.toml", nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+
+	userCfgPath, err := defaultUserConfigPath()
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(userCfgPath); err == nil {
+		return userCfgPath, nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+
+	return "./atryum.toml", nil
+}
+
+func defaultUserConfigPath() (string, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(configDir, "atryum", "atryum.toml"), nil
+}
+
+func defaultUserDatabasePath() (string, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(configDir, "atryum", "atryum.db"), nil
 }
 
 // agentsLookupAdapter bridges store.AgentsRepo → invocation.AgentLookup.

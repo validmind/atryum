@@ -24,4 +24,4 @@ FROM alpine:3.20
 RUN apk add --no-cache ca-certificates
 COPY --from=builder /atryum /usr/local/bin/atryum
 WORKDIR /app
-ENTRYPOINT ["atryum", "-config", "/app/atryum.toml"]
+ENTRYPOINT ["atryum", "run", "-config", "/app/atryum.toml"]

@@ -129,7 +129,7 @@ When `backend.base_url` is empty, the ValidMind backend connection check is skip
 Single-binary Go service.
 
 ```bash
-go run ./cmd/atryum -config atryum.toml
+go run ./cmd/atryum run -config atryum.toml
 ```
 
 Docker Compose has two mutually-exclusive profiles (Postgres always runs):

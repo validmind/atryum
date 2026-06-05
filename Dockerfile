@@ -9,4 +9,4 @@ FROM node:22-alpine
 RUN apk add --no-cache ca-certificates
 COPY --from=builder /atryum /usr/local/bin/atryum
 WORKDIR /app
-ENTRYPOINT ["atryum", "-config", "/app/atryum.toml"]
+ENTRYPOINT ["atryum", "run", "-config", "/app/atryum.toml"]
