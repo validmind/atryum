@@ -168,6 +168,81 @@ func (r *AgentsRepo) GetByAgentID(ctx context.Context, agentID string) (AgentRec
 	return scanAgent(r.db.QueryRowContext(ctx, query, agentID))
 }
 
+// Create inserts a new manually-created agent record. The caller is responsible
+// for supplying unique id and vm_cuid values (e.g. UUIDs). vm_organization_*
+// should be empty strings for manually-created agents.
+func (r *AgentsRepo) Create(ctx context.Context, agent AgentRecord) error {
+	agentIDs := agent.AgentIDs
+	if agentIDs == "" {
+		agentIDs = "[]"
+	}
+	syncedAt := agent.SyncedAt
+	if syncedAt.IsZero() {
+		syncedAt = time.Now().UTC()
+	}
+
+	insert, args, err := r.sb.Insert("agents").
+		Columns(agentColumns...).
+		Values(
+			agent.ID,
+			agent.VMOrganizationCUID,
+			agent.VMOrganizationName,
+			agent.VMCUID,
+			agent.VMName,
+			emptyToNil(agent.VMDescription),
+			agentIDs,
+			agent.Enabled,
+			syncedAt,
+		).
+		ToSql()
+	if err != nil {
+		return fmt.Errorf("build agent create: %w", err)
+	}
+	_, err = r.db.ExecContext(ctx, insert, args...)
+	return err
+}
+
+// UpdateMeta updates the user-visible name and description of the agent with
+// the given id.
+func (r *AgentsRepo) UpdateMeta(ctx context.Context, id, name, description string) error {
+	query, args, err := r.sb.Update("agents").
+		Set("vm_name", name).
+		Set("vm_description", emptyToNil(description)).
+		Where(sq.Eq{"id": id}).
+		ToSql()
+	if err != nil {
+		return fmt.Errorf("build agent meta update: %w", err)
+	}
+	result, err := r.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err == nil && n == 0 {
+		return sql.ErrNoRows
+	}
+	return err
+}
+
+// Delete removes the agent record with the given id.
+func (r *AgentsRepo) Delete(ctx context.Context, id string) error {
+	query, args, err := r.sb.Delete("agents").
+		Where(sq.Eq{"id": id}).
+		ToSql()
+	if err != nil {
+		return fmt.Errorf("build agent delete: %w", err)
+	}
+	result, err := r.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err == nil && n == 0 {
+		return sql.ErrNoRows
+	}
+	return err
+}
+
 // DeleteAll removes every agent record from the table. Used when the sync
 // org or record type changes so stale agents from the previous configuration
 // do not linger.
@@ -175,6 +250,20 @@ func (r *AgentsRepo) DeleteAll(ctx context.Context) error {
 	query, args, err := r.sb.Delete("agents").ToSql()
 	if err != nil {
 		return fmt.Errorf("build agents delete: %w", err)
+	}
+	_, err = r.db.ExecContext(ctx, query, args...)
+	return err
+}
+
+// DeleteSynced removes only agent records that originated from a ValidMind
+// sync (vm_organization_cuid != ''). Manually-created agents (empty
+// vm_organization_cuid) are preserved.
+func (r *AgentsRepo) DeleteSynced(ctx context.Context) error {
+	query, args, err := r.sb.Delete("agents").
+		Where(sq.NotEq{"vm_organization_cuid": ""}).
+		ToSql()
+	if err != nil {
+		return fmt.Errorf("build synced agents delete: %w", err)
 	}
 	_, err = r.db.ExecContext(ctx, query, args...)
 	return err

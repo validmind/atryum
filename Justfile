@@ -64,6 +64,22 @@ build-prod:
 	mv "$tmp_dir/atryum/internal/api/web/atryum.html" "$tmp_dir/atryum/internal/api/web/index.html"
 	(cd "$tmp_dir/atryum" && CGO_ENABLED=0 go build -o "$repo_dir/atryum" ./cmd/atryum)
 
+# Build the FOSS React UI and embed it in internal/api/web/
+build-ui:
+	#!/usr/bin/env bash
+	set -euo pipefail
+	cd ui && npm install && npm run build
+	rm -rf ../internal/api/web
+	mkdir -p ../internal/api/web
+	cp -R dist/. ../internal/api/web/
+
+# Build local atryum binary after building the FOSS UI
+build-with-ui: build-ui build
+
+# Dev server for the FOSS UI (proxies API calls to localhost:8080)
+ui-dev:
+	cd ui && npm install && npm run dev
+
 # Run atryum process locally
 run:
 	go run ./cmd/atryum -config {{config}}

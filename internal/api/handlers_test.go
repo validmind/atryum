@@ -251,6 +251,10 @@ func (s *stubAgentsRepo) UpdateEnabled(context.Context, string, bool) error { re
 func (s *stubAgentsRepo) UpdateAgentIDs(context.Context, string, string) error {
 	return nil
 }
+func (s *stubAgentsRepo) UpdateMeta(context.Context, string, string, string) error { return nil }
+func (s *stubAgentsRepo) Create(_ context.Context, _ store.AgentRecord) error      { return nil }
+func (s *stubAgentsRepo) Delete(context.Context, string) error                     { return nil }
+func (s *stubAgentsRepo) DeleteSynced(context.Context) error                       { return nil }
 func (s *stubAgentsRepo) DeleteAll(context.Context) error {
 	return nil
 }
