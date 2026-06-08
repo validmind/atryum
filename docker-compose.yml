@@ -127,6 +127,32 @@ services:
       keycloak:
         condition: service_healthy
 
+  ui:
+    profiles: ["dev"]
+    image: node:22-alpine
+    working_dir: /app
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        lock_hash="$$(sha256sum package-lock.json | awk '{print $$1}')"
+        marker="node_modules/.package-lock.sha256"
+        if [ ! -d node_modules/.bin ] || [ ! -f "$$marker" ] || [ "$$(cat "$$marker")" != "$$lock_hash" ]; then
+          npm install
+          printf '%s' "$$lock_hash" > "$$marker"
+        fi
+        npm run dev -- --host
+    ports:
+      - "5174:5174"
+    volumes:
+      - ./ui:/app
+    environment:
+      - ATRYUM_BACKEND_URL=http://atryum:8080
+    depends_on:
+      atryum:
+        condition: service_healthy
+
   frontend-init:
     profiles: ["dev"]
     image: busybox

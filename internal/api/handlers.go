@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"atryum/internal/auth"
 	backendclient "atryum/internal/backend"
 	"atryum/internal/invocation"
@@ -83,6 +85,9 @@ type agentsRepo interface {
 	GetByVMCUID(ctx context.Context, vmCUID string) (store.AgentRecord, error)
 	UpdateEnabled(ctx context.Context, id string, enabled bool) error
 	UpdateAgentIDs(ctx context.Context, id string, agentIDs string) error
+	UpdateMeta(ctx context.Context, id, name, description string) error
+	Create(ctx context.Context, agent store.AgentRecord) error
+	Delete(ctx context.Context, id string) error
 	DeleteAll(ctx context.Context) error
 }
 
@@ -288,8 +293,17 @@ type AdminAgent struct {
 }
 
 type AdminAgentInput struct {
-	Enabled  bool     `json:"enabled"`
-	AgentIDs []string `json:"agent_ids,omitempty"`
+	Enabled     bool     `json:"enabled"`
+	AgentIDs    []string `json:"agent_ids,omitempty"`
+	Name        string   `json:"name,omitempty"`
+	Description string   `json:"description,omitempty"`
+}
+
+type AdminAgentCreateInput struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Enabled     bool     `json:"enabled"`
+	AgentIDs    []string `json:"agent_ids,omitempty"`
 }
 
 type AgentListResponse struct {
@@ -2149,20 +2163,63 @@ func normalizePatternSlice(s []string) []string {
 // ─── Agent handlers ───────────────────────────────────────────────────────────
 
 func (h *Handler) adminAgents(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
+		records, err := h.agentsRepo.List(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list agents")
+			return
+		}
+		items := make([]AdminAgent, 0, len(records))
+		for _, a := range records {
+			items = append(items, toAdminAgent(a))
+		}
+		writeJSON(w, http.StatusOK, AgentListResponse{Items: items})
+
+	case http.MethodPost:
+		var req AdminAgentCreateInput
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+		if strings.TrimSpace(req.Name) == "" {
+			writeError(w, http.StatusBadRequest, "name is required")
+			return
+		}
+		id := uuid.New().String()
+		agentIDsJSON := "[]"
+		if len(req.AgentIDs) > 0 {
+			b, err := json.Marshal(req.AgentIDs)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to encode agent_ids")
+				return
+			}
+			agentIDsJSON = string(b)
+		}
+		agent := store.AgentRecord{
+			ID:                 id,
+			VMOrganizationCUID: "",
+			VMOrganizationName: "",
+			VMCUID:             id, // reuse id as vm_cuid for manual agents
+			VMName:             req.Name,
+			VMDescription:      req.Description,
+			AgentIDs:           agentIDsJSON,
+			Enabled:            req.Enabled,
+		}
+		if err := h.agentsRepo.Create(r.Context(), agent); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to create agent")
+			return
+		}
+		record, err := h.agentsRepo.Get(r.Context(), id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to retrieve created agent")
+			return
+		}
+		writeJSON(w, http.StatusCreated, toAdminAgent(record))
+
+	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
 	}
-	records, err := h.agentsRepo.List(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	items := make([]AdminAgent, 0, len(records))
-	for _, a := range records {
-		items = append(items, toAdminAgent(a))
-	}
-	writeJSON(w, http.StatusOK, AgentListResponse{Items: items})
 }
 
 func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
@@ -2200,7 +2257,7 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// PATCH /api/v1/admin/agents/:id — update enabled
+	// /api/v1/admin/agents/:id — GET / PATCH / DELETE
 	id := trimmed
 	switch r.Method {
 	case http.MethodGet:
@@ -2210,10 +2267,11 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 			if err == sql.ErrNoRows {
 				status = http.StatusNotFound
 			}
-			writeError(w, status, err.Error())
+			writeError(w, status, "agent not found")
 			return
 		}
 		writeJSON(w, http.StatusOK, toAdminAgent(record))
+
 	case http.MethodPatch:
 		var req AdminAgentInput
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -2225,7 +2283,7 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 			if err == sql.ErrNoRows {
 				status = http.StatusNotFound
 			}
-			writeError(w, status, err.Error())
+			writeError(w, status, "agent not found")
 			return
 		}
 		if req.AgentIDs != nil {
@@ -2239,16 +2297,38 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 				if err == sql.ErrNoRows {
 					status = http.StatusNotFound
 				}
-				writeError(w, status, err.Error())
+				writeError(w, status, "agent not found")
+				return
+			}
+		}
+		if req.Name != "" {
+			if err := h.agentsRepo.UpdateMeta(r.Context(), id, req.Name, req.Description); err != nil {
+				status := http.StatusInternalServerError
+				if err == sql.ErrNoRows {
+					status = http.StatusNotFound
+				}
+				writeError(w, status, "agent not found")
 				return
 			}
 		}
 		record, err := h.agentsRepo.Get(r.Context(), id)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeError(w, http.StatusInternalServerError, "failed to retrieve agent")
 			return
 		}
 		writeJSON(w, http.StatusOK, toAdminAgent(record))
+
+	case http.MethodDelete:
+		if err := h.agentsRepo.Delete(r.Context(), id); err != nil {
+			status := http.StatusInternalServerError
+			if err == sql.ErrNoRows {
+				status = http.StatusNotFound
+			}
+			writeError(w, status, "agent not found")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
