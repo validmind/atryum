@@ -7,10 +7,16 @@
 // tool — amp does. Atryum is the approval mediator and audit log.
 //
 // Configure via env:
-//   ATRYUM_URL    base URL of the atryum server, default http://localhost:8080
-//   ATRYUM_SOURCE label that shows up in the atryum UI as the "upstream"
-//                 column, default "amp"
-//   ATRYUM_POLL_MS poll interval in ms while waiting for approval, default 2000
+//   ATRYUM_URL       base URL of the atryum server, default http://localhost:8080
+//   ATRYUM_SOURCE    label that shows up in the atryum UI as the "upstream"
+//                    column, default "amp"
+//   ATRYUM_POLL_MS   poll interval in ms while waiting for approval, default 2000
+//   ATRYUM_AGENT_ID  stable agent identifier sent to atryum as the
+//                    invocation's `agent_id`. When this string is listed in
+//                    an Agent Record's `agent_ids` array in the atryum UI,
+//                    invocations from this plugin will be tagged to that
+//                    Agent Record (so agent-scoped approval rules apply).
+//                    Default: empty (no agent tagging).
 
 import type { PluginAPI } from "@ampcode/plugin";
 
@@ -26,6 +32,11 @@ const THREAD_ID = process.env.THREAD_ID || "";
 const CLIENT_NAME = process.env.ATRYUM_CLIENT_NAME || SOURCE;
 const CLIENT_VERSION =
   process.env.ATRYUM_CLIENT_VERSION || process.env.AMP_VERSION || "";
+// Self-declared agent identity. Atryum resolves the Agent Record via the
+// agents.agent_ids JSON array, so any string the user has added to an
+// Agent Record (e.g. "amp-local", "amp-alice", a service account id, etc.)
+// will work. Not authenticated — for verified identity use OAuth.
+const AGENT_ID = process.env.ATRYUM_AGENT_ID || "";
 
 type InvocationStatus =
   | "received"
@@ -74,6 +85,7 @@ async function submit(
       thread_id: THREAD_ID || undefined,
       client_name: CLIENT_NAME,
       client_version: CLIENT_VERSION || undefined,
+      agent_id: AGENT_ID || undefined,
     }),
   });
   if (!res.ok) {

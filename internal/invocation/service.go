@@ -719,7 +719,15 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		return InvocationResponse{}, err
 	}
 	// Evaluate rules against (source, tool, user) — same logic as Invoke.
+	// Verified OAuth identity (when the external route runs behind auth
+	// middleware) wins. Otherwise fall back to the self-declared agent_id
+	// in the body — useful for plugin-style callers that aren't doing
+	// OAuth but still want their invocations tagged & matched to an
+	// Agent Record via agents.agent_ids.
 	agentID := auth.AgentIDFromContext(ctx)
+	if agentID == "" {
+		agentID = strings.TrimSpace(req.AgentID)
+	}
 	agentRec := s.resolveAgentRecord(ctx, agentID)
 
 	now := time.Now().UTC()

@@ -71,6 +71,29 @@ with Approve / Deny buttons.
 | `ATRYUM_URL`      | `http://localhost:8080`| base URL of the atryum server                               |
 | `ATRYUM_SOURCE`   | `amp`                  | label shown as the "upstream" column in the atryum UI       |
 | `ATRYUM_POLL_MS`  | `2000`                 | how often the plugin polls atryum while awaiting approval   |
+| `ATRYUM_AGENT_ID` | _(empty)_              | self-declared agent identifier; matched against Agent Record `agent_ids` (see below) |
+
+## Tagging invocations to an Agent Record
+
+By default the plugin sends no agent identity, so invocations show up in
+the UI unattached to any Agent Record. To get the agent column populated
+and to make agent-scoped approval rules apply:
+
+1. In the Atryum UI, open an Agent Record (or create one) and add a string
+   to its **Agent IDs** field — e.g. `amp-local`, `amp-alice`, or any
+   stable identifier you choose.
+2. Export the same string in your shell:
+
+   ```sh
+   export ATRYUM_AGENT_ID=amp-local
+   ```
+
+3. Re-run amp. Future invocations carry `agent_id: "amp-local"`; Atryum
+   looks it up via `agents.agent_ids @> ["amp-local"]` and tags the row.
+
+This is a **self-declared** identity — anyone with network access to the
+Atryum API can claim any agent id. For verified identity, run Atryum
+behind OAuth and authenticate the plugin instead.
 
 ## API used
 

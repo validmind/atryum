@@ -36,6 +36,16 @@ SCOPE_NAME="${SCOPE_NAME:-atryum:mcp}"
 AUDIENCE="${AUDIENCE:-atryum}"
 REDIRECT_URI="${REDIRECT_URI:-http://localhost:8080/*}"
 
+# Token lifespans (seconds). Demo-friendly defaults: 24h access tokens,
+# 30-day sessions. Stock Keycloak defaults (5min access / 30min idle /
+# 10hr max) are what causes OAuth-based MCP clients (opencode, Claude Code)
+# to "expire fast" in dev. Override via env if you want different values.
+ACCESS_TOKEN_LIFESPAN="${ACCESS_TOKEN_LIFESPAN:-86400}"
+SSO_SESSION_IDLE_TIMEOUT="${SSO_SESSION_IDLE_TIMEOUT:-2592000}"
+SSO_SESSION_MAX_LIFESPAN="${SSO_SESSION_MAX_LIFESPAN:-2592000}"
+CLIENT_SESSION_IDLE_TIMEOUT="${CLIENT_SESSION_IDLE_TIMEOUT:-86400}"
+CLIENT_SESSION_MAX_LIFESPAN="${CLIENT_SESSION_MAX_LIFESPAN:-2592000}"
+
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing: $1" >&2; exit 1; }; }
 need curl
 need jq
@@ -71,6 +81,27 @@ else
 fi
 
 REALM_ID=$(api GET "/${REALM}" | jq -r .id)
+
+# Step 2b — UI: Realm Settings → Sessions / Tokens
+#   Tune token & session lifespans for demos. Stock Keycloak defaults
+#   (accessTokenLifespan=300s) are why OAuth MCP clients felt like they
+#   "expired" after 5 minutes. With these settings a single auth lasts
+#   ~30 days, with the access token itself good for 24h before refresh.
+log "Tuning realm token/session lifespans (access=${ACCESS_TOKEN_LIFESPAN}s, sso_max=${SSO_SESSION_MAX_LIFESPAN}s)..."
+api PUT "/${REALM}" -d "$(cat <<EOF
+{
+  "realm": "${REALM}",
+  "accessTokenLifespan": ${ACCESS_TOKEN_LIFESPAN},
+  "accessTokenLifespanForImplicitFlow": ${ACCESS_TOKEN_LIFESPAN},
+  "ssoSessionIdleTimeout": ${SSO_SESSION_IDLE_TIMEOUT},
+  "ssoSessionMaxLifespan": ${SSO_SESSION_MAX_LIFESPAN},
+  "ssoSessionIdleTimeoutRememberMe": ${SSO_SESSION_IDLE_TIMEOUT},
+  "ssoSessionMaxLifespanRememberMe": ${SSO_SESSION_MAX_LIFESPAN},
+  "clientSessionIdleTimeout": ${CLIENT_SESSION_IDLE_TIMEOUT},
+  "clientSessionMaxLifespan": ${CLIENT_SESSION_MAX_LIFESPAN}
+}
+EOF
+)" >/dev/null
 
 # Step 3 — UI: Client Scopes → Create client scope
 #   Name: atryum:mcp
