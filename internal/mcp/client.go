@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -484,20 +485,27 @@ func (c *Client) ExchangeOAuthCode(ctx context.Context, upstream Upstream, code 
 }
 
 func (c *Client) TestConnection(ctx context.Context, upstream Upstream) ConnectionTestResult {
+	started := time.Now()
+	c.debugf("connection test start server=%s transport=%s enabled=%t target=%s auth=%s timeout_ms=%d", upstream.Name, upstream.Mode, upstream.Enabled, debugTarget(upstream), debugAuthSummary(upstream), upstream.Timeout.Milliseconds())
+	var result ConnectionTestResult
 	if !upstream.Enabled {
 		message := "server is disabled"
 		action := "enable the server before using it"
-		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusDisabled, AuthStatus: upstream.Status.AuthStatus, ReauthNeeded: false, LastCheckOK: false, LastErrorSummary: stringPtr(message), ActionRequired: &action}
+		result = ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusDisabled, AuthStatus: upstream.Status.AuthStatus, ReauthNeeded: false, LastCheckOK: false, LastErrorSummary: stringPtr(message), ActionRequired: &action}
+		c.debugConnectionTestResult(upstream, result, started)
+		return result
 	}
 	switch upstream.Mode {
 	case UpstreamModeHTTP:
-		return c.testHTTP(ctx, upstream)
+		result = c.testHTTP(ctx, upstream)
 	case UpstreamModeStdio:
-		return c.testStdio(ctx, upstream)
+		result = c.testStdio(ctx, upstream)
 	default:
 		message := fmt.Sprintf("unsupported mode %q", upstream.Mode)
-		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusNeedsAttention, AuthStatus: AuthStatusUnknown, ReauthNeeded: false, LastCheckOK: false, LastErrorSummary: stringPtr(message)}
+		result = ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusNeedsAttention, AuthStatus: AuthStatusUnknown, ReauthNeeded: false, LastCheckOK: false, LastErrorSummary: stringPtr(message)}
 	}
+	c.debugConnectionTestResult(upstream, result, started)
+	return result
 }
 
 func (c *Client) invokeHTTP(ctx context.Context, upstream Upstream, tool string, input map[string]any, requestID *string) (InvokeResult, error) {
@@ -910,13 +918,16 @@ func (c *Client) testHTTP(ctx context.Context, upstream Upstream) ConnectionTest
 	if strings.TrimSpace(upstream.BaseURL) == "" {
 		message := "missing base_url"
 		action := "set base_url for this server"
+		c.debugf("connection test http validation server=%s err=%q action=%q", upstream.Name, message, action)
 		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusNeedsAttention, AuthStatus: AuthStatusUnknown, LastCheckOK: false, LastErrorSummary: &message, ActionRequired: &action}
 	}
 	if strings.TrimSpace(upstream.OAuthAuthorizeURL) != "" && strings.TrimSpace(upstream.AuthToken) == "" {
 		message := "oauth connection required"
 		action := "connect this server"
+		c.debugf("connection test http validation server=%s err=%q action=%q oauth_authorize_url=%s oauth_token_url=%s", upstream.Name, message, action, upstream.OAuthAuthorizeURL, upstream.OAuthTokenURL)
 		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusNeedsAttention, AuthStatus: AuthStatusMissingCredentials, ReauthNeeded: false, LastCheckOK: false, LastErrorSummary: &message, ActionRequired: &action}
 	}
+	c.debugf("connection test http initialize server=%s url=%s protocol=%s auth=%s", upstream.Name, upstream.BaseURL, DefaultMCPProtocolVersion, debugAuthSummary(upstream))
 	initBody, err := json.Marshal(Envelope{JSONRPC: "2.0", ID: json.RawMessage([]byte("1")), Method: "initialize", Params: mustRawJSON(map[string]any{
 		"protocolVersion": DefaultMCPProtocolVersion,
 		"clientInfo":      map[string]any{"name": "atryum", "version": "0.1.0"},
@@ -924,13 +935,16 @@ func (c *Client) testHTTP(ctx context.Context, upstream Upstream) ConnectionTest
 	})})
 	if err != nil {
 		message := err.Error()
+		c.debugf("connection test http marshal error server=%s err=%v", upstream.Name, err)
 		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusNeedsAttention, AuthStatus: AuthStatusUnknown, LastCheckOK: false, LastErrorSummary: &message}
 	}
 	result, err := c.doHTTPEnvelope(ctx, upstream, initBody, DefaultMCPProtocolVersion)
 	if err != nil {
 		message := err.Error()
+		c.debugf("connection test http transport error server=%s err=%v", upstream.Name, err)
 		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusUnreachable, AuthStatus: AuthStatusUnknown, LastCheckOK: false, LastErrorSummary: &message}
 	}
+	c.debugf("connection test http response server=%s status=%d content_type=%q protocol=%q body=%s", upstream.Name, result.StatusCode, result.ContentType, result.ProtocolVersion, truncateForLog(result.Body, 600))
 	if result.StatusCode == http.StatusUnauthorized || result.StatusCode == http.StatusForbidden {
 		message := fmt.Sprintf("http %d", result.StatusCode)
 		if detail := extractErrorDetail(result.Body); detail != "" {
@@ -954,13 +968,16 @@ func (c *Client) testStdio(ctx context.Context, upstream Upstream) ConnectionTes
 	if strings.TrimSpace(upstream.Command) == "" {
 		message := "missing command"
 		action := "set a command for this stdio server"
+		c.debugf("connection test stdio validation server=%s err=%q action=%q", upstream.Name, message, action)
 		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusNeedsAttention, AuthStatus: AuthStatusUnknown, LastCheckOK: false, LastErrorSummary: &message, ActionRequired: &action}
 	}
 	if strings.Contains(strings.ToLower(upstream.Name), "shortcut") && !hasCredentialEnv(upstream.Env) {
 		message := "missing credential environment variable"
 		action := "add the required API token env var"
+		c.debugf("connection test stdio validation server=%s err=%q action=%q env_keys=%s", upstream.Name, message, action, strings.Join(debugMapKeys(upstream.Env), ","))
 		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusNeedsAttention, AuthStatus: AuthStatusMissingCredentials, LastCheckOK: false, LastErrorSummary: &message, ActionRequired: &action}
 	}
+	c.debugf("connection test stdio initialize server=%s command=%q args=%s env_keys=%s", upstream.Name, upstream.Command, strings.Join(upstream.Args, " "), strings.Join(debugMapKeys(upstream.Env), ","))
 	cmd := exec.CommandContext(ctx, upstream.Command, upstream.Args...)
 	cmd.Env = os.Environ()
 	for k, v := range upstream.Env {
@@ -1205,6 +1222,61 @@ func (c *Client) debugf(format string, args ...any) {
 		return
 	}
 	log.Printf("[mcp] "+format, args...)
+}
+
+func (c *Client) debugConnectionTestResult(upstream Upstream, result ConnectionTestResult, started time.Time) {
+	c.debugf("connection test result server=%s transport=%s ok=%t connection_status=%s auth_status=%s reauth_needed=%t last_check_ok=%t action_required=%q message=%q duration_ms=%d", upstream.Name, upstream.Mode, result.Ok, result.ConnectionStatus, result.AuthStatus, result.ReauthNeeded, result.LastCheckOK, debugStringPtr(result.ActionRequired), result.Message, time.Since(started).Milliseconds())
+}
+
+func debugTarget(upstream Upstream) string {
+	switch upstream.Mode {
+	case UpstreamModeHTTP:
+		return upstream.BaseURL
+	case UpstreamModeStdio:
+		return strings.TrimSpace(strings.Join(append([]string{upstream.Command}, upstream.Args...), " "))
+	default:
+		return ""
+	}
+}
+
+func debugAuthSummary(upstream Upstream) string {
+	return fmt.Sprintf("has_bearer=%t auth_headers=%s env_credential=%t oauth_provider=%q oauth_client_id=%t oauth_secret=%t oauth_registration=%q",
+		strings.TrimSpace(upstream.AuthToken) != "",
+		strings.Join(debugAuthHeaderNames(upstream.AuthHeaders), ","),
+		hasCredentialEnv(upstream.Env),
+		upstream.OAuthProviderID,
+		strings.TrimSpace(upstream.OAuthClientID) != "",
+		strings.TrimSpace(upstream.OAuthClientSecret) != "",
+		upstream.OAuthClientRegistration,
+	)
+}
+
+func debugAuthHeaderNames(headers []AuthHeader) []string {
+	names := make([]string, 0, len(headers))
+	for _, header := range headers {
+		name := strings.TrimSpace(header.Name)
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func debugMapKeys(in map[string]string) []string {
+	keys := make([]string, 0, len(in))
+	for key := range in {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func debugStringPtr(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func truncateForLog(b []byte, max int) string {

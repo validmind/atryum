@@ -1645,11 +1645,14 @@ func (h *Handler) adminServerDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		name := strings.TrimSuffix(trimmed, "/test")
 		name = strings.TrimSuffix(name, "/")
+		h.debugf("admin server test request method=%s path=%s server=%s remote=%s origin=%q referer=%q user_agent=%q content_length=%d", r.Method, r.URL.Path, name, r.RemoteAddr, r.Header.Get("Origin"), r.Header.Get("Referer"), r.UserAgent(), r.ContentLength)
 		resp, err := h.serverSvc.Test(r.Context(), name)
 		if err != nil {
+			h.debugf("admin server test error server=%s err=%v", name, err)
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		h.debugf("admin server test response server=%s ok=%t connection_status=%s auth_status=%s reauth_needed=%t last_check_ok=%t message=%q action_required=%q", name, resp.Ok, resp.ConnectionStatus, resp.AuthStatus, resp.ReauthNeeded, resp.LastCheckOK, resp.Message, debugStringPtr(resp.ActionRequired))
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
@@ -1797,6 +1800,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]any{"error": map[string]string{"message": message}})
+}
+
+func debugStringPtr(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func (h *Handler) adminRules(w http.ResponseWriter, r *http.Request) {

@@ -1,9 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -155,6 +157,49 @@ func (s *stubAgentSyncSettingsRepo) Get(context.Context) (store.AgentSyncSetting
 func (s *stubAgentSyncSettingsRepo) Save(_ context.Context, settings store.AgentSyncSettings) error {
 	s.settings = settings
 	return nil
+}
+
+func TestAdminServerTestDebugLogsRequestContext(t *testing.T) {
+	t.Setenv("ATRYUM_MCP_DEBUG", "1")
+
+	var logs bytes.Buffer
+	prevWriter := log.Writer()
+	prevFlags := log.Flags()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(prevWriter)
+		log.SetFlags(prevFlags)
+	}()
+
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/servers/shortcut/test", nil)
+	req.Header.Set("Origin", "http://localhost:8080")
+	req.Header.Set("Referer", "http://localhost:8080/ui/")
+	req.Header.Set("User-Agent", "debug-test")
+	req.Header.Set("Cookie", "authToken=secret-token")
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	got := logs.String()
+	for _, want := range []string{
+		"admin server test request method=POST path=/api/v1/admin/servers/shortcut/test server=shortcut",
+		"origin=\"http://localhost:8080\"",
+		"referer=\"http://localhost:8080/ui/\"",
+		"user_agent=\"debug-test\"",
+		"admin server test response server=shortcut",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected logs to contain %q, got:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "secret-token") || strings.Contains(got, "Cookie") {
+		t.Fatalf("expected logs to omit cookie values, got:\n%s", got)
+	}
 }
 
 type stubAgentsRepo struct {
