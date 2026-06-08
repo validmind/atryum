@@ -84,3 +84,20 @@ export const useDenyInvocation = () => {
     },
   );
 };
+
+export const useSummarizeInvocation = () => {
+  const queryClient = useQueryClient();
+  return useMutation(
+    ({ id, modelConfigCuid }: { id: string; modelConfigCuid?: string }) =>
+      invocationsApi.summarize(id, modelConfigCuid),
+    {
+      onSuccess: async (_data, { id }) => {
+        await Promise.all([
+          queryClient.invalidateQueries(INVOCATIONS_KEY),
+          queryClient.invalidateQueries([INVOCATION_DETAIL_KEY, id]),
+          queryClient.invalidateQueries([INVOCATION_EVENTS_KEY, id]),
+        ]);
+      },
+    },
+  );
+};

@@ -316,9 +316,6 @@ const Servers: React.FC = () => {
                   >
                     <Text fontSize="xs">Show disabled</Text>
                   </Checkbox>
-                  <Button size="sm" variant="ghost" isLoading={isLoading} onClick={() => refetch()}>
-                    Refresh
-                  </Button>
                 </HStack>
               </HStack>
 

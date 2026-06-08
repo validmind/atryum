@@ -39,7 +39,9 @@ import { CpuChipIcon } from '@heroicons/react/24/outline';
 
 import { ContentPageTitle } from '../components/Layout';
 import { useAgents, useCreateAgent, useUpdateAgent, useDeleteAgent } from '../hooks/useAgents';
+import { useSettings } from '../hooks/useSettings';
 import type { Agent, AgentCreateInput, AgentUpdateInput } from '../api/AtryumAPI';
+import { agentsApi } from '../api/AtryumAPI';
 
 type SelectOption = { value: string; label: string };
 const toOptions = (ids: string[]): SelectOption[] =>
@@ -311,7 +313,8 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
             variant="outlineDanger"
             size="sm"
             isLoading={deleteMutation.isLoading}
-            isDisabled={isBusy}
+            isDisabled={isBusy || agent.synced}
+            title={agent.synced ? 'Managed by ValidMind sync — change the org or record type in Settings to remove' : undefined}
             onClick={handleDelete}
             mr="auto"
           >
@@ -339,6 +342,9 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
 
 const Agents: React.FC = () => {
   const { data, isLoading, isError, refetch } = useAgents();
+  const { isConnected } = useSettings();
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const {
     isOpen: isCreateOpen,
     onOpen: onCreateOpen,
@@ -347,6 +353,19 @@ const Agents: React.FC = () => {
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [editOpenCount, setEditOpenCount] = useState(0);
   const editDisclosure = useDisclosure();
+
+  const handleSync = useCallback(async () => {
+    setIsSyncing(true);
+    setSyncError(null);
+    try {
+      await agentsApi.sync();
+      await refetch();
+    } catch (err: unknown) {
+      setSyncError(err instanceof Error ? err.message : 'Sync failed.');
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [refetch]);
 
   const agents = data?.items ?? [];
 
@@ -369,17 +388,20 @@ const Agents: React.FC = () => {
               <ContentPageTitle>Agents</ContentPageTitle>
             </HStack>
             <HStack gap={2}>
-              <Button
-                size="sm"
-                variant="ghost"
-                isLoading={isLoading}
-                onClick={() => refetch()}
-              >
-                Refresh
-              </Button>
-              <Button variant="primary" size="sm" onClick={onCreateOpen}>
-                New Agent
-              </Button>
+              {isConnected ? (
+                <Button
+                  size="sm"
+                  variant="primary"
+                  isLoading={isSyncing}
+                  onClick={handleSync}
+                >
+                  Sync from ValidMind
+                </Button>
+              ) : (
+                <Button variant="primary" size="sm" onClick={onCreateOpen}>
+                  New Agent
+                </Button>
+              )}
             </HStack>
           </Flex>
         </HStack>
@@ -393,6 +415,13 @@ const Agents: React.FC = () => {
         <Alert status="error" mb={4} borderRadius="md">
           <AlertIcon />
           <AlertDescription>Failed to load agents.</AlertDescription>
+        </Alert>
+      )}
+
+      {syncError && (
+        <Alert status="warning" mb={4} borderRadius="md">
+          <AlertIcon />
+          <AlertDescription fontSize="sm">{syncError}</AlertDescription>
         </Alert>
       )}
 

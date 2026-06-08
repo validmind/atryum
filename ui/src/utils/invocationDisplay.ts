@@ -61,6 +61,28 @@ export const getDisposition = (
   return [{ label: '—', color: 'gray' }];
 };
 
+export const isAIEvaluated = (
+  inv: Pick<Invocation, 'status' | 'approval'>,
+): boolean => {
+  const reason = inv.approval?.reason ?? '';
+  const status = inv.approval?.status ?? '';
+  return (
+    reason.startsWith('ai_evaluation') ||
+    status === 'ai_escalated' ||
+    status === 'ai_escalated_approved' ||
+    status === 'ai_escalated_denied'
+  );
+};
+
+export const getConfidenceColor = (score: number): string => {
+  if (score >= 0.8) return 'green';
+  if (score >= 0.5) return 'yellow';
+  return 'red';
+};
+
+export const formatConfidence = (score: number): string =>
+  `${Math.round(score * 100)}%`;
+
 export const formatDate = (dateStr: string | null | undefined): string => {
   if (!dateStr) return '—';
   return new Date(dateStr).toLocaleString(undefined, {

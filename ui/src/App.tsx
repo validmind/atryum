@@ -6,6 +6,7 @@ import Invocations from './pages/Invocations';
 import Agents from './pages/Agents';
 import Servers from './pages/Servers';
 import Rules from './pages/Rules';
+import Settings from './pages/Settings';
 
 const App: React.FC = () => (
   <Layout>
@@ -15,6 +16,7 @@ const App: React.FC = () => (
       <Route path="/agents" element={<Agents />} />
       <Route path="/servers" element={<Servers />} />
       <Route path="/rules" element={<Rules />} />
+      <Route path="/settings" element={<Settings />} />
     </Routes>
   </Layout>
 );

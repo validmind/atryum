@@ -1,5 +1,5 @@
 /* eslint-disable react/jsx-no-bind */
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import ResizablePanels from '../components/ResizablePanels';
 import {
   Badge,
@@ -42,7 +42,9 @@ import {
   useInvocationEvents,
   useApproveInvocation,
   useDenyInvocation,
+  useSummarizeInvocation,
 } from '../hooks/useInvocations';
+import { useSettings } from '../hooks/useSettings';
 import { useCreateRule } from '../hooks/useRules';
 import { useAgents } from '../hooks/useAgents';
 import { useInvocationStream } from '../hooks/useInvocationStream';
@@ -58,6 +60,9 @@ import {
   STATUS_LABEL,
   getDisposition,
   formatDate,
+  isAIEvaluated,
+  getConfidenceColor,
+  formatConfidence,
 } from '../utils/invocationDisplay';
 
 const STATUSES: InvocationStatus[] = [
@@ -188,7 +193,32 @@ const Invocations: React.FC = () => {
 
   const approve = useApproveInvocation();
   const deny = useDenyInvocation();
+  const summarize = useSummarizeInvocation();
   const createRule = useCreateRule();
+  const { data: settings } = useSettings();
+  const summaryModelConfigCuid = settings?.summary_model_config_cuid ?? '';
+
+  const [summarizingInvocationId, setSummarizingInvocationId] = useState<string | null>(null);
+  const [summaryErrorInvocationId, setSummaryErrorInvocationId] = useState<string | null>(null);
+
+  const isCurrentInvocationSummarizing =
+    summarize.isLoading && summarizingInvocationId === resolvedSelectedId;
+  const didCurrentInvocationSummaryFail =
+    summaryErrorInvocationId === resolvedSelectedId;
+
+  const handleSummarize = useCallback(async () => {
+    if (!resolvedSelectedId) return;
+    setSummarizingInvocationId(resolvedSelectedId);
+    setSummaryErrorInvocationId(null);
+    try {
+      await summarize.mutateAsync({
+        id: resolvedSelectedId,
+        modelConfigCuid: summaryModelConfigCuid || undefined,
+      });
+    } catch {
+      setSummaryErrorInvocationId(resolvedSelectedId);
+    }
+  }, [resolvedSelectedId, summarize, summaryModelConfigCuid]);
 
   const buildScopeRule = (action: RuleAction): RuleInput => ({
     action,
@@ -566,6 +596,16 @@ const Invocations: React.FC = () => {
                                   </Badge>
                                 ) : null,
                               )}
+                              {isAIEvaluated(inv) &&
+                                inv.approval?.confidence_score != null && (
+                                  <Badge
+                                    colorScheme={getConfidenceColor(inv.approval.confidence_score)}
+                                    fontSize="2xs"
+                                    title={`Confidence: ${formatConfidence(inv.approval.confidence_score)}`}
+                                  >
+                                    {formatConfidence(inv.approval.confidence_score)}
+                                  </Badge>
+                                )}
                             </HStack>
                           </Td>
                           <Td>
@@ -614,6 +654,15 @@ const Invocations: React.FC = () => {
                             </Badge>
                           ) : null,
                         )}
+                        {isAIEvaluated(detail) &&
+                          detail.approval?.confidence_score != null && (
+                            <Badge
+                              colorScheme={getConfidenceColor(detail.approval.confidence_score)}
+                              fontSize="xs"
+                            >
+                              Confidence: {formatConfidence(detail.approval.confidence_score)}
+                            </Badge>
+                          )}
                       </HStack>
                       {detail.approval?.reason && (
                         <Text fontSize="xs" fontFamily="mono" color="text.subtle">
@@ -670,6 +719,56 @@ const Invocations: React.FC = () => {
                       )}
                     </VStack>
                   </Flex>
+
+                  <Box
+                    p={3}
+                    borderWidth={1}
+                    borderColor="border.base"
+                    borderRadius="md"
+                    bg="background.container.subtle"
+                  >
+                    <Flex
+                      justify="space-between"
+                      align="center"
+                      mb={detail.summary ? 2 : 0}
+                      gap={2}
+                      wrap="wrap"
+                    >
+                      <Text
+                        fontSize="xs"
+                        fontWeight="semibold"
+                        textTransform="uppercase"
+                        color="text.subtle"
+                        letterSpacing="wide"
+                      >
+                        Summary
+                      </Text>
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        isLoading={isCurrentInvocationSummarizing}
+                        isDisabled={!summaryModelConfigCuid || isCurrentInvocationSummarizing}
+                        title={!summaryModelConfigCuid ? 'Set an Invocation Summary Model in Settings to enable' : undefined}
+                        onClick={handleSummarize}
+                      >
+                        {detail.summary ? 'Re-summarize' : 'Summarize'}
+                      </Button>
+                    </Flex>
+                    {detail.summary ? (
+                      <Text fontSize="sm" whiteSpace="pre-wrap">{detail.summary}</Text>
+                    ) : (
+                      <Text fontSize="xs" color="text.subtle">
+                        {summaryModelConfigCuid
+                          ? 'No summary yet. Click Summarize to generate one.'
+                          : 'No summary model configured. Set one in Settings to enable summarization.'}
+                      </Text>
+                    )}
+                    {didCurrentInvocationSummaryFail && (
+                      <Text fontSize="xs" color="text.error" mt={2}>
+                        Failed to summarize invocation.
+                      </Text>
+                    )}
+                  </Box>
 
                   {detail.input != null &&
                     !(

@@ -5,6 +5,7 @@ import {
   HStack,
   Heading,
   Icon,
+  Image,
   Link,
   Stack,
   Text,
@@ -15,6 +16,7 @@ import type { ComponentType } from 'react';
 
 import {
   CircleStackIcon,
+  Cog6ToothIcon,
   CpuChipIcon,
   QueueListIcon,
   ShieldCheckIcon,
@@ -31,6 +33,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: 'Agents', icon: CpuChipIcon, path: '/agents' },
   { label: 'Servers', icon: CircleStackIcon, path: '/servers' },
   { label: 'Rules', icon: ShieldCheckIcon, path: '/rules' },
+  { label: 'Settings', icon: Cog6ToothIcon, path: '/settings' },
 ];
 
 type NavItemRowProps = NavItem & { isActive: boolean };
@@ -107,9 +110,17 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               to="/invocations"
               _hover={{ textDecoration: 'none' }}
             >
-              <Heading size="md" color="blue.600">
-                Atryum
-              </Heading>
+              <Image
+                src="/atryum-logo.png"
+                alt="Atryum"
+                objectFit="contain"
+                h="36px"
+                fallback={
+                  <Heading size="md" color="blue.600">
+                    Atryum
+                  </Heading>
+                }
+              />
             </Link>
           </Stack>
           <Stack gap={0}>

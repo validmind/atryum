@@ -88,6 +88,7 @@ type agentsRepo interface {
 	UpdateMeta(ctx context.Context, id, name, description string) error
 	Create(ctx context.Context, agent store.AgentRecord) error
 	Delete(ctx context.Context, id string) error
+	DeleteSynced(ctx context.Context) error
 	DeleteAll(ctx context.Context) error
 }
 
@@ -290,6 +291,10 @@ type AdminAgent struct {
 	AgentIDs    []string  `json:"agent_ids"`
 	SyncedAt    time.Time `json:"synced_at"`
 	Enabled     bool      `json:"enabled"`
+	// Synced is true when this agent originated from a ValidMind sync
+	// (vm_organization_cuid is non-empty). Synced agents cannot be deleted
+	// manually — they are removed by re-syncing with a different org/record-type.
+	Synced bool `json:"synced"`
 }
 
 type AdminAgentInput struct {
@@ -320,6 +325,7 @@ func toAdminAgent(a store.AgentRecord) AdminAgent {
 		AgentIDs:    ids,
 		SyncedAt:    a.SyncedAt,
 		Enabled:     a.Enabled,
+		Synced:      a.VMOrganizationCUID != "",
 	}
 }
 
@@ -1966,7 +1972,8 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 		orgChanged := current.OrgCUID != "" && current.OrgCUID != input.OrgCUID
 		slugChanged := current.AgentRecordTypeSlug != "" && current.AgentRecordTypeSlug != input.AgentRecordTypeSlug
 		if (orgChanged || slugChanged) && h.agentsRepo != nil {
-			if delErr := h.agentsRepo.DeleteAll(r.Context()); delErr != nil {
+			// Only delete synced agents so manually-created agents are preserved.
+			if delErr := h.agentsRepo.DeleteSynced(r.Context()); delErr != nil {
 				writeError(w, http.StatusInternalServerError, "failed to delete agents: "+delErr.Error())
 				return
 			}
@@ -2319,6 +2326,19 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, toAdminAgent(record))
 
 	case http.MethodDelete:
+		record, err := h.agentsRepo.Get(r.Context(), id)
+		if err != nil {
+			status := http.StatusInternalServerError
+			if err == sql.ErrNoRows {
+				status = http.StatusNotFound
+			}
+			writeError(w, status, "agent not found")
+			return
+		}
+		if record.VMOrganizationCUID != "" {
+			writeError(w, http.StatusConflict, "synced agents are managed by ValidMind; change the org or record type in settings to remove them")
+			return
+		}
 		if err := h.agentsRepo.Delete(r.Context(), id); err != nil {
 			status := http.StatusInternalServerError
 			if err == sql.ErrNoRows {

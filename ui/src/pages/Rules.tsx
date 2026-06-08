@@ -22,6 +22,7 @@ import {
   ModalFooter,
   ModalHeader,
   ModalOverlay,
+  Select as ChakraSelect,
   Spinner,
   Table,
   Tbody,
@@ -35,6 +36,7 @@ import {
 } from '@chakra-ui/react';
 import { CreatableSelect, Select } from 'chakra-react-select';
 import { ShieldCheckIcon, ChevronUpIcon, ChevronDownIcon } from '@heroicons/react/24/outline';
+import { useQuery } from 'react-query';
 
 import { ContentPageTitle } from '../components/Layout';
 import {
@@ -47,25 +49,33 @@ import {
 } from '../hooks/useRules';
 import { useServers } from '../hooks/useServers';
 import { useAgents } from '../hooks/useAgents';
-import { type Rule, type RuleAction, type RuleInput } from '../api/AtryumAPI';
+import { useSettings } from '../hooks/useSettings';
+import { type Rule, type RuleAction, type RuleInput, modelConfigsApi } from '../api/AtryumAPI';
 
 const ACTION_COLOR: Record<RuleAction, string> = {
   auto_approve: 'green',
   auto_deny: 'red',
   human_approval: 'orange',
+  ai_evaluation: 'purple',
 };
 
 const ACTION_LABEL: Record<RuleAction, string> = {
   auto_approve: 'Auto Approve',
   auto_deny: 'Auto Deny',
   human_approval: 'Human Approval',
+  ai_evaluation: 'AI Evaluation',
 };
 
-const ACTION_OPTIONS: { value: RuleAction; label: string }[] = [
+const BASE_ACTION_OPTIONS: { value: RuleAction; label: string }[] = [
   { value: 'auto_approve', label: 'Auto Approve' },
   { value: 'auto_deny', label: 'Auto Deny' },
   { value: 'human_approval', label: 'Human Approval' },
 ];
+
+const AI_EVAL_OPTION: { value: RuleAction; label: string } = {
+  value: 'ai_evaluation',
+  label: 'AI Evaluation',
+};
 
 const EMPTY_FORM: RuleInput = {
   action: 'human_approval',
@@ -74,6 +84,7 @@ const EMPTY_FORM: RuleInput = {
   user_pattern: '*',
   agent_cuids: [],
   description: '',
+  model_config_cuid: '',
   enabled: true,
 };
 
@@ -84,6 +95,7 @@ const ruleToInput = (r: Rule): RuleInput => ({
   user_pattern: r.user_pattern,
   agent_cuids: r.agent_cuids ?? [],
   description: r.description ?? '',
+  model_config_cuid: r.model_config_cuid ?? '',
   enabled: r.enabled,
 });
 
@@ -207,6 +219,12 @@ const Rules: React.FC = () => {
   const { data: serversData } = useServers(true);
   const { data: toolsData, isFetching: toolsFetching } = useServerTools(form.server_patterns);
   const { data: agentsData } = useAgents();
+  const { isConnected } = useSettings();
+  const { data: modelConfigsData } = useQuery(
+    ['model-configs'],
+    modelConfigsApi.list,
+    { enabled: isConnected, staleTime: 60_000 },
+  );
 
   const createRule = useCreateRule();
   const updateRule = useUpdateRule();
@@ -220,6 +238,13 @@ const Rules: React.FC = () => {
     value: a.cuid,
     label: a.name,
   }));
+  const modelConfigOptions = (modelConfigsData?.items ?? []).map((mc) => ({
+    value: mc.cuid,
+    label: mc.name,
+  }));
+  const actionOptions = isConnected
+    ? [...BASE_ACTION_OPTIONS, AI_EVAL_OPTION]
+    : BASE_ACTION_OPTIONS;
 
   const openForCreate = useCallback(() => {
     setSelectedId(null);
@@ -317,9 +342,6 @@ const Rules: React.FC = () => {
         <Button size="sm" variant="primary" onClick={openForCreate}>
           New Rule
         </Button>
-        <Button size="sm" variant="ghost" isLoading={isLoading} onClick={() => refetch()}>
-          Refresh
-        </Button>
       </HStack>
 
       <Box borderWidth={1} borderColor="border.base" borderRadius="md" overflow="hidden">
@@ -380,15 +402,46 @@ const Rules: React.FC = () => {
                 <FormLabel fontSize="sm">Action</FormLabel>
                 <Select
                   size="sm"
-                  options={ACTION_OPTIONS}
-                  value={ACTION_OPTIONS.find((o) => o.value === form.action) ?? null}
+                  options={actionOptions}
+                  value={actionOptions.find((o) => o.value === form.action) ?? null}
                   onChange={(opt) => {
                     if (!opt) return;
-                    setForm((f) => ({ ...f, action: opt.value as RuleAction }));
+                    setForm((f) => ({
+                      ...f,
+                      action: opt.value as RuleAction,
+                      model_config_cuid: opt.value !== 'ai_evaluation' ? '' : f.model_config_cuid,
+                    }));
                   }}
                   classNamePrefix="chakra-react-select"
                 />
               </FormControl>
+
+              {form.action === 'ai_evaluation' && (
+                <FormControl isRequired>
+                  <FormLabel fontSize="sm">AI Evaluation Model</FormLabel>
+                  <ChakraSelect
+                    size="sm"
+                    value={form.model_config_cuid ?? ''}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, model_config_cuid: e.target.value }))
+                    }
+                    placeholder={
+                      modelConfigOptions.length > 0
+                        ? 'Select a model configuration…'
+                        : 'No model configurations — configure one in Settings'
+                    }
+                  >
+                    {modelConfigOptions.map((mc) => (
+                      <option key={mc.value} value={mc.value}>
+                        {mc.label}
+                      </option>
+                    ))}
+                  </ChakraSelect>
+                  <FormHelperText fontSize="xs">
+                    ValidMind model configuration used to evaluate this invocation.
+                  </FormHelperText>
+                </FormControl>
+              )}
 
               <FormControl>
                 <FormLabel fontSize="sm">Agents</FormLabel>

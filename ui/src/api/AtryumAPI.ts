@@ -119,6 +119,18 @@ export const invocationsApi = {
       body,
     );
   },
+
+  summarize: async (
+    id: string,
+    modelConfigCuid?: string,
+  ): Promise<{ summary: string }> => {
+    const body = modelConfigCuid ? { model_config_cuid: modelConfigCuid } : {};
+    const { data } = await atryumApi.post(
+      `/api/v1/admin/invocations/${encodeURIComponent(id)}/summarize`,
+      body,
+    );
+    return data;
+  },
 };
 
 // ─── Servers ──────────────────────────────────────────────────────────────────
@@ -268,7 +280,7 @@ export const serversApi = {
 
 // ─── Rules ────────────────────────────────────────────────────────────────────
 
-export type RuleAction = 'auto_approve' | 'auto_deny' | 'human_approval';
+export type RuleAction = 'auto_approve' | 'auto_deny' | 'human_approval' | 'ai_evaluation';
 
 export interface Rule {
   id: string;
@@ -279,6 +291,8 @@ export interface Rule {
   /** Agent CUIDs this rule applies to; empty means all agents. */
   agent_cuids?: string[];
   description?: string;
+  /** ValidMind model config CUID used for ai_evaluation rules. */
+  model_config_cuid?: string;
   enabled: boolean;
   order: number;
 }
@@ -290,6 +304,7 @@ export interface RuleInput {
   user_pattern: string;
   agent_cuids?: string[];
   description?: string;
+  model_config_cuid?: string;
   enabled: boolean;
 }
 
@@ -337,6 +352,8 @@ export interface Agent {
   agent_ids: string[];
   enabled: boolean;
   synced_at: string;
+  /** True when this agent originated from a ValidMind sync and cannot be deleted manually. */
+  synced: boolean;
 }
 
 export interface AgentCreateInput {
@@ -376,5 +393,100 @@ export const agentsApi = {
     await atryumApi.delete(
       `/api/v1/admin/agents/${encodeURIComponent(cuid)}`,
     );
+  },
+
+  sync: async (): Promise<void> => {
+    await atryumApi.post('/api/v1/admin/agents/sync');
+  },
+};
+
+// ─── Settings ─────────────────────────────────────────────────────────────────
+
+export interface AgentSyncSettings {
+  org_cuid: string;
+  agent_record_type_slug: string;
+  constitution_field_key: string;
+  summary_model_config_cuid: string;
+  updated_at?: string;
+  sync_error?: string;
+}
+
+export const settingsApi = {
+  get: async (): Promise<AgentSyncSettings> => {
+    const { data } = await atryumApi.get('/api/v1/admin/settings');
+    return data;
+  },
+
+  update: async (
+    input: Omit<AgentSyncSettings, 'updated_at' | 'sync_error'>,
+  ): Promise<AgentSyncSettings> => {
+    const { data } = await atryumApi.put('/api/v1/admin/settings', input);
+    return data;
+  },
+};
+
+// ─── Model Configs ────────────────────────────────────────────────────────────
+
+export interface ModelConfig {
+  cuid: string;
+  name: string;
+}
+
+export const modelConfigsApi = {
+  list: async (): Promise<{ items: ModelConfig[]; total: number }> => {
+    const { data } = await atryumApi.get('/api/v1/admin/model-configs');
+    return data;
+  },
+};
+
+// ─── VM Discovery ─────────────────────────────────────────────────────────────
+
+export interface VmOrg {
+  cuid: string;
+  name: string;
+}
+
+export interface VmOrgListResponse {
+  items: VmOrg[];
+  total: number;
+  auth_mode?: string;
+  single_org?: boolean;
+}
+
+export interface VmRecordType {
+  cuid: string;
+  slug: string;
+  name: string;
+}
+
+export interface VmCustomField {
+  key: string;
+  name: string;
+  field_type: string;
+}
+
+export const vmDiscoveryApi = {
+  listOrganizations: async (): Promise<VmOrgListResponse> => {
+    const { data } = await atryumApi.get('/api/v1/admin/vm/organizations');
+    return data;
+  },
+
+  listRecordTypes: async (
+    orgCUID: string,
+  ): Promise<{ items: VmRecordType[]; total: number }> => {
+    const { data } = await atryumApi.get(
+      `/api/v1/admin/vm/record-types?org_cuid=${encodeURIComponent(orgCUID)}`,
+    );
+    return data;
+  },
+
+  listCustomFields: async (
+    orgCUID: string,
+    recordTypeSlug: string,
+  ): Promise<{ items: VmCustomField[]; total: number }> => {
+    const { data } = await atryumApi.get(
+      `/api/v1/admin/vm/custom-fields?org_cuid=${encodeURIComponent(orgCUID)}&record_type_slug=${encodeURIComponent(recordTypeSlug)}`,
+    );
+    return data;
   },
 };
