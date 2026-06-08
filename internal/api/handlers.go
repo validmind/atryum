@@ -80,6 +80,7 @@ type agentsRepo interface {
 	List(ctx context.Context) ([]store.AgentRecord, error)
 	ListEnabled(ctx context.Context) ([]store.AgentRecord, error)
 	Get(ctx context.Context, id string) (store.AgentRecord, error)
+	GetByAgentID(ctx context.Context, agentID string) (store.AgentRecord, error)
 	GetByVMCUID(ctx context.Context, vmCUID string) (store.AgentRecord, error)
 	UpdateEnabled(ctx context.Context, id string, enabled bool) error
 	UpdateAgentIDs(ctx context.Context, id string, agentIDs string) error
@@ -663,9 +664,10 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 	if err != nil {
 		return AgentRulesResponse{}, err
 	}
+	agentCUID := h.resolveAgentRecordForRules(ctx, agentID)
 
 	for _, rule := range rules {
-		if !rule.Enabled || !apiMatchAgentIDPattern(rule.AgentIDPattern, agentID) {
+		if !apiRuleMatches(rule, server, tool, agentID, agentCUID, false) {
 			continue
 		}
 		resp.Items = append(resp.Items, AgentRule{
@@ -678,8 +680,7 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 			Order:          rule.Order,
 		})
 		if resp.Action == "" && server != "" && tool != "" &&
-			apiMatchPatterns(rule.ServerPatterns, server) &&
-			apiMatchPatterns(rule.ToolPatterns, tool) {
+			apiRuleMatches(rule, server, tool, agentID, agentCUID, true) {
 			resp.Action = rule.Action
 			if rule.ID != "" {
 				id := rule.ID
@@ -688,6 +689,63 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 		}
 	}
 	return resp, nil
+}
+
+func (h *Handler) resolveAgentRecordForRules(ctx context.Context, agentID string) string {
+	if h.agentsRepo == nil {
+		return ""
+	}
+	if agentID != "" {
+		if rec, err := h.agentsRepo.GetByAgentID(ctx, agentID); err == nil {
+			return rec.ID
+		}
+	}
+	if h.agentSyncSettingsRepo == nil {
+		return ""
+	}
+	settings, err := h.agentSyncSettingsRepo.Get(ctx)
+	if err != nil {
+		return ""
+	}
+	defaultVMCUID := strings.TrimSpace(settings.DefaultAgentVMCUID)
+	if defaultVMCUID == "" {
+		return ""
+	}
+	rec, err := h.agentsRepo.GetByVMCUID(ctx, defaultVMCUID)
+	if err != nil {
+		return ""
+	}
+	return rec.ID
+}
+
+func apiRuleMatches(rule store.Rule, server, tool, agentID, agentCUID string, includeServerTool bool) bool {
+	if !rule.Enabled {
+		return false
+	}
+	if includeServerTool {
+		if !apiMatchPatterns(rule.ServerPatterns, server) {
+			return false
+		}
+		if !apiMatchPatterns(rule.ToolPatterns, tool) {
+			return false
+		}
+	}
+	if !apiMatchAgentIDPattern(rule.AgentIDPattern, agentID) {
+		return false
+	}
+	return apiMatchAgentCUIDs(rule.AgentCUIDs, agentCUID)
+}
+
+func apiMatchAgentCUIDs(cuids []string, agentCUID string) bool {
+	if len(cuids) == 0 {
+		return true
+	}
+	for _, cuid := range cuids {
+		if cuid == agentCUID {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) handleInvocation(w http.ResponseWriter, r *http.Request, server string) {
@@ -1072,12 +1130,13 @@ func (h *Handler) annotateToolsWithPolicy(ctx context.Context, server string, to
 		return out
 	}
 	agentID := auth.AgentIDFromContext(ctx)
+	agentCUID := h.resolveAgentRecordForRules(ctx, agentID)
 	for i, t := range tools {
 		if t.Name == agentRulesToolName {
 			out[i] = t
 			continue
 		}
-		action, matched := effectiveActionForTool(rules, server, t.Name, agentID)
+		action, matched := effectiveActionForTool(rules, server, t.Name, agentID, agentCUID)
 		desc := t.Description
 		if action != "" {
 			prefix := "[atryum policy: " + action + "] "
@@ -1101,20 +1160,11 @@ func (h *Handler) annotateToolsWithPolicy(ctx context.Context, server string, to
 }
 
 // effectiveActionForTool returns the action of the first enabled rule that
-// matches (server, tool, agentID), mirroring invocation.matchRules priority order.
+// matches (server, tool, agentID, agentCUID), mirroring invocation.matchRules priority order.
 // When no rule matches, it returns RuleActionHumanApproval (the default).
-func effectiveActionForTool(rules []store.Rule, server, tool, agentID string) (string, string) {
+func effectiveActionForTool(rules []store.Rule, server, tool, agentID, agentCUID string) (string, string) {
 	for _, r := range rules {
-		if !r.Enabled {
-			continue
-		}
-		if !apiMatchPatterns(r.ServerPatterns, server) {
-			continue
-		}
-		if !apiMatchPatterns(r.ToolPatterns, tool) {
-			continue
-		}
-		if !apiMatchAgentIDPattern(r.AgentIDPattern, agentID) {
+		if !apiRuleMatches(r, server, tool, agentID, agentCUID, true) {
 			continue
 		}
 		return r.Action, r.ID
