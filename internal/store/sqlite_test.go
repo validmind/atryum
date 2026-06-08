@@ -41,8 +41,8 @@ func TestInitDB_FreshDatabase(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 14 {
-		t.Fatalf("expected 14 migrations, got %d", count)
+	if count != 15 {
+		t.Fatalf("expected 15 migrations, got %d", count)
 	}
 
 	// Verify all tables exist
@@ -70,8 +70,8 @@ func TestInitDB_Idempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 14 {
-		t.Fatalf("expected 14 migrations after double init, got %d", count)
+	if count != 15 {
+		t.Fatalf("expected 15 migrations after double init, got %d", count)
 	}
 }
 
@@ -762,6 +762,7 @@ func TestAgentSyncSettingsRepo_UpsertOnEmptyTable(t *testing.T) {
 		AgentRecordTypeSlug:    "ai-agents",
 		ConstitutionFieldKey:   "constitution",
 		SummaryModelConfigCUID: "model-abc",
+		DefaultAgentVMCUID:     "agent-vm-abc",
 	})
 	if err != nil {
 		t.Fatalf("Save: %v", err)
@@ -780,5 +781,8 @@ func TestAgentSyncSettingsRepo_UpsertOnEmptyTable(t *testing.T) {
 	}
 	if s.SummaryModelConfigCUID != "model-abc" {
 		t.Fatalf("expected SummaryModelConfigCUID=model-abc, got %q", s.SummaryModelConfigCUID)
+	}
+	if s.DefaultAgentVMCUID != "agent-vm-abc" {
+		t.Fatalf("expected DefaultAgentVMCUID=agent-vm-abc, got %q", s.DefaultAgentVMCUID)
 	}
 }

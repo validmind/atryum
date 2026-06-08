@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"atryum/internal/auth"
 	"atryum/internal/config"
 	"atryum/internal/invocation"
 	"atryum/internal/invocation/policy"
@@ -310,6 +311,75 @@ func TestSubmitPendingApprovalAutomaticallySummarizesInvocation(t *testing.T) {
 	}
 }
 
+func TestSubmitAIEvaluationUsesDefaultAgentRecordForUnmappedAgentID(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := store.InitDB(db); err != nil {
+		t.Fatal(err)
+	}
+	invRepo := store.NewInvocationRepo(db)
+	eventRepo := store.NewEventRepo(db)
+	evaluator := &evaluateClientStub{
+		resp: invocation.EvaluateResponse{Verdict: "approved", Reason: "default constitution allows this"},
+	}
+	defaultAgent := invocation.AgentRecord{
+		ID:                 "agent-local-default",
+		VMCUID:             "agent-vm-default",
+		VMOrganizationCUID: "org-default",
+	}
+	service := invocation.NewService(
+		invRepo,
+		eventRepo,
+		nil,
+		nil,
+		nil,
+		5*time.Second,
+		rulesStoreStub{rules: []invocation.ApprovalRule{{
+			ID:              "rule-ai",
+			Action:          invocation.RuleActionAIEvaluation,
+			ToolPatterns:    []string{"bash"},
+			ModelConfigCUID: "model-ai",
+			AgentCUIDs:      []string{defaultAgent.ID},
+			Enabled:         true,
+		}}},
+		agentLookupStub{byVMCUID: map[string]invocation.AgentRecord{defaultAgent.VMCUID: defaultAgent}},
+		evaluator,
+		summarySettingsStub{
+			constitutionFieldKey: "constitution",
+			defaultAgentVMCUID:   defaultAgent.VMCUID,
+		},
+	)
+
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "hunners-codex"})
+	resp, err := service.Submit(ctx, invocation.ExternalSubmitRequest{
+		Source: "github",
+		Tool:   "bash",
+		Input:  map[string]any{"cmd": "pwd"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusApproved {
+		t.Fatalf("status = %q", resp.Status)
+	}
+	req := evaluator.request()
+	if req.AgentVMCUID != defaultAgent.VMCUID {
+		t.Fatalf("AgentVMCUID = %q", req.AgentVMCUID)
+	}
+	if req.OrgCUID != defaultAgent.VMOrganizationCUID {
+		t.Fatalf("OrgCUID = %q", req.OrgCUID)
+	}
+	if req.ConstitutionFieldKey != "constitution" {
+		t.Fatalf("ConstitutionFieldKey = %q", req.ConstitutionFieldKey)
+	}
+	if req.ModelConfigCUID != "model-ai" {
+		t.Fatalf("ModelConfigCUID = %q", req.ModelConfigCUID)
+	}
+}
+
 func newTestService(t *testing.T, cfg config.Config) *invocation.Service {
 	t.Helper()
 	db, err := sql.Open("sqlite", ":memory:")
@@ -348,16 +418,72 @@ func (s *summaryClientStub) request() invocation.SummaryRequest {
 }
 
 type summarySettingsStub struct {
-	orgCUID         string
-	modelConfigCUID string
+	orgCUID              string
+	modelConfigCUID      string
+	constitutionFieldKey string
+	defaultAgentVMCUID   string
 }
 
 func (s summarySettingsStub) ConstitutionFieldKey(context.Context) string {
-	return ""
+	return s.constitutionFieldKey
+}
+
+func (s summarySettingsStub) DefaultAgentVMCUID(context.Context) string {
+	return s.defaultAgentVMCUID
 }
 
 func (s summarySettingsStub) SummarySettings(context.Context) (string, string) {
 	return s.orgCUID, s.modelConfigCUID
+}
+
+type rulesStoreStub struct {
+	rules []invocation.ApprovalRule
+}
+
+func (s rulesStoreStub) ListApprovalRules(context.Context) ([]invocation.ApprovalRule, error) {
+	return s.rules, nil
+}
+
+type agentLookupStub struct {
+	byAgentID map[string]invocation.AgentRecord
+	byVMCUID  map[string]invocation.AgentRecord
+}
+
+func (s agentLookupStub) GetByAgentID(_ context.Context, agentID string) (invocation.AgentRecord, error) {
+	if s.byAgentID != nil {
+		if rec, ok := s.byAgentID[agentID]; ok {
+			return rec, nil
+		}
+	}
+	return invocation.AgentRecord{}, sql.ErrNoRows
+}
+
+func (s agentLookupStub) GetByVMCUID(_ context.Context, vmCUID string) (invocation.AgentRecord, error) {
+	if s.byVMCUID != nil {
+		if rec, ok := s.byVMCUID[vmCUID]; ok {
+			return rec, nil
+		}
+	}
+	return invocation.AgentRecord{}, sql.ErrNoRows
+}
+
+type evaluateClientStub struct {
+	mu   sync.Mutex
+	req  invocation.EvaluateRequest
+	resp invocation.EvaluateResponse
+}
+
+func (s *evaluateClientStub) EvaluateToolCall(_ context.Context, req invocation.EvaluateRequest) (invocation.EvaluateResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.req = req
+	return s.resp, nil
+}
+
+func (s *evaluateClientStub) request() invocation.EvaluateRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.req
 }
 
 func approveNextInvocation(t *testing.T, service *invocation.Service, delay time.Duration) {

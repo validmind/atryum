@@ -80,6 +80,7 @@ type agentsRepo interface {
 	List(ctx context.Context) ([]store.AgentRecord, error)
 	ListEnabled(ctx context.Context) ([]store.AgentRecord, error)
 	Get(ctx context.Context, id string) (store.AgentRecord, error)
+	GetByAgentID(ctx context.Context, agentID string) (store.AgentRecord, error)
 	GetByVMCUID(ctx context.Context, vmCUID string) (store.AgentRecord, error)
 	UpdateEnabled(ctx context.Context, id string, enabled bool) error
 	UpdateAgentIDs(ctx context.Context, id string, agentIDs string) error
@@ -426,6 +427,7 @@ func (h *Handler) Routes() http.Handler {
 		mux.Handle("/.well-known/oauth-protected-resource", h.protectedResourceMetadata())
 	}
 	mcpHandler := auth.MiddlewareWithOptions(h.authValidator, "/.well-known/oauth-protected-resource", auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})(http.HandlerFunc(h.invokeUpstream))
+	mcpHandler = h.noAuthAgentIDHint(mcpHandler)
 	mux.Handle("/mcp/", mcpHandler)
 	mux.HandleFunc("/api/v1/invocations", h.invocations)
 	mux.HandleFunc("/api/v1/admin/invocations", h.adminInvocations)
@@ -445,6 +447,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/api/v1/admin/oauth/callback", h.oauthCallback)
 	mux.HandleFunc("/api/v1/admin/policy", h.adminPolicy)
 	agentRulesHandler := auth.MiddlewareWithOptions(h.authValidator, "/.well-known/oauth-protected-resource", auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})(http.HandlerFunc(h.agentRules))
+	agentRulesHandler = h.noAuthAgentIDHint(agentRulesHandler)
 	mux.Handle("/api/v1/agent/rules", agentRulesHandler)
 	mux.HandleFunc("/api/v1/external/invocations", h.externalInvocations)
 	mux.HandleFunc("/api/v1/external/invocations/", h.externalInvocationDetail)
@@ -456,6 +459,50 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("/ui/", http.StripPrefix("/ui/", h.spaFileServer()))
 	mux.HandleFunc("/", h.root)
 	return mux
+}
+
+func (h *Handler) noAuthAgentIDHint(next http.Handler) http.Handler {
+	if h.authValidator != nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		agentID := normalizeNoAuthAgentID(r.URL.Query().Get("agent_id"))
+		if agentID == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		identity := auth.Identity{
+			AgentID: agentID,
+			Issuer:  "atryum:no-auth",
+			Subject: agentID,
+		}
+		next.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), identity)))
+	})
+}
+
+func normalizeNoAuthAgentID(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 256 {
+		return ""
+	}
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' {
+			continue
+		}
+		if r >= 'A' && r <= 'Z' {
+			continue
+		}
+		if r >= '0' && r <= '9' {
+			continue
+		}
+		switch r {
+		case '.', '_', ':', '-':
+			continue
+		default:
+			return ""
+		}
+	}
+	return value
 }
 
 func (h *Handler) healthz(w http.ResponseWriter, _ *http.Request) {
@@ -581,10 +628,10 @@ func (h *Handler) agentRules(w http.ResponseWriter, r *http.Request) {
 	}
 
 	agentID := auth.AgentIDFromContext(r.Context())
-	if agentID == "" {
-		agentID = strings.TrimSpace(r.URL.Query().Get("agent_id"))
+	if agentID == "" && h.authValidator == nil {
+		agentID = normalizeNoAuthAgentID(r.URL.Query().Get("agent_id"))
 	}
-	if agentID == "" {
+	if agentID == "" && h.authValidator == nil {
 		agentID = strings.TrimSpace(r.URL.Query().Get("request_id"))
 	}
 	server := strings.TrimSpace(r.URL.Query().Get("server"))
@@ -617,9 +664,10 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 	if err != nil {
 		return AgentRulesResponse{}, err
 	}
+	agentCUID := h.resolveAgentRecordForRules(ctx, agentID)
 
 	for _, rule := range rules {
-		if !rule.Enabled || !apiMatchAgentIDPattern(rule.AgentIDPattern, agentID) {
+		if !apiRuleMatches(rule, server, tool, agentID, agentCUID, false) {
 			continue
 		}
 		resp.Items = append(resp.Items, AgentRule{
@@ -632,8 +680,7 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 			Order:          rule.Order,
 		})
 		if resp.Action == "" && server != "" && tool != "" &&
-			apiMatchPatterns(rule.ServerPatterns, server) &&
-			apiMatchPatterns(rule.ToolPatterns, tool) {
+			apiRuleMatches(rule, server, tool, agentID, agentCUID, true) {
 			resp.Action = rule.Action
 			if rule.ID != "" {
 				id := rule.ID
@@ -642,6 +689,63 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 		}
 	}
 	return resp, nil
+}
+
+func (h *Handler) resolveAgentRecordForRules(ctx context.Context, agentID string) string {
+	if h.agentsRepo == nil {
+		return ""
+	}
+	if agentID != "" {
+		if rec, err := h.agentsRepo.GetByAgentID(ctx, agentID); err == nil {
+			return rec.ID
+		}
+	}
+	if h.agentSyncSettingsRepo == nil {
+		return ""
+	}
+	settings, err := h.agentSyncSettingsRepo.Get(ctx)
+	if err != nil {
+		return ""
+	}
+	defaultVMCUID := strings.TrimSpace(settings.DefaultAgentVMCUID)
+	if defaultVMCUID == "" {
+		return ""
+	}
+	rec, err := h.agentsRepo.GetByVMCUID(ctx, defaultVMCUID)
+	if err != nil {
+		return ""
+	}
+	return rec.ID
+}
+
+func apiRuleMatches(rule store.Rule, server, tool, agentID, agentCUID string, includeServerTool bool) bool {
+	if !rule.Enabled {
+		return false
+	}
+	if includeServerTool {
+		if !apiMatchPatterns(rule.ServerPatterns, server) {
+			return false
+		}
+		if !apiMatchPatterns(rule.ToolPatterns, tool) {
+			return false
+		}
+	}
+	if !apiMatchAgentIDPattern(rule.AgentIDPattern, agentID) {
+		return false
+	}
+	return apiMatchAgentCUIDs(rule.AgentCUIDs, agentCUID)
+}
+
+func apiMatchAgentCUIDs(cuids []string, agentCUID string) bool {
+	if len(cuids) == 0 {
+		return true
+	}
+	for _, cuid := range cuids {
+		if cuid == agentCUID {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) handleInvocation(w http.ResponseWriter, r *http.Request, server string) {
@@ -1026,12 +1130,13 @@ func (h *Handler) annotateToolsWithPolicy(ctx context.Context, server string, to
 		return out
 	}
 	agentID := auth.AgentIDFromContext(ctx)
+	agentCUID := h.resolveAgentRecordForRules(ctx, agentID)
 	for i, t := range tools {
 		if t.Name == agentRulesToolName {
 			out[i] = t
 			continue
 		}
-		action, matched := effectiveActionForTool(rules, server, t.Name, agentID)
+		action, matched := effectiveActionForTool(rules, server, t.Name, agentID, agentCUID)
 		desc := t.Description
 		if action != "" {
 			prefix := "[atryum policy: " + action + "] "
@@ -1055,20 +1160,11 @@ func (h *Handler) annotateToolsWithPolicy(ctx context.Context, server string, to
 }
 
 // effectiveActionForTool returns the action of the first enabled rule that
-// matches (server, tool, agentID), mirroring invocation.matchRules priority order.
+// matches (server, tool, agentID, agentCUID), mirroring invocation.matchRules priority order.
 // When no rule matches, it returns RuleActionHumanApproval (the default).
-func effectiveActionForTool(rules []store.Rule, server, tool, agentID string) (string, string) {
+func effectiveActionForTool(rules []store.Rule, server, tool, agentID, agentCUID string) (string, string) {
 	for _, r := range rules {
-		if !r.Enabled {
-			continue
-		}
-		if !apiMatchPatterns(r.ServerPatterns, server) {
-			continue
-		}
-		if !apiMatchPatterns(r.ToolPatterns, tool) {
-			continue
-		}
-		if !apiMatchAgentIDPattern(r.AgentIDPattern, agentID) {
+		if !apiRuleMatches(r, server, tool, agentID, agentCUID, true) {
 			continue
 		}
 		return r.Action, r.ID
@@ -1903,6 +1999,7 @@ type AgentSyncSettingsResponse struct {
 	AgentRecordTypeSlug    string `json:"agent_record_type_slug"`
 	ConstitutionFieldKey   string `json:"constitution_field_key"`
 	SummaryModelConfigCUID string `json:"summary_model_config_cuid"`
+	DefaultAgentVMCUID     string `json:"default_agent_vm_cuid"`
 	UpdatedAt              string `json:"updated_at,omitempty"`
 	SyncError              string `json:"sync_error,omitempty"`
 }
@@ -1913,6 +2010,7 @@ type AgentSyncSettingsInput struct {
 	AgentRecordTypeSlug    string `json:"agent_record_type_slug"`
 	ConstitutionFieldKey   string `json:"constitution_field_key"`
 	SummaryModelConfigCUID string `json:"summary_model_config_cuid"`
+	DefaultAgentVMCUID     string `json:"default_agent_vm_cuid"`
 }
 
 func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
@@ -1932,6 +2030,7 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 			AgentRecordTypeSlug:    s.AgentRecordTypeSlug,
 			ConstitutionFieldKey:   s.ConstitutionFieldKey,
 			SummaryModelConfigCUID: s.SummaryModelConfigCUID,
+			DefaultAgentVMCUID:     s.DefaultAgentVMCUID,
 		}
 		if !s.UpdatedAt.IsZero() {
 			resp.UpdatedAt = s.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z")
@@ -1962,6 +2061,7 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 			AgentRecordTypeSlug:    input.AgentRecordTypeSlug,
 			ConstitutionFieldKey:   input.ConstitutionFieldKey,
 			SummaryModelConfigCUID: input.SummaryModelConfigCUID,
+			DefaultAgentVMCUID:     input.DefaultAgentVMCUID,
 		}); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to save settings: "+err.Error())
 			return
@@ -1987,6 +2087,7 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 			AgentRecordTypeSlug:    s.AgentRecordTypeSlug,
 			ConstitutionFieldKey:   s.ConstitutionFieldKey,
 			SummaryModelConfigCUID: s.SummaryModelConfigCUID,
+			DefaultAgentVMCUID:     s.DefaultAgentVMCUID,
 			SyncError:              syncErr,
 		}
 		if !s.UpdatedAt.IsZero() {
