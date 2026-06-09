@@ -67,6 +67,28 @@ will reload extensions in the auto-discovered extension directories.
 | `ATRYUM_POLL_MS` | `2000` | approval polling interval |
 | `ATRYUM_CLIENT_NAME` | `pi` | harness name shown in the Atryum Agent column |
 | `ATRYUM_CLIENT_VERSION` | `PI_VERSION` if set | harness version shown in Atryum |
+| `ATRYUM_AGENT_ID` | _(empty)_ | self-declared agent identifier; matched against Agent Record `agent_ids` |
+
+## Tagging invocations to an Agent Record
+
+By default the extension sends no agent identity, so invocations show up in
+the UI unattached to any Agent Record. To populate the agent column and make
+agent-scoped approval rules apply:
+
+1. In the Atryum UI, open an Agent Record or create one, then add a stable
+   string to its **Agent IDs** field, such as `pi-local` or `pi-alice`.
+2. Export the same string in your shell:
+
+   ```sh
+   export ATRYUM_AGENT_ID=pi-local
+   ```
+
+3. Re-run Pi. Future invocations carry `agent_id: "pi-local"`; Atryum looks
+   it up via `agents.agent_ids @> ["pi-local"]` and tags the row.
+
+This is a self-declared identity. Anyone with network access to the Atryum API
+can claim any agent id. For verified identity, run Atryum behind OAuth and
+authenticate the extension instead.
 
 ## API used
 
