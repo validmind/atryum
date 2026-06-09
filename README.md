@@ -76,7 +76,7 @@ Admin (UI and operators):
 
 ## Frontend
 
-The repo currently embeds a minimal built-in React UI under `internal/api/web` served at `/ui/`. The standalone Atryum frontend (in the sibling `frontend/` repo under `src/atryum/`) is being pulled into this repo to replace the embedded UI as the open-source frontend. It covers servers, rules, invocations (list + detail with live SSE updates), agent records, and settings.
+The local React UI lives under `ui/`. `just build-ui` builds it and copies the Vite output into `internal/api/web`, which is embedded into the Go binary and served at `/ui/`. It covers servers, rules, invocations (list + detail with live SSE updates), agent records, and settings.
 
 The embedded invocation view subscribes to the admin SSE stream, updates list/detail/event views live, surfaces stored input arguments, and renders MCP-style text content in a friendly view alongside raw JSON.
 
@@ -139,7 +139,7 @@ go run ./cmd/atryum run -config atryum.toml
 Docker Compose has two mutually-exclusive profiles (Postgres always runs):
 
 ```bash
-docker compose --profile dev  up    # backend :8080 + Vite dev frontend :5175
+docker compose --profile dev  up    # backend :8080 + Vite dev UI :5174/ui/
 docker compose --profile prod up    # one binary, embedded UI :8080
 ```
 

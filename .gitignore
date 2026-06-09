@@ -1,11 +1,28 @@
-.pi
+# mac
 .DS_Store
-.direnv
+
+# config
 .envrc
-*.nix
 atryum.toml
+
+# data
 atryum.db
+
+# ide/ai/misc
+.pi
+.direnv
+*.nix
 .codex
 __inspiration
-docker-compose.override.yml
 opencode-state
+
+# development
+docker-compose.override.yml
+
+# build
+atryum
+releases
+
+# frontend build
+internal/api/web/assets/
+internal/api/web/atryum-logo.png
