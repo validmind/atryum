@@ -1,0 +1,82 @@
+# Atryum Pi extension
+
+A minimal [Pi](https://pi.dev) extension that routes Pi tool calls through
+Atryum before execution and reports the result back for audit.
+
+Pi runs the tool. Atryum mediates approval and records the decision trail.
+
+## How it works
+
+```diagram
+[ Pi tool_call ]  POST /api/v1/external/invocations   [ Atryum approval ]
+[  extension  ] ------------------------------------> [ pending/review  ]
+       |     poll GET /api/v1/external/invocations/:id       |
+       | <----------------------------------------------------+
+       v
+   allow | block
+       |
+       |  tool runs in Pi
+       v
+[ tool_execution_end ]  PATCH /api/v1/external/invocations/:id
+[                    ] --------------------------------------> audit
+                         {execution_status: completed|failed}
+```
+
+## Try it locally
+
+Make sure Atryum is running:
+
+```sh
+go run ./cmd/atryum run -config atryum.example.toml
+```
+
+Then launch Pi with the extension for a one-off smoke test:
+
+```sh
+pi -e ./examples/pi-extension/index.ts
+```
+
+Open <http://localhost:8080/ui/>. Pi tool calls should appear as pending
+invocations unless your Atryum rules auto-approve or auto-deny them.
+
+## Install
+
+For all Pi sessions on the machine:
+
+```sh
+mkdir -p ~/.pi/agent/extensions/atryum
+cp examples/pi-extension/index.ts ~/.pi/agent/extensions/atryum/index.ts
+```
+
+For one project:
+
+```sh
+mkdir -p .pi/extensions/atryum
+cp examples/pi-extension/index.ts .pi/extensions/atryum/index.ts
+```
+
+Restart Pi after installing the extension. If Pi is already running, `/reload`
+will reload extensions in the auto-discovered extension directories.
+
+## Configure
+
+| var | default | meaning |
+| --- | --- | --- |
+| `ATRYUM_URL` | `http://localhost:8080` | base URL of the Atryum server |
+| `ATRYUM_SOURCE` | `pi` | source label in Atryum |
+| `ATRYUM_POLL_MS` | `2000` | approval polling interval |
+| `ATRYUM_CLIENT_NAME` | `pi` | harness name shown in the Atryum Agent column |
+| `ATRYUM_CLIENT_VERSION` | `PI_VERSION` if set | harness version shown in Atryum |
+
+## API used
+
+This extension uses Atryum's external executor API:
+
+- `POST /api/v1/external/invocations` submits the pending Pi tool call.
+- `GET /api/v1/external/invocations/:id` waits for approval or denial.
+- `PATCH /api/v1/external/invocations/:id` records `running`, `completed`,
+  `failed`, or best-effort `cancelled` execution state.
+
+Pi's extension API currently exposes `tool_call` before execution and
+`tool_execution_end` after execution, which is enough to gate and audit native
+Pi tools without routing the tool implementation itself through Atryum.
