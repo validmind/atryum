@@ -1,0 +1,27 @@
+# PLACEHOLDER — static bearer token inbound auth.
+# Not exercised until ATRYUM_STATIC_BEARER_TOKEN is wired in the runner.
+
+[server]
+listen_addr = ":__ATRYUM_PORT__"
+public_base_url = "http://localhost:__ATRYUM_PORT__"
+database_path = "__RUN_DIR__/atryum.db"
+database_url = ""
+log_level = "info"
+
+[backend]
+base_url = ""
+
+[defaults]
+request_timeout_seconds = 30
+
+[[auth]]
+enabled = true
+issuer = "__MOCK_OIDC_ISSUER__"
+audience = "atryum"
+required_scope = "atryum:mcp"
+agent_id_claim = "client_id"
+
+[auth_debug]
+skip_verify = false
+
+__UPSTREAMS_BLOCK__

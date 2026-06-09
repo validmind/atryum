@@ -1,0 +1,166 @@
+# Agent harness registry for integration tests.
+#
+# LLM billing: codex/claude use OPENAI_API_KEY / ANTHROPIC_API_KEY (API billing),
+# not subscription OAuth. Harness→Atryum auth is separate (see auth-protocols.yaml).
+
+harnesses:
+  - id: fake-agent
+    display_name: Fake Agent (fake_agent.py)
+    cli: python3
+    invoke: ""
+    api_key_env: ""
+    hook: null
+    mcp_transport: direct-jsonrpc
+    mcp_config_path: null
+    mcp_config_template: null
+    skip_reason: ""
+    tags: [baseline, no-llm, mcp-only]
+
+  - id: codex
+    display_name: OpenAI Codex CLI
+    cli: codex
+    invoke: 'HOME="$CODEX_TEST_HOME" codex exec --dangerously-bypass-approvals-and-sandbox "$PROMPT"'
+    api_key_env: OPENAI_API_KEY
+    api_key_env_optional: true
+    hook: null
+    mcp_transport: codex-config-toml
+    mcp_config_path: "$CODEX_TEST_HOME/.codex/config.toml"
+    mcp_config_template: |
+      [mcp_servers.calculator_via_atryum]
+      command = "npx"
+      args = ["-y", "mcp-remote", "$ATRYUM_MCP_URL"]
+    skip_reason: ""
+    tags: [mcp-only]
+
+  - id: claude-code
+    display_name: Claude Code
+    cli: claude
+    invoke: 'claude -p "$PROMPT" --output-format text --dangerously-skip-permissions --mcp-config "$CLAUDE_MCP_CONFIG"'
+    api_key_env: ANTHROPIC_API_KEY
+    api_key_env_optional: true
+    hook:
+      type: command
+      source: claude-code
+      host: claude
+      events: [PreToolUse, PostToolUse]
+      script: shared-agent-hook/atryum-hook.mjs
+    mcp_transport: mcp-remote-stdio
+    mcp_config_path: "mcp-claude.json"
+    mcp_config_template: |
+      {
+        "mcpServers": {
+          "calculator_via_atryum": {
+            "command": "npx",
+            "args": ["-y", "mcp-remote", "$ATRYUM_MCP_URL"]
+          }
+        }
+      }
+    skip_reason: ""
+    tags: [hook, mcp]
+
+  - id: cursor
+    display_name: Cursor Agent CLI
+    cli: cursor
+    invoke: 'cursor agent -p "$PROMPT" --force'
+    api_key_env: CURSOR_API_KEY
+    hook:
+      type: command
+      source: cursor
+      host: cursor
+      events: [preToolUse, postToolUse]
+      script: shared-agent-hook/atryum-hook.mjs
+    mcp_transport: mcp-remote-stdio
+    mcp_config_path: "mcp-cursor.json"
+    mcp_config_template: |
+      {
+        "mcpServers": {
+          "calculator_via_atryum": {
+            "command": "npx",
+            "args": ["-y", "mcp-remote", "$ATRYUM_MCP_URL"]
+          }
+        }
+      }
+    skip_reason: ""
+    tags: [hook, mcp]
+
+  - id: amp
+    display_name: Amp
+    cli: amp
+    invoke: 'AMP_SETTINGS_FILE="$AMP_SETTINGS_FILE" amp --execute "$PROMPT" --dangerously-allow-all'
+    api_key_env: AMP_API_KEY
+    api_key_env_optional: true
+    hook:
+      type: plugin
+      source: amp
+      script: amp-plugin/atryum.ts
+    mcp_transport: amp-settings-json
+    mcp_config_path: "amp-settings.json"
+    mcp_config_template: null
+    skip_reason: ""
+    tags: [hook, mcp]
+
+  - id: grok
+    display_name: Grok CLI
+    cli: grok
+    invoke: 'HOME="$GROK_TEST_HOME" grok --single "$PROMPT" --always-approve'
+    api_key_env: XAI_API_KEY
+    api_key_env_optional: true
+    hook: null
+    mcp_transport: grok-config-toml
+    mcp_config_path: "$GROK_TEST_HOME/.grok/config.toml"
+    mcp_config_template: |
+      [mcp_servers.calculator_via_atryum]
+      command = "npx"
+      args = ["-y", "mcp-remote", "$ATRYUM_MCP_URL"]
+    skip_reason: ""
+    tags: [mcp-only]
+
+  - id: pi
+    display_name: Pi Coding Agent
+    cli: pi
+    invoke: 'pi -p "$PROMPT"'
+    api_key_env: OPENAI_API_KEY
+    hook: null
+    mcp_transport: mcp-remote-stdio
+    mcp_config_path: "mcp-pi.json"
+    mcp_config_template: |
+      {
+        "mcpServers": {
+          "calculator_via_atryum": {
+            "command": "npx",
+            "args": ["-y", "mcp-remote", "$ATRYUM_MCP_URL"]
+          }
+        }
+      }
+    skip_reason: "placeholder — Pi MCP wiring not yet validated in examples/"
+    tags: [placeholder, mcp-only]
+
+  - id: agentforce
+    display_name: Salesforce Agentforce
+    cli: ""
+    invoke: ""
+    api_key_env: AGENTFORCE_API_KEY
+    hook:
+      type: external-invocations
+      source: agentforce
+      notes: "Autonomous agent — POST /api/v1/external/invocations; no local CLI"
+    mcp_transport: http
+    mcp_config_path: null
+    mcp_config_template: null
+    skip_reason: "placeholder — no local CLI; requires Agentforce runtime and custom orchestration"
+    tags: [placeholder, autonomous]
+
+  - id: foundry
+    display_name: Microsoft Foundry
+    cli: ""
+    invoke: ""
+    api_key_env: AZURE_OPENAI_API_KEY
+    hook:
+      type: external-invocations
+      source: foundry
+      notes: "Autonomous agent — POST /api/v1/external/invocations; no local CLI"
+    mcp_transport: http
+    mcp_config_path: null
+    mcp_config_template: null
+    skip_reason: "placeholder — no local CLI; requires Foundry agent runtime"
+    tags: [placeholder, autonomous]

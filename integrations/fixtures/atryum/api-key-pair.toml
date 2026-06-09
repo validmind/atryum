@@ -1,0 +1,23 @@
+# PLACEHOLDER — API key pair protects legacy reporting endpoints, not /mcp/.
+
+[server]
+listen_addr = ":__ATRYUM_PORT__"
+public_base_url = "http://localhost:__ATRYUM_PORT__"
+database_path = "__RUN_DIR__/atryum.db"
+database_url = ""
+log_level = "info"
+
+[backend]
+base_url = ""
+
+[defaults]
+request_timeout_seconds = 30
+
+[api_key]
+key = "integration-test-key"
+secret = "integration-test-secret"
+
+[auth_debug]
+skip_verify = false
+
+__UPSTREAMS_BLOCK__
