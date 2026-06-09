@@ -21,6 +21,7 @@ const spaFallback = (): Plugin => ({
 });
 
 export default defineConfig({
+  base: '/ui/',
   plugins: [react(), spaFallback()],
   server: {
     host: true,
