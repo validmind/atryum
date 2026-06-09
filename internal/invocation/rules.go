@@ -17,14 +17,15 @@ const (
 // ApprovalRule is the invocation-layer view of a configured rule.
 // It is intentionally decoupled from the store layer to avoid import cycles.
 type ApprovalRule struct {
-	ID              string   // unique rule identifier
-	Action          string   // one of the RuleAction* constants
-	ServerPatterns  []string // empty slice = match any server
-	ToolPatterns    []string // empty slice = match any tool
-	AgentIDPattern  string   // "*" or "" = match any agent
-	ModelConfigCUID string   // VM agent model config to use for ai_evaluation rules
-	AgentCUIDs      []string // Atryum agent CUIDs this rule targets; empty = all
-	Enabled         bool
+	ID                string   // unique rule identifier
+	Action            string   // one of the RuleAction* constants
+	ServerPatterns    []string // empty slice = match any server
+	ToolPatterns      []string // empty slice = match any tool
+	AgentIDPattern    string   // "*" or "" = match any agent
+	ModelConfigCUID   string   // VM agent model config to use for ai_evaluation rules
+	AtryumLLMConfigID string   // local LLM config ID for native ai_evaluation (alternative to ModelConfigCUID)
+	AgentCUIDs        []string // Atryum agent CUIDs this rule targets; empty = all
+	Enabled           bool
 }
 
 // rulesStore is the minimal interface the invocation service needs.

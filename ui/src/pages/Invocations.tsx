@@ -197,6 +197,7 @@ const Invocations: React.FC = () => {
   const createRule = useCreateRule();
   const { data: settings } = useSettings();
   const summaryModelConfigCuid = settings?.summary_model_config_cuid ?? '';
+  const hasSummaryModel = Boolean(summaryModelConfigCuid || (settings?.summary_atryum_llm_config_id ?? ''));
 
   const [summarizingInvocationId, setSummarizingInvocationId] = useState<string | null>(null);
   const [summaryErrorInvocationId, setSummaryErrorInvocationId] = useState<string | null>(null);
@@ -747,8 +748,8 @@ const Invocations: React.FC = () => {
                         variant="outline"
                         size="xs"
                         isLoading={isCurrentInvocationSummarizing}
-                        isDisabled={!summaryModelConfigCuid || isCurrentInvocationSummarizing}
-                        title={!summaryModelConfigCuid ? 'Set an Invocation Summary Model in Settings to enable' : undefined}
+                        isDisabled={!hasSummaryModel || isCurrentInvocationSummarizing}
+                        title={!hasSummaryModel ? 'Set an Invocation Summary Model in Settings to enable' : undefined}
                         onClick={handleSummarize}
                       >
                         {detail.summary ? 'Re-summarize' : 'Summarize'}
@@ -758,7 +759,7 @@ const Invocations: React.FC = () => {
                       <Text fontSize="sm" whiteSpace="pre-wrap">{detail.summary}</Text>
                     ) : (
                       <Text fontSize="xs" color="text.subtle">
-                        {summaryModelConfigCuid
+                        {hasSummaryModel
                           ? 'No summary yet. Click Summarize to generate one.'
                           : 'No summary model configured. Set one in Settings to enable summarization.'}
                       </Text>

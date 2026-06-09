@@ -172,7 +172,7 @@ func TestAdminServerTestDebugLogsRequestContext(t *testing.T) {
 		log.SetFlags(prevFlags)
 	}()
 
-	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil)
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/servers/shortcut/test", nil)
 	req.Header.Set("Origin", "http://localhost:8080")
 	req.Header.Set("Referer", "http://localhost:8080/ui/")
@@ -251,7 +251,9 @@ func (s *stubAgentsRepo) UpdateEnabled(context.Context, string, bool) error { re
 func (s *stubAgentsRepo) UpdateAgentIDs(context.Context, string, string) error {
 	return nil
 }
-func (s *stubAgentsRepo) UpdateMeta(context.Context, string, string, string) error { return nil }
+func (s *stubAgentsRepo) UpdateMeta(context.Context, string, string, string, string) error {
+	return nil
+}
 func (s *stubAgentsRepo) Create(_ context.Context, _ store.AgentRecord) error      { return nil }
 func (s *stubAgentsRepo) Delete(context.Context, string) error                     { return nil }
 func (s *stubAgentsRepo) DeleteSynced(context.Context) error                       { return nil }
@@ -260,7 +262,7 @@ func (s *stubAgentsRepo) DeleteAll(context.Context) error {
 }
 
 func TestMCPInitializeNegotiatesProtocolVersion(t *testing.T) {
-	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil)
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("MCP-Protocol-Version", "2025-11-25")
@@ -294,7 +296,7 @@ func TestAgentIDsUsesAgentsTable(t *testing.T) {
 		{ID: "agent_b", AgentIDs: `["disabled-worker"]`, Enabled: false},
 		{ID: "agent_c", AgentIDs: `[" worker-3 "]`, Enabled: true},
 	}}
-	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, agents, nil, nil, nil)
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, agents, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/agent_ids", nil)
 	w := httptest.NewRecorder()
 
@@ -333,7 +335,7 @@ func TestSummarizeInvocationPersistsBackendSummary(t *testing.T) {
 		CompletedAt:  &now,
 	}}
 	summarizer := &stubSummarizer{resp: backendclient.SummarizeInvocationResponse{Summary: "Read /tmp/a and returned hello."}}
-	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil)
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	h.summarizeClient = summarizer
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/invocations/inv_123/summarize", strings.NewReader(`{"model_config_cuid":" model_abc "}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -383,7 +385,7 @@ func TestSummarizeInvocationUsesSettingsModelConfigWhenRequestBodyEmpty(t *testi
 		SummaryModelConfigCUID: " model_from_settings ",
 	}}
 	summarizer := &stubSummarizer{resp: backendclient.SummarizeInvocationResponse{Summary: "Read /tmp/a."}}
-	h := NewHandler(svc, stubServerService{}, nil, nil, nil, settings, nil, nil)
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, settings, nil, nil, nil, nil)
 	h.summarizeClient = summarizer
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/invocations/inv_123/summarize", nil)
 	w := httptest.NewRecorder()
@@ -424,7 +426,7 @@ func TestInvocationSignatureChangesWhenSummaryChanges(t *testing.T) {
 }
 
 func TestMCPInitializedNotificationReturnsAccepted(t *testing.T) {
-	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil)
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}`))
 	w := httptest.NewRecorder()
 
@@ -437,7 +439,7 @@ func TestMCPInitializedNotificationReturnsAccepted(t *testing.T) {
 
 func TestMCPPingPassThrough(t *testing.T) {
 	svc := &stubService{upstream: mcp.Upstream{Name: "demo", Mode: mcp.UpstreamModeHTTP}, forward: mcp.ForwardResult{StatusCode: http.StatusOK, Body: []byte(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`), ContentType: "application/json", ProtocolVersion: "2025-11-25"}}
-	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil)
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}`))
 	w := httptest.NewRecorder()
 
@@ -453,7 +455,7 @@ func TestMCPPingPassThrough(t *testing.T) {
 
 func TestMCPUnknownNotificationPassThroughFallbackAccepted(t *testing.T) {
 	svc := &stubService{fwdErr: context.Canceled}
-	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil)
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/custom","params":{"x":1}}`))
 	w := httptest.NewRecorder()
 
@@ -465,7 +467,7 @@ func TestMCPUnknownNotificationPassThroughFallbackAccepted(t *testing.T) {
 }
 
 func TestMCPMalformedJSONReturnsParseError(t *testing.T) {
-	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil)
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":`))
 	w := httptest.NewRecorder()
 
@@ -477,7 +479,7 @@ func TestMCPMalformedJSONReturnsParseError(t *testing.T) {
 }
 
 func TestMCPGetOpenSSEStream(t *testing.T) {
-	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil)
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodGet, "/mcp/demo", nil).WithContext(ctx)
 	w := httptest.NewRecorder()
@@ -498,7 +500,7 @@ func TestMCPGetOpenSSEStream(t *testing.T) {
 }
 
 func TestMCPDeleteReturn405(t *testing.T) {
-	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil)
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodDelete, "/mcp/demo", nil)
 	w := httptest.NewRecorder()
 	h.Routes().ServeHTTP(w, req)
@@ -508,7 +510,7 @@ func TestMCPDeleteReturn405(t *testing.T) {
 }
 
 func TestMCPToolsList(t *testing.T) {
-	h := NewHandler(&stubService{tools: []mcp.Tool{{Name: "demo_tool"}}}, stubServerService{}, nil, nil, nil, nil, nil, nil)
+	h := NewHandler(&stubService{tools: []mcp.Tool{{Name: "demo_tool"}}}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
 	w := httptest.NewRecorder()
 
@@ -525,7 +527,7 @@ func TestMCPToolsList(t *testing.T) {
 func TestMCPToolsCallInterceptsInvocation(t *testing.T) {
 	now := time.Now().UTC()
 	svc := &stubService{invoke: invocation.InvocationResponse{InvocationID: "inv_123", ServerName: "demo", ToolName: "demo_tool", Status: invocation.StatusSucceeded, Input: json.RawMessage(`{"a":1}`), SubmittedAt: now, CompletedAt: &now, Result: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`)}}
-	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil)
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"demo_tool","arguments":{"a":1}}}`))
 	w := httptest.NewRecorder()
 
@@ -548,7 +550,7 @@ func TestMCPToolsCallInterceptsInvocation(t *testing.T) {
 func TestMCPNoAuthAgentIDQueryHintSetsIdentity(t *testing.T) {
 	now := time.Now().UTC()
 	svc := &stubService{invoke: invocation.InvocationResponse{InvocationID: "inv_123", ServerName: "demo", ToolName: "demo_tool", Status: invocation.StatusSucceeded, SubmittedAt: now, CompletedAt: &now, Result: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`)}}
-	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil)
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo?agent_id=hunners-codex", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"demo_tool","arguments":{}}}`))
 	w := httptest.NewRecorder()
 
@@ -568,7 +570,7 @@ func TestMCPNoAuthAgentIDQueryHintSetsIdentity(t *testing.T) {
 func TestMCPNoAuthAgentIDQueryHintRejectsInvalidCharacters(t *testing.T) {
 	now := time.Now().UTC()
 	svc := &stubService{invoke: invocation.InvocationResponse{InvocationID: "inv_123", ServerName: "demo", ToolName: "demo_tool", Status: invocation.StatusSucceeded, SubmittedAt: now, CompletedAt: &now, Result: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`)}}
-	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil)
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo?agent_id=bad/agent", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"demo_tool","arguments":{}}}`))
 	w := httptest.NewRecorder()
 
@@ -588,7 +590,7 @@ func TestMCPNoAuthAgentIDQueryHintRejectsInvalidCharacters(t *testing.T) {
 func TestMCPAgentIDQueryHintIgnoredWhenAuthConfigured(t *testing.T) {
 	now := time.Now().UTC()
 	svc := &stubService{invoke: invocation.InvocationResponse{InvocationID: "inv_123", ServerName: "demo", ToolName: "demo_tool", Status: invocation.StatusSucceeded, SubmittedAt: now, CompletedAt: &now, Result: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`)}}
-	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil)
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	h.SetAuthValidator(&auth.Validator{})
 	h.SetAuthDebugSkipVerify(true)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo?agent_id=hunners-codex", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"demo_tool","arguments":{}}}`))
@@ -612,7 +614,7 @@ func TestMCPRulesToolReturnsApplicableRulesWithoutInvocation(t *testing.T) {
 		{ID: "read-auto", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Read"}, AgentIDPattern: "*", Enabled: true, Order: 0},
 	}}
 	svc := &stubService{}
-	h := NewHandler(svc, stubServerService{}, nil, rules, nil, nil, nil, nil)
+	h := NewHandler(svc, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"atryum.rules.get","arguments":{"tool":"Read"}}}`))
 	w := httptest.NewRecorder()
 
@@ -649,7 +651,7 @@ func TestAgentRulesListsApplicableRulesAndDisposition(t *testing.T) {
 		{ID: "fallback-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, AgentIDPattern: "*", Enabled: true, Order: 2},
 		{ID: "disabled", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Bash"}, AgentIDPattern: "agent-007", Enabled: false, Order: 3},
 	}}
-	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil, nil)
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?agent_id=agent-007&source=amp&tool=Read", nil)
 	w := httptest.NewRecorder()
 
@@ -688,7 +690,7 @@ func TestAgentRulesUsesDefaultAgentRecordForAgentScopedRules(t *testing.T) {
 	}}
 	agents := &stubAgentsRepo{byVMCUID: map[string]store.AgentRecord{defaultAgent.VMCUID: defaultAgent}}
 	settings := &stubAgentSyncSettingsRepo{settings: store.AgentSyncSettings{DefaultAgentVMCUID: defaultAgent.VMCUID}}
-	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, agents, settings, nil, nil)
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, agents, settings, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?source=amp&tool=Read", nil)
 	w := httptest.NewRecorder()
 
@@ -721,7 +723,7 @@ func TestMCPToolsListAnnotatesEffectiveAction(t *testing.T) {
 		{ID: "bash-deny", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Bash"}, AgentIDPattern: "*", Enabled: true, Order: 1},
 	}}
 	svc := &stubService{tools: []mcp.Tool{{Name: "Read", Description: "read a file"}, {Name: "Bash", Description: "run a shell command"}, {Name: "Other"}}}
-	h := NewHandler(svc, stubServerService{}, nil, rules, nil, nil, nil, nil)
+	h := NewHandler(svc, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
 	w := httptest.NewRecorder()
 
@@ -782,7 +784,7 @@ func TestMCPToolsListAnnotationsUseDefaultAgentScopedRules(t *testing.T) {
 	svc := &stubService{tools: []mcp.Tool{{Name: "Bash", Description: "run a shell command"}}}
 	agents := &stubAgentsRepo{byVMCUID: map[string]store.AgentRecord{defaultAgent.VMCUID: defaultAgent}}
 	settings := &stubAgentSyncSettingsRepo{settings: store.AgentSyncSettings{DefaultAgentVMCUID: defaultAgent.VMCUID}}
-	h := NewHandler(svc, stubServerService{}, nil, rules, agents, settings, nil, nil)
+	h := NewHandler(svc, stubServerService{}, nil, rules, agents, settings, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
 	w := httptest.NewRecorder()
 
@@ -837,7 +839,7 @@ func TestMCPToolsCallDenialIncludesRulesContext(t *testing.T) {
 		SubmittedAt: now, CompletedAt: &now,
 		Error: json.RawMessage(`{"content":[{"type":"text","text":"Tool call denied by approval rule (auto_deny)."}],"isError":true}`),
 	}}
-	h := NewHandler(svc, stubServerService{}, nil, rules, nil, nil, nil, nil)
+	h := NewHandler(svc, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"Bash","arguments":{"cmd":"ls"}}}`))
 	w := httptest.NewRecorder()
 
@@ -870,7 +872,7 @@ func TestMCPToolsCallDenialIncludesRulesContext(t *testing.T) {
 func TestAdminInvocationsResponsesIncludeServerToolAndInput(t *testing.T) {
 	now := time.Now().UTC()
 	svc := &stubService{invoke: invocation.InvocationResponse{InvocationID: "inv_123", ServerName: "demo-server", ToolName: "demo_tool", Status: invocation.StatusSucceeded, Input: json.RawMessage(`{"issue":123,"verbose":true}`), SubmittedAt: now, CompletedAt: &now}}
-	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil)
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	t.Run("list", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)
@@ -920,7 +922,7 @@ func TestInvocationsByVMCUID(t *testing.T) {
 				"mdl_abc": {ID: "agent_1", AgentIDs: `["worker-1"]`, Enabled: true},
 			},
 		}
-		h := NewHandler(svc, stubServerService{}, nil, nil, agents, nil, nil, nil)
+		h := NewHandler(svc, stubServerService{}, nil, nil, agents, nil, nil, nil, nil, nil)
 		req := httptest.NewRequest(http.MethodGet, "/models/mdl_abc/invocations", nil)
 		w := httptest.NewRecorder()
 		h.invocationsByVMCUID(w, req)
@@ -938,7 +940,7 @@ func TestInvocationsByVMCUID(t *testing.T) {
 
 	t.Run("returns 404 for unknown vm_cuid", func(t *testing.T) {
 		agents := &stubAgentsRepo{} // byVMCUID is nil — stub returns no rows error
-		h := NewHandler(svc, stubServerService{}, nil, nil, agents, nil, nil, nil)
+		h := NewHandler(svc, stubServerService{}, nil, nil, agents, nil, nil, nil, nil, nil)
 		req := httptest.NewRequest(http.MethodGet, "/models/mdl_unknown/invocations", nil)
 		w := httptest.NewRecorder()
 		h.invocationsByVMCUID(w, req)
@@ -953,7 +955,7 @@ func TestInvocationsByVMCUID(t *testing.T) {
 				"mdl_noids": {ID: "agent_2", AgentIDs: `[]`, Enabled: true},
 			},
 		}
-		h := NewHandler(svc, stubServerService{}, nil, nil, agents, nil, nil, nil)
+		h := NewHandler(svc, stubServerService{}, nil, nil, agents, nil, nil, nil, nil, nil)
 		req := httptest.NewRequest(http.MethodGet, "/models/mdl_noids/invocations", nil)
 		w := httptest.NewRecorder()
 		h.invocationsByVMCUID(w, req)
@@ -971,7 +973,7 @@ func TestInvocationsByVMCUID(t *testing.T) {
 
 	t.Run("returns 400 when vm_cuid missing from path", func(t *testing.T) {
 		agents := &stubAgentsRepo{}
-		h := NewHandler(svc, stubServerService{}, nil, nil, agents, nil, nil, nil)
+		h := NewHandler(svc, stubServerService{}, nil, nil, agents, nil, nil, nil, nil, nil)
 		req := httptest.NewRequest(http.MethodGet, "/models//invocations", nil)
 		w := httptest.NewRecorder()
 		h.invocationsByVMCUID(w, req)

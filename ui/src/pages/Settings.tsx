@@ -9,38 +9,159 @@ import {
   Divider,
   Flex,
   FormControl,
+  FormHelperText,
   FormLabel,
   HStack,
   Heading,
   Icon,
+  Input,
+  Modal,
+  ModalBody,
+  ModalCloseButton,
+  ModalContent,
+  ModalFooter,
+  ModalHeader,
+  ModalOverlay,
   Select,
+  SimpleGrid,
   Spinner,
   Stack,
+  Switch,
+  Table,
+  TableContainer,
+  Tbody,
+  Td,
   Text,
+  Th,
+  Thead,
+  Tr,
+  useDisclosure,
   useToast,
 } from '@chakra-ui/react';
-import { Cog6ToothIcon } from '@heroicons/react/24/outline';
+import { Select as GroupedSelect } from 'chakra-react-select';
+import { Cog6ToothIcon, PlusIcon, TrashIcon } from '@heroicons/react/24/outline';
 
 import { useSettings, useUpdateSettings } from '../hooks/useSettings';
+import { useCreateLLMConfig, useDeleteLLMConfig, useLLMConfigs, useUpdateLLMConfig } from '../hooks/useLLMConfigs';
 import {
   modelConfigsApi,
   vmDiscoveryApi,
+  type LLMConfig,
+  type LLMConfigInput,
+  type LLMProvider,
   type ModelConfig,
   type VmCustomField,
   type VmOrg,
   type VmRecordType,
 } from '../api/AtryumAPI';
 
+const PROVIDER_LABELS: Record<LLMProvider, string> = {
+  openai: 'OpenAI',
+  anthropic: 'Anthropic',
+  openai_compatible: 'OpenAI-compatible',
+};
+
+interface LLMConfigFormProps {
+  initial?: LLMConfig;
+  onSave: (input: LLMConfigInput) => Promise<void>;
+  onClose: () => void;
+  isLoading: boolean;
+}
+
+const LLMConfigForm: React.FC<LLMConfigFormProps> = ({ initial, onSave, onClose, isLoading }) => {
+  const [name, setName] = useState(initial?.name ?? '');
+  const [provider, setProvider] = useState<LLMProvider>(initial?.provider ?? 'openai');
+  const [model, setModel] = useState(initial?.model ?? '');
+  const [apiKey, setApiKey] = useState('');
+  const [baseURL, setBaseURL] = useState(initial?.base_url ?? '');
+  const [enabled, setEnabled] = useState(initial?.enabled ?? true);
+
+  const handleSubmit = async () => {
+    const input: LLMConfigInput = { name, provider, model, enabled };
+    if (apiKey) input.api_key = apiKey;
+    if (baseURL) input.base_url = baseURL;
+    await onSave(input);
+  };
+
+  return (
+    <Stack gap={4}>
+      <FormControl isRequired>
+        <FormLabel fontSize="sm">Name</FormLabel>
+        <Input size="sm" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Local Llama 3" />
+      </FormControl>
+
+      <FormControl isRequired>
+        <FormLabel fontSize="sm">Provider</FormLabel>
+        <Select size="sm" value={provider} onChange={(e) => setProvider(e.target.value as LLMProvider)}>
+          <option value="openai">OpenAI</option>
+          <option value="anthropic">Anthropic</option>
+          <option value="openai_compatible">OpenAI-compatible (Ollama, LM Studio, Azure…)</option>
+        </Select>
+      </FormControl>
+
+      <FormControl isRequired>
+        <FormLabel fontSize="sm">Model</FormLabel>
+        <Input size="sm" value={model} onChange={(e) => setModel(e.target.value)} placeholder="e.g. gpt-4o, claude-3-5-sonnet-latest" />
+      </FormControl>
+
+      <FormControl>
+        <FormLabel fontSize="sm">API Key</FormLabel>
+        <Input
+          size="sm"
+          type="password"
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
+          placeholder={initial?.api_key === '***' ? '(leave blank to keep existing)' : 'sk-…'}
+        />
+        <FormHelperText fontSize="xs">Stored encrypted. Leave blank to keep the existing key when editing.</FormHelperText>
+      </FormControl>
+
+      {provider === 'openai_compatible' && (
+        <FormControl isRequired>
+          <FormLabel fontSize="sm">Base URL</FormLabel>
+          <Input size="sm" value={baseURL} onChange={(e) => setBaseURL(e.target.value)} placeholder="http://localhost:11434" />
+          <FormHelperText fontSize="xs">Base URL of the OpenAI-compatible endpoint (e.g. Ollama: http://localhost:11434).</FormHelperText>
+        </FormControl>
+      )}
+
+      <FormControl>
+        <HStack>
+          <Switch isChecked={enabled} onChange={(e) => setEnabled(e.target.checked)} size="sm" />
+          <FormLabel mb={0} fontSize="sm">Enabled</FormLabel>
+        </HStack>
+      </FormControl>
+
+      <HStack justify="flex-end" pt={2}>
+        <Button size="sm" variant="ghost" onClick={onClose} isDisabled={isLoading}>Cancel</Button>
+        <Button size="sm" variant="primary" onClick={() => void handleSubmit()} isLoading={isLoading} isDisabled={!name || !model}>
+          {initial ? 'Save Changes' : 'Add LLM'}
+        </Button>
+      </HStack>
+    </Stack>
+  );
+};
+
 const Settings: React.FC = () => {
   const toast = useToast();
   const { data: savedSettings, isLoading: loadingSettings, isError: settingsError } = useSettings();
   const updateMutation = useUpdateSettings();
+
+  // ── Local LLM hooks ───────────────────────────────────────────────────────────
+  const { data: llmConfigsData } = useLLMConfigs();
+  const createLLMConfig = useCreateLLMConfig();
+  const updateLLMConfig = useUpdateLLMConfig();
+  const deleteLLMConfig = useDeleteLLMConfig();
+  const llmConfigs: LLMConfig[] = llmConfigsData?.items ?? [];
+
+  const { isOpen: isLLMModalOpen, onOpen: openLLMModal, onClose: closeLLMModal } = useDisclosure();
+  const [editingLLM, setEditingLLM] = useState<LLMConfig | undefined>(undefined);
 
   // ── Form state ────────────────────────────────────────────────────────────────
   const [orgCUID, setOrgCUID] = useState('');
   const [recordTypeSlug, setRecordTypeSlug] = useState('');
   const [constitutionFieldKey, setConstitutionFieldKey] = useState('');
   const [summaryModelConfigCUID, setSummaryModelConfigCUID] = useState('');
+  const [summaryAtryumLLMConfigID, setSummaryAtryumLLMConfigID] = useState('');
 
   // ── Discovery data ────────────────────────────────────────────────────────────
   const [orgs, setOrgs] = useState<VmOrg[]>([]);
@@ -68,6 +189,7 @@ const Settings: React.FC = () => {
     setRecordTypeSlug(savedSettings.agent_record_type_slug ?? '');
     setConstitutionFieldKey(savedSettings.constitution_field_key ?? '');
     setSummaryModelConfigCUID(savedSettings.summary_model_config_cuid ?? '');
+    setSummaryAtryumLLMConfigID(savedSettings.summary_atryum_llm_config_id ?? '');
   }, [savedSettings]);
 
   // ── Load orgs + model configs on mount ────────────────────────────────────────
@@ -150,7 +272,8 @@ const Settings: React.FC = () => {
     orgCUID !== (savedSettings?.org_cuid ?? '') ||
     recordTypeSlug !== (savedSettings?.agent_record_type_slug ?? '') ||
     constitutionFieldKey !== (savedSettings?.constitution_field_key ?? '') ||
-    summaryModelConfigCUID !== (savedSettings?.summary_model_config_cuid ?? '');
+    summaryModelConfigCUID !== (savedSettings?.summary_model_config_cuid ?? '') ||
+    summaryAtryumLLMConfigID !== (savedSettings?.summary_atryum_llm_config_id ?? '');
 
   const willDeleteSyncedAgents =
     (savedSettings?.org_cuid ?? '') !== '' &&
@@ -181,6 +304,7 @@ const Settings: React.FC = () => {
         agent_record_type_slug: recordTypeSlug,
         constitution_field_key: constitutionFieldKey,
         summary_model_config_cuid: summaryModelConfigCUID,
+        summary_atryum_llm_config_id: summaryAtryumLLMConfigID,
       });
       if (saved.sync_error) {
         toast({
@@ -212,6 +336,7 @@ const Settings: React.FC = () => {
     recordTypeSlug,
     constitutionFieldKey,
     summaryModelConfigCUID,
+    summaryAtryumLLMConfigID,
     updateMutation,
     toast,
   ]);
@@ -225,6 +350,46 @@ const Settings: React.FC = () => {
   }, [willDeleteSyncedAgents, commitSave]);
 
   const isConnected = Boolean(savedSettings?.org_cuid && savedSettings?.agent_record_type_slug);
+
+  const handleOpenAddLLM = useCallback(() => {
+    setEditingLLM(undefined);
+    openLLMModal();
+  }, [openLLMModal]);
+
+  const handleOpenEditLLM = useCallback((cfg: LLMConfig) => {
+    setEditingLLM(cfg);
+    openLLMModal();
+  }, [openLLMModal]);
+
+  const handleSaveLLM = useCallback(async (input: LLMConfigInput) => {
+    try {
+      if (editingLLM) {
+        await updateLLMConfig.mutateAsync({ id: editingLLM.id, input });
+        toast({ title: 'LLM configuration updated', status: 'success', duration: 3000, isClosable: true });
+      } else {
+        await createLLMConfig.mutateAsync(input);
+        toast({ title: 'LLM configuration added', status: 'success', duration: 3000, isClosable: true });
+      }
+      closeLLMModal();
+    } catch (err: unknown) {
+      toast({
+        title: 'Failed to save LLM configuration',
+        description: err instanceof Error ? err.message : 'Unexpected error',
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+    }
+  }, [editingLLM, createLLMConfig, updateLLMConfig, toast, closeLLMModal]);
+
+  const handleDeleteLLM = useCallback(async (id: string) => {
+    try {
+      await deleteLLMConfig.mutateAsync(id);
+      toast({ title: 'LLM configuration deleted', status: 'success', duration: 3000, isClosable: true });
+    } catch {
+      toast({ title: 'Failed to delete LLM configuration', status: 'error', duration: 4000, isClosable: true });
+    }
+  }, [deleteLLMConfig, toast]);
 
   if (loadingSettings) {
     return (
@@ -245,7 +410,7 @@ const Settings: React.FC = () => {
   }
 
   return (
-    <Stack gap={8} maxW="3xl">
+    <Stack gap={8} maxW="6xl">
       <Stack gap={1}>
         <HStack gap={3} color="text.heading">
           <Icon as={Cog6ToothIcon} boxSize={8} />
@@ -269,6 +434,9 @@ const Settings: React.FC = () => {
           <AlertDescription fontSize="sm">{vmError}</AlertDescription>
         </Alert>
       )}
+
+      {/* Agent Sync + Local LLM side by side */}
+      <SimpleGrid columns={{ base: 1, xl: 2 }} gap={6} alignItems="start">
 
       {/* Agent Sync section */}
       <Box
@@ -375,48 +543,6 @@ const Settings: React.FC = () => {
             )}
           </FormControl>
 
-          <Divider />
-
-          {/* Invocation Summary Model */}
-          <FormControl>
-            <FormLabel fontWeight="semibold" fontSize="sm">Invocation Summary Model (optional)</FormLabel>
-            <Text fontSize="xs" color="text.subtle" mb={2}>
-              The ValidMind model configuration used to generate summaries on the Invocations page.
-            </Text>
-            {loadingModelConfigs ? (
-              <Spinner size="sm" />
-            ) : (
-              <Select
-                value={summaryModelConfigCUID}
-                onChange={(e) => setSummaryModelConfigCUID(e.target.value)}
-                placeholder={
-                  modelConfigs.length > 0
-                    ? 'Select a model configuration…'
-                    : 'No model configurations available'
-                }
-                isDisabled={modelConfigs.length === 0}
-                size="sm"
-              >
-                {modelConfigs.map((mc) => (
-                  <option key={mc.cuid} value={mc.cuid}>
-                    {mc.name}
-                  </option>
-                ))}
-              </Select>
-            )}
-          </FormControl>
-
-          <Flex justify="flex-end">
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={handleSaveClick}
-              isLoading={updateMutation.isLoading}
-              isDisabled={!hasChanges || updateMutation.isLoading}
-            >
-              Save Settings
-            </Button>
-          </Flex>
         </Stack>
       </Box>
 
@@ -449,15 +575,194 @@ const Settings: React.FC = () => {
         </Alert>
       )}
 
-      {savedSettings?.updated_at && (
-        <Text fontSize="xs" color="text.subtle">
-          Last saved:{' '}
-          {new Date(savedSettings.updated_at).toLocaleString(undefined, {
-            dateStyle: 'medium',
-            timeStyle: 'short',
-          })}
-        </Text>
-      )}
+
+      {/* ── Local LLM Configurations ────────────────────────────────────────── */}
+      <Box
+        borderWidth={1}
+        borderColor="border.base"
+        borderRadius="md"
+        p={6}
+        bg="background.container.subtle"
+      >
+        <Stack gap={4}>
+          <HStack justify="space-between" align="flex-start">
+            <Stack gap={1}>
+              <Heading as="h2" size="sm" color="text.heading">
+                Local LLM Configurations
+              </Heading>
+              <Text fontSize="sm" color="text.subtle">
+                Configure local LLM providers (OpenAI, Anthropic, Ollama, etc.) for native AI evaluation rules without requiring a ValidMind connection.
+              </Text>
+            </Stack>
+            <Button
+              leftIcon={<Icon as={PlusIcon} />}
+              size="sm"
+              variant="secondary"
+              onClick={handleOpenAddLLM}
+              flexShrink={0}
+            >
+              Add LLM
+            </Button>
+          </HStack>
+
+          {llmConfigs.length === 0 ? (
+            <Box
+              borderWidth={1}
+              borderColor="border.base"
+              borderRadius="md"
+              p={8}
+              textAlign="center"
+              bg="background.base"
+            >
+              <Text color="text.subtle" fontSize="sm">
+                No local LLMs configured. Add one to enable AI evaluation rules without ValidMind.
+              </Text>
+            </Box>
+          ) : (
+            <TableContainer>
+              <Table size="sm" variant="simple">
+                <Thead>
+                  <Tr>
+                    <Th>Name</Th>
+                    <Th>Provider</Th>
+                    <Th>Model</Th>
+                    <Th>Status</Th>
+                    <Th />
+                  </Tr>
+                </Thead>
+                <Tbody>
+                  {llmConfigs.map((cfg) => (
+                    <Tr
+                      key={cfg.id}
+                      cursor="pointer"
+                      _hover={{ bg: 'background.container.subtle' }}
+                      onClick={() => handleOpenEditLLM(cfg)}
+                    >
+                      <Td fontWeight="medium">{cfg.name}</Td>
+                      <Td>
+                        <Badge variant="subtle" colorScheme="blue" fontSize="xs">
+                          {PROVIDER_LABELS[cfg.provider] ?? cfg.provider}
+                        </Badge>
+                      </Td>
+                      <Td>
+                        <Text fontSize="xs" fontFamily="mono">{cfg.model}</Text>
+                      </Td>
+                      <Td>
+                        <Badge colorScheme={cfg.enabled ? 'green' : 'gray'} fontSize="xs">
+                          {cfg.enabled ? 'Enabled' : 'Disabled'}
+                        </Badge>
+                      </Td>
+                      <Td onClick={(e) => e.stopPropagation()}>
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          colorScheme="red"
+                          leftIcon={<Icon as={TrashIcon} />}
+                          onClick={() => void handleDeleteLLM(cfg.id)}
+                          isLoading={deleteLLMConfig.isLoading}
+                        >
+                          Delete
+                        </Button>
+                      </Td>
+                    </Tr>
+                  ))}
+                </Tbody>
+              </Table>
+            </TableContainer>
+          )}
+        </Stack>
+      </Box>
+
+      </SimpleGrid>
+
+      {/* ── Invocation Summary Model ────────────────────────────────────────────── */}
+      {(() => {
+        const vmOpts = modelConfigs.map((mc) => ({ value: `vm:${mc.cuid}`, label: mc.name }));
+        const localOpts = llmConfigs.map((c) => ({ value: `local:${c.id}`, label: c.name }));
+        const summaryGroups: { label: string; options: { value: string; label: string }[] }[] = [];
+        if (vmOpts.length > 0) summaryGroups.push({ label: 'ValidMind Models', options: vmOpts });
+        if (localOpts.length > 0) summaryGroups.push({ label: 'Local LLMs', options: localOpts });
+        const summaryValue =
+          summaryModelConfigCUID
+            ? (vmOpts.find((o) => o.value === `vm:${summaryModelConfigCUID}`) ?? null)
+            : summaryAtryumLLMConfigID
+              ? (localOpts.find((o) => o.value === `local:${summaryAtryumLLMConfigID}`) ?? null)
+              : null;
+        return (
+          <Box
+            borderWidth={1}
+            borderColor="border.base"
+            borderRadius="md"
+            p={6}
+            bg="background.container.subtle"
+          >
+            <Stack gap={4}>
+              <Stack gap={1}>
+                <Heading as="h2" size="sm" color="text.heading">
+                  Invocation Summary Model
+                </Heading>
+                <Text fontSize="sm" color="text.subtle">
+                  LLM used to generate plain-language summaries on the Invocations page. Choose a ValidMind model configuration or a local LLM.
+                </Text>
+              </Stack>
+
+              {loadingModelConfigs ? (
+                <Spinner size="sm" />
+              ) : summaryGroups.length === 0 ? (
+                <Text fontSize="sm" color="text.subtle">
+                  No models available. Connect to ValidMind or add a local LLM above.
+                </Text>
+              ) : (
+                <FormControl>
+                  <GroupedSelect
+                    size="sm"
+                    options={summaryGroups}
+                    value={summaryValue}
+                    onChange={(opt) => {
+                      if (!opt) { setSummaryModelConfigCUID(''); setSummaryAtryumLLMConfigID(''); return; }
+                      if (opt.value.startsWith('vm:')) { setSummaryModelConfigCUID(opt.value.slice(3)); setSummaryAtryumLLMConfigID(''); }
+                      else { setSummaryAtryumLLMConfigID(opt.value.slice(6)); setSummaryModelConfigCUID(''); }
+                    }}
+                    placeholder="Select a model…"
+                    isClearable
+                    classNamePrefix="chakra-react-select"
+                  />
+                </FormControl>
+              )}
+
+              <Flex justify="flex-end">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={handleSaveClick}
+                  isLoading={updateMutation.isLoading}
+                  isDisabled={!hasChanges || updateMutation.isLoading}
+                >
+                  Save Settings
+                </Button>
+              </Flex>
+            </Stack>
+          </Box>
+        );
+      })()}
+
+      {/* ── LLM Config Modal ───────────────────────────────────────────────────── */}
+      <Modal isOpen={isLLMModalOpen} onClose={closeLLMModal} size="md">
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader>{editingLLM ? 'Edit LLM Configuration' : 'Add LLM Configuration'}</ModalHeader>
+          <ModalCloseButton />
+          <ModalBody>
+            <LLMConfigForm
+              initial={editingLLM}
+              onSave={handleSaveLLM}
+              onClose={closeLLMModal}
+              isLoading={createLLMConfig.isLoading || updateLLMConfig.isLoading}
+            />
+          </ModalBody>
+          <ModalFooter />
+        </ModalContent>
+      </Modal>
     </Stack>
   );
 };

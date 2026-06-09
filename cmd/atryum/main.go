@@ -112,6 +112,7 @@ func runServer(args []string) error {
 	rulesRepo := store.NewRulesRepoWithDialect(db, dialect)
 	agentsRepo := store.NewAgentsRepoWithDialect(db, dialect)
 	agentSyncSettingsRepo := store.NewAgentSyncSettingsRepoWithDialect(db, dialect)
+	llmConfigsRepo := store.NewLLMConfigsRepoWithDialect(db, dialect)
 
 	// syncAgents is the shared sync function used both at startup and via the
 	// admin API POST /api/v1/admin/agents/sync endpoint.
@@ -186,9 +187,18 @@ func runServer(args []string) error {
 	if agentsRepo != nil {
 		invAgents = &agentsLookupAdapter{repo: agentsRepo}
 	}
+
+	// Build the evaluator: always create a local evaluator backed by llmConfigsRepo.
+	// When a ValidMind backend is configured, wrap both in a dispatchingEvaluator.
+	localEvaluator := invocation.NewLocalEvaluatorClient(&llmConfigsLookupAdapter{repo: llmConfigsRepo})
 	var invEvaluator invocation.EvaluatorClient
 	if backendClient != nil {
-		invEvaluator = &evaluatorAdapter{client: backendClient}
+		invEvaluator = &invocation.DispatchingEvaluator{
+			VM:    &evaluatorAdapter{client: backendClient},
+			Local: localEvaluator,
+		}
+	} else {
+		invEvaluator = localEvaluator
 	}
 
 	service := invocation.NewService(invRepo, eventRepo, resolver, client, policyRegistry, time.Duration(cfg.Defaults.RequestTimeoutSeconds)*time.Second, rulesRepo, invAgents, invEvaluator, &syncSettingsAdapter{repo: agentSyncSettingsRepo})
@@ -201,7 +211,7 @@ func runServer(args []string) error {
 			return fmt.Errorf("init servers: %w", err)
 		}
 	}
-	handler := api.NewHandler(service, serverAdmin, policyRegistry, rulesRepo, agentsRepo, agentSyncSettingsRepo, syncAgents, backendClient)
+	handler := api.NewHandler(service, serverAdmin, policyRegistry, rulesRepo, agentsRepo, agentSyncSettingsRepo, llmConfigsRepo, syncAgents, backendClient, localEvaluator)
 
 	authValidator, err := auth.NewValidator(cfg.Auth, nil)
 	if err != nil {
@@ -326,7 +336,7 @@ func (a *agentsLookupAdapter) GetByAgentID(ctx context.Context, agentID string) 
 	if err != nil {
 		return invocation.AgentRecord{}, err
 	}
-	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID}, nil
+	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Constitution: rec.Constitution}, nil
 }
 
 func (a *agentsLookupAdapter) GetByVMCUID(ctx context.Context, vmCUID string) (invocation.AgentRecord, error) {
@@ -334,7 +344,26 @@ func (a *agentsLookupAdapter) GetByVMCUID(ctx context.Context, vmCUID string) (i
 	if err != nil {
 		return invocation.AgentRecord{}, err
 	}
-	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID}, nil
+	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Constitution: rec.Constitution}, nil
+}
+
+// llmConfigsLookupAdapter bridges store.LLMConfigsRepo → invocation.LLMConfigProvider.
+type llmConfigsLookupAdapter struct {
+	repo *store.LLMConfigsRepo
+}
+
+func (a *llmConfigsLookupAdapter) GetLLMConfig(ctx context.Context, id string) (invocation.LocalLLMConfig, error) {
+	cfg, err := a.repo.Get(ctx, id)
+	if err != nil {
+		return invocation.LocalLLMConfig{}, err
+	}
+	return invocation.LocalLLMConfig{
+		ID:       cfg.ID,
+		Provider: string(cfg.Provider),
+		Model:    cfg.Model,
+		APIKey:   cfg.APIKey,
+		BaseURL:  cfg.BaseURL,
+	}, nil
 }
 
 // syncSettingsAdapter bridges store.AgentSyncSettingsRepo → invocation.SyncSettingsProvider.
