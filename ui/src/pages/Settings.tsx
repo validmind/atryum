@@ -268,10 +268,12 @@ const Settings: React.FC = () => {
   }, [orgCUID, recordTypeSlug]);
 
   // ── Derived state ─────────────────────────────────────────────────────────────
-  const hasChanges =
+  const hasSyncChanges =
     orgCUID !== (savedSettings?.org_cuid ?? '') ||
     recordTypeSlug !== (savedSettings?.agent_record_type_slug ?? '') ||
-    constitutionFieldKey !== (savedSettings?.constitution_field_key ?? '') ||
+    constitutionFieldKey !== (savedSettings?.constitution_field_key ?? '');
+
+  const hasSummaryChanges =
     summaryModelConfigCUID !== (savedSettings?.summary_model_config_cuid ?? '') ||
     summaryAtryumLLMConfigID !== (savedSettings?.summary_atryum_llm_config_id ?? '');
 
@@ -295,7 +297,8 @@ const Settings: React.FC = () => {
     [],
   );
 
-  const commitSave = useCallback(async () => {
+  // Saves Agent Record Sync fields only; preserves saved summary model values.
+  const commitSyncSave = useCallback(async () => {
     setShowConfirm(false);
     setVmError(null);
     try {
@@ -303,8 +306,8 @@ const Settings: React.FC = () => {
         org_cuid: orgCUID,
         agent_record_type_slug: recordTypeSlug,
         constitution_field_key: constitutionFieldKey,
-        summary_model_config_cuid: summaryModelConfigCUID,
-        summary_atryum_llm_config_id: summaryAtryumLLMConfigID,
+        summary_model_config_cuid: savedSettings?.summary_model_config_cuid ?? '',
+        summary_atryum_llm_config_id: savedSettings?.summary_atryum_llm_config_id ?? '',
       });
       if (saved.sync_error) {
         toast({
@@ -335,8 +338,40 @@ const Settings: React.FC = () => {
     orgCUID,
     recordTypeSlug,
     constitutionFieldKey,
+    savedSettings,
+    updateMutation,
+    toast,
+  ]);
+
+  // Saves Invocation Summary Model fields only; preserves saved sync values.
+  const commitSummarySave = useCallback(async () => {
+    try {
+      await updateMutation.mutateAsync({
+        org_cuid: savedSettings?.org_cuid ?? '',
+        agent_record_type_slug: savedSettings?.agent_record_type_slug ?? '',
+        constitution_field_key: savedSettings?.constitution_field_key ?? '',
+        summary_model_config_cuid: summaryModelConfigCUID,
+        summary_atryum_llm_config_id: summaryAtryumLLMConfigID,
+      });
+      toast({
+        title: 'Summary model saved',
+        status: 'success',
+        duration: 3000,
+        isClosable: true,
+      });
+    } catch (err: unknown) {
+      toast({
+        title: 'Failed to save summary model',
+        description: err instanceof Error ? err.message : 'Unexpected error',
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+    }
+  }, [
     summaryModelConfigCUID,
     summaryAtryumLLMConfigID,
+    savedSettings,
     updateMutation,
     toast,
   ]);
@@ -345,11 +380,12 @@ const Settings: React.FC = () => {
     if (willDeleteSyncedAgents) {
       setShowConfirm(true);
     } else {
-      void commitSave();
+      void commitSyncSave();
     }
-  }, [willDeleteSyncedAgents, commitSave]);
+  }, [willDeleteSyncedAgents, commitSyncSave]);
 
   const isConnected = Boolean(savedSettings?.org_cuid && savedSettings?.agent_record_type_slug);
+  const isBackendConfigured = savedSettings?.backend_configured ?? false;
 
   const handleOpenAddLLM = useCallback(() => {
     setEditingLLM(undefined);
@@ -421,12 +457,14 @@ const Settings: React.FC = () => {
         </Text>
       </Stack>
 
-      {/* Connection status */}
-      <HStack>
-        <Badge colorScheme={isConnected ? 'green' : 'gray'} px={2} py={1} borderRadius="md">
-          {isConnected ? 'Connected to ValidMind' : 'Not connected'}
-        </Badge>
-      </HStack>
+      {/* Connection status — only shown when a backend URL is configured */}
+      {isBackendConfigured && (
+        <HStack>
+          <Badge colorScheme={isConnected ? 'green' : 'gray'} px={2} py={1} borderRadius="md">
+            {isConnected ? 'Connected to ValidMind' : 'Not connected'}
+          </Badge>
+        </HStack>
+      )}
 
       {vmError && (
         <Alert status="warning" borderRadius="md">
@@ -436,10 +474,10 @@ const Settings: React.FC = () => {
       )}
 
       {/* Agent Sync + Local LLM side by side */}
-      <SimpleGrid columns={{ base: 1, xl: 2 }} gap={6} alignItems="start">
+      <SimpleGrid minChildWidth="340px" gap={6} alignItems="start">
 
-      {/* Agent Sync section */}
-      <Box
+      {/* Agent Sync section — only shown when a backend URL is configured */}
+      {isBackendConfigured && <Box
         borderWidth={1}
         borderColor="border.base"
         borderRadius="md"
@@ -543,37 +581,47 @@ const Settings: React.FC = () => {
             )}
           </FormControl>
 
-        </Stack>
-      </Box>
+          {showConfirm && (
+            <Alert status="warning" borderRadius="md" flexDirection="column" alignItems="flex-start" gap={3}>
+              <HStack>
+                <AlertIcon />
+                <AlertDescription fontWeight="semibold">
+                  Changing the org or record type will delete all synced agents. Manually-created agents are kept.
+                </AlertDescription>
+              </HStack>
+              <HStack pl={6} gap={2}>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setShowConfirm(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  colorScheme="red"
+                  onClick={() => void commitSyncSave()}
+                  isLoading={updateMutation.isLoading}
+                >
+                  Delete synced agents &amp; save
+                </Button>
+              </HStack>
+            </Alert>
+          )}
 
-      {/* Destructive confirmation */}
-      {showConfirm && (
-        <Alert status="warning" borderRadius="md" flexDirection="column" alignItems="flex-start" gap={3}>
-          <HStack>
-            <AlertIcon />
-            <AlertDescription fontWeight="semibold">
-              Changing the org or record type will delete all synced agents. Manually-created agents are kept.
-            </AlertDescription>
-          </HStack>
-          <HStack pl={6} gap={2}>
+          <Flex justify="flex-end">
             <Button
+              variant="primary"
               size="sm"
-              variant="ghost"
-              onClick={() => setShowConfirm(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              colorScheme="red"
-              onClick={() => void commitSave()}
+              onClick={handleSaveClick}
               isLoading={updateMutation.isLoading}
+              isDisabled={!hasSyncChanges || updateMutation.isLoading}
             >
-              Delete synced agents &amp; save
+              Save Settings
             </Button>
-          </HStack>
-        </Alert>
-      )}
+          </Flex>
+        </Stack>
+      </Box>}
 
 
       {/* ── Local LLM Configurations ────────────────────────────────────────── */}
@@ -673,8 +721,6 @@ const Settings: React.FC = () => {
         </Stack>
       </Box>
 
-      </SimpleGrid>
-
       {/* ── Invocation Summary Model ────────────────────────────────────────────── */}
       {(() => {
         const vmOpts = modelConfigs.map((mc) => ({ value: `vm:${mc.cuid}`, label: mc.name }));
@@ -734,17 +780,19 @@ const Settings: React.FC = () => {
                 <Button
                   variant="primary"
                   size="sm"
-                  onClick={handleSaveClick}
+                  onClick={() => void commitSummarySave()}
                   isLoading={updateMutation.isLoading}
-                  isDisabled={!hasChanges || updateMutation.isLoading}
+                  isDisabled={!hasSummaryChanges || updateMutation.isLoading}
                 >
-                  Save Settings
+                  Save
                 </Button>
               </Flex>
             </Stack>
           </Box>
         );
       })()}
+
+      </SimpleGrid>
 
       {/* ── LLM Config Modal ───────────────────────────────────────────────────── */}
       <Modal isOpen={isLLMModalOpen} onClose={closeLLMModal} size="md">

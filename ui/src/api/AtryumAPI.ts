@@ -416,6 +416,7 @@ export interface AgentSyncSettings {
   constitution_field_key: string;
   summary_model_config_cuid: string;
   summary_atryum_llm_config_id: string;
+  backend_configured?: boolean;
   updated_at?: string;
   sync_error?: string;
 }

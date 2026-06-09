@@ -2100,6 +2100,7 @@ type AgentSyncSettingsResponse struct {
 	DefaultAgentVMCUID         string `json:"default_agent_vm_cuid"`
 	UpdatedAt                  string `json:"updated_at,omitempty"`
 	SyncError                  string `json:"sync_error,omitempty"`
+	BackendConfigured          bool   `json:"backend_configured"`
 }
 
 // AgentSyncSettingsInput is the JSON body accepted by PUT /admin/settings.
@@ -2318,6 +2319,7 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 			SummaryModelConfigCUID:   s.SummaryModelConfigCUID,
 			SummaryAtryumLLMConfigID: s.SummaryAtryumLLMConfigID,
 			DefaultAgentVMCUID:       s.DefaultAgentVMCUID,
+			BackendConfigured:        h.backendClient != nil,
 		}
 		if !s.UpdatedAt.IsZero() {
 			resp.UpdatedAt = s.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z")
@@ -2379,6 +2381,7 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 			SummaryAtryumLLMConfigID: s.SummaryAtryumLLMConfigID,
 			DefaultAgentVMCUID:       s.DefaultAgentVMCUID,
 			SyncError:                syncErr,
+			BackendConfigured:        h.backendClient != nil,
 		}
 		if !s.UpdatedAt.IsZero() {
 			resp.UpdatedAt = s.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z")

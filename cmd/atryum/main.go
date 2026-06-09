@@ -211,7 +211,13 @@ func runServer(args []string) error {
 			return fmt.Errorf("init servers: %w", err)
 		}
 	}
-	handler := api.NewHandler(service, serverAdmin, policyRegistry, rulesRepo, agentsRepo, agentSyncSettingsRepo, llmConfigsRepo, syncAgents, backendClient, localEvaluator)
+	// Only wire up the sync function when a backend client is available; passing
+	// nil causes the handler to skip the post-save sync trigger entirely.
+	var syncAgentsFn func(ctx context.Context) error
+	if backendClient != nil {
+		syncAgentsFn = syncAgents
+	}
+	handler := api.NewHandler(service, serverAdmin, policyRegistry, rulesRepo, agentsRepo, agentSyncSettingsRepo, llmConfigsRepo, syncAgentsFn, backendClient, localEvaluator)
 
 	authValidator, err := auth.NewValidator(cfg.Auth, nil)
 	if err != nil {
