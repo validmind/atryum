@@ -82,8 +82,8 @@ ui-dev:
 
 # Run atryum process locally
 run:
-	go run ./cmd/atryum -config {{config}}
+	go run ./cmd/atryum run --config {{config}}
 
 # Kill local running atryum process
 stop:
-	pkill -f '/atryum -config|go run ./cmd/atryum'
+	pkill -f '/atryum run .*--config|go run ./cmd/atryum run'
