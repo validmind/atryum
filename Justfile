@@ -39,6 +39,10 @@ check: fmt test
 build:
 	CGO_ENABLED=0 go build -o ./atryum ./cmd/atryum
 
+# Remove generated binaries, release artifacts, and built UI assets
+clean:
+	rm -rf ./atryum {{release_dir}} ui/dist internal/api/web
+
 # Build local production-like atryum binary with the local UI embedded
 build-prod: build-ui build
 
