@@ -121,7 +121,6 @@ func (e *LocalEvaluatorClient) callOpenAI(ctx context.Context, cfg LocalLLMConfi
 			{"role": "system", "content": system},
 			{"role": "user", "content": user},
 		},
-		"temperature": 0.0,
 	})
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))

@@ -474,7 +474,7 @@ const Settings: React.FC = () => {
       )}
 
       {/* Agent Sync + Local LLM side by side */}
-      <SimpleGrid minChildWidth="340px" gap={6} alignItems="start">
+      <SimpleGrid columns={2} gap={6} alignItems="start">
 
       {/* Agent Sync section — only shown when a backend URL is configured */}
       {isBackendConfigured && <Box
@@ -741,6 +741,7 @@ const Settings: React.FC = () => {
             borderRadius="md"
             p={6}
             bg="background.container.subtle"
+            sx={isBackendConfigured ? { gridColumn: '1 / -1' } : undefined}
           >
             <Stack gap={4}>
               <Stack gap={1}>
