@@ -6,6 +6,9 @@ const POLL_INTERVAL = Number(process.env.ATRYUM_POLL_MS || 2000);
 const CLIENT_NAME = process.env.ATRYUM_CLIENT_NAME || SOURCE;
 const CLIENT_VERSION =
   process.env.ATRYUM_CLIENT_VERSION || process.env.PI_VERSION || "";
+// Self-declared agent identity. Atryum resolves the Agent Record via the
+// agents.agent_ids array. Not authenticated; for verified identity use OAuth.
+const AGENT_ID = process.env.ATRYUM_AGENT_ID || "";
 
 type InvocationStatus =
   | "received"
@@ -71,6 +74,7 @@ async function submit(
       input,
       request_id: toolCallID,
       thread_id: threadID,
+      agent_id: AGENT_ID || undefined,
       client_name: CLIENT_NAME,
       client_version: CLIENT_VERSION || undefined,
     }),
