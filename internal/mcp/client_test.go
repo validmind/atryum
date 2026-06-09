@@ -27,14 +27,16 @@ func TestConnectionDebugLogsHTTPProbeWithoutSecrets(t *testing.T) {
 	}()
 
 	const targetURL = "https://shortcut.example/mcp"
-	client := &Client{httpClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+	client := NewHTTPClient()
+	client.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusUnauthorized,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
 			Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"token expired"}}`)),
 			Request:    r,
 		}, nil
-	})}, debug: true, sessions: make(map[string]string)}
+	})}
+	client.debug = true
 	result := client.TestConnection(context.Background(), Upstream{
 		Name:        "shortcut",
 		Mode:        UpstreamModeHTTP,
@@ -55,7 +57,7 @@ func TestConnectionDebugLogsHTTPProbeWithoutSecrets(t *testing.T) {
 		"connection test http initialize server=shortcut",
 		"connection test http response server=shortcut status=401",
 		"connection test result server=shortcut",
-		"message=\"http 401: token expired\"",
+		"message=\"upstream initialize using MCP 2025-11-25 failed: http 401: token expired\"",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected logs to contain %q, got:\n%s", want, got)
