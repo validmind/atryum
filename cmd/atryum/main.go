@@ -268,12 +268,15 @@ func runServer(args []string) error {
 	}
 	if len(managedAccounts) > 0 {
 		managedSessionRepo := store.NewManagedAgentSessionRepoWithDialect(db, dialect)
-		managedSvc = managedagents.NewService(
+		managedSvc, err = managedagents.NewService(
 			service, // *invocation.Service satisfies InvocationGateway
 			&managedSessionStoreAdapter{repo: managedSessionRepo},
 			&managedAuditAdapter{inv: invRepo, events: eventRepo},
 			managedAccounts,
 		)
+		if err != nil {
+			return fmt.Errorf("configure managed agents bridge: %w", err)
+		}
 		if err := managedSvc.Start(context.Background()); err != nil {
 			return fmt.Errorf("start managed agents bridge: %w", err)
 		}

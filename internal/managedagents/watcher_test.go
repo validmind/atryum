@@ -171,9 +171,30 @@ func itoa(n int) string {
 
 func newTestWatcher(g InvocationGateway, c AnthropicClient, a InvocationAuditStore) *watcher {
 	cfg := Config{PollInterval: time.Millisecond}.withDefaults()
-	svc := NewService(g, &fakeSessionStore{}, a, []Account{{Client: c, Config: cfg}})
+	svc, err := NewService(g, &fakeSessionStore{}, a, []Account{{Client: c, Config: cfg}})
+	if err != nil {
+		panic(err)
+	}
 	acct := svc.accounts[cfg.Name]
 	return &watcher{svc: svc, acct: acct, reg: SessionRegistration{SessionID: "sess_1", Account: cfg.Name, AgentID: "agent-1"}, pending: map[string]pendingCall{}}
+}
+
+func TestNewServiceRejectsDuplicateAccountNames(t *testing.T) {
+	_, err := NewService(nil, nil, nil, []Account{
+		{Config: Config{Name: "prod"}},
+		{Config: Config{Name: "prod"}},
+	})
+	if err == nil {
+		t.Fatal("expected duplicate explicit account name error")
+	}
+
+	_, err = NewService(nil, nil, nil, []Account{
+		{Config: Config{}},
+		{Config: Config{}},
+	})
+	if err == nil {
+		t.Fatal("expected duplicate default account name error")
+	}
 }
 
 func toolUseEvent(id, eventType, name string, input map[string]any) RawEvent {

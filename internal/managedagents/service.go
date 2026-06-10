@@ -60,7 +60,7 @@ type Service struct {
 
 // NewService builds a bridge over one or more Anthropic accounts. Each account's
 // config is normalized (name defaulted) on construction.
-func NewService(inv InvocationGateway, sessions SessionStore, audit InvocationAuditStore, accounts []Account) *Service {
+func NewService(inv InvocationGateway, sessions SessionStore, audit InvocationAuditStore, accounts []Account) (*Service, error) {
 	s := &Service{
 		inv:      inv,
 		sessions: sessions,
@@ -70,6 +70,9 @@ func NewService(inv InvocationGateway, sessions SessionStore, audit InvocationAu
 	}
 	for _, a := range accounts {
 		cfg := a.Config.withDefaults()
+		if _, exists := s.accounts[cfg.Name]; exists {
+			return nil, fmt.Errorf("duplicate managed-agent account name %q", cfg.Name)
+		}
 		s.accounts[cfg.Name] = account{client: a.Client, cfg: cfg}
 	}
 	if len(s.accounts) == 1 {
@@ -77,7 +80,7 @@ func NewService(inv InvocationGateway, sessions SessionStore, audit InvocationAu
 			s.defaultAccount = name
 		}
 	}
-	return s
+	return s, nil
 }
 
 // Start resumes watching every previously-registered session. It is safe to
