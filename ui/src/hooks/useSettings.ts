@@ -6,10 +6,11 @@ export const useSettings = () => {
     retry: false,
     staleTime: 30_000,
   });
-  const isConnected = Boolean(
+  const isBackendConfigured = Boolean(query.data?.backend_configured);
+  const isConnected = isBackendConfigured && Boolean(
     query.data?.org_cuid && query.data?.agent_record_type_slug,
   );
-  return { ...query, isConnected };
+  return { ...query, isConnected, isBackendConfigured };
 };
 
 export const useUpdateSettings = () => {

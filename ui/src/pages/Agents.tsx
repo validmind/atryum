@@ -429,20 +429,19 @@ const Agents: React.FC = () => {
               <ContentPageTitle>Agents</ContentPageTitle>
             </HStack>
             <HStack gap={2}>
-              {isConnected ? (
+              {isConnected && (
                 <Button
                   size="sm"
-                  variant="primary"
+                  variant="outline"
                   isLoading={isSyncing}
                   onClick={handleSync}
                 >
                   Sync from ValidMind
                 </Button>
-              ) : (
-                <Button variant="primary" size="sm" onClick={onCreateOpen}>
-                  New Agent
-                </Button>
               )}
+              <Button variant="primary" size="sm" onClick={onCreateOpen}>
+                New Agent
+              </Button>
             </HStack>
           </Flex>
         </HStack>
