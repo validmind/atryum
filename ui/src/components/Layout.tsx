@@ -111,7 +111,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               _hover={{ textDecoration: 'none' }}
             >
               <Image
-                src="/atryum-logo.png"
+                src="/ui/atryum-logo.png"
                 alt="Atryum"
                 objectFit="contain"
                 h="36px"
