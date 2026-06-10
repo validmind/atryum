@@ -22,6 +22,7 @@ import (
 	"atryum/internal/config"
 	"atryum/internal/invocation"
 	"atryum/internal/invocation/policy"
+	"atryum/internal/managedagents"
 	"atryum/internal/mcp"
 	"atryum/internal/store"
 
@@ -241,6 +242,42 @@ func runServer(args []string) error {
 		log.Printf("WARNING: inbound auth debug skip_verify enabled; /mcp/ Authorization header is ignored entirely")
 	}
 
+	// Optional Claude Managed Agents events bridge. Enabled only when an
+	// Anthropic API key is configured (TOML or env). It watches registered
+	// sessions, streams their events into the invocations table, and gates
+	// blocking tool calls through the normal approval rules.
+	var managedSvc *managedagents.Service
+	if cfg.ManagedAgents.APIKey != "" {
+		managedSessionRepo := store.NewManagedAgentSessionRepoWithDialect(db, dialect)
+		managedClient := managedagents.NewAnthropicHTTPClient(managedagents.Config{
+			BaseURL:       cfg.ManagedAgents.BaseURL,
+			APIKey:        cfg.ManagedAgents.APIKey,
+			ClientName:    cfg.ManagedAgents.ClientName,
+			ClientVersion: cfg.ManagedAgents.ClientVersion,
+		})
+		managedSvc = managedagents.NewService(
+			managedClient,
+			service, // *invocation.Service satisfies InvocationGateway
+			&managedSessionStoreAdapter{repo: managedSessionRepo},
+			&managedAuditAdapter{inv: invRepo, events: eventRepo},
+			managedagents.Config{
+				BaseURL:          cfg.ManagedAgents.BaseURL,
+				APIKey:           cfg.ManagedAgents.APIKey,
+				PollInterval:     time.Duration(cfg.ManagedAgents.PollIntervalMillis) * time.Millisecond,
+				ReconnectBackoff: time.Duration(cfg.ManagedAgents.ReconnectBackoffSeconds) * time.Second,
+				ClientName:       cfg.ManagedAgents.ClientName,
+				ClientVersion:    cfg.ManagedAgents.ClientVersion,
+			},
+		)
+		if err := managedSvc.Start(context.Background()); err != nil {
+			return fmt.Errorf("start managed agents bridge: %w", err)
+		}
+		handler.SetManagedAgents(managedSvc)
+		log.Printf("claude managed agents bridge enabled")
+	} else {
+		log.Printf("claude managed agents bridge disabled (no [managed_agents].api_key)")
+	}
+
 	srv := &http.Server{
 		Addr:              cfg.Server.ListenAddr,
 		Handler:           handler.Routes(),
@@ -258,10 +295,85 @@ func runServer(args []string) error {
 	defer stop()
 	<-ctx.Done()
 
+	if managedSvc != nil {
+		_ = managedSvc.Close()
+	}
+
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
 	return nil
+}
+
+// managedSessionStoreAdapter bridges store.ManagedAgentSessionRepo →
+// managedagents.SessionStore, converting between the store row and the
+// managedagents registration type.
+type managedSessionStoreAdapter struct {
+	repo *store.ManagedAgentSessionRepo
+}
+
+func (a *managedSessionStoreAdapter) Upsert(ctx context.Context, s managedagents.SessionRegistration) error {
+	return a.repo.Upsert(ctx, store.ManagedAgentSession{
+		SessionID:   s.SessionID,
+		AgentID:     s.AgentID,
+		Description: s.Description,
+		LastEventID: s.LastEventID,
+		CreatedAt:   s.CreatedAt,
+	})
+}
+
+func (a *managedSessionStoreAdapter) Get(ctx context.Context, sessionID string) (managedagents.SessionRegistration, error) {
+	row, err := a.repo.Get(ctx, sessionID)
+	if err != nil {
+		return managedagents.SessionRegistration{}, err
+	}
+	return managedSessionToReg(row), nil
+}
+
+func (a *managedSessionStoreAdapter) List(ctx context.Context) ([]managedagents.SessionRegistration, error) {
+	rows, err := a.repo.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]managedagents.SessionRegistration, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, managedSessionToReg(row))
+	}
+	return out, nil
+}
+
+func (a *managedSessionStoreAdapter) UpdateCursor(ctx context.Context, sessionID, lastEventID string) error {
+	return a.repo.UpdateCursor(ctx, sessionID, lastEventID)
+}
+
+func managedSessionToReg(row store.ManagedAgentSession) managedagents.SessionRegistration {
+	return managedagents.SessionRegistration{
+		SessionID:   row.SessionID,
+		AgentID:     row.AgentID,
+		Description: row.Description,
+		LastEventID: row.LastEventID,
+		CreatedAt:   row.CreatedAt,
+		UpdatedAt:   row.UpdatedAt,
+	}
+}
+
+// managedAuditAdapter bridges the invocation/event repos →
+// managedagents.InvocationAuditStore for the synthetic per-session audit row.
+type managedAuditAdapter struct {
+	inv    *store.InvocationRepo
+	events *store.EventRepo
+}
+
+func (a *managedAuditAdapter) Create(ctx context.Context, inv invocation.Invocation) error {
+	return a.inv.Create(ctx, inv)
+}
+
+func (a *managedAuditAdapter) GetByIdempotencyKey(ctx context.Context, key string) (invocation.Invocation, error) {
+	return a.inv.GetByIdempotencyKey(ctx, key)
+}
+
+func (a *managedAuditAdapter) CreateEvent(ctx context.Context, evt invocation.Event) error {
+	return a.events.Create(ctx, evt)
 }
 
 func initEnabledServerStatuses(ctx context.Context, repo *store.ServerRepo, serverAdmin *api.ServerAdminService) error {

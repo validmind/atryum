@@ -10,8 +10,9 @@ Atryum mediates two kinds of tool calls:
 
 - **Pre-tool hooks from agent harnesses.** Managed harnesses (Claude Code, Cursor, amp, Pi) and autonomous ones (Microsoft Foundry, custom orchestrators) post their intended tool call to `POST /api/v1/external/invocations` (when the harness executes the tool itself) or `POST /api/v1/invocations` (when Atryum should execute it). The harness blocks on the response and only proceeds if Atryum returns an approved status. In the hook path Atryum never touches the tool — it just answers "may this call happen."
 - **Direct MCP proxying.** Agents that speak MCP connect to `POST /mcp/{server}` as their MCP endpoint. Atryum implements the JSON-RPC surface (`initialize`, `notifications/initialized`, `tools/list`, `tools/call`) and proxies calls to the configured upstream — HTTP or stdio. Because Atryum is the MCP client to the upstream, it holds the credentials (OAuth tokens, bearer tokens, custom headers) and the agent never sees them. The same approval engine runs on every `tools/call`.
+- **Claude Managed Agents events bridge.** Anthropic's hosted harness runs the agent loop on its own infrastructure and never calls Atryum, so for those sessions Atryum dials *out*: it streams a registered session's [events](https://platform.claude.com/docs/en/managed-agents/events-and-streaming), records every event as an invocation, and — when the session blocks on a tool call (`session.status_idle` / `requires_action`) — runs the normal approval rules and answers Claude with a `user.tool_confirmation` (or `user.custom_tool_result`). This gates both built-in and MCP tools. Enable it with `[managed_agents]` and register sessions via `POST /api/v1/admin/managed-agents/sessions`. See `examples/managed-agents/`.
 
-The two paths converge on a single service so rules, audit, and the UI work identically regardless of how the call arrived.
+These paths converge on a single service so rules, audit, and the UI work identically regardless of how the call arrived.
 
 ## The rule engine
 
@@ -72,6 +73,7 @@ Admin (UI and operators):
 - `/api/v1/admin/rules`, `/{id}` (including reorder/move)
 - `/api/v1/admin/agents`, `/{id}`
 - `/api/v1/admin/settings`, `/api/v1/admin/policy`
+- `/api/v1/admin/managed-agents/sessions` — register a Claude Managed Agents session for the events bridge to watch (returns `501` when `[managed_agents]` is not configured)
 - `/api/v1/admin/oauth/callback` — OAuth callback for upstream MCP server connect flows
 
 ## Frontend
@@ -90,6 +92,7 @@ SQLite by default, PostgreSQL optional via `server.database_url`. Both are first
 - `invocation_events` — append-only lifecycle events.
 - `approval_rules` — the rule engine.
 - `agents` — local agent records and their authenticated-ID mappings.
+- `managed_agent_sessions` — Claude Managed Agents sessions watched by the events bridge, with each one's event cursor for resume-after-restart.
 
 ## Config
 
@@ -110,6 +113,10 @@ base_url = ""
 machine_key = ""
 machine_secret = ""
 connection_timeout_seconds = 5
+
+[managed_agents]                   # optional — Claude Managed Agents events bridge
+api_key  = ""                      # Anthropic API key; empty disables the bridge
+                                   # env override: ATRYUM_MANAGED_AGENTS_API_KEY, then ANTHROPIC_API_KEY
 
 [[auth]]                           # optional — repeatable per authorization server
 issuer    = "https://keycloak.example/realms/agents"

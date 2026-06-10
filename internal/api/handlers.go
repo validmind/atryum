@@ -25,6 +25,7 @@ import (
 	backendclient "atryum/internal/backend"
 	"atryum/internal/invocation"
 	"atryum/internal/invocation/policy"
+	"atryum/internal/managedagents"
 	"atryum/internal/mcp"
 	authprovider "atryum/internal/mcp/auth_provider"
 	"atryum/internal/store"
@@ -144,6 +145,16 @@ type Handler struct {
 	// absent we fall back to remote IP + User-Agent.
 	clientInfoMu    sync.RWMutex
 	clientInfoCache map[string]clientInfoSnapshot
+
+	// managedAgents is the optional Claude Managed Agents events bridge.
+	// nil when not configured (no anthropic api key).
+	managedAgents managedAgentsAdmin
+}
+
+// managedAgentsAdmin is the slice of the managed-agents service the admin API
+// needs to register a session for watching.
+type managedAgentsAdmin interface {
+	RegisterSession(ctx context.Context, req managedagents.RegisterSessionRequest) (managedagents.SessionRegistration, error)
 }
 
 type PolicyStatusResponse struct {
@@ -472,6 +483,12 @@ func (h *Handler) SetAuthDebugSkipVerify(enabled bool) {
 	h.authDebugSkip = enabled
 }
 
+// SetManagedAgents installs the optional Claude Managed Agents events bridge,
+// enabling the POST /api/v1/admin/managed-agents/sessions endpoint.
+func (h *Handler) SetManagedAgents(m managedAgentsAdmin) {
+	h.managedAgents = m
+}
+
 // SetAPIKeyAuth installs the static api-key/secret pair used to protect the
 // read-only invocation reporting endpoints.
 func (h *Handler) SetAPIKeyAuth(cfg auth.APIKeyConfig) {
@@ -517,6 +534,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/api/v1/admin/vm/custom-fields", h.adminVMCustomFields)
 	mux.HandleFunc("/api/v1/admin/oauth/callback", h.oauthCallback)
 	mux.HandleFunc("/api/v1/admin/policy", h.adminPolicy)
+	mux.HandleFunc("/api/v1/admin/managed-agents/sessions", h.adminManagedAgentSessions)
 	agentRulesHandler := auth.MiddlewareWithOptions(h.authValidator, "/.well-known/oauth-protected-resource", auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})(http.HandlerFunc(h.agentRules))
 	agentRulesHandler = h.noAuthAgentIDHint(agentRulesHandler)
 	mux.Handle("/api/v1/agent/rules", agentRulesHandler)
@@ -3118,6 +3136,31 @@ func (h *Handler) externalInvocations(w http.ResponseWriter, r *http.Request) {
 	h.debugf("external submit user-agent=%q", r.Header.Get("User-Agent"))
 
 	resp, err := h.svc.Submit(r.Context(), req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// adminManagedAgentSessions registers a Claude Managed Agents session for
+// Atryum to watch. Once registered, Atryum streams the session's events into
+// the invocations table and gates blocking tool calls through approval rules.
+func (h *Handler) adminManagedAgentSessions(w http.ResponseWriter, r *http.Request) {
+	if h.managedAgents == nil {
+		writeError(w, http.StatusNotImplemented, "managed agents bridge not configured (set [managed_agents].api_key)")
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req managedagents.RegisterSessionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	resp, err := h.managedAgents.RegisterSession(r.Context(), req)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

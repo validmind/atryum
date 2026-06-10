@@ -25,6 +25,31 @@ type Config struct {
 	// (GET /invocations/{agent_id}, GET /agent_ids). When key or secret is
 	// empty, those endpoints refuse every request.
 	APIKey auth.APIKeyConfig `toml:"api_key"`
+	// ManagedAgents configures the optional Claude Managed Agents events
+	// bridge. When api_key is empty the bridge is disabled.
+	ManagedAgents ManagedAgentsConfig `toml:"managed_agents"`
+}
+
+// ManagedAgentsConfig configures Atryum's outbound connection to Anthropic's
+// Claude Managed Agents "events and streaming" API. When APIKey is empty the
+// bridge is disabled and no sessions are watched.
+type ManagedAgentsConfig struct {
+	BaseURL                 string `toml:"base_url"`
+	APIKey                  string `toml:"api_key"`
+	PollIntervalMillis      int    `toml:"poll_interval_millis"`
+	ReconnectBackoffSeconds int    `toml:"reconnect_backoff_seconds"`
+	ClientName              string `toml:"client_name"`
+	ClientVersion           string `toml:"client_version"`
+}
+
+// ApplyEnv lets ANTHROPIC_API_KEY / ATRYUM_MANAGED_AGENTS_API_KEY override the
+// TOML api_key (the env var wins when set).
+func (c *ManagedAgentsConfig) ApplyEnv() {
+	if value := os.Getenv("ATRYUM_MANAGED_AGENTS_API_KEY"); value != "" {
+		c.APIKey = value
+	} else if value := os.Getenv("ANTHROPIC_API_KEY"); value != "" && c.APIKey == "" {
+		c.APIKey = value
+	}
 }
 
 // BackendConfig configures Atryum's startup connection check to the ValidMind
@@ -106,6 +131,7 @@ func Load(path string) (Config, error) {
 		return cfg, err
 	}
 	cfg.Backend.ApplyEnv()
+	cfg.ManagedAgents.ApplyEnv()
 	return cfg, nil
 }
 
