@@ -68,6 +68,32 @@ func TestStreamEventsParsesSSE(t *testing.T) {
 	}
 }
 
+func TestStreamEventsParsesMultilineSSEData(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: message\n")
+		fmt.Fprint(w, "data: {\"id\":\"e1\",\n")
+		fmt.Fprint(w, "data: \"type\":\"agent.tool_use\",\n")
+		fmt.Fprint(w, "data: \"name\":\"Bash\"}\n\n")
+	}))
+	defer srv.Close()
+
+	c := NewAnthropicHTTPClient(Config{BaseURL: srv.URL, APIKey: "k"})
+	stream, err := c.StreamEvents(context.Background(), "sess_1")
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	evt, err := stream.Next(context.Background())
+	if err != nil {
+		t.Fatalf("next: %v", err)
+	}
+	if evt.ID != "e1" || evt.Type != "agent.tool_use" {
+		t.Fatalf("unexpected event: %+v raw=%s", evt, string(evt.Raw))
+	}
+}
+
 func TestSendEventsPostsFlattenedType(t *testing.T) {
 	var gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -48,8 +48,15 @@ type rawEventEnvelope struct {
 }
 
 func parseEnvelope(raw json.RawMessage) RawEvent {
+	evt, _ := parseEnvelopeStrict(raw)
+	return evt
+}
+
+func parseEnvelopeStrict(raw json.RawMessage) (RawEvent, error) {
 	var env rawEventEnvelope
-	_ = json.Unmarshal(raw, &env)
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return RawEvent{}, err
+	}
 	evt := RawEvent{ID: env.ID, Type: env.Type, Raw: raw}
 	if env.ProcessedAt != "" {
 		if t, err := time.Parse(time.RFC3339Nano, env.ProcessedAt); err == nil {
@@ -59,7 +66,7 @@ func parseEnvelope(raw json.RawMessage) RawEvent {
 	if evt.ProcessedAt.IsZero() {
 		evt.ProcessedAt = time.Now().UTC()
 	}
-	return evt
+	return evt, nil
 }
 
 func (c *httpClient) ListEventsSince(ctx context.Context, sessionID, afterEventID string) ([]RawEvent, error) {
@@ -160,6 +167,7 @@ type sseStream struct {
 }
 
 func (s *sseStream) Next(ctx context.Context) (RawEvent, error) {
+	var dataLines []string
 	for {
 		if err := ctx.Err(); err != nil {
 			return RawEvent{}, err
@@ -168,21 +176,44 @@ func (s *sseStream) Next(ctx context.Context) (RawEvent, error) {
 			if err := s.scanner.Err(); err != nil {
 				return RawEvent{}, err
 			}
+			if len(dataLines) > 0 {
+				return parseSSEDataLines(dataLines)
+			}
 			return RawEvent{}, io.EOF
 		}
 		line := strings.TrimRight(s.scanner.Text(), "\r")
-		if line == "" || strings.HasPrefix(line, ":") {
-			continue // keep-alive ping or blank separator
+		if line == "" {
+			if len(dataLines) == 0 {
+				continue // blank separator with no message
+			}
+			evt, err := parseSSEDataLines(dataLines)
+			if err != nil {
+				return RawEvent{}, err
+			}
+			dataLines = nil
+			return evt, nil
+		}
+		if strings.HasPrefix(line, ":") {
+			continue // keep-alive ping
 		}
 		if !strings.HasPrefix(line, "data:") {
 			continue // ignore event:/id: lines; the JSON carries its own type
 		}
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if data == "" {
-			continue
+		data := strings.TrimPrefix(line, "data:")
+		if strings.HasPrefix(data, " ") {
+			data = data[1:]
 		}
-		return parseEnvelope(json.RawMessage(data)), nil
+		dataLines = append(dataLines, data)
 	}
 }
 
 func (s *sseStream) Close() error { return s.body.Close() }
+
+func parseSSEDataLines(lines []string) (RawEvent, error) {
+	data := strings.Join(lines, "\n")
+	evt, err := parseEnvelopeStrict(json.RawMessage(data))
+	if err != nil {
+		return RawEvent{}, fmt.Errorf("stream events: decode SSE data: %w", err)
+	}
+	return evt, nil
+}
