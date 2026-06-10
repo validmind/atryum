@@ -30,6 +30,7 @@ import {
   Spinner,
   Stack,
   Table,
+  Tag,
   Tbody,
   Td,
   Text,
@@ -48,6 +49,7 @@ import { Select } from "chakra-react-select";
 import {
   QueueListIcon,
   ChevronDownIcon,
+  ChevronUpIcon,
   ShieldCheckIcon,
 } from "@heroicons/react/24/outline";
 
@@ -70,6 +72,7 @@ import { useInvocationStream } from "../hooks/useInvocationStream";
 import {
   invocationsApi,
   type Invocation,
+  type InvocationEvent,
   type InvocationStatus,
   type RuleAction,
   type RuleInput,
@@ -142,6 +145,69 @@ const loadPendingInvocations = async (): Promise<Invocation[]> => {
     pendingInvocations.push(...page.items);
     if (page.items.length < limit) return pendingInvocations;
   }
+};
+
+const EventRow: React.FC<{ event: InvocationEvent }> = ({ event }) => {
+  const [showDetails, setShowDetails] = useState(false);
+  const hasData = event.data != null;
+  return (
+    <>
+      <Tr
+        onClick={hasData ? () => setShowDetails((v) => !v) : undefined}
+        cursor={hasData ? "pointer" : "default"}
+        _hover={hasData ? { bg: "background.container.subtle" } : undefined}>
+        <Td textAlign="center" w="1">
+          {hasData ? (
+            <IconButton
+              variant="ghost"
+              size="xs"
+              aria-label={showDetails ? "Hide details" : "See details"}
+              icon={
+                <Icon
+                  as={showDetails ? ChevronUpIcon : ChevronDownIcon}
+                  boxSize={4}
+                />
+              }
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowDetails((v) => !v);
+              }}
+            />
+          ) : (
+            <Text fontSize="xs" color="text.subtle">
+              —
+            </Text>
+          )}
+        </Td>
+        <Td>
+          <Text fontSize="xs" textTransform="capitalize" fontFamily="mono">
+            {event.type.replace(/^invocation\./i, "")}
+          </Text>
+        </Td>
+        <Td fontSize="xs" color="text.subtle" whiteSpace="nowrap">
+          {formatDate(event.timestamp)}
+        </Td>
+      </Tr>
+      {hasData && (
+        <Tr>
+          <Td colSpan={3} p={0} borderBottomWidth={showDetails ? undefined : 0}>
+            <Collapse in={showDetails} animateOpacity>
+              <Code
+                display="block"
+                fontSize="2xs"
+                whiteSpace="pre-wrap"
+                p={3}
+                m={2}
+                borderRadius="md"
+                bg="background.container.subtle">
+                {JSON.stringify(event.data, null, 2)}
+              </Code>
+            </Collapse>
+          </Td>
+        </Tr>
+      )}
+    </>
+  );
 };
 
 const Invocations: React.FC = () => {
@@ -701,7 +767,7 @@ const Invocations: React.FC = () => {
                               if (record) {
                                 return (
                                   <Badge
-                                    colorScheme="blue"
+                                    colorScheme="gray"
                                     fontSize="2xs"
                                     title={`agent_id: ${agentID}`}>
                                     {record.name}
@@ -719,12 +785,25 @@ const Invocations: React.FC = () => {
                             })()}
                           </Td>
                           <Td>
-                            <Badge
-                              colorScheme={STATUS_COLOR[inv.status] ?? "gray"}
-                              textTransform="capitalize"
-                              fontSize="2xs">
-                              {STATUS_LABEL[inv.status] ?? inv.status}
-                            </Badge>
+                            {(() => {
+                              const statusColor =
+                                STATUS_COLOR[inv.status] ?? "gray";
+                              return (
+                                <Tag
+                                  colorScheme={statusColor}
+                                  size="sm"
+                                  textTransform="capitalize">
+                                  <Box
+                                    as="span"
+                                    boxSize="8px"
+                                    borderRadius="full"
+                                    bg={`${statusColor}.500`}
+                                    mr={1.5}
+                                  />
+                                  {STATUS_LABEL[inv.status] ?? inv.status}
+                                </Tag>
+                              );
+                            })()}
                           </Td>
                           <Td>
                             <HStack gap={1}>
@@ -790,11 +869,25 @@ const Invocations: React.FC = () => {
                       gap={2}>
                       <VStack align="start" gap={1}>
                         <HStack gap={2}>
-                          <Badge
-                            colorScheme={STATUS_COLOR[detail.status] ?? "gray"}
-                            textTransform="capitalize">
-                            {STATUS_LABEL[detail.status] ?? detail.status}
-                          </Badge>
+                          {(() => {
+                            const statusColor =
+                              STATUS_COLOR[detail.status] ?? "gray";
+                            return (
+                              <Tag
+                                colorScheme={statusColor}
+                                size="sm"
+                                textTransform="capitalize">
+                                <Box
+                                  as="span"
+                                  boxSize="8px"
+                                  borderRadius="full"
+                                  bg={`${statusColor}.500`}
+                                  mr={1.5}
+                                />
+                                {STATUS_LABEL[detail.status] ?? detail.status}
+                              </Tag>
+                            );
+                          })()}
                           {getDisposition(detail).map((d) =>
                             d.label !== "—" ? (
                               <Badge
@@ -1027,23 +1120,7 @@ const Invocations: React.FC = () => {
                             if (!isPlainObject) return jsonBlock;
 
                             return (
-                              <VStack align="stretch" gap={0}>
-                                <Box alignSelf="flex-end">
-                                  <Button
-                                    variant="link"
-                                    size="xs"
-                                    onClick={() => setShowArgsJson((v) => !v)}
-                                    data-testid="invocation-arguments-json-toggle">
-                                    {showArgsJson
-                                      ? "Hide raw JSON"
-                                      : "Show raw JSON"}
-                                  </Button>
-                                </Box>
-                                <Box>
-                                  <Collapse in={showArgsJson} animateOpacity>
-                                    <Box my={2}>{jsonBlock}</Box>
-                                  </Collapse>
-                                </Box>
+                              <VStack align="stretch" gap={2}>
                                 <Box
                                   borderWidth={1}
                                   borderColor="border.base"
@@ -1095,6 +1172,20 @@ const Invocations: React.FC = () => {
                                     </Tbody>
                                   </Table>
                                 </Box>
+                                <Box alignSelf="flex-start">
+                                  <Button
+                                    variant="link"
+                                    size="xs"
+                                    onClick={() => setShowArgsJson((v) => !v)}
+                                    data-testid="invocation-arguments-json-toggle">
+                                    {showArgsJson
+                                      ? "Hide raw JSON"
+                                      : "Show raw JSON"}
+                                  </Button>
+                                </Box>
+                                <Collapse in={showArgsJson} animateOpacity>
+                                  {jsonBlock}
+                                </Collapse>
                               </VStack>
                             );
                           })()}
@@ -1564,38 +1655,29 @@ const Invocations: React.FC = () => {
                           No events recorded.
                         </Text>
                       ) : (
-                        <VStack align="stretch" gap={1}>
-                          {(eventsData?.items ?? []).map((evt, i) => (
-                            <VStack
-                              key={`${evt.timestamp}-${evt.type}-${String(i)}`}
-                              gap={1}
-                              fontSize="xs"
-                              p={2}
-                              borderRadius="md"
-                              bg="background.container.subtle"
-                              align="stretch">
-                              <HStack gap={3} align="center">
-                                <Badge
-                                  colorScheme={STATUS_COLOR[evt.type] ?? "gray"}
-                                  fontSize="2xs"
-                                  flexShrink={0}>
-                                  {evt.type}
-                                </Badge>
-                                <Text color="text.subtle" flexShrink={0}>
-                                  {formatDate(evt.timestamp)}
-                                </Text>
-                              </HStack>
-                              {evt.data != null && (
-                                <Code
-                                  fontSize="2xs"
-                                  whiteSpace="pre-wrap"
-                                  bg="transparent">
-                                  {JSON.stringify(evt.data, null, 2)}
-                                </Code>
-                              )}
-                            </VStack>
-                          ))}
-                        </VStack>
+                        <Box
+                          borderWidth={1}
+                          borderColor="border.base"
+                          borderRadius="md"
+                          overflow="hidden">
+                          <Table size="sm" variant="simple">
+                            <Thead bg="background.table.header">
+                              <Tr>
+                                <Th />
+                                <Th>Event</Th>
+                                <Th>Date</Th>
+                              </Tr>
+                            </Thead>
+                            <Tbody>
+                              {(eventsData?.items ?? []).map((evt, i) => (
+                                <EventRow
+                                  key={`${evt.timestamp}-${evt.type}-${String(i)}`}
+                                  event={evt}
+                                />
+                              ))}
+                            </Tbody>
+                          </Table>
+                        </Box>
                       )}
                     </Box>
                   </VStack>
