@@ -263,7 +263,8 @@ func (s *stubAgentsRepo) DeleteAll(context.Context) error {
 
 func TestMCPInitializeNegotiatesProtocolVersion(t *testing.T) {
 	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
-	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}`))
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`))
+
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("MCP-Protocol-Version", "2025-11-25")
 	w := httptest.NewRecorder()
@@ -273,7 +274,7 @@ func TestMCPInitializeNegotiatesProtocolVersion(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	if got := w.Header().Get("MCP-Protocol-Version"); got != "2025-11-25" {
+	if got := w.Header().Get("MCP-Protocol-Version"); got != "2025-06-18" {
 		t.Fatalf("expected negotiated header, got %q", got)
 	}
 	var resp map[string]any
@@ -281,8 +282,8 @@ func TestMCPInitializeNegotiatesProtocolVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	result := resp["result"].(map[string]any)
-	if result["protocolVersion"] != "2025-11-25" {
-		t.Fatalf("expected protocol version 2025-11-25, got %#v", result["protocolVersion"])
+	if result["protocolVersion"] != "2025-06-18" {
+		t.Fatalf("expected protocol version 2025-06-18, got %#v", result["protocolVersion"])
 	}
 	instructions, ok := result["instructions"].(string)
 	if !ok || !strings.Contains(instructions, "atryum.rules.get") {
@@ -482,6 +483,7 @@ func TestMCPGetOpenSSEStream(t *testing.T) {
 	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodGet, "/mcp/demo", nil).WithContext(ctx)
+	req.Header.Set("MCP-Protocol-Version", "2025-06-18")
 	w := httptest.NewRecorder()
 	done := make(chan struct{})
 	go func() {
@@ -496,6 +498,12 @@ func TestMCPGetOpenSSEStream(t *testing.T) {
 	}
 	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
 		t.Fatalf("expected text/event-stream, got %s", ct)
+	}
+	if got := w.Header().Get("MCP-Protocol-Version"); got != "2025-06-18" {
+		t.Fatalf("expected protocol header, got %q", got)
+	}
+	if !strings.Contains(w.Body.String(), ": atryum mcp ready\n\n") {
+		t.Fatalf("expected initial SSE ready comment, got %q", w.Body.String())
 	}
 }
 

@@ -1,0 +1,17 @@
+.git
+.DS_Store
+.direnv
+.envrc
+.codex
+*.nix
+__inspiration
+atryum
+atryum.db
+atryum.toml
+docker-compose.override.yml
+internal/api/web
+releases
+opencode-state
+node_modules
+ui/node_modules
+ui/dist

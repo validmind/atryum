@@ -30,9 +30,11 @@ const (
 )
 
 const (
-	MCPProtocolVersion2024    = "2024-11-05"
-	MCPProtocolVersion2025    = "2025-11-25"
-	DefaultMCPProtocolVersion = MCPProtocolVersion2025
+	MCPProtocolVersion2024       = "2024-11-05"
+	MCPProtocolVersion2025_03_26 = "2025-03-26"
+	MCPProtocolVersion2025_06_18 = "2025-06-18"
+	MCPProtocolVersion2025       = "2025-11-25"
+	DefaultMCPProtocolVersion    = MCPProtocolVersion2025
 )
 
 type ServerConnectionStatus string
@@ -224,10 +226,14 @@ type Client struct {
 	// (since spec rev 2025-03-26) lets a server require an `Mcp-Session-Id`
 	// header on every non-initialize request. We initialize lazily, cache
 	// the id, and clear it on 404 (server-side expiry) so the next call
-	// re-inits. Stateless upstreams (those that never return the header)
-	// stay as empty strings.
-	sessionMu sync.Mutex
-	sessions  map[string]string
+	// re-inits. The protocol version is kept with the session because
+	// fallback may initialize older servers with 2025-03-26 while Atryum's
+	// default remains newer. Stateless upstreams (those that never return
+	// the header) stay as empty strings.
+	sessionMu        sync.Mutex
+	sessionInitLocks map[string]*sync.Mutex
+	sessions         map[string]string
+	sessionProtocols map[string]string
 }
 
 type InvokeResult struct {
@@ -241,6 +247,8 @@ type ForwardResult struct {
 	Body            []byte
 	ContentType     string
 	ProtocolVersion string
+	SessionExpired  bool
+	SessionID       string
 }
 
 type ConnectionTestResult struct {
@@ -284,7 +292,7 @@ func (r *Resolver) WithCredentials(credentials CredentialStore) *Resolver {
 
 func NewHTTPClient() *Client {
 	debug := strings.EqualFold(os.Getenv("ATRYUM_MCP_DEBUG"), "1") || strings.EqualFold(os.Getenv("ATRYUM_MCP_DEBUG"), "true")
-	return &Client{httpClient: &http.Client{}, debug: debug, sessions: make(map[string]string)}
+	return &Client{httpClient: &http.Client{}, debug: debug, sessionInitLocks: make(map[string]*sync.Mutex), sessions: make(map[string]string), sessionProtocols: make(map[string]string)}
 }
 
 func (r *Resolver) Resolve(name string) (Upstream, error) {
@@ -520,13 +528,28 @@ func (c *Client) invokeHTTP(ctx context.Context, upstream Upstream, tool string,
 	if err != nil {
 		return InvokeResult{}, err
 	}
-	result, err := c.doHTTPEnvelope(ctx, upstream, body, DefaultMCPProtocolVersion)
+	result, err := c.doHTTPEnvelopeWithSessionRetry(ctx, upstream, body, DefaultMCPProtocolVersion)
 	if err != nil {
 		return InvokeResult{}, err
 	}
 	var rpcResp rpcResponse
 	if err := json.Unmarshal(result.Body, &rpcResp); err != nil {
 		return InvokeResult{}, err
+	}
+	if len(rpcResp.Error) > 0 && string(rpcResp.Error) != "null" {
+		if isMissingSessionRPCError(rpcResp.Error) {
+			if retryErr := c.reinitializeRequiredHTTPSession(ctx, upstream, result.SessionID); retryErr != nil {
+				return InvokeResult{}, retryErr
+			}
+			result, err = c.doHTTPEnvelopeWithSessionRetry(ctx, upstream, body, DefaultMCPProtocolVersion)
+			if err != nil {
+				return InvokeResult{}, err
+			}
+			rpcResp = rpcResponse{}
+			if err := json.Unmarshal(result.Body, &rpcResp); err != nil {
+				return InvokeResult{}, err
+			}
+		}
 	}
 	if len(rpcResp.Error) > 0 && string(rpcResp.Error) != "null" {
 		return InvokeResult{StatusCode: result.StatusCode, Body: rpcResp.Error, Failed: true}, nil
@@ -548,13 +571,28 @@ func (c *Client) listToolsHTTP(ctx context.Context, upstream Upstream) ([]Tool, 
 	if err != nil {
 		return nil, err
 	}
-	result, err := c.doHTTPEnvelope(ctx, upstream, body, DefaultMCPProtocolVersion)
+	result, err := c.doHTTPEnvelopeWithSessionRetry(ctx, upstream, body, DefaultMCPProtocolVersion)
 	if err != nil {
 		return nil, err
 	}
 	var rpcResp rpcResponse
 	if err := json.Unmarshal(result.Body, &rpcResp); err != nil {
 		return nil, err
+	}
+	if len(rpcResp.Error) > 0 && string(rpcResp.Error) != "null" {
+		if isMissingSessionRPCError(rpcResp.Error) {
+			if retryErr := c.reinitializeRequiredHTTPSession(ctx, upstream, result.SessionID); retryErr != nil {
+				return nil, retryErr
+			}
+			result, err = c.doHTTPEnvelopeWithSessionRetry(ctx, upstream, body, DefaultMCPProtocolVersion)
+			if err != nil {
+				return nil, err
+			}
+			rpcResp = rpcResponse{}
+			if err := json.Unmarshal(result.Body, &rpcResp); err != nil {
+				return nil, err
+			}
+		}
 	}
 	if len(rpcResp.Error) > 0 && string(rpcResp.Error) != "null" {
 		return nil, fmt.Errorf("upstream tools/list error: %s", string(rpcResp.Error))
@@ -574,7 +612,7 @@ func (c *Client) forwardEnvelopeHTTP(ctx context.Context, upstream Upstream, env
 	if err != nil {
 		return ForwardResult{}, err
 	}
-	return c.doHTTPEnvelope(ctx, upstream, body, protocolVersion)
+	return c.doHTTPEnvelopeWithSessionRetry(ctx, upstream, body, protocolVersion)
 }
 
 func (c *Client) doHTTPEnvelopeRaw(ctx context.Context, upstream Upstream, body []byte, protocolVersion, sessionID string) (*http.Response, error) {
@@ -601,32 +639,55 @@ func (c *Client) doHTTPEnvelopeRaw(ctx context.Context, upstream Upstream, body 
 
 func (c *Client) doHTTPEnvelope(ctx context.Context, upstream Upstream, body []byte, protocolVersion string) (ForwardResult, error) {
 	sessionID := c.getSession(upstream.Name)
-	resp, err := c.doHTTPEnvelopeRaw(ctx, upstream, body, protocolVersion, sessionID)
+	effectiveProtocol := protocolVersion
+	if sessionID != "" {
+		if sessionProtocol := c.getSessionProtocol(upstream.Name); sessionProtocol != "" {
+			effectiveProtocol = sessionProtocol
+		}
+	}
+	resp, err := c.doHTTPEnvelopeRaw(ctx, upstream, body, effectiveProtocol, sessionID)
 	if err != nil {
 		return ForwardResult{}, err
 	}
 	defer resp.Body.Close()
+	sessionExpired := false
 	// Capture/clear session id based on response. 404 with an existing
 	// session means the server forgot us; drop it so the next call inits.
 	if newSession := strings.TrimSpace(resp.Header.Get("Mcp-Session-Id")); newSession != "" {
-		c.setSession(upstream.Name, newSession)
+		c.setSession(upstream.Name, newSession, effectiveProtocol)
 	} else if resp.StatusCode == http.StatusNotFound && sessionID != "" {
-		c.clearSession(upstream.Name)
+		c.clearSessionIfCurrent(upstream.Name, sessionID)
+		sessionExpired = true
 	}
 	contentType := resp.Header.Get("Content-Type")
+	if sessionExpired {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return ForwardResult{StatusCode: resp.StatusCode, Body: bodyBytes, ContentType: contentType, ProtocolVersion: resp.Header.Get("MCP-Protocol-Version"), SessionExpired: true, SessionID: sessionID}, nil
+	}
 	if strings.Contains(contentType, "text/event-stream") {
 		data, sseErr := extractFirstSSEData(resp.Body)
 		if sseErr != nil {
 			return ForwardResult{}, sseErr
 		}
-		return ForwardResult{StatusCode: resp.StatusCode, Body: data, ContentType: "application/json", ProtocolVersion: resp.Header.Get("MCP-Protocol-Version")}, nil
+		return ForwardResult{StatusCode: resp.StatusCode, Body: data, ContentType: "application/json", ProtocolVersion: resp.Header.Get("MCP-Protocol-Version"), SessionID: sessionID}, nil
 	}
 	respBody := new(bytes.Buffer)
 	_, err = respBody.ReadFrom(resp.Body)
 	if err != nil {
 		return ForwardResult{}, err
 	}
-	return ForwardResult{StatusCode: resp.StatusCode, Body: respBody.Bytes(), ContentType: contentType, ProtocolVersion: resp.Header.Get("MCP-Protocol-Version")}, nil
+	return ForwardResult{StatusCode: resp.StatusCode, Body: respBody.Bytes(), ContentType: contentType, ProtocolVersion: resp.Header.Get("MCP-Protocol-Version"), SessionID: sessionID}, nil
+}
+
+func (c *Client) doHTTPEnvelopeWithSessionRetry(ctx context.Context, upstream Upstream, body []byte, protocolVersion string) (ForwardResult, error) {
+	result, err := c.doHTTPEnvelope(ctx, upstream, body, protocolVersion)
+	if err != nil || !result.SessionExpired {
+		return result, err
+	}
+	if err := c.reinitializeRequiredHTTPSession(ctx, upstream, result.SessionID); err != nil {
+		return ForwardResult{}, err
+	}
+	return c.doHTTPEnvelope(ctx, upstream, body, protocolVersion)
 }
 
 func (c *Client) getSession(name string) string {
@@ -635,16 +696,54 @@ func (c *Client) getSession(name string) string {
 	return c.sessions[name]
 }
 
-func (c *Client) setSession(name, id string) {
+func (c *Client) getSessionInitLock(name string) *sync.Mutex {
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+	lock := c.sessionInitLocks[name]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		c.sessionInitLocks[name] = lock
+	}
+	return lock
+}
+
+func (c *Client) getSessionProtocol(name string) string {
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+	return c.sessionProtocols[name]
+}
+
+func (c *Client) setSession(name, id, protocolVersion string) {
 	c.sessionMu.Lock()
 	defer c.sessionMu.Unlock()
 	c.sessions[name] = id
+	c.sessionProtocols[name] = protocolVersion
 }
 
 func (c *Client) clearSession(name string) {
 	c.sessionMu.Lock()
 	defer c.sessionMu.Unlock()
 	delete(c.sessions, name)
+	delete(c.sessionProtocols, name)
+}
+
+func (c *Client) clearSessionIfCurrent(name, id string) {
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+	if c.sessions[name] != id {
+		return
+	}
+	delete(c.sessions, name)
+	delete(c.sessionProtocols, name)
+}
+
+func httpProtocolCandidates() []string {
+	return []string{
+		DefaultMCPProtocolVersion,
+		MCPProtocolVersion2025_06_18,
+		MCPProtocolVersion2025_03_26,
+		MCPProtocolVersion2024,
+	}
 }
 
 // ensureHTTPSession initializes the upstream session if not yet established,
@@ -652,36 +751,111 @@ func (c *Client) clearSession(name string) {
 // Mcp-Session-Id). Required by spec-compliant servers (e.g. Shortcut) which
 // reject non-initialize requests that arrive without a session id.
 func (c *Client) ensureHTTPSession(ctx context.Context, upstream Upstream) error {
+	return c.ensureHTTPSessionMode(ctx, upstream, false)
+}
+
+func (c *Client) reinitializeRequiredHTTPSession(ctx context.Context, upstream Upstream, failedSessionID string) error {
+	initLock := c.getSessionInitLock(upstream.Name)
+	initLock.Lock()
+	defer initLock.Unlock()
+
+	currentSessionID := c.getSession(upstream.Name)
+	if failedSessionID != "" && currentSessionID != "" && currentSessionID != failedSessionID {
+		return nil
+	}
+	if failedSessionID == "" && currentSessionID != "" {
+		return nil
+	}
+	if failedSessionID != "" {
+		c.clearSessionIfCurrent(upstream.Name, failedSessionID)
+	} else {
+		c.clearSession(upstream.Name)
+	}
+	return c.initializeHTTPSessionCandidates(ctx, upstream, true)
+}
+
+func (c *Client) ensureHTTPSessionMode(ctx context.Context, upstream Upstream, requireSession bool) error {
+	initLock := c.getSessionInitLock(upstream.Name)
+	initLock.Lock()
+	defer initLock.Unlock()
+
 	if c.getSession(upstream.Name) != "" {
 		return nil
 	}
+	return c.initializeHTTPSessionCandidates(ctx, upstream, requireSession)
+}
+
+func (c *Client) initializeHTTPSessionCandidates(ctx context.Context, upstream Upstream, requireSession bool) error {
+	var lastErr error
+	for _, protocolVersion := range httpProtocolCandidates() {
+		hadSession, err := c.initializeHTTPSession(ctx, upstream, protocolVersion)
+		if err != nil {
+			lastErr = err
+			if isProtocolNegotiationError(err) {
+				continue
+			}
+			return err
+		}
+		if !requireSession || hadSession {
+			return nil
+		}
+		lastErr = fmt.Errorf("upstream initialize using MCP %s did not return Mcp-Session-Id", protocolVersion)
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("upstream initialize failed")
+}
+
+func (c *Client) initializeHTTPSession(ctx context.Context, upstream Upstream, protocolVersion string) (bool, error) {
+	c.debugf("connection test http initialize server=%s url=%s protocol=%s auth=%s", upstream.Name, upstream.BaseURL, protocolVersion, debugAuthSummary(upstream))
 	initBody, err := json.Marshal(Envelope{
 		JSONRPC: "2.0",
 		ID:      json.RawMessage([]byte("1")),
 		Method:  "initialize",
 		Params: mustRawJSON(map[string]any{
-			"protocolVersion": DefaultMCPProtocolVersion,
+			"protocolVersion": protocolVersion,
 			"clientInfo":      map[string]any{"name": "atryum", "version": "0.1.0"},
 			"capabilities":    map[string]any{},
 		}),
 	})
 	if err != nil {
-		return err
+		c.debugf("connection test http marshal error server=%s err=%v", upstream.Name, err)
+		return false, err
 	}
 	// doHTTPEnvelope reads the Mcp-Session-Id response header and stores it.
-	if _, err := c.doHTTPEnvelope(ctx, upstream, initBody, DefaultMCPProtocolVersion); err != nil {
-		return err
+	result, err := c.doHTTPEnvelope(ctx, upstream, initBody, protocolVersion)
+	if err != nil {
+		c.debugf("connection test http transport error server=%s err=%v", upstream.Name, err)
+		return false, err
+	}
+	c.debugf("connection test http response server=%s status=%d content_type=%q protocol=%q body=%s", upstream.Name, result.StatusCode, result.ContentType, result.ProtocolVersion, truncateForLog(result.Body, 600))
+	if result.StatusCode >= http.StatusBadRequest {
+		c.clearSession(upstream.Name)
+		return false, fmt.Errorf("upstream initialize using MCP %s failed: http %d: %s", protocolVersion, result.StatusCode, extractErrorDetail(result.Body))
+	}
+	if len(bytes.TrimSpace(result.Body)) > 0 {
+		var rpcResp rpcResponse
+		if err := json.Unmarshal(result.Body, &rpcResp); err != nil {
+			c.clearSession(upstream.Name)
+			return false, fmt.Errorf("upstream initialize using MCP %s returned invalid JSON-RPC: %w", protocolVersion, err)
+		}
+		if len(rpcResp.Error) > 0 && string(rpcResp.Error) != "null" {
+			c.clearSession(upstream.Name)
+			return false, fmt.Errorf("upstream initialize using MCP %s error: %s", protocolVersion, rpcErrorDetail(rpcResp.Error))
+		}
 	}
 	// Spec requires the client to send notifications/initialized after a
 	// successful initialize. Stateless servers ignore it; stateful ones need
 	// it to mark the session usable.
-	if c.getSession(upstream.Name) != "" {
+	hadSession := c.getSession(upstream.Name) != ""
+	if hadSession {
 		notifyBody, err := json.Marshal(Envelope{JSONRPC: "2.0", Method: "notifications/initialized", Params: mustRawJSON(map[string]any{})})
 		if err == nil {
-			_, _ = c.doHTTPEnvelope(ctx, upstream, notifyBody, DefaultMCPProtocolVersion)
+			_, _ = c.doHTTPEnvelope(ctx, upstream, notifyBody, protocolVersion)
 		}
 	}
-	return nil
+	return hadSession, nil
 }
 
 func (c *Client) invokeStdio(ctx context.Context, upstream Upstream, tool string, input map[string]any) (InvokeResult, error) {
@@ -927,40 +1101,19 @@ func (c *Client) testHTTP(ctx context.Context, upstream Upstream) ConnectionTest
 		c.debugf("connection test http validation server=%s err=%q action=%q oauth_authorize_url=%s oauth_token_url=%s", upstream.Name, message, action, upstream.OAuthAuthorizeURL, upstream.OAuthTokenURL)
 		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusNeedsAttention, AuthStatus: AuthStatusMissingCredentials, ReauthNeeded: false, LastCheckOK: false, LastErrorSummary: &message, ActionRequired: &action}
 	}
-	c.debugf("connection test http initialize server=%s url=%s protocol=%s auth=%s", upstream.Name, upstream.BaseURL, DefaultMCPProtocolVersion, debugAuthSummary(upstream))
-	initBody, err := json.Marshal(Envelope{JSONRPC: "2.0", ID: json.RawMessage([]byte("1")), Method: "initialize", Params: mustRawJSON(map[string]any{
-		"protocolVersion": DefaultMCPProtocolVersion,
-		"clientInfo":      map[string]any{"name": "atryum", "version": "0.1.0"},
-		"capabilities":    map[string]any{},
-	})})
-	if err != nil {
+	if err := c.ensureHTTPSession(ctx, upstream); err != nil {
 		message := err.Error()
-		c.debugf("connection test http marshal error server=%s err=%v", upstream.Name, err)
-		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusNeedsAttention, AuthStatus: AuthStatusUnknown, LastCheckOK: false, LastErrorSummary: &message}
-	}
-	result, err := c.doHTTPEnvelope(ctx, upstream, initBody, DefaultMCPProtocolVersion)
-	if err != nil {
-		message := err.Error()
-		c.debugf("connection test http transport error server=%s err=%v", upstream.Name, err)
-		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusUnreachable, AuthStatus: AuthStatusUnknown, LastCheckOK: false, LastErrorSummary: &message}
-	}
-	c.debugf("connection test http response server=%s status=%d content_type=%q protocol=%q body=%s", upstream.Name, result.StatusCode, result.ContentType, result.ProtocolVersion, truncateForLog(result.Body, 600))
-	if result.StatusCode == http.StatusUnauthorized || result.StatusCode == http.StatusForbidden {
-		message := fmt.Sprintf("http %d", result.StatusCode)
-		if detail := extractErrorDetail(result.Body); detail != "" {
-			message = fmt.Sprintf("http %d: %s", result.StatusCode, detail)
+		switch {
+		case strings.Contains(message, "http 401"), strings.Contains(message, "http 403"):
+			action := "refresh or reconnect credentials"
+			return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusNeedsAttention, AuthStatus: AuthStatusInvalid, ReauthNeeded: true, LastCheckOK: false, LastErrorSummary: &message, ActionRequired: &action}
+		case strings.Contains(message, "http "):
+			return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusDegraded, AuthStatus: AuthStatusUnknown, LastCheckOK: false, LastErrorSummary: &message}
+		default:
+			return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusUnreachable, AuthStatus: AuthStatusUnknown, LastCheckOK: false, LastErrorSummary: &message}
 		}
-		action := "refresh or reconnect credentials"
-		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusNeedsAttention, AuthStatus: AuthStatusInvalid, ReauthNeeded: true, LastCheckOK: false, LastErrorSummary: &message, ActionRequired: &action}
 	}
-	if result.StatusCode >= http.StatusBadRequest {
-		message := fmt.Sprintf("http %d", result.StatusCode)
-		if detail := extractErrorDetail(result.Body); detail != "" {
-			message = fmt.Sprintf("http %d: %s", result.StatusCode, detail)
-		}
-		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusDegraded, AuthStatus: AuthStatusUnknown, LastCheckOK: false, LastErrorSummary: &message}
-	}
-	message := fmt.Sprintf("http %d", result.StatusCode)
+	message := "http initialize ok"
 	return ConnectionTestResult{Ok: true, Message: message, ConnectionStatus: ConnectionStatusReady, AuthStatus: AuthStatusReady, ReauthNeeded: false, LastCheckOK: true}
 }
 
@@ -1062,6 +1215,36 @@ func extractErrorDetail(body []byte) string {
 		trimmed = trimmed[:200] + "..."
 	}
 	return trimmed
+}
+
+func rpcErrorDetail(body json.RawMessage) string {
+	if len(body) == 0 || string(body) == "null" {
+		return ""
+	}
+	var rpcErr struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &rpcErr); err == nil && strings.TrimSpace(rpcErr.Message) != "" {
+		if rpcErr.Code != 0 {
+			return fmt.Sprintf(`{"code":%d,"message":%q}`, rpcErr.Code, rpcErr.Message)
+		}
+		return rpcErr.Message
+	}
+	return strings.TrimSpace(string(body))
+}
+
+func isProtocolNegotiationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "protocol")
+}
+
+func isMissingSessionRPCError(body json.RawMessage) bool {
+	lower := strings.ToLower(rpcErrorDetail(body))
+	return strings.Contains(lower, "session") && strings.Contains(lower, "no session")
 }
 
 func classifyAuthFailure(message string) (ServerAuthStatus, bool) {

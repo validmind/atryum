@@ -1,27 +1,9 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import type { Plugin } from 'vite';
-
-const spaFallback = (): Plugin => ({
-  name: 'atryum-spa-fallback',
-  configureServer(server) {
-    server.middlewares.use((req, _res, next) => {
-      const url = req.url ?? '/';
-      if (
-        !url.includes('.') &&
-        !url.startsWith('/@') &&
-        !url.startsWith('/api/') &&
-        !url.startsWith('/mcp/')
-      ) {
-        req.url = '/index.html';
-      }
-      next();
-    });
-  },
-});
 
 export default defineConfig({
-  plugins: [react(), spaFallback()],
+  base: '/ui/',
+  plugins: [react()],
   server: {
     host: true,
     port: 5174,
@@ -41,5 +23,12 @@ export default defineConfig({
     sourcemap: false,
     minify: 'esbuild',
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        entryFileNames: 'assets/[name].js',
+        chunkFileNames: 'assets/[name].js',
+        assetFileNames: 'assets/[name][extname]',
+      },
+    },
   },
 });

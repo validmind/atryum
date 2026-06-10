@@ -21,7 +21,7 @@ const root = createRoot(container!);
 
 root.render(
   <React.StrictMode>
-    <BrowserRouter>
+    <BrowserRouter basename="/ui">
       <QueryClientProvider client={queryClient}>
         <ChakraProvider theme={theme}>
           <App />

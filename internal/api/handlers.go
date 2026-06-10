@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -651,12 +652,17 @@ func (h *Handler) handleMCPSSE(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
+	protocolVersion := normalizeProtocolVersion(r.Header.Get("MCP-Protocol-Version"))
+	if protocolVersion == "" {
+		protocolVersion = mcp.DefaultMCPProtocolVersion
+	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
+	setMCPProtocolVersionHeader(w, protocolVersion)
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, ": atryum mcp ready\n\n")
+	writeSSEComment(w, "atryum mcp ready")
 	flusher.Flush()
 
 	ticker := time.NewTicker(15 * time.Second)
@@ -666,10 +672,17 @@ func (h *Handler) handleMCPSSE(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-ticker.C:
-			fmt.Fprintf(w, ": ping\n\n")
+			writeSSEComment(w, "ping")
 			flusher.Flush()
 		}
 	}
+}
+
+func writeSSEComment(w io.Writer, comment string) {
+	for _, line := range strings.Split(comment, "\n") {
+		fmt.Fprintf(w, ": %s\n", line)
+	}
+	fmt.Fprint(w, "\n")
 }
 
 func isJSONRPCRequest(r *http.Request) bool {
@@ -856,7 +869,7 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		req.JSONRPC = "2.0"
 	}
 	requestID := compactRequestID(req.ID)
-	protocolVersion := negotiateProtocolVersion(r.Header.Get("MCP-Protocol-Version"), req.Params)
+	protocolVersion := negotiateProtocolVersion(req.Method, r.Header.Get("MCP-Protocol-Version"), req.Params)
 	h.debugf("server-side mcp request server=%s method=%s id=%s", server, req.Method, requestID)
 	defer func() {
 		h.debugf("server-side mcp complete server=%s method=%s id=%s duration_ms=%d", server, req.Method, requestID, time.Since(started).Milliseconds())
@@ -3280,17 +3293,29 @@ func (h *Handler) forwardProxyEnvelope(ctx context.Context, server string, envel
 	return result, true
 }
 
-func negotiateProtocolVersion(header string, params json.RawMessage) string {
-	if v := normalizeProtocolVersion(header); v != "" {
-		return v
-	}
+func negotiateProtocolVersion(method, header string, params json.RawMessage) string {
 	var payload struct {
 		ProtocolVersion string `json:"protocolVersion"`
 	}
-	if err := json.Unmarshal(params, &payload); err == nil {
-		if v := normalizeProtocolVersion(payload.ProtocolVersion); v != "" {
-			return v
+	if strings.TrimSpace(method) == "initialize" {
+		if err := json.Unmarshal(params, &payload); err == nil {
+			if v := normalizeProtocolVersion(payload.ProtocolVersion); v != "" {
+				return v
+			}
 		}
+	}
+	if v := normalizeProtocolVersion(header); v != "" {
+		return v
+	}
+	if strings.TrimSpace(method) != "initialize" {
+		if err := json.Unmarshal(params, &payload); err == nil {
+			if v := normalizeProtocolVersion(payload.ProtocolVersion); v != "" {
+				return v
+			}
+		}
+	}
+	if strings.TrimSpace(method) == "initialize" {
+		return mcp.MCPProtocolVersion2025_06_18
 	}
 	return mcp.DefaultMCPProtocolVersion
 }
@@ -3299,6 +3324,10 @@ func normalizeProtocolVersion(value string) string {
 	switch strings.TrimSpace(value) {
 	case mcp.MCPProtocolVersion2025:
 		return mcp.MCPProtocolVersion2025
+	case mcp.MCPProtocolVersion2025_06_18:
+		return mcp.MCPProtocolVersion2025_06_18
+	case mcp.MCPProtocolVersion2025_03_26:
+		return mcp.MCPProtocolVersion2025_03_26
 	case mcp.MCPProtocolVersion2024:
 		return mcp.MCPProtocolVersion2024
 	default:
