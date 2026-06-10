@@ -17,6 +17,7 @@ import (
 type pendingCall struct {
 	InvocationID string
 	IsCustom     bool
+	KindKnown    bool
 }
 
 // watcher streams one session's events and drives the approval lifecycle.
@@ -28,8 +29,10 @@ type watcher struct {
 	auditID     string
 	lastEventID string
 
-	mu      sync.Mutex
-	pending map[string]pendingCall // keyed by tool-use event ID
+	mu             sync.Mutex
+	pending        map[string]pendingCall // keyed by tool-use event ID
+	toolUseCustom  map[string]bool
+	toolUseKindSet bool
 }
 
 func (w *watcher) log() *slog.Logger {
@@ -174,7 +177,11 @@ func (w *watcher) handleToolUse(ctx context.Context, evt RawEvent) {
 		return
 	}
 	w.mu.Lock()
-	w.pending[eventID] = pendingCall{InvocationID: resp.InvocationID, IsCustom: tu.IsCustom}
+	w.pending[eventID] = pendingCall{InvocationID: resp.InvocationID, IsCustom: tu.IsCustom, KindKnown: true}
+	if w.toolUseCustom == nil {
+		w.toolUseCustom = make(map[string]bool)
+	}
+	w.toolUseCustom[eventID] = tu.IsCustom
 	w.mu.Unlock()
 	w.log().Info("tool call submitted", "tool", tu.ToolName, "invocation_id", resp.InvocationID, "status", resp.Status)
 }
@@ -185,11 +192,13 @@ func (w *watcher) handleToolUse(ctx context.Context, evt RawEvent) {
 func (w *watcher) handleRequiresAction(ctx context.Context, blockingIDs []string) {
 	var wg sync.WaitGroup
 	for _, id := range blockingIDs {
-		w.mu.Lock()
-		pc, ok := w.pending[id]
-		w.mu.Unlock()
+		pc, ok := w.pendingCall(ctx, id, true)
 		if !ok {
 			w.log().Warn("requires_action references unknown tool-use event; will retry on replay", "tool_use_event_id", id)
+			continue
+		}
+		if !pc.KindKnown {
+			w.log().Warn("requires_action references recovered tool-use event with unknown kind; will retry on replay", "tool_use_event_id", id)
 			continue
 		}
 		wg.Add(1)
@@ -258,9 +267,7 @@ func (w *watcher) sendDeny(ctx context.Context, blockingID string, pc pendingCal
 // handleToolResult records the executor outcome reported by Anthropic onto the
 // matching invocation.
 func (w *watcher) handleToolResult(ctx context.Context, tr toolResult) {
-	w.mu.Lock()
-	pc, ok := w.pending[tr.ToolUseID]
-	w.mu.Unlock()
+	pc, ok := w.pendingCall(ctx, tr.ToolUseID, false)
 	if !ok {
 		return
 	}
@@ -282,6 +289,79 @@ func (w *watcher) handleToolResult(ctx context.Context, tr toolResult) {
 	w.mu.Lock()
 	delete(w.pending, tr.ToolUseID)
 	w.mu.Unlock()
+}
+
+func (w *watcher) pendingCall(ctx context.Context, toolUseEventID string, needKind bool) (pendingCall, bool) {
+	w.mu.Lock()
+	pc, ok := w.pending[toolUseEventID]
+	w.mu.Unlock()
+	if ok {
+		return pc, true
+	}
+	if w.svc.audit == nil {
+		return pendingCall{}, false
+	}
+	inv, err := w.svc.audit.GetByIdempotencyKey(ctx, toolUseEventID)
+	if err != nil || inv.InvocationID == "" {
+		return pendingCall{}, false
+	}
+	pc = pendingCall{
+		InvocationID: inv.InvocationID,
+	}
+	if needKind {
+		if isCustom, ok := w.customToolUse(ctx, toolUseEventID); ok {
+			pc.IsCustom = isCustom
+			pc.KindKnown = true
+		}
+	}
+	// Only cache a fully-resolved entry. When the kind was needed but couldn't
+	// be determined (e.g. a transient history-fetch error), leave it uncached
+	// so the next replay re-attempts recovery instead of permanently skipping.
+	if pc.KindKnown || !needKind {
+		w.mu.Lock()
+		w.pending[toolUseEventID] = pc
+		w.mu.Unlock()
+	}
+	w.log().Info("recovered pending tool call", "tool_use_event_id", toolUseEventID, "invocation_id", pc.InvocationID)
+	return pc, true
+}
+
+func (w *watcher) customToolUse(ctx context.Context, toolUseEventID string) (bool, bool) {
+	if isCustom, ok, loaded := w.cachedCustomToolUse(toolUseEventID); ok || loaded {
+		return isCustom, ok
+	}
+	events, err := w.acct.client.ListEventsSince(ctx, w.reg.SessionID, "")
+	if err != nil {
+		w.log().Debug("could not recover tool-use kind from session history", "tool_use_event_id", toolUseEventID, "error", err)
+		return false, false
+	}
+	kinds := make(map[string]bool)
+	for _, evt := range events {
+		if tu, ok := parseToolUse(evt); ok {
+			kinds[tu.EventID] = tu.IsCustom
+		}
+	}
+	w.mu.Lock()
+	if w.toolUseCustom == nil {
+		w.toolUseCustom = make(map[string]bool, len(kinds))
+	}
+	for id, isCustom := range kinds {
+		w.toolUseCustom[id] = isCustom
+	}
+	w.toolUseKindSet = true
+	isCustom, ok := w.toolUseCustom[toolUseEventID]
+	w.mu.Unlock()
+	return isCustom, ok
+}
+
+func (w *watcher) cachedCustomToolUse(toolUseEventID string) (isCustom bool, ok bool, loaded bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.toolUseCustom == nil {
+		return false, false, w.toolUseKindSet
+	}
+	isCustom, ok = w.toolUseCustom[toolUseEventID]
+	return isCustom, ok, w.toolUseKindSet
 }
 
 func (w *watcher) advanceCursor(ctx context.Context, eventID string) {

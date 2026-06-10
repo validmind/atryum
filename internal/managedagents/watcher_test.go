@@ -3,6 +3,7 @@ package managedagents
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"runtime"
 	"sync"
@@ -75,8 +76,11 @@ func (g *fakeGateway) setStatusForKey(key string, status invocation.Status) {
 func (g *fakeGateway) submitCount() int { g.mu.Lock(); defer g.mu.Unlock(); return len(g.submitted) }
 
 type fakeClient struct {
-	mu   sync.Mutex
-	sent []sentEvent
+	mu         sync.Mutex
+	sent       []sentEvent
+	history    []RawEvent
+	historyErr error
+	listCalls  int
 }
 
 type sentEvent struct {
@@ -85,7 +89,13 @@ type sentEvent struct {
 }
 
 func (c *fakeClient) ListEventsSince(ctx context.Context, sessionID, after string) ([]RawEvent, error) {
-	return nil, nil
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.listCalls++
+	if c.historyErr != nil {
+		return nil, c.historyErr
+	}
+	return append([]RawEvent(nil), c.history...), nil
 }
 func (c *fakeClient) StreamEvents(ctx context.Context, sessionID string) (EventStream, error) {
 	return nil, context.Canceled
@@ -97,6 +107,7 @@ func (c *fakeClient) SendEvents(ctx context.Context, sessionID string, events []
 	return nil
 }
 func (c *fakeClient) sentEvents() []sentEvent { c.mu.Lock(); defer c.mu.Unlock(); return c.sent }
+func (c *fakeClient) listEventCalls() int     { c.mu.Lock(); defer c.mu.Unlock(); return c.listCalls }
 
 type eofStreamClient struct{}
 
@@ -333,6 +344,79 @@ func TestCustomToolApprovedSendsCustomResult(t *testing.T) {
 	}
 }
 
+func TestRequiresActionRecoversPendingCallAfterRestart(t *testing.T) {
+	g := newFakeGateway()
+	g.statusByID["inv_recovered"] = invocation.StatusApproved
+	g.statusByID["inv_recovered_2"] = invocation.StatusApproved
+	toolEvent := toolUseEvent("custom_evt_1", evtAgentCustomToolUse, "deploy", map[string]any{"env": "prod"})
+	toolEvent2 := toolUseEvent("tool_evt_2", evtAgentToolUse, "Bash", map[string]any{"command": "ls"})
+	c := &fakeClient{history: []RawEvent{toolEvent, toolEvent2}}
+	a := newFakeAudit()
+	key := "custom_evt_1"
+	if err := a.Create(context.Background(), invocation.Invocation{
+		InvocationID:   "inv_recovered",
+		IdempotencyKey: &key,
+		Tool:           "deploy",
+		Status:         invocation.StatusApproved,
+	}); err != nil {
+		t.Fatalf("seed audit: %v", err)
+	}
+	key2 := "tool_evt_2"
+	if err := a.Create(context.Background(), invocation.Invocation{
+		InvocationID:   "inv_recovered_2",
+		IdempotencyKey: &key2,
+		Tool:           "Bash",
+		Status:         invocation.StatusApproved,
+	}); err != nil {
+		t.Fatalf("seed audit 2: %v", err)
+	}
+	w := newTestWatcher(g, c, a)
+	ctx := context.Background()
+
+	w.handleEvent(ctx, idleRequiresAction("idle_1", []string{"custom_evt_1", "tool_evt_2"}))
+
+	sent := c.sentEvents()
+	if len(sent) != 2 {
+		t.Fatalf("expected 2 outbound events, got %d", len(sent))
+	}
+	foundCustom := false
+	for _, sentEvent := range sent {
+		evt := sentEvent.Events[0]
+		if evt.Type == "user.custom_tool_result" && evt.Fields["custom_tool_use_id"] == "custom_evt_1" {
+			foundCustom = true
+		}
+	}
+	if !foundCustom {
+		t.Fatalf("expected recovered custom_tool_result for custom_evt_1, got %+v", sent)
+	}
+	if calls := c.listEventCalls(); calls != 1 {
+		t.Fatalf("expected 1 session-history fetch, got %d", calls)
+	}
+}
+
+func TestRequiresActionDoesNotGuessToolKindWhenRecoveryHistoryFails(t *testing.T) {
+	g := newFakeGateway()
+	g.statusByID["inv_recovered"] = invocation.StatusApproved
+	c := &fakeClient{historyErr: errors.New("history unavailable")}
+	a := newFakeAudit()
+	key := "custom_evt_1"
+	if err := a.Create(context.Background(), invocation.Invocation{
+		InvocationID:   "inv_recovered",
+		IdempotencyKey: &key,
+		Tool:           "deploy",
+		Status:         invocation.StatusApproved,
+	}); err != nil {
+		t.Fatalf("seed audit: %v", err)
+	}
+	w := newTestWatcher(g, c, a)
+
+	w.handleEvent(context.Background(), idleRequiresAction("idle_1", []string{"custom_evt_1"}))
+
+	if sent := c.sentEvents(); len(sent) != 0 {
+		t.Fatalf("expected no guessed outbound events, got %+v", sent)
+	}
+}
+
 func TestEveryEventAudited(t *testing.T) {
 	g := newFakeGateway()
 	a := newFakeAudit()
@@ -388,6 +472,35 @@ func TestToolResultRecordsExecution(t *testing.T) {
 	}
 	if !foundCompleted {
 		t.Fatalf("expected a completed RecordExecution, got %+v", g.executions)
+	}
+}
+
+func TestToolResultRecoversPendingCallAfterRestart(t *testing.T) {
+	g := newFakeGateway()
+	c := &fakeClient{}
+	a := newFakeAudit()
+	key := "t1"
+	if err := a.Create(context.Background(), invocation.Invocation{
+		InvocationID:   "inv_recovered",
+		IdempotencyKey: &key,
+		Tool:           "Bash",
+		Status:         invocation.StatusExecuting,
+	}); err != nil {
+		t.Fatalf("seed audit: %v", err)
+	}
+	w := newTestWatcher(g, c, a)
+	ctx := context.Background()
+
+	resultBody, _ := json.Marshal(map[string]any{"id": "r1", "type": "agent.tool_result", "tool_use_id": "t1", "content": "done"})
+	w.handleEvent(ctx, RawEvent{ID: "r1", Type: "agent.tool_result", Raw: resultBody, ProcessedAt: time.Now()})
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.executions) != 1 {
+		t.Fatalf("expected 1 recovered execution update, got %+v", g.executions)
+	}
+	if g.executions[0].ID != "inv_recovered" || g.executions[0].Update.ExecutionStatus != "completed" {
+		t.Fatalf("unexpected recovered execution update: %+v", g.executions[0])
 	}
 }
 
