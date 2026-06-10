@@ -2123,25 +2123,25 @@ func (h *Handler) adminModelConfigs(w http.ResponseWriter, r *http.Request) {
 // and PUT /admin/settings. SyncError is non-empty when the post-save agent
 // sync failed; settings are persisted regardless.
 type AgentSyncSettingsResponse struct {
-	OrgCUID                    string `json:"org_cuid"`
-	AgentRecordTypeSlug        string `json:"agent_record_type_slug"`
-	ConstitutionFieldKey       string `json:"constitution_field_key"`
-	SummaryModelConfigCUID     string `json:"summary_model_config_cuid"`
-	SummaryAtryumLLMConfigID   string `json:"summary_atryum_llm_config_id"`
-	DefaultAgentVMCUID         string `json:"default_agent_vm_cuid"`
-	UpdatedAt                  string `json:"updated_at,omitempty"`
-	SyncError                  string `json:"sync_error,omitempty"`
-	BackendConfigured          bool   `json:"backend_configured"`
+	OrgCUID                  string `json:"org_cuid"`
+	AgentRecordTypeSlug      string `json:"agent_record_type_slug"`
+	ConstitutionFieldKey     string `json:"constitution_field_key"`
+	SummaryModelConfigCUID   string `json:"summary_model_config_cuid"`
+	SummaryAtryumLLMConfigID string `json:"summary_atryum_llm_config_id"`
+	DefaultAgentVMCUID       string `json:"default_agent_vm_cuid"`
+	UpdatedAt                string `json:"updated_at,omitempty"`
+	SyncError                string `json:"sync_error,omitempty"`
+	BackendConfigured        bool   `json:"backend_configured"`
 }
 
 // AgentSyncSettingsInput is the JSON body accepted by PUT /admin/settings.
 type AgentSyncSettingsInput struct {
-	OrgCUID                    string `json:"org_cuid"`
-	AgentRecordTypeSlug        string `json:"agent_record_type_slug"`
-	ConstitutionFieldKey       string `json:"constitution_field_key"`
-	SummaryModelConfigCUID     string `json:"summary_model_config_cuid"`
-	SummaryAtryumLLMConfigID   string `json:"summary_atryum_llm_config_id"`
-	DefaultAgentVMCUID         string `json:"default_agent_vm_cuid"`
+	OrgCUID                  string `json:"org_cuid"`
+	AgentRecordTypeSlug      string `json:"agent_record_type_slug"`
+	ConstitutionFieldKey     string `json:"constitution_field_key"`
+	SummaryModelConfigCUID   string `json:"summary_model_config_cuid"`
+	SummaryAtryumLLMConfigID string `json:"summary_atryum_llm_config_id"`
+	DefaultAgentVMCUID       string `json:"default_agent_vm_cuid"`
 }
 
 // ─── Local LLM Config handlers ────────────────────────────────────────────────
@@ -3148,23 +3148,29 @@ func (h *Handler) externalInvocations(w http.ResponseWriter, r *http.Request) {
 // the invocations table and gates blocking tool calls through approval rules.
 func (h *Handler) adminManagedAgentSessions(w http.ResponseWriter, r *http.Request) {
 	if h.managedAgents == nil {
+		h.debugf("managed-agents session registration rejected: bridge not configured method=%s path=%s remote=%s", r.Method, r.URL.Path, r.RemoteAddr)
 		writeError(w, http.StatusNotImplemented, "managed agents bridge not configured (set [managed_agents].api_key)")
 		return
 	}
 	if r.Method != http.MethodPost {
+		h.debugf("managed-agents session registration rejected: method not allowed method=%s path=%s remote=%s", r.Method, r.URL.Path, r.RemoteAddr)
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	var req managedagents.RegisterSessionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.debugf("managed-agents session registration rejected: invalid json remote=%s err=%v", r.RemoteAddr, err)
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	h.debugf("managed-agents session registration request session_id=%q account=%q agent_id=%q description=%q remote=%s", req.SessionID, req.Account, req.AgentID, req.Description, r.RemoteAddr)
 	resp, err := h.managedAgents.RegisterSession(r.Context(), req)
 	if err != nil {
+		h.debugf("managed-agents session registration failed session_id=%q account=%q agent_id=%q err=%v", req.SessionID, req.Account, req.AgentID, err)
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	h.debugf("managed-agents session registered session_id=%q account=%q agent_id=%q last_event_id=%q", resp.SessionID, resp.Account, resp.AgentID, resp.LastEventID)
 	writeJSON(w, http.StatusOK, resp)
 }
 
