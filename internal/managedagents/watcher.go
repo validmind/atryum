@@ -85,9 +85,14 @@ func (w *watcher) follow(ctx context.Context) error {
 	}
 	// Closing the stream unblocks a Next() that is parked on a read when the
 	// context is cancelled.
+	done := make(chan struct{})
+	defer close(done)
 	go func() {
-		<-ctx.Done()
-		_ = stream.Close()
+		select {
+		case <-ctx.Done():
+			_ = stream.Close()
+		case <-done:
+		}
 	}()
 	defer stream.Close()
 	for {

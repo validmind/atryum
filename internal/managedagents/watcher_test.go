@@ -3,6 +3,8 @@ package managedagents
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -95,6 +97,23 @@ func (c *fakeClient) SendEvents(ctx context.Context, sessionID string, events []
 	return nil
 }
 func (c *fakeClient) sentEvents() []sentEvent { c.mu.Lock(); defer c.mu.Unlock(); return c.sent }
+
+type eofStreamClient struct{}
+
+func (c eofStreamClient) ListEventsSince(ctx context.Context, sessionID, after string) ([]RawEvent, error) {
+	return nil, nil
+}
+func (c eofStreamClient) StreamEvents(ctx context.Context, sessionID string) (EventStream, error) {
+	return eofStream{}, nil
+}
+func (c eofStreamClient) SendEvents(ctx context.Context, sessionID string, events []OutboundEvent) error {
+	return nil
+}
+
+type eofStream struct{}
+
+func (s eofStream) Next(ctx context.Context) (RawEvent, error) { return RawEvent{}, io.EOF }
+func (s eofStream) Close() error                               { return nil }
 
 type fakeSessionStore struct {
 	mu      sync.Mutex
@@ -195,6 +214,29 @@ func TestNewServiceRejectsDuplicateAccountNames(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected duplicate default account name error")
 	}
+}
+
+func TestFollowDoesNotLeakCloseGoroutineAfterEOF(t *testing.T) {
+	w := newTestWatcher(newFakeGateway(), eofStreamClient{}, newFakeAudit())
+	ctx := context.Background()
+
+	runtime.GC()
+	before := runtime.NumGoroutine()
+	for i := 0; i < 100; i++ {
+		if err := w.follow(ctx); err != nil {
+			t.Fatalf("follow %d: %v", i, err)
+		}
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		runtime.GC()
+		if runtime.NumGoroutine() <= before+5 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("possible close goroutine leak: before=%d after=%d", before, runtime.NumGoroutine())
 }
 
 func toolUseEvent(id, eventType, name string, input map[string]any) RawEvent {
