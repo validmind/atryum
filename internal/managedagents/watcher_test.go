@@ -3,6 +3,7 @@ package managedagents
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"runtime"
 	"sync"
@@ -78,6 +79,7 @@ type fakeClient struct {
 	mu      sync.Mutex
 	sent    []sentEvent
 	history []RawEvent
+	sendErr error
 }
 
 type sentEvent struct {
@@ -96,6 +98,9 @@ func (c *fakeClient) StreamEvents(ctx context.Context, sessionID string) (EventS
 func (c *fakeClient) SendEvents(ctx context.Context, sessionID string, events []OutboundEvent) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.sendErr != nil {
+		return c.sendErr
+	}
 	c.sent = append(c.sent, sentEvent{SessionID: sessionID, Events: events})
 	return nil
 }
@@ -136,6 +141,11 @@ func (s *fakeSessionStore) UpdateCursor(ctx context.Context, id, lastEventID str
 	}
 	s.cursors[id] = lastEventID
 	return nil
+}
+func (s *fakeSessionStore) cursor(id string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cursors[id]
 }
 
 type fakeAudit struct {
@@ -205,6 +215,16 @@ func itoa(n int) string {
 func newTestWatcher(g InvocationGateway, c AnthropicClient, a InvocationAuditStore) *watcher {
 	cfg := Config{PollInterval: time.Millisecond}.withDefaults()
 	svc, err := NewService(g, &fakeSessionStore{}, a, []Account{{Client: c, Config: cfg}})
+	if err != nil {
+		panic(err)
+	}
+	acct := svc.accounts[cfg.Name]
+	return &watcher{svc: svc, acct: acct, reg: SessionRegistration{SessionID: "sess_1", Account: cfg.Name, AgentID: "agent-1"}, pending: map[string]pendingCall{}}
+}
+
+func newTestWatcherWithStore(g InvocationGateway, c AnthropicClient, a InvocationAuditStore, store *fakeSessionStore) *watcher {
+	cfg := Config{PollInterval: time.Millisecond}.withDefaults()
+	svc, err := NewService(g, store, a, []Account{{Client: c, Config: cfg}})
 	if err != nil {
 		panic(err)
 	}
@@ -426,6 +446,26 @@ func TestRequiresActionDoesNotGuessToolKindWhenPersistedKindMissing(t *testing.T
 
 	if sent := c.sentEvents(); len(sent) != 0 {
 		t.Fatalf("expected no guessed outbound events, got %+v", sent)
+	}
+}
+
+func TestRequiresActionDoesNotAdvanceCursorWhenSendFails(t *testing.T) {
+	g := newFakeGateway()
+	g.statusByID["tool_evt_1"] = invocation.StatusApproved
+	c := &fakeClient{sendErr: errors.New("anthropic unavailable")}
+	a := newFakeAudit()
+	store := &fakeSessionStore{}
+	w := newTestWatcherWithStore(g, c, a, store)
+	ctx := context.Background()
+
+	w.handleEvent(ctx, toolUseEvent("tool_evt_1", evtAgentToolUse, "Bash", nil))
+	w.handleEvent(ctx, idleRequiresAction("idle_1", []string{"tool_evt_1"}))
+
+	if got := store.cursor("sess_1"); got != "tool_evt_1" {
+		t.Fatalf("cursor advanced past failed requires_action: got %q", got)
+	}
+	if sent := c.sentEvents(); len(sent) != 0 {
+		t.Fatalf("expected no successful outbound events, got %+v", sent)
 	}
 }
 

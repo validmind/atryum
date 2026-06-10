@@ -22,6 +22,11 @@ type pendingCall struct {
 
 const toolUseKindEvent = "managed_agents.tool_use"
 
+type decisionResult struct {
+	BlockingID string
+	Delivered  bool
+}
+
 // watcher streams one session's events and drives the approval lifecycle.
 type watcher struct {
 	svc  *Service
@@ -218,6 +223,7 @@ func (w *watcher) recordToolUseKind(ctx context.Context, invocationID string, tu
 func (w *watcher) handleRequiresAction(ctx context.Context, blockingIDs []string) bool {
 	var wg sync.WaitGroup
 	allResolved := true
+	results := make(chan decisionResult, len(blockingIDs))
 	for _, id := range blockingIDs {
 		pc, ok := w.pendingCall(ctx, id, true)
 		if !ok {
@@ -233,65 +239,72 @@ func (w *watcher) handleRequiresAction(ctx context.Context, blockingIDs []string
 		wg.Add(1)
 		go func(blockingID string, pc pendingCall) {
 			defer wg.Done()
-			w.resolveDecision(ctx, blockingID, pc)
+			results <- decisionResult{BlockingID: blockingID, Delivered: w.resolveDecision(ctx, blockingID, pc)}
 		}(id, pc)
 	}
 	wg.Wait()
+	close(results)
+	for result := range results {
+		if !result.Delivered {
+			w.log().Warn("requires_action confirmation not delivered; will retry on replay", "tool_use_event_id", result.BlockingID)
+			allResolved = false
+		}
+	}
 	return allResolved
 }
 
 // resolveDecision polls the invocation until a terminal approval decision is
 // reached, then sends the corresponding confirmation event to the session.
-func (w *watcher) resolveDecision(ctx context.Context, blockingID string, pc pendingCall) {
+func (w *watcher) resolveDecision(ctx context.Context, blockingID string, pc pendingCall) bool {
 	for {
 		if ctx.Err() != nil {
-			return
+			return false
 		}
 		resp, err := w.svc.inv.Get(ctx, pc.InvocationID)
 		if err != nil {
 			w.log().Warn("get invocation failed", "invocation_id", pc.InvocationID, "error", err)
-			return
+			return false
 		}
 		switch resp.Status {
 		case invocation.StatusApproved:
-			w.sendAllow(ctx, blockingID, pc)
-			return
+			return w.sendAllow(ctx, blockingID, pc)
 		case invocation.StatusDenied:
-			w.sendDeny(ctx, blockingID, pc, denyReason(resp))
-			return
+			return w.sendDeny(ctx, blockingID, pc, denyReason(resp))
 		case invocation.StatusExecuting, invocation.StatusSucceeded, invocation.StatusFailed, invocation.StatusCancelled:
 			// Already advanced (e.g. replayed after we sent the confirmation).
-			return
+			return true
 		default: // received, pending_approval
 			select {
 			case <-ctx.Done():
-				return
+				return false
 			case <-time.After(w.acct.cfg.PollInterval):
 			}
 		}
 	}
 }
 
-func (w *watcher) sendAllow(ctx context.Context, blockingID string, pc pendingCall) {
+func (w *watcher) sendAllow(ctx context.Context, blockingID string, pc pendingCall) bool {
 	evt := allowEvent(blockingID, pc)
 	if err := w.acct.client.SendEvents(ctx, w.reg.SessionID, []OutboundEvent{evt}); err != nil {
 		w.log().Warn("send allow failed", "tool_use_event_id", blockingID, "error", err)
-		return
+		return false
 	}
 	// Mark the invocation as running now that Claude will execute it.
 	if _, err := w.svc.inv.RecordExecution(ctx, pc.InvocationID, invocation.ExternalExecutionUpdate{ExecutionStatus: "running"}); err != nil {
 		w.log().Debug("record running failed", "invocation_id", pc.InvocationID, "error", err)
 	}
 	w.log().Info("tool call approved -> allow sent", "invocation_id", pc.InvocationID)
+	return true
 }
 
-func (w *watcher) sendDeny(ctx context.Context, blockingID string, pc pendingCall, reason string) {
+func (w *watcher) sendDeny(ctx context.Context, blockingID string, pc pendingCall, reason string) bool {
 	evt := denyEvent(blockingID, pc, reason)
 	if err := w.acct.client.SendEvents(ctx, w.reg.SessionID, []OutboundEvent{evt}); err != nil {
 		w.log().Warn("send deny failed", "tool_use_event_id", blockingID, "error", err)
-		return
+		return false
 	}
 	w.log().Info("tool call denied -> deny sent", "invocation_id", pc.InvocationID, "reason", reason)
+	return true
 }
 
 // handleToolResult records the executor outcome reported by Anthropic onto the
