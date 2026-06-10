@@ -13,8 +13,7 @@ COPY . .
 COPY --from=ui-builder /ui/dist ./internal/api/web
 RUN CGO_ENABLED=0 go build -o /atryum ./cmd/atryum
 
-FROM alpine:3.20
-RUN apk add --no-cache ca-certificates
+FROM node:22-alpine 
 COPY --from=builder /atryum /usr/local/bin/atryum
 WORKDIR /app
 ENTRYPOINT ["atryum", "run", "-config", "/app/atryum.toml"]
