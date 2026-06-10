@@ -42,6 +42,7 @@ import {
   Alert,
   AlertDescription,
   AlertIcon,
+  useToast,
 } from "@chakra-ui/react";
 import { Select } from "chakra-react-select";
 import {
@@ -144,6 +145,7 @@ const loadPendingInvocations = async (): Promise<Invocation[]> => {
 };
 
 const Invocations: React.FC = () => {
+  const toast = useToast();
   const [draftFilters, setDraftFilters] = useState({
     server: "",
     tool: "",
@@ -386,8 +388,29 @@ const Invocations: React.FC = () => {
       description: createRuleForm.description || undefined,
       enabled: true,
     };
-    await createRule.mutateAsync(input);
-    setShowCreateRule(false);
+    try {
+      await createRule.mutateAsync(input);
+      resetCreateRuleForm();
+      toast({
+        title: "Rule created",
+        status: "success",
+        duration: 3000,
+        isClosable: true,
+      });
+    } catch (err) {
+      const message =
+        (err as { response?: { data?: { error?: { message?: string } } } })
+          ?.response?.data?.error?.message ??
+        (err as Error)?.message ??
+        "Failed to create rule";
+      toast({
+        title: "Failed to create rule",
+        description: message,
+        status: "error",
+        duration: 6000,
+        isClosable: true,
+      });
+    }
   };
 
   const isPending = detail?.status === "pending_approval";
@@ -440,98 +463,96 @@ const Invocations: React.FC = () => {
                       size="sm"
                       variant="outline"
                       onClick={() => setShowFilters(true)}
-                      data-testid="invocations-filter-toggle"
-                    >
+                      data-testid="invocations-filter-toggle">
                       Filter
                     </Button>
                   )}
                 </Flex>
                 <Collapse in={showFilters} animateOpacity>
-                <VStack gap={2} align="stretch" mt={3}>
-                  <HStack gap={2} align="end">
-                    <FormControl size="sm">
-                      <FormLabel fontSize="xs" mb={1}>
-                        Server
-                      </FormLabel>
-                      <Input
+                  <VStack gap={2} align="stretch" mt={3}>
+                    <HStack gap={2} align="end">
+                      <FormControl size="sm">
+                        <FormLabel fontSize="xs" mb={1}>
+                          Server
+                        </FormLabel>
+                        <Input
+                          size="sm"
+                          placeholder="Any"
+                          value={draftFilters.server}
+                          onChange={(e) =>
+                            setDraftFilters((f) => ({
+                              ...f,
+                              server: e.target.value,
+                            }))
+                          }
+                        />
+                      </FormControl>
+                      <FormControl size="sm">
+                        <FormLabel fontSize="xs" mb={1}>
+                          Tool
+                        </FormLabel>
+                        <Input
+                          size="sm"
+                          placeholder="Any"
+                          value={draftFilters.tool}
+                          onChange={(e) =>
+                            setDraftFilters((f) => ({
+                              ...f,
+                              tool: e.target.value,
+                            }))
+                          }
+                        />
+                      </FormControl>
+                      <FormControl size="sm">
+                        <FormLabel fontSize="xs" mb={1}>
+                          Agent
+                        </FormLabel>
+                        <Input
+                          size="sm"
+                          placeholder="e.g. claude-code"
+                          value={draftFilters.client_name}
+                          onChange={(e) =>
+                            setDraftFilters((f) => ({
+                              ...f,
+                              client_name: e.target.value,
+                            }))
+                          }
+                        />
+                      </FormControl>
+                    </HStack>
+                    <HStack gap={2} align="end">
+                      <FormControl size="sm" flex={1}>
+                        <FormLabel fontSize="xs" mb={1}>
+                          Status
+                        </FormLabel>
+                        <Select
+                          classNamePrefix="chakra-react-select"
+                          isClearable
+                          options={STATUS_OPTIONS}
+                          placeholder="Any"
+                          size="sm"
+                          value={
+                            STATUS_OPTIONS.find(
+                              (o) => o.value === draftFilters.status,
+                            ) ?? null
+                          }
+                          onChange={(option) =>
+                            setDraftFilters((f) => ({
+                              ...f,
+                              status: option?.value ?? "",
+                            }))
+                          }
+                        />
+                      </FormControl>
+                      <Button
                         size="sm"
-                        placeholder="Any"
-                        value={draftFilters.server}
-                        onChange={(e) =>
-                          setDraftFilters((f) => ({
-                            ...f,
-                            server: e.target.value,
-                          }))
-                        }
-                      />
-                    </FormControl>
-                    <FormControl size="sm">
-                      <FormLabel fontSize="xs" mb={1}>
-                        Tool
-                      </FormLabel>
-                      <Input
-                        size="sm"
-                        placeholder="Any"
-                        value={draftFilters.tool}
-                        onChange={(e) =>
-                          setDraftFilters((f) => ({
-                            ...f,
-                            tool: e.target.value,
-                          }))
-                        }
-                      />
-                    </FormControl>
-                    <FormControl size="sm">
-                      <FormLabel fontSize="xs" mb={1}>
-                        Agent
-                      </FormLabel>
-                      <Input
-                        size="sm"
-                        placeholder="e.g. claude-code"
-                        value={draftFilters.client_name}
-                        onChange={(e) =>
-                          setDraftFilters((f) => ({
-                            ...f,
-                            client_name: e.target.value,
-                          }))
-                        }
-                      />
-                    </FormControl>
-                  </HStack>
-                  <HStack gap={2} align="end">
-                    <FormControl size="sm" flex={1}>
-                      <FormLabel fontSize="xs" mb={1}>
-                        Status
-                      </FormLabel>
-                      <Select
-                        classNamePrefix="chakra-react-select"
-                        isClearable
-                        options={STATUS_OPTIONS}
-                        placeholder="Any"
-                        size="sm"
-                        value={
-                          STATUS_OPTIONS.find(
-                            (o) => o.value === draftFilters.status,
-                          ) ?? null
-                        }
-                        onChange={(option) =>
-                          setDraftFilters((f) => ({
-                            ...f,
-                            status: option?.value ?? "",
-                          }))
-                        }
-                      />
-                    </FormControl>
-                    <Button
-                      size="sm"
-                      variant="primary"
-                      onClick={handleApply}
-                      data-testid="invocations-apply-filter-button"
-                    >
-                      Apply Filter
-                    </Button>
-                  </HStack>
-                </VStack>
+                        variant="primary"
+                        onClick={handleApply}
+                        data-testid="invocations-apply-filter-button">
+                        Apply Filter
+                      </Button>
+                    </HStack>
+                  </VStack>
                 </Collapse>
               </Box>
 
@@ -646,14 +667,12 @@ const Invocations: React.FC = () => {
                               hasArrow
                               label={inv.invocation_id}
                               placement="top-start"
-                              openDelay={300}
-                            >
+                              openDelay={300}>
                               <Text
                                 fontSize="xs"
                                 fontFamily="mono"
                                 color="text.subtle"
-                                whiteSpace="nowrap"
-                              >
+                                whiteSpace="nowrap">
                                 {truncateMiddle(inv.invocation_id)}
                               </Text>
                             </Tooltip>
@@ -750,488 +769,638 @@ const Invocations: React.FC = () => {
           }
           right={
             !resolvedSelectedId ? null : (
-            <Box overflow="auto" p={4} h="full">
-              {detailLoading ? (
-                <HStack justify="center" py={8}>
-                  <Spinner size="md" color="brand.base" />
-                </HStack>
-              ) : !detail ? (
-                <Alert status="error" borderRadius="md">
-                  <AlertIcon />
-                  <AlertDescription>
-                    Could not load invocation detail.
-                  </AlertDescription>
-                </Alert>
-              ) : (
-                <VStack align="stretch" gap={4}>
-                  <Flex
-                    justify="space-between"
-                    align="start"
-                    wrap="nowrap"
-                    gap={2}>
-                    <VStack align="start" gap={1}>
-                      <HStack gap={2}>
-                        <Badge
-                          colorScheme={STATUS_COLOR[detail.status] ?? "gray"}
-                          textTransform="capitalize">
-                          {STATUS_LABEL[detail.status] ?? detail.status}
-                        </Badge>
-                        {getDisposition(detail).map((d) =>
-                          d.label !== "—" ? (
-                            <Badge
-                              key={d.label}
-                              colorScheme={d.color}
-                              fontSize="xs">
-                              {d.label}
-                            </Badge>
-                          ) : null,
-                        )}
-                        {isAIEvaluated(detail) &&
-                          detail.approval?.confidence_score != null && (
-                            <Badge
-                              colorScheme={getConfidenceColor(
-                                detail.approval.confidence_score,
-                              )}
-                              fontSize="xs">
-                              Confidence:{" "}
-                              {formatConfidence(
-                                detail.approval.confidence_score,
-                              )}
-                            </Badge>
+              <Box overflow="auto" p={4} h="full">
+                {detailLoading ? (
+                  <HStack justify="center" py={8}>
+                    <Spinner size="md" color="brand.base" />
+                  </HStack>
+                ) : !detail ? (
+                  <Alert status="error" borderRadius="md">
+                    <AlertIcon />
+                    <AlertDescription>
+                      Could not load invocation detail.
+                    </AlertDescription>
+                  </Alert>
+                ) : (
+                  <VStack align="stretch" gap={4}>
+                    <Flex
+                      justify="space-between"
+                      align="start"
+                      wrap="nowrap"
+                      gap={2}>
+                      <VStack align="start" gap={1}>
+                        <HStack gap={2}>
+                          <Badge
+                            colorScheme={STATUS_COLOR[detail.status] ?? "gray"}
+                            textTransform="capitalize">
+                            {STATUS_LABEL[detail.status] ?? detail.status}
+                          </Badge>
+                          {getDisposition(detail).map((d) =>
+                            d.label !== "—" ? (
+                              <Badge
+                                key={d.label}
+                                colorScheme={d.color}
+                                fontSize="xs">
+                                {d.label}
+                              </Badge>
+                            ) : null,
                           )}
-                      </HStack>
-                      {detail.approval?.reason && (
+                          {isAIEvaluated(detail) &&
+                            detail.approval?.confidence_score != null && (
+                              <Badge
+                                colorScheme={getConfidenceColor(
+                                  detail.approval.confidence_score,
+                                )}
+                                fontSize="xs">
+                                Confidence:{" "}
+                                {formatConfidence(
+                                  detail.approval.confidence_score,
+                                )}
+                              </Badge>
+                            )}
+                        </HStack>
+                        {detail.approval?.reason && (
+                          <Text
+                            fontSize="xs"
+                            fontFamily="mono"
+                            color="text.subtle">
+                            {detail.approval.reason}
+                          </Text>
+                        )}
+                        {detail.matched_rule_id && (
+                          <Text fontSize="xs" color="text.subtle">
+                            Matched rule:{" "}
+                            <Code fontSize="xs">{detail.matched_rule_id}</Code>
+                          </Text>
+                        )}
+                        <Text fontSize="sm" color="text.subtle">
+                          {formatDate(detail.submitted_at)}
+                        </Text>
+                        <Text fontSize="sm" color="text.subtle">
+                          {detail.server_name || "none"} ·{" "}
+                          {detail.tool_name || "—"}
+                        </Text>
                         <Text
                           fontSize="xs"
                           fontFamily="mono"
                           color="text.subtle">
-                          {detail.approval.reason}
+                          {detail.invocation_id}
                         </Text>
-                      )}
-                      {detail.matched_rule_id && (
-                        <Text fontSize="xs" color="text.subtle">
-                          Matched rule:{" "}
-                          <Code fontSize="xs">{detail.matched_rule_id}</Code>
-                        </Text>
-                      )}
-                      <Text fontSize="sm" color="text.subtle">
-                        {formatDate(detail.submitted_at)}
-                      </Text>
-                      <Text fontSize="sm" color="text.subtle">
-                        {detail.server_name || "none"} ·{" "}
-                        {detail.tool_name || "—"}
-                      </Text>
-                      <Text fontSize="xs" fontFamily="mono" color="text.subtle">
-                        {detail.invocation_id}
-                      </Text>
-                      {(detail.agent_id ||
-                        detail.agent_client_name ||
-                        detail.user_id) && (
-                        <VStack
-                          align="start"
-                          gap={0}
-                          mt={1}
-                          pt={1}
-                          borderTopWidth={1}
-                          borderColor="border.base"
-                          w="full">
-                          {detail.agent_client_name && (
-                            <HStack gap={2} align="center">
-                              <AgentIcon
-                                name={detail.agent_client_name}
-                                size={18}
-                              />
-                              <Text fontSize="xs" color="text.base">
-                                <Text as="span" color="text.subtle">
-                                  Agent type:{" "}
+                        {(detail.agent_id ||
+                          detail.agent_client_name ||
+                          detail.user_id) && (
+                          <VStack
+                            align="start"
+                            gap={0}
+                            mt={1}
+                            pt={1}
+                            borderTopWidth={1}
+                            borderColor="border.base"
+                            w="full">
+                            {detail.agent_client_name && (
+                              <HStack gap={2} align="center">
+                                <AgentIcon
+                                  name={detail.agent_client_name}
+                                  size={18}
+                                />
+                                <Text fontSize="xs" color="text.base">
+                                  <Text as="span" color="text.subtle">
+                                    Agent type:{" "}
+                                  </Text>
+                                  {detail.agent_client_name}
+                                  {detail.agent_client_version
+                                    ? ` ${detail.agent_client_version}`
+                                    : ""}
                                 </Text>
-                                {detail.agent_client_name}
-                                {detail.agent_client_version
-                                  ? ` ${detail.agent_client_version}`
-                                  : ""}
-                              </Text>
-                            </HStack>
-                          )}
-                          {detail.agent_id && (
-                            <Text
-                              fontSize="xs"
-                              fontFamily="mono"
-                              color="text.subtle">
+                              </HStack>
+                            )}
+                            {detail.agent_id && (
                               <Text
-                                as="span"
-                                fontFamily="body"
+                                fontSize="xs"
+                                fontFamily="mono"
                                 color="text.subtle">
-                                Agent ID:{" "}
+                                <Text
+                                  as="span"
+                                  fontFamily="body"
+                                  color="text.subtle">
+                                  Agent ID:{" "}
+                                </Text>
+                                {detail.agent_id}
                               </Text>
-                              {detail.agent_id}
-                            </Text>
-                          )}
-                          {detail.user_id && (
-                            <Text
-                              fontSize="xs"
-                              fontFamily="mono"
-                              color="text.subtle">
+                            )}
+                            {detail.user_id && (
                               <Text
-                                as="span"
-                                fontFamily="body"
+                                fontSize="xs"
+                                fontFamily="mono"
                                 color="text.subtle">
-                                User:{" "}
+                                <Text
+                                  as="span"
+                                  fontFamily="body"
+                                  color="text.subtle">
+                                  User:{" "}
+                                </Text>
+                                {detail.user_id}
                               </Text>
-                              {detail.user_id}
-                            </Text>
-                          )}
-                        </VStack>
-                      )}
-                    </VStack>
-                    <CloseButton
-                      size="sm"
-                      onClick={handleCloseDetail}
-                      aria-label="Close details"
-                      title="Close details"
-                      data-testid="invocation-detail-close-button"
-                    />
-                  </Flex>
-
-                  <Box
-                    p={3}
-                    borderWidth={1}
-                    borderColor="border.base"
-                    borderRadius="md"
-                    bg="background.container.subtle">
-                    <Flex
-                      justify="space-between"
-                      align="center"
-                      mb={detail.summary ? 2 : 0}
-                      gap={2}
-                      wrap="wrap">
-                      <Text
-                        fontSize="xs"
-                        fontWeight="semibold"
-                        textTransform="uppercase"
-                        color="text.subtle"
-                        letterSpacing="wide">
-                        Summary
-                      </Text>
-                      <Button
-                        variant="outline"
-                        size="xs"
-                        isLoading={isCurrentInvocationSummarizing}
-                        isDisabled={
-                          !hasSummaryModel || isCurrentInvocationSummarizing
-                        }
-                        title={
-                          !hasSummaryModel
-                            ? "Set an Invocation Summary Model in Settings to enable"
-                            : undefined
-                        }
-                        onClick={handleSummarize}>
-                        {detail.summary ? "Re-summarize" : "Summarize"}
-                      </Button>
+                            )}
+                          </VStack>
+                        )}
+                      </VStack>
+                      <CloseButton
+                        size="sm"
+                        onClick={handleCloseDetail}
+                        aria-label="Close details"
+                        title="Close details"
+                        data-testid="invocation-detail-close-button"
+                      />
                     </Flex>
-                    {detail.summary ? (
-                      <Text fontSize="sm" whiteSpace="pre-wrap">
-                        {detail.summary}
-                      </Text>
-                    ) : (
-                      <Text fontSize="xs" color="text.subtle">
-                        {hasSummaryModel
-                          ? "No summary yet. Click Summarize to generate one."
-                          : "No summary model configured. Set one in Settings to enable summarization."}
-                      </Text>
-                    )}
-                    {didCurrentInvocationSummaryFail && (
-                      <Text fontSize="xs" color="text.error" mt={2}>
-                        Failed to summarize invocation.
-                      </Text>
-                    )}
-                  </Box>
 
-                  {detail.input != null &&
-                    !(
-                      typeof detail.input === "object" &&
-                      detail.input !== null &&
-                      Object.keys(detail.input as object).length === 0
-                    ) && (
-                      <Box>
+                    <Box
+                      p={3}
+                      borderWidth={1}
+                      borderColor="border.base"
+                      borderRadius="md"
+                      bg="background.container.subtle">
+                      <Flex
+                        justify="space-between"
+                        align="center"
+                        mb={detail.summary ? 2 : 0}
+                        gap={2}
+                        wrap="wrap">
                         <Text
                           fontSize="xs"
                           fontWeight="semibold"
                           textTransform="uppercase"
                           color="text.subtle"
-                          letterSpacing="wide"
-                          mb={2}>
-                          Arguments
+                          letterSpacing="wide">
+                          Summary
                         </Text>
-                        {(() => {
-                          const d = extractDiff(detail.input);
-                          if (d)
-                            return (
-                              <DiffViewer diff={d.diff} filePath={d.path} />
+                        <Button
+                          variant="outline"
+                          size="xs"
+                          isLoading={isCurrentInvocationSummarizing}
+                          isDisabled={
+                            !hasSummaryModel || isCurrentInvocationSummarizing
+                          }
+                          title={
+                            !hasSummaryModel
+                              ? "Set an Invocation Summary Model in Settings to enable"
+                              : undefined
+                          }
+                          onClick={handleSummarize}>
+                          {detail.summary ? "Re-summarize" : "Summarize"}
+                        </Button>
+                      </Flex>
+                      {detail.summary ? (
+                        <Text fontSize="sm" whiteSpace="pre-wrap">
+                          {detail.summary}
+                        </Text>
+                      ) : (
+                        <Text fontSize="xs" color="text.subtle">
+                          {hasSummaryModel
+                            ? "No summary yet. Click Summarize to generate one."
+                            : "No summary model configured. Set one in Settings to enable summarization."}
+                        </Text>
+                      )}
+                      {didCurrentInvocationSummaryFail && (
+                        <Text fontSize="xs" color="text.error" mt={2}>
+                          Failed to summarize invocation.
+                        </Text>
+                      )}
+                    </Box>
+
+                    {detail.input != null &&
+                      !(
+                        typeof detail.input === "object" &&
+                        detail.input !== null &&
+                        Object.keys(detail.input as object).length === 0
+                      ) && (
+                        <Box>
+                          <Text
+                            fontSize="xs"
+                            fontWeight="semibold"
+                            textTransform="uppercase"
+                            color="text.subtle"
+                            letterSpacing="wide"
+                            mb={2}>
+                            Arguments
+                          </Text>
+                          {(() => {
+                            const d = extractDiff(detail.input);
+                            if (d)
+                              return (
+                                <DiffViewer diff={d.diff} filePath={d.path} />
+                              );
+
+                            const input = detail.input;
+                            const isPlainObject =
+                              typeof input === "object" &&
+                              input !== null &&
+                              !Array.isArray(input);
+
+                            const renderArgValue = (value: unknown) => {
+                              if (value === null) return "null";
+                              if (value === undefined) return "undefined";
+                              if (typeof value === "string") return value;
+                              if (
+                                typeof value === "number" ||
+                                typeof value === "boolean"
+                              ) {
+                                return String(value);
+                              }
+                              return JSON.stringify(value, null, 2);
+                            };
+
+                            const jsonBlock = (
+                              <Code
+                                display="block"
+                                whiteSpace="pre-wrap"
+                                fontSize="xs"
+                                p={3}
+                                borderRadius="md"
+                                bg="background.container.subtle"
+                                w="full"
+                                data-testid="invocation-arguments-json">
+                                {JSON.stringify(input, null, 2)}
+                              </Code>
                             );
 
-                          const input = detail.input;
-                          const isPlainObject =
-                            typeof input === "object" &&
-                            input !== null &&
-                            !Array.isArray(input);
+                            if (!isPlainObject) return jsonBlock;
 
-                          const renderArgValue = (value: unknown) => {
-                            if (value === null) return "null";
-                            if (value === undefined) return "undefined";
-                            if (typeof value === "string") return value;
-                            if (
-                              typeof value === "number" ||
-                              typeof value === "boolean"
-                            ) {
-                              return String(value);
-                            }
-                            return JSON.stringify(value, null, 2);
-                          };
-
-                          const jsonBlock = (
-                            <Code
-                              display="block"
-                              whiteSpace="pre-wrap"
-                              fontSize="xs"
-                              p={3}
-                              borderRadius="md"
-                              bg="background.container.subtle"
-                              w="full"
-                              data-testid="invocation-arguments-json">
-                              {JSON.stringify(input, null, 2)}
-                            </Code>
-                          );
-
-                          if (!isPlainObject) return jsonBlock;
-
-                          return (
-                            <VStack align="stretch" gap={0}>
-                              <Box alignSelf="flex-end">
-                                <Button
-                                  variant="link"
-                                  size="xs"
-                                  onClick={() => setShowArgsJson((v) => !v)}
-                                  data-testid="invocation-arguments-json-toggle">
-                                  {showArgsJson
-                                    ? "Hide raw JSON"
-                                    : "Show raw JSON"}
-                                </Button>
-                              </Box>
-                              <Box>
-                                <Collapse in={showArgsJson} animateOpacity>
-                                  <Box my={2}>{jsonBlock}</Box>
-                                </Collapse>
-                              </Box>
-                              <Box
-                                borderWidth={1}
-                                borderColor="border.base"
-                                borderRadius="md"
-                                overflow="hidden">
-                                <Table
-                                  size="sm"
-                                  variant="simple"
-                                  data-testid="invocation-arguments-table">
-                                  <Thead bg="background.table.header">
-                                    <Tr>
-                                      <Th>Key</Th>
-                                      <Th>Value</Th>
-                                    </Tr>
-                                  </Thead>
-                                  <Tbody>
-                                    {Object.entries(
-                                      input as Record<string, unknown>,
-                                    ).map(([key, value]) => (
-                                      <Tr
-                                        key={key}
-                                        data-testid="invocation-arguments-row"
-                                        data-testid-id={key}>
-                                        <Td
-                                          fontFamily="mono"
-                                          fontSize="xs"
-                                          fontWeight="medium"
-                                          verticalAlign="top"
-                                          whiteSpace="nowrap">
-                                          {key}
-                                        </Td>
-                                        <Td fontSize="xs" verticalAlign="top">
-                                          <Box
-                                            as="pre"
-                                            m={0}
-                                            whiteSpace="pre-wrap"
-                                            wordBreak="break-word"
-                                            fontFamily={
-                                              typeof value === "object" &&
-                                              value !== null
-                                                ? "mono"
-                                                : "body"
-                                            }>
-                                            {renderArgValue(value)}
-                                          </Box>
-                                        </Td>
+                            return (
+                              <VStack align="stretch" gap={0}>
+                                <Box alignSelf="flex-end">
+                                  <Button
+                                    variant="link"
+                                    size="xs"
+                                    onClick={() => setShowArgsJson((v) => !v)}
+                                    data-testid="invocation-arguments-json-toggle">
+                                    {showArgsJson
+                                      ? "Hide raw JSON"
+                                      : "Show raw JSON"}
+                                  </Button>
+                                </Box>
+                                <Box>
+                                  <Collapse in={showArgsJson} animateOpacity>
+                                    <Box my={2}>{jsonBlock}</Box>
+                                  </Collapse>
+                                </Box>
+                                <Box
+                                  borderWidth={1}
+                                  borderColor="border.base"
+                                  borderRadius="md"
+                                  overflow="hidden">
+                                  <Table
+                                    size="sm"
+                                    variant="simple"
+                                    data-testid="invocation-arguments-table">
+                                    <Thead bg="background.table.header">
+                                      <Tr>
+                                        <Th>Key</Th>
+                                        <Th>Value</Th>
                                       </Tr>
-                                    ))}
-                                  </Tbody>
-                                </Table>
-                              </Box>
-                            </VStack>
-                          );
-                        })()}
-                      </Box>
-                    )}
-
-                  {isPending && (
-                    <Box
-                      p={4}
-                      borderWidth={1}
-                      borderColor="border.base"
-                      borderRadius="md"
-                      bg="background.container.subtle">
-                      <Text fontWeight="medium" mb={3}>
-                        Approval Required
-                      </Text>
-
-                      {!showDenyInput ? (
-                        <HStack
-                          gap={2}
-                          wrap="wrap"
-                          data-testid="invocation-approval-actions">
-                          <ButtonGroup isAttached size="sm" variant="primary">
-                            <Button
-                              isLoading={approve.isLoading}
-                              onClick={handleApproveOnce}
-                              data-testid="invocation-approve-button">
-                              Approve
-                            </Button>
-                            <Menu placement="bottom-end">
-                              <MenuButton
-                                as={IconButton}
-                                aria-label="More approve options"
-                                icon={<Icon as={ChevronDownIcon} boxSize={4} />}
-                                isDisabled={approve.isLoading}
-                                borderLeftWidth="1px"
-                                borderLeftColor="whiteAlpha.400"
-                                data-testid="invocation-approve-menu-button"
-                              />
-                              <MenuList>
-                                <MenuItem
-                                  onClick={handleAlwaysApprove}
-                                  data-testid="invocation-always-approve-menu-item">
-                                  Always approve
-                                </MenuItem>
-                              </MenuList>
-                            </Menu>
-                          </ButtonGroup>
-                          <ButtonGroup
-                            isAttached
-                            size="sm"
-                            variant="outlineDanger">
-                            <Button
-                              onClick={() => {
-                                setDenyMode("once");
-                                setShowDenyInput(true);
-                              }}
-                              data-testid="invocation-deny-button">
-                              Deny
-                            </Button>
-                            <Menu placement="bottom-end">
-                              <MenuButton
-                                as={IconButton}
-                                aria-label="More deny options"
-                                icon={<Icon as={ChevronDownIcon} boxSize={4} />}
-                                borderLeftWidth="1px"
-                                borderLeftColor="red.200"
-                                data-testid="invocation-deny-menu-button"
-                              />
-                              <MenuList>
-                                <MenuItem
-                                  onClick={() => {
-                                    setDenyMode("always");
-                                    setShowDenyInput(true);
-                                  }}
-                                  data-testid="invocation-always-deny-menu-item">
-                                  Always deny
-                                </MenuItem>
-                              </MenuList>
-                            </Menu>
-                          </ButtonGroup>
-                        </HStack>
-                      ) : (
-                        <VStack
-                          align="stretch"
-                          gap={2}
-                          data-testid="invocation-deny-form">
-                          <Textarea
-                            size="sm"
-                            placeholder="Reason for denial (optional)"
-                            value={denyMessage}
-                            onChange={(e) => setDenyMessage(e.target.value)}
-                            rows={3}
-                            data-testid="invocation-deny-reason-input"
-                          />
-                          <HStack gap={2}>
-                            <Button
-                              variant="outlineDanger"
-                              size="sm"
-                              isLoading={deny.isLoading}
-                              onClick={
-                                denyMode === "always"
-                                  ? handleAlwaysDeny
-                                  : handleDenyOnce
-                              }
-                              data-testid="invocation-deny-confirm-button">
-                              {denyMode === "always" ? "Always deny" : "Deny"}
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => {
-                                setShowDenyInput(false);
-                                setDenyMessage("");
-                                setDenyMode("once");
-                              }}
-                              data-testid="invocation-deny-cancel-button">
-                              Cancel
-                            </Button>
-                          </HStack>
-                        </VStack>
+                                    </Thead>
+                                    <Tbody>
+                                      {Object.entries(
+                                        input as Record<string, unknown>,
+                                      ).map(([key, value]) => (
+                                        <Tr
+                                          key={key}
+                                          data-testid="invocation-arguments-row"
+                                          data-testid-id={key}>
+                                          <Td
+                                            fontFamily="mono"
+                                            fontSize="xs"
+                                            fontWeight="medium"
+                                            verticalAlign="top"
+                                            whiteSpace="nowrap">
+                                            {key}
+                                          </Td>
+                                          <Td fontSize="xs" verticalAlign="top">
+                                            <Box
+                                              as="pre"
+                                              m={0}
+                                              whiteSpace="pre-wrap"
+                                              wordBreak="break-word"
+                                              fontFamily={
+                                                typeof value === "object" &&
+                                                value !== null
+                                                  ? "mono"
+                                                  : "body"
+                                              }>
+                                              {renderArgValue(value)}
+                                            </Box>
+                                          </Td>
+                                        </Tr>
+                                      ))}
+                                    </Tbody>
+                                  </Table>
+                                </Box>
+                              </VStack>
+                            );
+                          })()}
+                        </Box>
                       )}
 
-                      <Box mt={3}>
-                        <Button
-                          variant="ghost"
-                          size="xs"
-                          onClick={() => {
-                            if (!showCustomizeScope) {
-                              setRuleForm((f) => ({
-                                ...f,
-                                server_patterns:
-                                  f.server_patterns || detail.server_name || "",
-                                tool_patterns:
-                                  f.tool_patterns || detail.tool_name || "",
-                              }));
-                            }
-                            setShowCustomizeScope((v) => !v);
-                          }}>
-                          {showCustomizeScope
-                            ? "▲ Hide rule scope"
-                            : "▼ Customize rule scope"}
-                        </Button>
-                        <Collapse in={showCustomizeScope} animateOpacity>
+                    {isPending && (
+                      <Box
+                        p={4}
+                        borderWidth={1}
+                        borderColor="border.base"
+                        borderRadius="md"
+                        bg="background.container.subtle">
+                        <Text fontWeight="medium" mb={3}>
+                          Approval Required
+                        </Text>
+
+                        {!showDenyInput ? (
+                          <HStack
+                            gap={2}
+                            w="full"
+                            data-testid="invocation-approval-actions">
+                            <ButtonGroup
+                              isAttached
+                              colorScheme="green"
+                              w="full"
+                              size="sm">
+                              <Button
+                                w="full"
+                                isLoading={approve.isLoading}
+                                onClick={handleApproveOnce}
+                                data-testid="invocation-approve-button">
+                                Approve
+                              </Button>
+                              <Menu placement="bottom-end">
+                                <MenuButton
+                                  as={IconButton}
+                                  aria-label="More approve options"
+                                  icon={
+                                    <Icon as={ChevronDownIcon} boxSize={4} />
+                                  }
+                                  isDisabled={approve.isLoading}
+                                  borderLeftWidth="1px"
+                                  borderLeftColor="whiteAlpha.400"
+                                  data-testid="invocation-approve-menu-button"
+                                />
+                                <MenuList>
+                                  <MenuItem
+                                    onClick={handleAlwaysApprove}
+                                    data-testid="invocation-always-approve-menu-item">
+                                    Always approve
+                                  </MenuItem>
+                                </MenuList>
+                              </Menu>
+                            </ButtonGroup>
+                            <ButtonGroup
+                              isAttached
+                              colorScheme="red"
+                              size="sm"
+                              w="full">
+                              <Button
+                                w="full"
+                                onClick={() => {
+                                  setDenyMode("once");
+                                  setShowDenyInput(true);
+                                }}
+                                data-testid="invocation-deny-button">
+                                Deny
+                              </Button>
+                              <Menu placement="bottom-end">
+                                <MenuButton
+                                  as={IconButton}
+                                  aria-label="More deny options"
+                                  icon={
+                                    <Icon as={ChevronDownIcon} boxSize={4} />
+                                  }
+                                  borderLeftWidth="1px"
+                                  borderLeftColor="red.200"
+                                  data-testid="invocation-deny-menu-button"
+                                />
+                                <MenuList>
+                                  <MenuItem
+                                    onClick={() => {
+                                      setDenyMode("always");
+                                      setShowDenyInput(true);
+                                    }}
+                                    data-testid="invocation-always-deny-menu-item">
+                                    Always deny
+                                  </MenuItem>
+                                </MenuList>
+                              </Menu>
+                            </ButtonGroup>
+                          </HStack>
+                        ) : (
                           <VStack
                             align="stretch"
                             gap={2}
-                            mt={2}
-                            p={3}
-                            borderWidth={1}
-                            borderColor="border.base"
-                            borderRadius="md">
-                            <Text
-                              fontSize="xs"
-                              color="text.subtle"
-                              fontWeight="semibold">
-                              Rule scope for &ldquo;Always approve&rdquo; /
-                              &ldquo;Always deny&rdquo;
-                            </Text>
+                            data-testid="invocation-deny-form">
+                            <Textarea
+                              size="sm"
+                              placeholder="Reason for denial (optional)"
+                              value={denyMessage}
+                              onChange={(e) => setDenyMessage(e.target.value)}
+                              rows={3}
+                              data-testid="invocation-deny-reason-input"
+                            />
+                            <HStack gap={2}>
+                              <Button
+                                variant="outlineDanger"
+                                size="sm"
+                                isLoading={deny.isLoading}
+                                onClick={
+                                  denyMode === "always"
+                                    ? handleAlwaysDeny
+                                    : handleDenyOnce
+                                }
+                                data-testid="invocation-deny-confirm-button">
+                                {denyMode === "always" ? "Always deny" : "Deny"}
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => {
+                                  setShowDenyInput(false);
+                                  setDenyMessage("");
+                                  setDenyMode("once");
+                                }}
+                                data-testid="invocation-deny-cancel-button">
+                                Cancel
+                              </Button>
+                            </HStack>
+                          </VStack>
+                        )}
+
+                        <Box mt={3}>
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            onClick={() => {
+                              if (!showCustomizeScope) {
+                                setRuleForm((f) => ({
+                                  ...f,
+                                  server_patterns:
+                                    f.server_patterns ||
+                                    detail.server_name ||
+                                    "",
+                                  tool_patterns:
+                                    f.tool_patterns || detail.tool_name || "",
+                                }));
+                              }
+                              setShowCustomizeScope((v) => !v);
+                            }}>
+                            {showCustomizeScope
+                              ? "▲ Hide rule scope"
+                              : "▼ Customize rule scope"}
+                          </Button>
+                          <Collapse in={showCustomizeScope} animateOpacity>
+                            <VStack
+                              align="stretch"
+                              gap={2}
+                              mt={2}
+                              p={3}
+                              borderWidth={1}
+                              borderColor="border.base"
+                              borderRadius="md">
+                              <Text
+                                fontSize="xs"
+                                color="text.subtle"
+                                fontWeight="semibold">
+                                Rule scope for &ldquo;Always approve&rdquo; /
+                                &ldquo;Always deny&rdquo;
+                              </Text>
+                              <FormControl size="sm">
+                                <FormLabel fontSize="xs" mb={1}>
+                                  Server patterns (comma-separated)
+                                </FormLabel>
+                                <Input
+                                  size="sm"
+                                  fontFamily="mono"
+                                  placeholder="e.g. github, *"
+                                  value={ruleForm.server_patterns}
+                                  onChange={(e) =>
+                                    setRuleForm((f) => ({
+                                      ...f,
+                                      server_patterns: e.target.value,
+                                    }))
+                                  }
+                                />
+                              </FormControl>
+                              <FormControl size="sm">
+                                <FormLabel fontSize="xs" mb={1}>
+                                  Tool patterns (comma-separated)
+                                </FormLabel>
+                                <Input
+                                  size="sm"
+                                  fontFamily="mono"
+                                  placeholder="e.g. list_issues, *"
+                                  value={ruleForm.tool_patterns}
+                                  onChange={(e) =>
+                                    setRuleForm((f) => ({
+                                      ...f,
+                                      tool_patterns: e.target.value,
+                                    }))
+                                  }
+                                />
+                              </FormControl>
+                              <FormControl size="sm">
+                                <FormLabel fontSize="xs" mb={1}>
+                                  User pattern
+                                </FormLabel>
+                                <Input
+                                  size="sm"
+                                  fontFamily="mono"
+                                  placeholder="* for any"
+                                  value={ruleForm.user_pattern}
+                                  onChange={(e) =>
+                                    setRuleForm((f) => ({
+                                      ...f,
+                                      user_pattern: e.target.value,
+                                    }))
+                                  }
+                                />
+                              </FormControl>
+                              <FormControl size="sm">
+                                <FormLabel fontSize="xs" mb={1}>
+                                  Description (optional)
+                                </FormLabel>
+                                <Input
+                                  size="sm"
+                                  placeholder="e.g. Allow GitHub read tools"
+                                  value={ruleForm.description}
+                                  onChange={(e) =>
+                                    setRuleForm((f) => ({
+                                      ...f,
+                                      description: e.target.value,
+                                    }))
+                                  }
+                                />
+                              </FormControl>
+                            </VStack>
+                          </Collapse>
+                        </Box>
+                      </Box>
+                    )}
+
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      alignSelf="flex-start"
+                      leftIcon={<Icon as={ShieldCheckIcon} boxSize={4} />}
+                      onClick={() => {
+                        setCreateRuleForm((f) => ({
+                          ...f,
+                          server_patterns:
+                            f.server_patterns || detail.server_name || "",
+                          tool_patterns:
+                            f.tool_patterns || detail.tool_name || "",
+                        }));
+                        setShowCreateRule(true);
+                      }}
+                      data-testid="invocation-create-rule-button">
+                      Create Rule From This
+                    </Button>
+                    <Modal
+                      isOpen={showCreateRule}
+                      onClose={() => setShowCreateRule(false)}
+                      size="lg"
+                      isCentered>
+                      <ModalOverlay />
+                      <ModalContent data-testid="create-rule-modal">
+                        <ModalHeader>
+                          Create Rule From This Invocation
+                        </ModalHeader>
+                        <ModalCloseButton data-testid="create-rule-modal-close-button" />
+                        <ModalBody>
+                          <VStack align="stretch" gap={2}>
+                            <FormControl size="sm">
+                              <FormLabel fontSize="xs" mb={1}>
+                                Action
+                              </FormLabel>
+                              <Select
+                                classNamePrefix="chakra-react-select"
+                                size="sm"
+                                options={[
+                                  {
+                                    value: "auto_approve",
+                                    label: "Auto Approve",
+                                  },
+                                  { value: "auto_deny", label: "Auto Deny" },
+                                ]}
+                                value={{
+                                  value: createRuleForm.action,
+                                  label:
+                                    createRuleForm.action === "auto_approve"
+                                      ? "Auto Approve"
+                                      : "Auto Deny",
+                                }}
+                                onChange={(opt) =>
+                                  opt &&
+                                  setCreateRuleForm((f) => ({
+                                    ...f,
+                                    action: opt.value as RuleAction,
+                                  }))
+                                }
+                              />
+                            </FormControl>
                             <FormControl size="sm">
                               <FormLabel fontSize="xs" mb={1}>
                                 Server patterns (comma-separated)
@@ -1240,9 +1409,9 @@ const Invocations: React.FC = () => {
                                 size="sm"
                                 fontFamily="mono"
                                 placeholder="e.g. github, *"
-                                value={ruleForm.server_patterns}
+                                value={createRuleForm.server_patterns}
                                 onChange={(e) =>
-                                  setRuleForm((f) => ({
+                                  setCreateRuleForm((f) => ({
                                     ...f,
                                     server_patterns: e.target.value,
                                   }))
@@ -1257,9 +1426,9 @@ const Invocations: React.FC = () => {
                                 size="sm"
                                 fontFamily="mono"
                                 placeholder="e.g. list_issues, *"
-                                value={ruleForm.tool_patterns}
+                                value={createRuleForm.tool_patterns}
                                 onChange={(e) =>
-                                  setRuleForm((f) => ({
+                                  setCreateRuleForm((f) => ({
                                     ...f,
                                     tool_patterns: e.target.value,
                                   }))
@@ -1274,9 +1443,9 @@ const Invocations: React.FC = () => {
                                 size="sm"
                                 fontFamily="mono"
                                 placeholder="* for any"
-                                value={ruleForm.user_pattern}
+                                value={createRuleForm.user_pattern}
                                 onChange={(e) =>
-                                  setRuleForm((f) => ({
+                                  setCreateRuleForm((f) => ({
                                     ...f,
                                     user_pattern: e.target.value,
                                   }))
@@ -1290,9 +1459,9 @@ const Invocations: React.FC = () => {
                               <Input
                                 size="sm"
                                 placeholder="e.g. Allow GitHub read tools"
-                                value={ruleForm.description}
+                                value={createRuleForm.description}
                                 onChange={(e) =>
-                                  setRuleForm((f) => ({
+                                  setCreateRuleForm((f) => ({
                                     ...f,
                                     description: e.target.value,
                                   }))
@@ -1300,267 +1469,138 @@ const Invocations: React.FC = () => {
                               />
                             </FormControl>
                           </VStack>
-                        </Collapse>
+                        </ModalBody>
+                        <ModalFooter gap={2}>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setShowCreateRule(false)}
+                            data-testid="create-rule-modal-cancel-button">
+                            Cancel
+                          </Button>
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            isLoading={createRule.isLoading}
+                            onClick={handleSaveRule}
+                            data-testid="create-rule-modal-save-button">
+                            Save rule
+                          </Button>
+                        </ModalFooter>
+                      </ModalContent>
+                    </Modal>
+
+                    {detail.result != null && (
+                      <Box>
+                        <Text
+                          fontSize="xs"
+                          fontWeight="semibold"
+                          textTransform="uppercase"
+                          color="text.subtle"
+                          letterSpacing="wide"
+                          mb={2}>
+                          Result
+                        </Text>
+                        {(() => {
+                          const d = extractDiff(detail.result);
+                          if (d)
+                            return (
+                              <DiffViewer diff={d.diff} filePath={d.path} />
+                            );
+                          return (
+                            <Code
+                              display="block"
+                              whiteSpace="pre-wrap"
+                              fontSize="xs"
+                              p={3}
+                              borderRadius="md"
+                              bg="background.container.subtle"
+                              w="full">
+                              {JSON.stringify(detail.result, null, 2)}
+                            </Code>
+                          );
+                        })()}
                       </Box>
-                    </Box>
-                  )}
-
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    alignSelf="flex-start"
-                    leftIcon={<Icon as={ShieldCheckIcon} boxSize={4} />}
-                    onClick={() => {
-                      setCreateRuleForm((f) => ({
-                        ...f,
-                        server_patterns:
-                          f.server_patterns || detail.server_name || "",
-                        tool_patterns:
-                          f.tool_patterns || detail.tool_name || "",
-                      }));
-                      setShowCreateRule(true);
-                    }}
-                    data-testid="invocation-create-rule-button">
-                    Create Rule From This
-                  </Button>
-                  <Modal
-                    isOpen={showCreateRule}
-                    onClose={() => setShowCreateRule(false)}
-                    size="lg"
-                    isCentered>
-                    <ModalOverlay />
-                    <ModalContent data-testid="create-rule-modal">
-                      <ModalHeader>
-                        Create Rule From This Invocation
-                      </ModalHeader>
-                      <ModalCloseButton data-testid="create-rule-modal-close-button" />
-                      <ModalBody>
-                        <VStack align="stretch" gap={2}>
-                        <FormControl size="sm">
-                          <FormLabel fontSize="xs" mb={1}>
-                            Action
-                          </FormLabel>
-                          <Select
-                            classNamePrefix="chakra-react-select"
-                            size="sm"
-                            options={[
-                              { value: "auto_approve", label: "Auto Approve" },
-                              { value: "auto_deny", label: "Auto Deny" },
-                            ]}
-                            value={{
-                              value: createRuleForm.action,
-                              label:
-                                createRuleForm.action === "auto_approve"
-                                  ? "Auto Approve"
-                                  : "Auto Deny",
-                            }}
-                            onChange={(opt) =>
-                              opt &&
-                              setCreateRuleForm((f) => ({
-                                ...f,
-                                action: opt.value as RuleAction,
-                              }))
-                            }
-                          />
-                        </FormControl>
-                        <FormControl size="sm">
-                          <FormLabel fontSize="xs" mb={1}>
-                            Server patterns (comma-separated)
-                          </FormLabel>
-                          <Input
-                            size="sm"
-                            fontFamily="mono"
-                            placeholder="e.g. github, *"
-                            value={createRuleForm.server_patterns}
-                            onChange={(e) =>
-                              setCreateRuleForm((f) => ({
-                                ...f,
-                                server_patterns: e.target.value,
-                              }))
-                            }
-                          />
-                        </FormControl>
-                        <FormControl size="sm">
-                          <FormLabel fontSize="xs" mb={1}>
-                            Tool patterns (comma-separated)
-                          </FormLabel>
-                          <Input
-                            size="sm"
-                            fontFamily="mono"
-                            placeholder="e.g. list_issues, *"
-                            value={createRuleForm.tool_patterns}
-                            onChange={(e) =>
-                              setCreateRuleForm((f) => ({
-                                ...f,
-                                tool_patterns: e.target.value,
-                              }))
-                            }
-                          />
-                        </FormControl>
-                        <FormControl size="sm">
-                          <FormLabel fontSize="xs" mb={1}>
-                            User pattern
-                          </FormLabel>
-                          <Input
-                            size="sm"
-                            fontFamily="mono"
-                            placeholder="* for any"
-                            value={createRuleForm.user_pattern}
-                            onChange={(e) =>
-                              setCreateRuleForm((f) => ({
-                                ...f,
-                                user_pattern: e.target.value,
-                              }))
-                            }
-                          />
-                        </FormControl>
-                        <FormControl size="sm">
-                          <FormLabel fontSize="xs" mb={1}>
-                            Description (optional)
-                          </FormLabel>
-                          <Input
-                            size="sm"
-                            placeholder="e.g. Allow GitHub read tools"
-                            value={createRuleForm.description}
-                            onChange={(e) =>
-                              setCreateRuleForm((f) => ({
-                                ...f,
-                                description: e.target.value,
-                              }))
-                            }
-                          />
-                        </FormControl>
-                        </VStack>
-                      </ModalBody>
-                      <ModalFooter gap={2}>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setShowCreateRule(false)}
-                          data-testid="create-rule-modal-cancel-button">
-                          Cancel
-                        </Button>
-                        <Button
-                          variant="primary"
-                          size="sm"
-                          isLoading={createRule.isLoading}
-                          onClick={handleSaveRule}
-                          data-testid="create-rule-modal-save-button">
-                          Save rule
-                        </Button>
-                      </ModalFooter>
-                    </ModalContent>
-                  </Modal>
-
-                  {detail.result != null && (
-                    <Box>
-                      <Text
-                        fontSize="xs"
-                        fontWeight="semibold"
-                        textTransform="uppercase"
-                        color="text.subtle"
-                        letterSpacing="wide"
-                        mb={2}>
-                        Result
-                      </Text>
-                      {(() => {
-                        const d = extractDiff(detail.result);
-                        if (d)
-                          return <DiffViewer diff={d.diff} filePath={d.path} />;
-                        return (
-                          <Code
-                            display="block"
-                            whiteSpace="pre-wrap"
-                            fontSize="xs"
-                            p={3}
-                            borderRadius="md"
-                            bg="background.container.subtle"
-                            w="full">
-                            {JSON.stringify(detail.result, null, 2)}
-                          </Code>
-                        );
-                      })()}
-                    </Box>
-                  )}
-
-                  {detail.error != null && (
-                    <Box>
-                      <Text
-                        fontSize="xs"
-                        fontWeight="semibold"
-                        textTransform="uppercase"
-                        color="text.subtle"
-                        letterSpacing="wide"
-                        mb={2}>
-                        Error
-                      </Text>
-                      <Code
-                        display="block"
-                        whiteSpace="pre-wrap"
-                        fontSize="xs"
-                        p={3}
-                        borderRadius="md"
-                        bg="background.container.subtle"
-                        w="full">
-                        {JSON.stringify(detail.error, null, 2)}
-                      </Code>
-                    </Box>
-                  )}
-
-                  <Box>
-                    <Text
-                      fontSize="xs"
-                      fontWeight="semibold"
-                      textTransform="uppercase"
-                      color="text.subtle"
-                      letterSpacing="wide"
-                      mb={2}>
-                      Events
-                    </Text>
-                    {eventsLoading ? (
-                      <Spinner size="sm" color="brand.base" />
-                    ) : (eventsData?.items ?? []).length === 0 ? (
-                      <Text fontSize="sm" color="text.subtle">
-                        No events recorded.
-                      </Text>
-                    ) : (
-                      <VStack align="stretch" gap={1}>
-                        {(eventsData?.items ?? []).map((evt, i) => (
-                          <VStack
-                            key={`${evt.timestamp}-${evt.type}-${String(i)}`}
-                            gap={1}
-                            fontSize="xs"
-                            p={2}
-                            borderRadius="md"
-                            bg="background.container.subtle"
-                            align="stretch">
-                            <HStack gap={3} align="center">
-                              <Badge
-                                colorScheme={STATUS_COLOR[evt.type] ?? "gray"}
-                                fontSize="2xs"
-                                flexShrink={0}>
-                                {evt.type}
-                              </Badge>
-                              <Text color="text.subtle" flexShrink={0}>
-                                {formatDate(evt.timestamp)}
-                              </Text>
-                            </HStack>
-                            {evt.data != null && (
-                              <Code
-                                fontSize="2xs"
-                                whiteSpace="pre-wrap"
-                                bg="transparent">
-                                {JSON.stringify(evt.data, null, 2)}
-                              </Code>
-                            )}
-                          </VStack>
-                        ))}
-                      </VStack>
                     )}
-                  </Box>
-                </VStack>
-              )}
-            </Box>
+
+                    {detail.error != null && (
+                      <Box>
+                        <Text
+                          fontSize="xs"
+                          fontWeight="semibold"
+                          textTransform="uppercase"
+                          color="text.subtle"
+                          letterSpacing="wide"
+                          mb={2}>
+                          Error
+                        </Text>
+                        <Code
+                          display="block"
+                          whiteSpace="pre-wrap"
+                          fontSize="xs"
+                          p={3}
+                          borderRadius="md"
+                          bg="background.container.subtle"
+                          w="full">
+                          {JSON.stringify(detail.error, null, 2)}
+                        </Code>
+                      </Box>
+                    )}
+
+                    <Box>
+                      <Text
+                        fontSize="xs"
+                        fontWeight="semibold"
+                        textTransform="uppercase"
+                        color="text.subtle"
+                        letterSpacing="wide"
+                        mb={2}>
+                        Events
+                      </Text>
+                      {eventsLoading ? (
+                        <Spinner size="sm" color="brand.base" />
+                      ) : (eventsData?.items ?? []).length === 0 ? (
+                        <Text fontSize="sm" color="text.subtle">
+                          No events recorded.
+                        </Text>
+                      ) : (
+                        <VStack align="stretch" gap={1}>
+                          {(eventsData?.items ?? []).map((evt, i) => (
+                            <VStack
+                              key={`${evt.timestamp}-${evt.type}-${String(i)}`}
+                              gap={1}
+                              fontSize="xs"
+                              p={2}
+                              borderRadius="md"
+                              bg="background.container.subtle"
+                              align="stretch">
+                              <HStack gap={3} align="center">
+                                <Badge
+                                  colorScheme={STATUS_COLOR[evt.type] ?? "gray"}
+                                  fontSize="2xs"
+                                  flexShrink={0}>
+                                  {evt.type}
+                                </Badge>
+                                <Text color="text.subtle" flexShrink={0}>
+                                  {formatDate(evt.timestamp)}
+                                </Text>
+                              </HStack>
+                              {evt.data != null && (
+                                <Code
+                                  fontSize="2xs"
+                                  whiteSpace="pre-wrap"
+                                  bg="transparent">
+                                  {JSON.stringify(evt.data, null, 2)}
+                                </Code>
+                              )}
+                            </VStack>
+                          ))}
+                        </VStack>
+                      )}
+                    </Box>
+                  </VStack>
+                )}
+              </Box>
             )
           }
         />
