@@ -57,6 +57,10 @@ type invocationSummarizer interface {
 	SummarizeInvocation(ctx context.Context, req backendclient.SummarizeInvocationRequest) (backendclient.SummarizeInvocationResponse, error)
 }
 
+type localInvocationSummarizer interface {
+	SummarizeInvocation(ctx context.Context, llmConfigID string, invocationData map[string]any) (string, error)
+}
+
 type serverService interface {
 	List(ctx context.Context, filter mcp.ServerFilter) (ServerListResponse, error)
 	Get(ctx context.Context, name string) (AdminServer, error)
@@ -87,7 +91,7 @@ type agentsRepo interface {
 	GetByVMCUID(ctx context.Context, vmCUID string) (store.AgentRecord, error)
 	UpdateEnabled(ctx context.Context, id string, enabled bool) error
 	UpdateAgentIDs(ctx context.Context, id string, agentIDs string) error
-	UpdateMeta(ctx context.Context, id, name, description string) error
+	UpdateMeta(ctx context.Context, id, name, description, constitution string) error
 	Create(ctx context.Context, agent store.AgentRecord) error
 	Delete(ctx context.Context, id string) error
 	DeleteSynced(ctx context.Context) error
@@ -97,6 +101,14 @@ type agentsRepo interface {
 type agentSyncSettingsRepo interface {
 	Get(ctx context.Context) (store.AgentSyncSettings, error)
 	Save(ctx context.Context, s store.AgentSyncSettings) error
+}
+
+type llmConfigsRepo interface {
+	List(ctx context.Context) ([]store.LLMConfig, error)
+	Get(ctx context.Context, id string) (store.LLMConfig, error)
+	Create(ctx context.Context, cfg store.LLMConfig) error
+	Update(ctx context.Context, cfg store.LLMConfig) error
+	Delete(ctx context.Context, id string) error
 }
 
 // clientInfoSnapshot is what the agent reported in `initialize.clientInfo`.
@@ -113,8 +125,10 @@ type Handler struct {
 	rulesRepo             rulesRepo
 	agentsRepo            agentsRepo
 	agentSyncSettingsRepo agentSyncSettingsRepo
+	llmConfigsRepo        llmConfigsRepo
 	backendClient         *backendclient.Client
 	summarizeClient       invocationSummarizer
+	localSummarizer       localInvocationSummarizer
 	syncAgentsFn          func(ctx context.Context) error
 	forwarder             mcpEnvelopeForwarder
 	staticHTTP            http.Handler
@@ -243,29 +257,31 @@ type OAuthConnectStatusResponse struct {
 // ─── Rules ───────────────────────────────────────────────────────────────────
 
 type AdminRule struct {
-	ID              string    `json:"id"`
-	Action          string    `json:"action"`
-	ServerPatterns  []string  `json:"server_patterns"`
-	ToolPatterns    []string  `json:"tool_patterns"`
-	AgentIDPattern  string    `json:"agent_id_pattern"`
-	ModelConfigCUID string    `json:"model_config_cuid,omitempty"`
-	AgentCUIDs      []string  `json:"agent_cuids"`
-	Description     string    `json:"description,omitempty"`
-	Enabled         bool      `json:"enabled"`
-	Order           int       `json:"order"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID                string    `json:"id"`
+	Action            string    `json:"action"`
+	ServerPatterns    []string  `json:"server_patterns"`
+	ToolPatterns      []string  `json:"tool_patterns"`
+	AgentIDPattern    string    `json:"agent_id_pattern"`
+	ModelConfigCUID   string    `json:"model_config_cuid,omitempty"`
+	AtryumLLMConfigID string    `json:"atryum_llm_config_id,omitempty"`
+	AgentCUIDs        []string  `json:"agent_cuids"`
+	Description       string    `json:"description,omitempty"`
+	Enabled           bool      `json:"enabled"`
+	Order             int       `json:"order"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 type AdminRuleInput struct {
-	Action          string   `json:"action"`
-	ServerPatterns  []string `json:"server_patterns"`
-	ToolPatterns    []string `json:"tool_patterns"`
-	AgentIDPattern  string   `json:"agent_id_pattern"`
-	ModelConfigCUID string   `json:"model_config_cuid,omitempty"`
-	AgentCUIDs      []string `json:"agent_cuids"`
-	Description     string   `json:"description,omitempty"`
-	Enabled         *bool    `json:"enabled,omitempty"`
+	Action            string   `json:"action"`
+	ServerPatterns    []string `json:"server_patterns"`
+	ToolPatterns      []string `json:"tool_patterns"`
+	AgentIDPattern    string   `json:"agent_id_pattern"`
+	ModelConfigCUID   string   `json:"model_config_cuid,omitempty"`
+	AtryumLLMConfigID string   `json:"atryum_llm_config_id,omitempty"`
+	AgentCUIDs        []string `json:"agent_cuids"`
+	Description       string   `json:"description,omitempty"`
+	Enabled           *bool    `json:"enabled,omitempty"`
 }
 
 // AdminModelConfig is the API representation of a VM agent model configuration.
@@ -279,6 +295,34 @@ type ModelConfigListResponse struct {
 	Total int                `json:"total"`
 }
 
+// ─── Local LLM Config types ───────────────────────────────────────────────────
+
+// AdminLLMConfig is the API representation of a locally-configured LLM.
+// APIKey is write-only — on reads it is returned as "***" when set.
+type AdminLLMConfig struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Provider  string    `json:"provider"`
+	Model     string    `json:"model"`
+	APIKey    string    `json:"api_key,omitempty"` // "***" on read if set
+	BaseURL   string    `json:"base_url,omitempty"`
+	Enabled   bool      `json:"enabled"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type AdminLLMConfigInput struct {
+	Name     string `json:"name"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	APIKey   string `json:"api_key,omitempty"`
+	BaseURL  string `json:"base_url,omitempty"`
+	Enabled  *bool  `json:"enabled,omitempty"`
+}
+
+type LLMConfigListResponse struct {
+	Items []AdminLLMConfig `json:"items"`
+}
+
 type RuleListResponse struct {
 	Items []AdminRule `json:"items"`
 }
@@ -286,13 +330,14 @@ type RuleListResponse struct {
 // ─── Agent admin types ────────────────────────────────────────────────────────
 
 type AdminAgent struct {
-	CUID        string    `json:"cuid"`
-	OrgName     string    `json:"org_name"`
-	Name        string    `json:"name"`
-	Description string    `json:"description,omitempty"`
-	AgentIDs    []string  `json:"agent_ids"`
-	SyncedAt    time.Time `json:"synced_at"`
-	Enabled     bool      `json:"enabled"`
+	CUID         string    `json:"cuid"`
+	OrgName      string    `json:"org_name"`
+	Name         string    `json:"name"`
+	Description  string    `json:"description,omitempty"`
+	AgentIDs     []string  `json:"agent_ids"`
+	SyncedAt     time.Time `json:"synced_at"`
+	Enabled      bool      `json:"enabled"`
+	Constitution string    `json:"constitution,omitempty"`
 	// Synced is true when this agent originated from a ValidMind sync
 	// (vm_organization_cuid is non-empty). Synced agents cannot be deleted
 	// manually — they are removed by re-syncing with a different org/record-type.
@@ -300,17 +345,19 @@ type AdminAgent struct {
 }
 
 type AdminAgentInput struct {
-	Enabled     bool     `json:"enabled"`
-	AgentIDs    []string `json:"agent_ids,omitempty"`
-	Name        string   `json:"name,omitempty"`
-	Description string   `json:"description,omitempty"`
+	Enabled      bool     `json:"enabled"`
+	AgentIDs     []string `json:"agent_ids,omitempty"`
+	Name         string   `json:"name,omitempty"`
+	Description  string   `json:"description,omitempty"`
+	Constitution string   `json:"constitution,omitempty"`
 }
 
 type AdminAgentCreateInput struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description,omitempty"`
-	Enabled     bool     `json:"enabled"`
-	AgentIDs    []string `json:"agent_ids,omitempty"`
+	Name         string   `json:"name"`
+	Description  string   `json:"description,omitempty"`
+	Enabled      bool     `json:"enabled"`
+	AgentIDs     []string `json:"agent_ids,omitempty"`
+	Constitution string   `json:"constitution,omitempty"`
 }
 
 type AgentListResponse struct {
@@ -320,14 +367,15 @@ type AgentListResponse struct {
 func toAdminAgent(a store.AgentRecord) AdminAgent {
 	ids := parseAgentIDs(a.AgentIDs)
 	return AdminAgent{
-		CUID:        a.ID,
-		OrgName:     a.VMOrganizationName,
-		Name:        a.VMName,
-		Description: a.VMDescription,
-		AgentIDs:    ids,
-		SyncedAt:    a.SyncedAt,
-		Enabled:     a.Enabled,
-		Synced:      a.VMOrganizationCUID != "",
+		CUID:         a.ID,
+		OrgName:      a.VMOrganizationName,
+		Name:         a.VMName,
+		Description:  a.VMDescription,
+		AgentIDs:     ids,
+		SyncedAt:     a.SyncedAt,
+		Enabled:      a.Enabled,
+		Constitution: a.Constitution,
+		Synced:       a.VMOrganizationCUID != "",
 	}
 }
 
@@ -400,7 +448,7 @@ type invocationStreamEnvelope struct {
 	Items []invocation.InvocationResponse `json:"items"`
 }
 
-func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Registry, rules rulesRepo, agents agentsRepo, agentSyncSettings agentSyncSettingsRepo, syncAgents func(ctx context.Context) error, bc *backendclient.Client) *Handler {
+func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Registry, rules rulesRepo, agents agentsRepo, agentSyncSettings agentSyncSettingsRepo, llmConfigs llmConfigsRepo, syncAgents func(ctx context.Context) error, bc *backendclient.Client, localSummarizer localInvocationSummarizer) *Handler {
 	staticSub, err := fs.Sub(webFS, "web")
 	if err != nil {
 		panic(err)
@@ -410,7 +458,7 @@ func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Reg
 	if f, ok := svc.(mcpEnvelopeForwarder); ok {
 		forwarder = f
 	}
-	return &Handler{svc: svc, serverSvc: serverSvc, policyRegistry: policyRegistry, rulesRepo: rules, agentsRepo: agents, agentSyncSettingsRepo: agentSyncSettings, backendClient: bc, summarizeClient: bc, syncAgentsFn: syncAgents, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug, clientInfoCache: make(map[string]clientInfoSnapshot)}
+	return &Handler{svc: svc, serverSvc: serverSvc, policyRegistry: policyRegistry, rulesRepo: rules, agentsRepo: agents, agentSyncSettingsRepo: agentSyncSettings, llmConfigsRepo: llmConfigs, backendClient: bc, summarizeClient: bc, localSummarizer: localSummarizer, syncAgentsFn: syncAgents, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug, clientInfoCache: make(map[string]clientInfoSnapshot)}
 }
 
 // SetAuthValidator installs the inbound auth validator. When non-nil, the
@@ -461,6 +509,8 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/api/v1/admin/agents", h.adminAgents)
 	mux.HandleFunc("/api/v1/admin/agents/", h.adminAgentDetail)
 	mux.HandleFunc("/api/v1/admin/model-configs", h.adminModelConfigs)
+	mux.HandleFunc("/api/v1/admin/llm-configs", h.adminLLMConfigs)
+	mux.HandleFunc("/api/v1/admin/llm-configs/", h.adminLLMConfigDetail)
 	mux.HandleFunc("/api/v1/admin/settings", h.adminSettings)
 	mux.HandleFunc("/api/v1/admin/vm/organizations", h.adminVMOrganizations)
 	mux.HandleFunc("/api/v1/admin/vm/record-types", h.adminVMRecordTypes)
@@ -1569,36 +1619,51 @@ func (h *Handler) summarizeInvocation(w http.ResponseWriter, r *http.Request, id
 	}
 
 	orgCUID := ""
+	summaryAtryumLLMConfigID := ""
 	if h.agentSyncSettingsRepo != nil {
 		if s, sErr := h.agentSyncSettingsRepo.Get(r.Context()); sErr == nil {
 			orgCUID = s.OrgCUID
 			if modelConfigCUID == "" {
 				modelConfigCUID = strings.TrimSpace(s.SummaryModelConfigCUID)
+				summaryAtryumLLMConfigID = strings.TrimSpace(s.SummaryAtryumLLMConfigID)
 			}
 		} else {
 			log.Printf("[summarizeInvocation] read agent_sync_settings failed: %v", sErr)
 		}
 	}
 
-	if modelConfigCUID == "" {
-		writeError(w, http.StatusBadRequest, "summary model configuration is not set; configure one on the Settings page")
-		return
-	}
+	var summary string
 
-	resp, err := h.summarizeClient.SummarizeInvocation(r.Context(), backendclient.SummarizeInvocationRequest{
-		ModelConfigCUID: modelConfigCUID,
-		OrgCUID:         orgCUID,
-		Invocation:      invMap,
-	})
-	if err != nil {
-		log.Printf("[summarizeInvocation] backend call failed for invocation %s (model_config_cuid=%s): %v", id, modelConfigCUID, err)
-		writeError(w, http.StatusBadGateway, "failed to summarize invocation: "+err.Error())
+	if summaryAtryumLLMConfigID != "" && h.localSummarizer != nil {
+		// Local LLM path
+		s, lErr := h.localSummarizer.SummarizeInvocation(r.Context(), summaryAtryumLLMConfigID, invMap)
+		if lErr != nil {
+			log.Printf("[summarizeInvocation] local LLM call failed for invocation %s (llm_config_id=%s): %v", id, summaryAtryumLLMConfigID, lErr)
+			writeError(w, http.StatusBadGateway, "failed to summarize invocation: "+lErr.Error())
+			return
+		}
+		summary = s
+	} else if modelConfigCUID != "" && h.summarizeClient != nil {
+		// ValidMind backend path
+		resp, vErr := h.summarizeClient.SummarizeInvocation(r.Context(), backendclient.SummarizeInvocationRequest{
+			ModelConfigCUID: modelConfigCUID,
+			OrgCUID:         orgCUID,
+			Invocation:      invMap,
+		})
+		if vErr != nil {
+			log.Printf("[summarizeInvocation] backend call failed for invocation %s (model_config_cuid=%s): %v", id, modelConfigCUID, vErr)
+			writeError(w, http.StatusBadGateway, "failed to summarize invocation: "+vErr.Error())
+			return
+		}
+		summary = resp.Summary
+	} else {
+		writeError(w, http.StatusBadRequest, "summary model is not configured; set one on the Settings page")
 		return
 	}
 
 	// Persist the generated summary on the invocation row so subsequent
 	// Get/List calls expose it and the UI can render it without re-calling the LLM.
-	updated, err := h.svc.SetSummary(r.Context(), inv.InvocationID, resp.Summary)
+	updated, err := h.svc.SetSummary(r.Context(), inv.InvocationID, summary)
 	if err != nil {
 		log.Printf("[summarizeInvocation] persist summary for invocation %s failed: %v", id, err)
 		writeError(w, http.StatusInternalServerError, "failed to persist summary: "+err.Error())
@@ -1875,16 +1940,17 @@ func (h *Handler) adminRules(w http.ResponseWriter, r *http.Request) {
 			enabled = *req.Enabled
 		}
 		rule := store.Rule{
-			ID:              "rule_" + newUUID(),
-			Action:          req.Action,
-			ServerPatterns:  normalizePatternSlice(req.ServerPatterns),
-			ToolPatterns:    normalizePatternSlice(req.ToolPatterns),
-			AgentIDPattern:  defaultPattern(req.AgentIDPattern),
-			ModelConfigCUID: req.ModelConfigCUID,
-			AgentCUIDs:      normalizePatternSlice(req.AgentCUIDs),
-			Description:     req.Description,
-			Enabled:         enabled,
-			Order:           order,
+			ID:                "rule_" + newUUID(),
+			Action:            req.Action,
+			ServerPatterns:    normalizePatternSlice(req.ServerPatterns),
+			ToolPatterns:      normalizePatternSlice(req.ToolPatterns),
+			AgentIDPattern:    defaultPattern(req.AgentIDPattern),
+			ModelConfigCUID:   req.ModelConfigCUID,
+			AtryumLLMConfigID: req.AtryumLLMConfigID,
+			AgentCUIDs:        normalizePatternSlice(req.AgentCUIDs),
+			Description:       req.Description,
+			Enabled:           enabled,
+			Order:             order,
 		}
 		if err := h.rulesRepo.Create(r.Context(), rule); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
@@ -1981,6 +2047,7 @@ func (h *Handler) adminRuleDetail(w http.ResponseWriter, r *http.Request) {
 		existing.ToolPatterns = normalizePatternSlice(req.ToolPatterns)
 		existing.AgentIDPattern = defaultPattern(req.AgentIDPattern)
 		existing.ModelConfigCUID = req.ModelConfigCUID
+		existing.AtryumLLMConfigID = req.AtryumLLMConfigID
 		existing.AgentCUIDs = normalizePatternSlice(req.AgentCUIDs)
 		existing.Description = req.Description
 		existing.Enabled = enabled
@@ -2038,23 +2105,213 @@ func (h *Handler) adminModelConfigs(w http.ResponseWriter, r *http.Request) {
 // and PUT /admin/settings. SyncError is non-empty when the post-save agent
 // sync failed; settings are persisted regardless.
 type AgentSyncSettingsResponse struct {
-	OrgCUID                string `json:"org_cuid"`
-	AgentRecordTypeSlug    string `json:"agent_record_type_slug"`
-	ConstitutionFieldKey   string `json:"constitution_field_key"`
-	SummaryModelConfigCUID string `json:"summary_model_config_cuid"`
-	DefaultAgentVMCUID     string `json:"default_agent_vm_cuid"`
-	UpdatedAt              string `json:"updated_at,omitempty"`
-	SyncError              string `json:"sync_error,omitempty"`
+	OrgCUID                    string `json:"org_cuid"`
+	AgentRecordTypeSlug        string `json:"agent_record_type_slug"`
+	ConstitutionFieldKey       string `json:"constitution_field_key"`
+	SummaryModelConfigCUID     string `json:"summary_model_config_cuid"`
+	SummaryAtryumLLMConfigID   string `json:"summary_atryum_llm_config_id"`
+	DefaultAgentVMCUID         string `json:"default_agent_vm_cuid"`
+	UpdatedAt                  string `json:"updated_at,omitempty"`
+	SyncError                  string `json:"sync_error,omitempty"`
+	BackendConfigured          bool   `json:"backend_configured"`
 }
 
 // AgentSyncSettingsInput is the JSON body accepted by PUT /admin/settings.
 type AgentSyncSettingsInput struct {
-	OrgCUID                string `json:"org_cuid"`
-	AgentRecordTypeSlug    string `json:"agent_record_type_slug"`
-	ConstitutionFieldKey   string `json:"constitution_field_key"`
-	SummaryModelConfigCUID string `json:"summary_model_config_cuid"`
-	DefaultAgentVMCUID     string `json:"default_agent_vm_cuid"`
+	OrgCUID                    string `json:"org_cuid"`
+	AgentRecordTypeSlug        string `json:"agent_record_type_slug"`
+	ConstitutionFieldKey       string `json:"constitution_field_key"`
+	SummaryModelConfigCUID     string `json:"summary_model_config_cuid"`
+	SummaryAtryumLLMConfigID   string `json:"summary_atryum_llm_config_id"`
+	DefaultAgentVMCUID         string `json:"default_agent_vm_cuid"`
 }
+
+// ─── Local LLM Config handlers ────────────────────────────────────────────────
+
+func (h *Handler) adminLLMConfigs(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		if h.llmConfigsRepo == nil {
+			writeJSON(w, http.StatusOK, LLMConfigListResponse{Items: []AdminLLMConfig{}})
+			return
+		}
+		cfgs, err := h.llmConfigsRepo.List(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list llm configs")
+			return
+		}
+		items := make([]AdminLLMConfig, 0, len(cfgs))
+		for _, c := range cfgs {
+			items = append(items, toAdminLLMConfig(c))
+		}
+		writeJSON(w, http.StatusOK, LLMConfigListResponse{Items: items})
+
+	case http.MethodPost:
+		if h.llmConfigsRepo == nil {
+			writeError(w, http.StatusServiceUnavailable, "llm configs not available")
+			return
+		}
+		var req AdminLLMConfigInput
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+		if err := validateLLMConfigInput(req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		enabled := true
+		if req.Enabled != nil {
+			enabled = *req.Enabled
+		}
+		cfg := store.LLMConfig{
+			ID:       uuid.New().String(),
+			Name:     req.Name,
+			Provider: store.LLMProvider(req.Provider),
+			Model:    req.Model,
+			APIKey:   req.APIKey,
+			BaseURL:  req.BaseURL,
+			Enabled:  enabled,
+		}
+		if err := h.llmConfigsRepo.Create(r.Context(), cfg); err != nil {
+			log.Printf("[adminLLMConfigs] create failed id=%s provider=%s: %v", cfg.ID, cfg.Provider, err)
+			writeError(w, http.StatusInternalServerError, "failed to create llm config")
+			return
+		}
+		created, err := h.llmConfigsRepo.Get(r.Context(), cfg.ID)
+		if err != nil {
+			log.Printf("[adminLLMConfigs] get after create failed id=%s: %v", cfg.ID, err)
+			writeError(w, http.StatusInternalServerError, "failed to retrieve llm config")
+			return
+		}
+		writeJSON(w, http.StatusCreated, toAdminLLMConfig(created))
+
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (h *Handler) adminLLMConfigDetail(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/llm-configs/")
+	id = strings.Trim(id, "/")
+	if id == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if h.llmConfigsRepo == nil {
+		writeError(w, http.StatusServiceUnavailable, "llm configs not available")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		cfg, err := h.llmConfigsRepo.Get(r.Context(), id)
+		if err != nil {
+			status := http.StatusInternalServerError
+			if err == sql.ErrNoRows {
+				status = http.StatusNotFound
+			}
+			writeError(w, status, "llm config not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, toAdminLLMConfig(cfg))
+
+	case http.MethodPatch:
+		var req AdminLLMConfigInput
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+		existing, err := h.llmConfigsRepo.Get(r.Context(), id)
+		if err != nil {
+			status := http.StatusInternalServerError
+			if err == sql.ErrNoRows {
+				status = http.StatusNotFound
+			}
+			writeError(w, status, "llm config not found")
+			return
+		}
+		if req.Name != "" {
+			existing.Name = req.Name
+		}
+		if req.Provider != "" {
+			existing.Provider = store.LLMProvider(req.Provider)
+		}
+		if req.Model != "" {
+			existing.Model = req.Model
+		}
+		if req.APIKey != "" {
+			existing.APIKey = req.APIKey
+		}
+		if req.BaseURL != "" {
+			existing.BaseURL = req.BaseURL
+		}
+		if req.Enabled != nil {
+			existing.Enabled = *req.Enabled
+		}
+		if err := h.llmConfigsRepo.Update(r.Context(), existing); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update llm config")
+			return
+		}
+		updated, err := h.llmConfigsRepo.Get(r.Context(), id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to retrieve llm config")
+			return
+		}
+		writeJSON(w, http.StatusOK, toAdminLLMConfig(updated))
+
+	case http.MethodDelete:
+		if err := h.llmConfigsRepo.Delete(r.Context(), id); err != nil {
+			status := http.StatusInternalServerError
+			if err == sql.ErrNoRows {
+				status = http.StatusNotFound
+			}
+			writeError(w, status, "llm config not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func toAdminLLMConfig(c store.LLMConfig) AdminLLMConfig {
+	apiKey := ""
+	if c.APIKey != "" {
+		apiKey = "***"
+	}
+	return AdminLLMConfig{
+		ID:        c.ID,
+		Name:      c.Name,
+		Provider:  string(c.Provider),
+		Model:     c.Model,
+		APIKey:    apiKey,
+		BaseURL:   c.BaseURL,
+		Enabled:   c.Enabled,
+		CreatedAt: c.CreatedAt,
+	}
+}
+
+func validateLLMConfigInput(req AdminLLMConfigInput) error {
+	if strings.TrimSpace(req.Name) == "" {
+		return fmt.Errorf("name is required")
+	}
+	switch req.Provider {
+	case "openai", "anthropic", "openai_compatible":
+	default:
+		return fmt.Errorf("provider must be one of: openai, anthropic, openai_compatible")
+	}
+	if strings.TrimSpace(req.Model) == "" {
+		return fmt.Errorf("model is required")
+	}
+	if req.Provider == "openai_compatible" && strings.TrimSpace(req.BaseURL) == "" {
+		return fmt.Errorf("base_url is required for openai_compatible provider")
+	}
+	return nil
+}
+
+// ─── Settings handler ─────────────────────────────────────────────────────────
 
 func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 	if h.agentSyncSettingsRepo == nil {
@@ -2069,11 +2326,13 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resp := AgentSyncSettingsResponse{
-			OrgCUID:                s.OrgCUID,
-			AgentRecordTypeSlug:    s.AgentRecordTypeSlug,
-			ConstitutionFieldKey:   s.ConstitutionFieldKey,
-			SummaryModelConfigCUID: s.SummaryModelConfigCUID,
-			DefaultAgentVMCUID:     s.DefaultAgentVMCUID,
+			OrgCUID:                  s.OrgCUID,
+			AgentRecordTypeSlug:      s.AgentRecordTypeSlug,
+			ConstitutionFieldKey:     s.ConstitutionFieldKey,
+			SummaryModelConfigCUID:   s.SummaryModelConfigCUID,
+			SummaryAtryumLLMConfigID: s.SummaryAtryumLLMConfigID,
+			DefaultAgentVMCUID:       s.DefaultAgentVMCUID,
+			BackendConfigured:        h.backendClient != nil,
 		}
 		if !s.UpdatedAt.IsZero() {
 			resp.UpdatedAt = s.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z")
@@ -2101,11 +2360,12 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if err := h.agentSyncSettingsRepo.Save(r.Context(), store.AgentSyncSettings{
-			OrgCUID:                input.OrgCUID,
-			AgentRecordTypeSlug:    input.AgentRecordTypeSlug,
-			ConstitutionFieldKey:   input.ConstitutionFieldKey,
-			SummaryModelConfigCUID: input.SummaryModelConfigCUID,
-			DefaultAgentVMCUID:     input.DefaultAgentVMCUID,
+			OrgCUID:                  input.OrgCUID,
+			AgentRecordTypeSlug:      input.AgentRecordTypeSlug,
+			ConstitutionFieldKey:     input.ConstitutionFieldKey,
+			SummaryModelConfigCUID:   input.SummaryModelConfigCUID,
+			SummaryAtryumLLMConfigID: input.SummaryAtryumLLMConfigID,
+			DefaultAgentVMCUID:       input.DefaultAgentVMCUID,
 		}); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to save settings: "+err.Error())
 			return
@@ -2127,12 +2387,14 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		log.Printf("[adminSettings] GET after save: org_cuid=%q record_type=%q", s.OrgCUID, s.AgentRecordTypeSlug)
 		resp := AgentSyncSettingsResponse{
-			OrgCUID:                s.OrgCUID,
-			AgentRecordTypeSlug:    s.AgentRecordTypeSlug,
-			ConstitutionFieldKey:   s.ConstitutionFieldKey,
-			SummaryModelConfigCUID: s.SummaryModelConfigCUID,
-			DefaultAgentVMCUID:     s.DefaultAgentVMCUID,
-			SyncError:              syncErr,
+			OrgCUID:                  s.OrgCUID,
+			AgentRecordTypeSlug:      s.AgentRecordTypeSlug,
+			ConstitutionFieldKey:     s.ConstitutionFieldKey,
+			SummaryModelConfigCUID:   s.SummaryModelConfigCUID,
+			SummaryAtryumLLMConfigID: s.SummaryAtryumLLMConfigID,
+			DefaultAgentVMCUID:       s.DefaultAgentVMCUID,
+			SyncError:                syncErr,
+			BackendConfigured:        h.backendClient != nil,
 		}
 		if !s.UpdatedAt.IsZero() {
 			resp.UpdatedAt = s.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z")
@@ -2269,18 +2531,19 @@ func toAdminRule(r store.Rule) AdminRule {
 		ac = []string{}
 	}
 	return AdminRule{
-		ID:              r.ID,
-		Action:          r.Action,
-		ServerPatterns:  sp,
-		ToolPatterns:    tp,
-		AgentIDPattern:  r.AgentIDPattern,
-		ModelConfigCUID: r.ModelConfigCUID,
-		AgentCUIDs:      ac,
-		Description:     r.Description,
-		Enabled:         r.Enabled,
-		Order:           r.Order,
-		CreatedAt:       r.CreatedAt,
-		UpdatedAt:       r.UpdatedAt,
+		ID:                r.ID,
+		Action:            r.Action,
+		ServerPatterns:    sp,
+		ToolPatterns:      tp,
+		AgentIDPattern:    r.AgentIDPattern,
+		ModelConfigCUID:   r.ModelConfigCUID,
+		AtryumLLMConfigID: r.AtryumLLMConfigID,
+		AgentCUIDs:        ac,
+		Description:       r.Description,
+		Enabled:           r.Enabled,
+		Order:             r.Order,
+		CreatedAt:         r.CreatedAt,
+		UpdatedAt:         r.UpdatedAt,
 	}
 }
 
@@ -2336,6 +2599,7 @@ func (h *Handler) adminAgents(w http.ResponseWriter, r *http.Request) {
 			VMDescription:      req.Description,
 			AgentIDs:           agentIDsJSON,
 			Enabled:            req.Enabled,
+			Constitution:       req.Constitution,
 		}
 		if err := h.agentsRepo.Create(r.Context(), agent); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to create agent")
@@ -2432,8 +2696,8 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if req.Name != "" {
-			if err := h.agentsRepo.UpdateMeta(r.Context(), id, req.Name, req.Description); err != nil {
+		if req.Name != "" || req.Constitution != "" {
+			if err := h.agentsRepo.UpdateMeta(r.Context(), id, req.Name, req.Description, req.Constitution); err != nil {
 				status := http.StatusInternalServerError
 				if err == sql.ErrNoRows {
 					status = http.StatusNotFound
@@ -2484,8 +2748,13 @@ func validateRuleInput(req AdminRuleInput) error {
 	switch req.Action {
 	case "auto_approve", "auto_deny", "human_approval":
 	case "ai_evaluation":
-		if strings.TrimSpace(req.ModelConfigCUID) == "" {
-			return fmt.Errorf("model_config_cuid is required for ai_evaluation rules")
+		hasVM := strings.TrimSpace(req.ModelConfigCUID) != ""
+		hasLocal := strings.TrimSpace(req.AtryumLLMConfigID) != ""
+		if !hasVM && !hasLocal {
+			return fmt.Errorf("ai_evaluation rules require either model_config_cuid (ValidMind) or atryum_llm_config_id (local LLM)")
+		}
+		if hasVM && hasLocal {
+			return fmt.Errorf("ai_evaluation rules must specify exactly one of model_config_cuid or atryum_llm_config_id, not both")
 		}
 	default:
 		return fmt.Errorf("action must be one of: auto_approve, auto_deny, human_approval, ai_evaluation")

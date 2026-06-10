@@ -22,7 +22,6 @@ import {
   ModalFooter,
   ModalHeader,
   ModalOverlay,
-  Select as ChakraSelect,
   Spinner,
   Table,
   Tbody,
@@ -50,7 +49,8 @@ import {
 import { useServers } from '../hooks/useServers';
 import { useAgents } from '../hooks/useAgents';
 import { useSettings } from '../hooks/useSettings';
-import { type Rule, type RuleAction, type RuleInput, modelConfigsApi } from '../api/AtryumAPI';
+import { useLLMConfigs } from '../hooks/useLLMConfigs';
+import { type LLMConfig, type Rule, type RuleAction, type RuleInput, modelConfigsApi } from '../api/AtryumAPI';
 
 const ACTION_COLOR: Record<RuleAction, string> = {
   auto_approve: 'green',
@@ -85,6 +85,7 @@ const EMPTY_FORM: RuleInput = {
   agent_cuids: [],
   description: '',
   model_config_cuid: '',
+  atryum_llm_config_id: '',
   enabled: true,
 };
 
@@ -96,6 +97,7 @@ const ruleToInput = (r: Rule): RuleInput => ({
   agent_cuids: r.agent_cuids ?? [],
   description: r.description ?? '',
   model_config_cuid: r.model_config_cuid ?? '',
+  atryum_llm_config_id: r.atryum_llm_config_id ?? '',
   enabled: r.enabled,
 });
 
@@ -197,9 +199,6 @@ const RuleRow: React.FC<RuleRowProps> = ({
         </Text>
       </Td>
       <Td>
-        <Text fontSize="xs" fontFamily="mono">{rule.user_pattern}</Text>
-      </Td>
-      <Td>
         <Badge colorScheme={rule.enabled ? 'green' : 'gray'} fontSize="2xs">
           {rule.enabled ? 'yes' : 'no'}
         </Badge>
@@ -225,6 +224,7 @@ const Rules: React.FC = () => {
     modelConfigsApi.list,
     { enabled: isConnected, staleTime: 60_000 },
   );
+  const { data: llmConfigsData } = useLLMConfigs();
 
   const createRule = useCreateRule();
   const updateRule = useUpdateRule();
@@ -239,12 +239,35 @@ const Rules: React.FC = () => {
     label: a.name,
   }));
   const modelConfigOptions = (modelConfigsData?.items ?? []).map((mc) => ({
-    value: mc.cuid,
+    value: `vm:${mc.cuid}`,
     label: mc.name,
   }));
-  const actionOptions = isConnected
+  const llmConfigOptions = ((llmConfigsData?.items ?? []) as LLMConfig[])
+    .filter((c) => c.enabled)
+    .map((c) => ({ value: `local:${c.id}`, label: c.name }));
+
+  // ai_evaluation is available when either ValidMind is connected OR local LLMs are configured
+  const hasAIEval = isConnected || llmConfigOptions.length > 0;
+  const actionOptions = hasAIEval
     ? [...BASE_ACTION_OPTIONS, AI_EVAL_OPTION]
     : BASE_ACTION_OPTIONS;
+
+  // Build grouped options for the single AI evaluation model picker
+  const aiEvalGroups: { label: string; options: SelectOption[] }[] = [];
+  if (isConnected && modelConfigOptions.length > 0) {
+    aiEvalGroups.push({ label: 'ValidMind Models', options: modelConfigOptions });
+  }
+  if (llmConfigOptions.length > 0) {
+    aiEvalGroups.push({ label: 'Local LLMs', options: llmConfigOptions });
+  }
+
+  // Derive the currently selected grouped option value
+  const aiEvalValue: SelectOption | null =
+    form.model_config_cuid
+      ? (modelConfigOptions.find((o) => o.value === `vm:${form.model_config_cuid}`) ?? null)
+      : form.atryum_llm_config_id
+        ? (llmConfigOptions.find((o) => o.value === `local:${form.atryum_llm_config_id}`) ?? null)
+        : null;
 
   const openForCreate = useCallback(() => {
     setSelectedId(null);
@@ -362,7 +385,6 @@ const Rules: React.FC = () => {
                 <Th>Action</Th>
                 <Th>Servers</Th>
                 <Th>Tools</Th>
-                <Th>User</Th>
                 <Th>Enabled</Th>
               </Tr>
             </Thead>
@@ -410,6 +432,7 @@ const Rules: React.FC = () => {
                       ...f,
                       action: opt.value as RuleAction,
                       model_config_cuid: opt.value !== 'ai_evaluation' ? '' : f.model_config_cuid,
+                      atryum_llm_config_id: opt.value !== 'ai_evaluation' ? '' : f.atryum_llm_config_id,
                     }));
                   }}
                   classNamePrefix="chakra-react-select"
@@ -417,30 +440,40 @@ const Rules: React.FC = () => {
               </FormControl>
 
               {form.action === 'ai_evaluation' && (
-                <FormControl isRequired>
-                  <FormLabel fontSize="sm">AI Evaluation Model</FormLabel>
-                  <ChakraSelect
-                    size="sm"
-                    value={form.model_config_cuid ?? ''}
-                    onChange={(e) =>
-                      setForm((f) => ({ ...f, model_config_cuid: e.target.value }))
-                    }
-                    placeholder={
-                      modelConfigOptions.length > 0
-                        ? 'Select a model configuration…'
-                        : 'No model configurations — configure one in Settings'
-                    }
-                  >
-                    {modelConfigOptions.map((mc) => (
-                      <option key={mc.value} value={mc.value}>
-                        {mc.label}
-                      </option>
-                    ))}
-                  </ChakraSelect>
-                  <FormHelperText fontSize="xs">
-                    ValidMind model configuration used to evaluate this invocation.
-                  </FormHelperText>
-                </FormControl>
+                aiEvalGroups.length > 0 ? (
+                  <FormControl isRequired>
+                    <FormLabel fontSize="sm">Evaluation Model</FormLabel>
+                    <Select
+                      size="sm"
+                      options={aiEvalGroups}
+                      value={aiEvalValue}
+                      onChange={(opt) => {
+                        if (!opt) {
+                          setForm((f) => ({ ...f, model_config_cuid: '', atryum_llm_config_id: '' }));
+                          return;
+                        }
+                        if (opt.value.startsWith('vm:')) {
+                          setForm((f) => ({ ...f, model_config_cuid: opt.value.slice(3), atryum_llm_config_id: '' }));
+                        } else {
+                          setForm((f) => ({ ...f, atryum_llm_config_id: opt.value.slice(6), model_config_cuid: '' }));
+                        }
+                      }}
+                      placeholder="Select a model…"
+                      isClearable
+                      classNamePrefix="chakra-react-select"
+                    />
+                    <FormHelperText fontSize="xs">
+                      Choose a ValidMind model configuration or a locally-configured LLM.
+                    </FormHelperText>
+                  </FormControl>
+                ) : (
+                  <Alert status="warning" borderRadius="md" py={2}>
+                    <AlertIcon />
+                    <AlertDescription fontSize="xs">
+                      No evaluation models available. Connect to ValidMind or add a local LLM in Settings.
+                    </AlertDescription>
+                  </Alert>
+                )
               )}
 
               <FormControl>
@@ -502,17 +535,6 @@ const Rules: React.FC = () => {
                 <FormHelperText fontSize="xs">
                   Pick from discovered tools or type a tool name. Leave empty to match all.
                 </FormHelperText>
-              </FormControl>
-
-              <FormControl isRequired>
-                <FormLabel fontSize="sm">User pattern</FormLabel>
-                <Input
-                  size="sm"
-                  fontFamily="mono"
-                  placeholder="* for any"
-                  value={form.user_pattern}
-                  onChange={(e) => setForm((f) => ({ ...f, user_pattern: e.target.value }))}
-                />
               </FormControl>
 
               <FormControl>

@@ -293,6 +293,8 @@ export interface Rule {
   description?: string;
   /** ValidMind model config CUID used for ai_evaluation rules. */
   model_config_cuid?: string;
+  /** Local LLM config ID for native ai_evaluation (alternative to model_config_cuid). */
+  atryum_llm_config_id?: string;
   enabled: boolean;
   order: number;
 }
@@ -305,6 +307,8 @@ export interface RuleInput {
   agent_cuids?: string[];
   description?: string;
   model_config_cuid?: string;
+  /** Local LLM config ID for native ai_evaluation (alternative to model_config_cuid). */
+  atryum_llm_config_id?: string;
   enabled: boolean;
 }
 
@@ -354,6 +358,8 @@ export interface Agent {
   synced_at: string;
   /** True when this agent originated from a ValidMind sync and cannot be deleted manually. */
   synced: boolean;
+  /** Governing text used by local LLM-as-judge evaluation. Only editable for non-synced agents. */
+  constitution?: string;
 }
 
 export interface AgentCreateInput {
@@ -361,6 +367,7 @@ export interface AgentCreateInput {
   description?: string;
   enabled: boolean;
   agent_ids?: string[];
+  constitution?: string;
 }
 
 export interface AgentUpdateInput {
@@ -368,6 +375,7 @@ export interface AgentUpdateInput {
   description?: string;
   enabled: boolean;
   agent_ids?: string[];
+  constitution?: string;
 }
 
 export const agentsApi = {
@@ -407,6 +415,8 @@ export interface AgentSyncSettings {
   agent_record_type_slug: string;
   constitution_field_key: string;
   summary_model_config_cuid: string;
+  summary_atryum_llm_config_id: string;
+  backend_configured?: boolean;
   updated_at?: string;
   sync_error?: string;
 }
@@ -464,6 +474,57 @@ export interface VmCustomField {
   name: string;
   field_type: string;
 }
+
+// ─── Local LLM Configs ────────────────────────────────────────────────────────
+
+export type LLMProvider = 'openai' | 'anthropic' | 'openai_compatible';
+
+export interface LLMConfig {
+  id: string;
+  name: string;
+  provider: LLMProvider;
+  model: string;
+  /** "***" when an API key is stored; empty when not set. */
+  api_key?: string;
+  base_url?: string;
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface LLMConfigInput {
+  name: string;
+  provider: LLMProvider;
+  model: string;
+  api_key?: string;
+  base_url?: string;
+  enabled?: boolean;
+}
+
+export const llmConfigsApi = {
+  list: async (): Promise<{ items: LLMConfig[] }> => {
+    const { data } = await atryumApi.get('/api/v1/admin/llm-configs');
+    return data;
+  },
+
+  create: async (input: LLMConfigInput): Promise<LLMConfig> => {
+    const { data } = await atryumApi.post('/api/v1/admin/llm-configs', input);
+    return data;
+  },
+
+  update: async (id: string, input: Partial<LLMConfigInput>): Promise<LLMConfig> => {
+    const { data } = await atryumApi.patch(
+      `/api/v1/admin/llm-configs/${encodeURIComponent(id)}`,
+      input,
+    );
+    return data;
+  },
+
+  remove: async (id: string): Promise<void> => {
+    await atryumApi.delete(`/api/v1/admin/llm-configs/${encodeURIComponent(id)}`);
+  },
+};
+
+// ─── VM Discovery ─────────────────────────────────────────────────────────────
 
 export const vmDiscoveryApi = {
   listOrganizations: async (): Promise<VmOrgListResponse> => {

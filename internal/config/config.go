@@ -9,7 +9,6 @@ import (
 	"atryum/internal/auth"
 )
 
-const DefaultBackendBaseURL = "https://app.prod.validmind.ai/"
 
 type Config struct {
 	Server    ServerConfig     `toml:"server"`
@@ -96,7 +95,6 @@ func Load(path string) (Config, error) {
 			LogLevel:     "info",
 		},
 		Backend: BackendConfig{
-			BaseURL:               DefaultBackendBaseURL,
 			ConnectionTimeoutSecs: 5,
 		},
 		Defaults: DefaultsConfig{

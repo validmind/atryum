@@ -23,6 +23,10 @@ type AgentRecord struct {
 	AgentIDs           string // JSON array, e.g. "[]" or "[\"id1\",\"id2\"]"
 	Enabled            bool
 	SyncedAt           time.Time
+	// Constitution is the governing text used by local LLM-as-judge evaluation.
+	// Set by humans for manually-created agents; ignored for VM-synced agents
+	// (which get their constitution from the ValidMind custom field at eval time).
+	Constitution string
 }
 
 // AgentsRepo provides upsert and query operations for the agents table.
@@ -43,7 +47,7 @@ func NewAgentsRepoWithDialect(db *sql.DB, dialect Dialect) *AgentsRepo {
 var agentColumns = []string{
 	"id", "vm_organization_cuid", "vm_organization_name",
 	"vm_cuid", "vm_name", "vm_description",
-	"agent_ids", "enabled", "synced_at",
+	"agent_ids", "enabled", "synced_at", "constitution",
 }
 
 // Upsert inserts a new agent record or, on conflict with an existing vm_cuid,
@@ -72,6 +76,7 @@ func (r *AgentsRepo) Upsert(ctx context.Context, agent AgentRecord) error {
 			agentIDs,
 			agent.Enabled,
 			syncedAt,
+			agent.Constitution,
 		).
 		Suffix(`ON CONFLICT (vm_cuid) DO UPDATE SET
 			vm_organization_cuid = excluded.vm_organization_cuid,
@@ -80,6 +85,8 @@ func (r *AgentsRepo) Upsert(ctx context.Context, agent AgentRecord) error {
 			vm_description       = excluded.vm_description,
 			synced_at            = excluded.synced_at`).
 		ToSql()
+	// Note: constitution is intentionally NOT updated on upsert — it is a
+	// manually-maintained field and must survive agent re-syncs.
 	if err != nil {
 		return fmt.Errorf("build agent upsert: %w", err)
 	}
@@ -193,6 +200,7 @@ func (r *AgentsRepo) Create(ctx context.Context, agent AgentRecord) error {
 			agentIDs,
 			agent.Enabled,
 			syncedAt,
+			agent.Constitution,
 		).
 		ToSql()
 	if err != nil {
@@ -202,12 +210,13 @@ func (r *AgentsRepo) Create(ctx context.Context, agent AgentRecord) error {
 	return err
 }
 
-// UpdateMeta updates the user-visible name and description of the agent with
-// the given id.
-func (r *AgentsRepo) UpdateMeta(ctx context.Context, id, name, description string) error {
+// UpdateMeta updates the user-visible name, description, and constitution of
+// the agent with the given id.
+func (r *AgentsRepo) UpdateMeta(ctx context.Context, id, name, description, constitution string) error {
 	query, args, err := r.sb.Update("agents").
 		Set("vm_name", name).
 		Set("vm_description", emptyToNil(description)).
+		Set("constitution", constitution).
 		Where(sq.Eq{"id": id}).
 		ToSql()
 	if err != nil {
@@ -306,7 +315,7 @@ func scanAgent(scanner interface{ Scan(dest ...any) error }) (AgentRecord, error
 	if err := scanner.Scan(
 		&a.ID, &a.VMOrganizationCUID, &a.VMOrganizationName,
 		&a.VMCUID, &a.VMName, &vmDescription,
-		&a.AgentIDs, &a.Enabled, &a.SyncedAt,
+		&a.AgentIDs, &a.Enabled, &a.SyncedAt, &a.Constitution,
 	); err != nil {
 		return AgentRecord{}, err
 	}

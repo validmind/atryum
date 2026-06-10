@@ -41,8 +41,8 @@ func TestInitDB_FreshDatabase(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 15 {
-		t.Fatalf("expected 15 migrations, got %d", count)
+	if count != 19 {
+		t.Fatalf("expected 19 migrations, got %d", count)
 	}
 
 	// Verify all tables exist
@@ -70,8 +70,8 @@ func TestInitDB_Idempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 15 {
-		t.Fatalf("expected 15 migrations after double init, got %d", count)
+	if count != 19 {
+		t.Fatalf("expected 19 migrations after double init, got %d", count)
 	}
 }
 

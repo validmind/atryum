@@ -63,8 +63,8 @@ func TestLoadMissingConfigUsesDefaultsAndEnv(t *testing.T) {
 	if cfg.Server.DatabasePath != "./atryum.db" {
 		t.Fatalf("DatabasePath = %q", cfg.Server.DatabasePath)
 	}
-	if cfg.Backend.BaseURL != DefaultBackendBaseURL {
-		t.Fatalf("Backend.BaseURL = %q", cfg.Backend.BaseURL)
+	if cfg.Backend.BaseURL != "" {
+		t.Fatalf("Backend.BaseURL = %q, want empty (no default)", cfg.Backend.BaseURL)
 	}
 	if cfg.Backend.APIKey != "env-api-key" {
 		t.Fatalf("Backend.APIKey = %q", cfg.Backend.APIKey)

@@ -17,21 +17,24 @@ import (
 // server_pattern / tool_pattern TEXT columns; an empty slice means "match all".
 // AgentIDPattern is the literal authenticated agent_id (or "*"/"" for any).
 // ModelConfigCUID references the VM agent model configuration for ai_evaluation rules.
+// AtryumLLMConfigID references a locally-configured LLM for ai_evaluation rules
+// (alternative to ModelConfigCUID; exactly one should be set for ai_evaluation rules).
 // AgentCUIDs is a JSON-encoded list of Atryum agent CUIDs the rule applies to;
 // an empty slice means "match all agents".
 type Rule struct {
-	ID              string
-	Action          string
-	ServerPatterns  []string
-	ToolPatterns    []string
-	AgentIDPattern  string
-	ModelConfigCUID string
-	AgentCUIDs      []string
-	Description     string
-	Enabled         bool
-	Order           int
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID                 string
+	Action             string
+	ServerPatterns     []string
+	ToolPatterns       []string
+	AgentIDPattern     string
+	ModelConfigCUID    string
+	AtryumLLMConfigID  string
+	AgentCUIDs         []string
+	Description        string
+	Enabled            bool
+	Order              int
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // RulesRepo provides CRUD and ordering operations for approval_rules.
@@ -50,7 +53,7 @@ func NewRulesRepoWithDialect(db *sql.DB, dialect Dialect) *RulesRepo {
 
 var ruleColumns = []string{
 	"id", "action", "server_pattern", "tool_pattern", "agent_id_pattern",
-	"model_config_cuid", "agent_cuids",
+	"model_config_cuid", "atryum_llm_config_id", "agent_cuids",
 	"description", "enabled", "rule_order", "created_at", "updated_at",
 }
 
@@ -64,7 +67,7 @@ func (r *RulesRepo) Create(ctx context.Context, rule Rule) error {
 		Columns(ruleColumns...).
 		Values(
 			rule.ID, rule.Action, serverJSON, toolJSON, rule.AgentIDPattern,
-			emptyToNil(rule.ModelConfigCUID), agentCUIDsJSON,
+			emptyToNil(rule.ModelConfigCUID), emptyToNil(rule.AtryumLLMConfigID), agentCUIDsJSON,
 			emptyToNil(rule.Description), boolToInt(rule.Enabled), rule.Order, now, now,
 		).ToSql()
 	if err != nil {
@@ -136,6 +139,7 @@ func (r *RulesRepo) Update(ctx context.Context, rule Rule) error {
 		Set("tool_pattern", toolJSON).
 		Set("agent_id_pattern", rule.AgentIDPattern).
 		Set("model_config_cuid", emptyToNil(rule.ModelConfigCUID)).
+		Set("atryum_llm_config_id", emptyToNil(rule.AtryumLLMConfigID)).
 		Set("agent_cuids", agentCUIDsJSON).
 		Set("description", emptyToNil(rule.Description)).
 		Set("enabled", boolToInt(rule.Enabled)).
@@ -274,11 +278,11 @@ func (r *RulesRepo) Move(ctx context.Context, id string, direction string) ([]Ru
 func scanRule(scanner interface{ Scan(dest ...any) error }) (Rule, error) {
 	var rule Rule
 	var serverJSON, toolJSON, agentCUIDsJSON string
-	var modelConfigCUID, description sql.NullString
+	var modelConfigCUID, atryumLLMConfigID, description sql.NullString
 	var enabled int
 	if err := scanner.Scan(
 		&rule.ID, &rule.Action, &serverJSON, &toolJSON, &rule.AgentIDPattern,
-		&modelConfigCUID, &agentCUIDsJSON,
+		&modelConfigCUID, &atryumLLMConfigID, &agentCUIDsJSON,
 		&description, &enabled, &rule.Order, &rule.CreatedAt, &rule.UpdatedAt,
 	); err != nil {
 		return Rule{}, err
@@ -286,6 +290,7 @@ func scanRule(scanner interface{ Scan(dest ...any) error }) (Rule, error) {
 	rule.Enabled = enabled == 1
 	rule.Description = description.String
 	rule.ModelConfigCUID = modelConfigCUID.String
+	rule.AtryumLLMConfigID = atryumLLMConfigID.String
 	if err := json.Unmarshal([]byte(serverJSON), &rule.ServerPatterns); err != nil {
 		rule.ServerPatterns = []string{}
 	}
@@ -320,14 +325,15 @@ func (r *RulesRepo) ListApprovalRules(ctx context.Context) ([]invocation.Approva
 	out := make([]invocation.ApprovalRule, 0, len(rules))
 	for _, rule := range rules {
 		out = append(out, invocation.ApprovalRule{
-			ID:              rule.ID,
-			Action:          rule.Action,
-			ServerPatterns:  rule.ServerPatterns,
-			ToolPatterns:    rule.ToolPatterns,
-			AgentIDPattern:  rule.AgentIDPattern,
-			ModelConfigCUID: rule.ModelConfigCUID,
-			AgentCUIDs:      rule.AgentCUIDs,
-			Enabled:         rule.Enabled,
+			ID:                rule.ID,
+			Action:            rule.Action,
+			ServerPatterns:    rule.ServerPatterns,
+			ToolPatterns:      rule.ToolPatterns,
+			AgentIDPattern:    rule.AgentIDPattern,
+			ModelConfigCUID:   rule.ModelConfigCUID,
+			AtryumLLMConfigID: rule.AtryumLLMConfigID,
+			AgentCUIDs:        rule.AgentCUIDs,
+			Enabled:           rule.Enabled,
 		})
 	}
 	return out, nil
@@ -380,7 +386,7 @@ func (r *RulesRepo) InsertBefore(ctx context.Context, anchorID string, rule Rule
 		Columns(ruleColumns...).
 		Values(
 			rule.ID, rule.Action, serverJSON, toolJSON, rule.AgentIDPattern,
-			emptyToNil(rule.ModelConfigCUID), agentCUIDsJSON,
+			emptyToNil(rule.ModelConfigCUID), emptyToNil(rule.AtryumLLMConfigID), agentCUIDsJSON,
 			emptyToNil(rule.Description), boolToInt(rule.Enabled), rule.Order, now, now,
 		).ToSql()
 	if err != nil {

@@ -68,6 +68,7 @@ type AgentRecord struct {
 	ID                 string // local Atryum agent UUID (used for rule matching)
 	VMCUID             string // VM inventory model CUID (used for constitution lookup)
 	VMOrganizationCUID string // VM organization CUID (used for cross-tenant validation)
+	Constitution       string // governing text for local LLM-as-judge evaluation
 }
 
 // EvaluatorClient is the minimal interface required by the invocation service
@@ -99,10 +100,15 @@ type EvaluateRequest struct {
 	OrgCUID              string         `json:"org_cuid,omitempty"`
 	AgentVMCUID          string         `json:"agent_vm_cuid,omitempty"`
 	ConstitutionFieldKey string         `json:"constitution_field_key,omitempty"`
-	ServerName           string         `json:"server_name"`
-	ToolName             string         `json:"tool_name"`
-	ToolArgs             map[string]any `json:"tool_args,omitempty"`
-	Context              string         `json:"context,omitempty"`
+	// AtryumLLMConfigID references a local LLM config for native evaluation.
+	// When set, the local evaluator is used instead of the VM backend.
+	AtryumLLMConfigID string `json:"atryum_llm_config_id,omitempty"`
+	// Constitution is the agent's governing text sent to the local LLM judge.
+	Constitution string `json:"constitution,omitempty"`
+	ServerName   string         `json:"server_name"`
+	ToolName     string         `json:"tool_name"`
+	ToolArgs     map[string]any `json:"tool_args,omitempty"`
+	Context      string         `json:"context,omitempty"`
 }
 
 // EvaluateResponse mirrors backend.EvaluateResponse.
@@ -387,9 +393,10 @@ func (s *Service) resolveAgentRecord(ctx context.Context, agentID string) AgentR
 	return rec
 }
 
-// runAIEvaluation calls the VM backend's evaluate endpoint and translates the
-// LLM verdict into a policy.Decision. On any error or if the evaluator is not
-// configured, it falls back to DispositionHuman so no invocation is silently lost.
+// runAIEvaluation dispatches to either the VM backend evaluator (when
+// rule.ModelConfigCUID is set) or the local LLM evaluator (when
+// rule.AtryumLLMConfigID is set). Falls back to DispositionHuman on any error
+// so no invocation is silently lost.
 func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serverName, toolName string, toolArgs map[string]any, agentID string, agentRec AgentRecord) (policy.Decision, *float64) {
 	if s.evaluator == nil {
 		slog.Warn("ai_evaluation rule matched but no evaluator configured; falling back to human_approval",
@@ -397,12 +404,57 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 		return policy.Decision{Disposition: policy.DispositionHuman, Reason: "ai_evaluation: evaluator not configured (falling back to human_approval)"}, nil
 	}
 
-	// Resolve the agent's VM CUID and org CUID so the constitution can be
-	// fetched server-side and the request can be cross-validated against the org.
-	agentVMCUID := ""
-	orgCUID := ""
-	agentVMCUID = agentRec.VMCUID
-	orgCUID = agentRec.VMOrganizationCUID
+	// --- Local LLM path ---
+	if rule.AtryumLLMConfigID != "" {
+		if agentRec.Constitution == "" {
+			slog.Error("ai_evaluation (local): agent has no constitution configured; denying tool call",
+				"rule_id", rule.ID, "server", serverName, "tool", toolName, "agent_id", agentID)
+			return policy.Decision{
+				Disposition: policy.DispositionNever,
+				Reason:      "ai_evaluation denied: no constitution configured for this agent",
+			}, nil
+		}
+
+		slog.Info("ai_evaluation: calling local LLM",
+			"rule_id", rule.ID,
+			"server", serverName,
+			"tool", toolName,
+			"agent_id", agentID,
+			"atryum_llm_config_id", rule.AtryumLLMConfigID,
+		)
+
+		evalCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		defer cancel()
+
+		resp, err := s.evaluator.EvaluateToolCall(evalCtx, EvaluateRequest{
+			AtryumLLMConfigID: rule.AtryumLLMConfigID,
+			Constitution:      agentRec.Constitution,
+			ServerName:        serverName,
+			ToolName:          toolName,
+			ToolArgs:          toolArgs,
+		})
+		if err != nil {
+			slog.Error("ai_evaluation (local): LLM call failed; falling back to human_approval",
+				"rule_id", rule.ID, "tool", toolName, "error", err)
+			return policy.Decision{Disposition: policy.DispositionHuman, Reason: "ai_evaluation: local LLM call failed (falling back to human_approval)"}, nil
+		}
+
+		slog.Info("ai_evaluation (local): result",
+			"verdict", resp.Verdict,
+			"rule_id", rule.ID,
+			"server", serverName,
+			"tool", toolName,
+			"agent_id", agentID,
+			"reason", resp.Reason,
+			"confidence", resp.Confidence,
+		)
+
+		return toDecision(resp), resp.Confidence
+	}
+
+	// --- VM backend path ---
+	agentVMCUID := agentRec.VMCUID
+	orgCUID := agentRec.VMOrganizationCUID
 
 	constitutionFieldKey := ""
 	if s.syncSettings != nil {
@@ -424,7 +476,7 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 		}, nil
 	}
 
-	slog.Info("ai_evaluation: calling LLM",
+	slog.Info("ai_evaluation: calling VM LLM",
 		"rule_id", rule.ID,
 		"server", serverName,
 		"tool", toolName,
@@ -453,7 +505,7 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 		return policy.Decision{Disposition: policy.DispositionHuman, Reason: "ai_evaluation: LLM call failed (falling back to human_approval)"}, nil
 	}
 
-	slog.Info("ai_evaluation: result",
+	slog.Info("ai_evaluation (vm): result",
 		"verdict", resp.Verdict,
 		"rule_id", rule.ID,
 		"server", serverName,
@@ -463,15 +515,20 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 		"confidence", resp.Confidence,
 	)
 
+	return toDecision(resp), resp.Confidence
+}
+
+// toDecision converts an EvaluateResponse verdict into a policy.Decision.
+func toDecision(resp EvaluateResponse) policy.Decision {
 	switch resp.Verdict {
 	case "approved":
-		return policy.Decision{Disposition: policy.DispositionAuto, Reason: "ai_evaluation approved: " + resp.Reason}, resp.Confidence
+		return policy.Decision{Disposition: policy.DispositionAuto, Reason: "ai_evaluation approved: " + resp.Reason}
 	case "denied":
-		return policy.Decision{Disposition: policy.DispositionNever, Reason: "ai_evaluation denied: " + resp.Reason}, resp.Confidence
+		return policy.Decision{Disposition: policy.DispositionNever, Reason: "ai_evaluation denied: " + resp.Reason}
 	case "human_approval":
-		return policy.Decision{Disposition: dispositionAIEscalated, Reason: "ai_evaluation requires human approval: " + resp.Reason}, resp.Confidence
+		return policy.Decision{Disposition: dispositionAIEscalated, Reason: "ai_evaluation requires human approval: " + resp.Reason}
 	default: // "next_rule" or any unrecognised value
-		return policy.Decision{Disposition: dispositionContinue, Reason: "ai_evaluation deferred to next rule: " + resp.Reason}, resp.Confidence
+		return policy.Decision{Disposition: dispositionContinue, Reason: "ai_evaluation deferred to next rule: " + resp.Reason}
 	}
 }
 
