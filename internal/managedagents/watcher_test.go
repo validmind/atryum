@@ -3,7 +3,6 @@ package managedagents
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"runtime"
 	"sync"
@@ -76,11 +75,9 @@ func (g *fakeGateway) setStatusForKey(key string, status invocation.Status) {
 func (g *fakeGateway) submitCount() int { g.mu.Lock(); defer g.mu.Unlock(); return len(g.submitted) }
 
 type fakeClient struct {
-	mu         sync.Mutex
-	sent       []sentEvent
-	history    []RawEvent
-	historyErr error
-	listCalls  int
+	mu      sync.Mutex
+	sent    []sentEvent
+	history []RawEvent
 }
 
 type sentEvent struct {
@@ -91,10 +88,6 @@ type sentEvent struct {
 func (c *fakeClient) ListEventsSince(ctx context.Context, sessionID, after string) ([]RawEvent, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.listCalls++
-	if c.historyErr != nil {
-		return nil, c.historyErr
-	}
 	return append([]RawEvent(nil), c.history...), nil
 }
 func (c *fakeClient) StreamEvents(ctx context.Context, sessionID string) (EventStream, error) {
@@ -107,7 +100,6 @@ func (c *fakeClient) SendEvents(ctx context.Context, sessionID string, events []
 	return nil
 }
 func (c *fakeClient) sentEvents() []sentEvent { c.mu.Lock(); defer c.mu.Unlock(); return c.sent }
-func (c *fakeClient) listEventCalls() int     { c.mu.Lock(); defer c.mu.Unlock(); return c.listCalls }
 
 type eofStreamClient struct{}
 
@@ -176,6 +168,17 @@ func (a *fakeAudit) CreateEvent(ctx context.Context, evt invocation.Event) error
 	defer a.mu.Unlock()
 	a.events = append(a.events, evt)
 	return nil
+}
+func (a *fakeAudit) ListEvents(ctx context.Context, invocationID string, filter invocation.EventListFilter) ([]invocation.Event, int, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out []invocation.Event
+	for _, evt := range a.events {
+		if evt.InvocationID == invocationID {
+			out = append(out, evt)
+		}
+	}
+	return out, len(out), nil
 }
 func (a *fakeAudit) eventCount() int { a.mu.Lock(); defer a.mu.Unlock(); return len(a.events) }
 
@@ -348,9 +351,7 @@ func TestRequiresActionRecoversPendingCallAfterRestart(t *testing.T) {
 	g := newFakeGateway()
 	g.statusByID["inv_recovered"] = invocation.StatusApproved
 	g.statusByID["inv_recovered_2"] = invocation.StatusApproved
-	toolEvent := toolUseEvent("custom_evt_1", evtAgentCustomToolUse, "deploy", map[string]any{"env": "prod"})
-	toolEvent2 := toolUseEvent("tool_evt_2", evtAgentToolUse, "Bash", map[string]any{"command": "ls"})
-	c := &fakeClient{history: []RawEvent{toolEvent, toolEvent2}}
+	c := &fakeClient{}
 	a := newFakeAudit()
 	key := "custom_evt_1"
 	if err := a.Create(context.Background(), invocation.Invocation{
@@ -361,6 +362,13 @@ func TestRequiresActionRecoversPendingCallAfterRestart(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed audit: %v", err)
 	}
+	if err := a.CreateEvent(context.Background(), invocation.Event{
+		InvocationID: "inv_recovered",
+		EventType:    toolUseKindEvent,
+		Payload:      mustJSON(map[string]any{"event_id": "custom_evt_1", "is_custom": true}),
+	}); err != nil {
+		t.Fatalf("seed kind event: %v", err)
+	}
 	key2 := "tool_evt_2"
 	if err := a.Create(context.Background(), invocation.Invocation{
 		InvocationID:   "inv_recovered_2",
@@ -369,6 +377,13 @@ func TestRequiresActionRecoversPendingCallAfterRestart(t *testing.T) {
 		Status:         invocation.StatusApproved,
 	}); err != nil {
 		t.Fatalf("seed audit 2: %v", err)
+	}
+	if err := a.CreateEvent(context.Background(), invocation.Event{
+		InvocationID: "inv_recovered_2",
+		EventType:    toolUseKindEvent,
+		Payload:      mustJSON(map[string]any{"event_id": "tool_evt_2", "is_custom": false}),
+	}); err != nil {
+		t.Fatalf("seed kind event 2: %v", err)
 	}
 	w := newTestWatcher(g, c, a)
 	ctx := context.Background()
@@ -389,15 +404,12 @@ func TestRequiresActionRecoversPendingCallAfterRestart(t *testing.T) {
 	if !foundCustom {
 		t.Fatalf("expected recovered custom_tool_result for custom_evt_1, got %+v", sent)
 	}
-	if calls := c.listEventCalls(); calls != 1 {
-		t.Fatalf("expected 1 session-history fetch, got %d", calls)
-	}
 }
 
-func TestRequiresActionDoesNotGuessToolKindWhenRecoveryHistoryFails(t *testing.T) {
+func TestRequiresActionDoesNotGuessToolKindWhenPersistedKindMissing(t *testing.T) {
 	g := newFakeGateway()
 	g.statusByID["inv_recovered"] = invocation.StatusApproved
-	c := &fakeClient{historyErr: errors.New("history unavailable")}
+	c := &fakeClient{}
 	a := newFakeAudit()
 	key := "custom_evt_1"
 	if err := a.Create(context.Background(), invocation.Invocation{
@@ -431,6 +443,32 @@ func TestEveryEventAudited(t *testing.T) {
 	}
 	if g.submitCount() != 0 {
 		t.Fatalf("non-tool events should not create invocations, got %d", g.submitCount())
+	}
+}
+
+func TestToolUsePersistsKindForRecovery(t *testing.T) {
+	g := newFakeGateway()
+	a := newFakeAudit()
+	w := newTestWatcher(g, &fakeClient{}, a)
+
+	w.handleEvent(context.Background(), toolUseEvent("custom_evt_1", evtAgentCustomToolUse, "deploy", nil))
+
+	invID := ""
+	w.mu.Lock()
+	if pc, ok := w.pending["custom_evt_1"]; ok {
+		invID = pc.InvocationID
+	}
+	w.mu.Unlock()
+	if invID == "" {
+		t.Fatal("expected pending invocation")
+	}
+	events, _, err := a.ListEvents(context.Background(), invID, invocation.EventListFilter{})
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	isCustom, ok := findPersistedToolUseKind(events, "custom_evt_1")
+	if !ok || !isCustom {
+		t.Fatalf("expected persisted custom tool kind, ok=%v isCustom=%v events=%+v", ok, isCustom, events)
 	}
 }
 

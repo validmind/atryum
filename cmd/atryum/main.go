@@ -386,6 +386,10 @@ func (a *managedAuditAdapter) CreateEvent(ctx context.Context, evt invocation.Ev
 	return a.events.Create(ctx, evt)
 }
 
+func (a *managedAuditAdapter) ListEvents(ctx context.Context, invocationID string, filter invocation.EventListFilter) ([]invocation.Event, int, error) {
+	return a.events.ListByInvocation(ctx, invocationID, filter)
+}
+
 func initEnabledServerStatuses(ctx context.Context, repo *store.ServerRepo, serverAdmin *api.ServerAdminService) error {
 	enabled := true
 	const pageSize = 100

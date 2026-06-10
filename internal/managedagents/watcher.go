@@ -20,6 +20,8 @@ type pendingCall struct {
 	KindKnown    bool
 }
 
+const toolUseKindEvent = "managed_agents.tool_use"
+
 // watcher streams one session's events and drives the approval lifecycle.
 type watcher struct {
 	svc  *Service
@@ -29,10 +31,9 @@ type watcher struct {
 	auditID     string
 	lastEventID string
 
-	mu             sync.Mutex
-	pending        map[string]pendingCall // keyed by tool-use event ID
-	toolUseCustom  map[string]bool
-	toolUseKindSet bool
+	mu            sync.Mutex
+	pending       map[string]pendingCall // keyed by tool-use event ID
+	toolUseCustom map[string]bool
 }
 
 func (w *watcher) log() *slog.Logger {
@@ -122,10 +123,14 @@ func (w *watcher) handleEvent(ctx context.Context, evt RawEvent) {
 
 	switch {
 	case isToolUse(evt.Type):
-		w.handleToolUse(ctx, evt)
+		if !w.handleToolUse(ctx, evt) {
+			return
+		}
 	case evt.Type == evtSessionIdle:
 		if ids, ok := requiresAction(evt); ok {
-			w.handleRequiresAction(ctx, ids)
+			if !w.handleRequiresAction(ctx, ids) {
+				return
+			}
 		}
 	default:
 		if tr, ok := parseToolResult(evt); ok {
@@ -153,10 +158,10 @@ func (w *watcher) ensureAudit(ctx context.Context) error {
 // handleToolUse submits the tool call to Atryum's approval engine. It does not
 // execute the tool — that's Anthropic's job. The invocation is recorded with
 // status from the rule engine (auto-approved/denied or pending_approval).
-func (w *watcher) handleToolUse(ctx context.Context, evt RawEvent) {
+func (w *watcher) handleToolUse(ctx context.Context, evt RawEvent) bool {
 	tu, ok := parseToolUse(evt)
 	if !ok {
-		return
+		return true
 	}
 	source := w.cfgSource(tu)
 	eventID := tu.EventID
@@ -174,7 +179,11 @@ func (w *watcher) handleToolUse(ctx context.Context, evt RawEvent) {
 	})
 	if err != nil {
 		w.log().Warn("submit tool call failed", "tool", tu.ToolName, "error", err)
-		return
+		return false
+	}
+	if err := w.recordToolUseKind(ctx, resp.InvocationID, tu); err != nil {
+		w.log().Warn("persist tool-use kind failed", "tool_use_event_id", eventID, "invocation_id", resp.InvocationID, "error", err)
+		return false
 	}
 	w.mu.Lock()
 	w.pending[eventID] = pendingCall{InvocationID: resp.InvocationID, IsCustom: tu.IsCustom, KindKnown: true}
@@ -184,21 +193,41 @@ func (w *watcher) handleToolUse(ctx context.Context, evt RawEvent) {
 	w.toolUseCustom[eventID] = tu.IsCustom
 	w.mu.Unlock()
 	w.log().Info("tool call submitted", "tool", tu.ToolName, "invocation_id", resp.InvocationID, "status", resp.Status)
+	return true
+}
+
+func (w *watcher) recordToolUseKind(ctx context.Context, invocationID string, tu toolUse) error {
+	if w.svc.audit == nil {
+		return nil
+	}
+	return w.svc.audit.CreateEvent(ctx, invocation.Event{
+		InvocationID: invocationID,
+		EventType:    toolUseKindEvent,
+		Payload: mustJSON(map[string]any{
+			"event_id":  tu.EventID,
+			"kind":      tu.Kind,
+			"is_custom": tu.IsCustom,
+		}),
+		CreatedAt: time.Now().UTC(),
+	})
 }
 
 // handleRequiresAction resolves each blocking tool-use event: it waits for the
 // Atryum decision and reports it back to Claude. Blocking IDs are handled
 // concurrently so one slow human approval doesn't stall the others.
-func (w *watcher) handleRequiresAction(ctx context.Context, blockingIDs []string) {
+func (w *watcher) handleRequiresAction(ctx context.Context, blockingIDs []string) bool {
 	var wg sync.WaitGroup
+	allResolved := true
 	for _, id := range blockingIDs {
 		pc, ok := w.pendingCall(ctx, id, true)
 		if !ok {
 			w.log().Warn("requires_action references unknown tool-use event; will retry on replay", "tool_use_event_id", id)
+			allResolved = false
 			continue
 		}
 		if !pc.KindKnown {
 			w.log().Warn("requires_action references recovered tool-use event with unknown kind; will retry on replay", "tool_use_event_id", id)
+			allResolved = false
 			continue
 		}
 		wg.Add(1)
@@ -208,6 +237,7 @@ func (w *watcher) handleRequiresAction(ctx context.Context, blockingIDs []string
 		}(id, pc)
 	}
 	wg.Wait()
+	return allResolved
 }
 
 // resolveDecision polls the invocation until a terminal approval decision is
@@ -315,8 +345,8 @@ func (w *watcher) pendingCall(ctx context.Context, toolUseEventID string, needKi
 		}
 	}
 	// Only cache a fully-resolved entry. When the kind was needed but couldn't
-	// be determined (e.g. a transient history-fetch error), leave it uncached
-	// so the next replay re-attempts recovery instead of permanently skipping.
+	// be determined, leave it uncached so the next replay re-attempts recovery
+	// instead of permanently skipping.
 	if pc.KindKnown || !needKind {
 		w.mu.Lock()
 		w.pending[toolUseEventID] = pc
@@ -327,41 +357,57 @@ func (w *watcher) pendingCall(ctx context.Context, toolUseEventID string, needKi
 }
 
 func (w *watcher) customToolUse(ctx context.Context, toolUseEventID string) (bool, bool) {
-	if isCustom, ok, loaded := w.cachedCustomToolUse(toolUseEventID); ok || loaded {
+	if isCustom, ok := w.cachedCustomToolUse(toolUseEventID); ok {
 		return isCustom, ok
 	}
-	events, err := w.acct.client.ListEventsSince(ctx, w.reg.SessionID, "")
+	inv, err := w.svc.audit.GetByIdempotencyKey(ctx, toolUseEventID)
 	if err != nil {
-		w.log().Debug("could not recover tool-use kind from session history", "tool_use_event_id", toolUseEventID, "error", err)
 		return false, false
 	}
-	kinds := make(map[string]bool)
-	for _, evt := range events {
-		if tu, ok := parseToolUse(evt); ok {
-			kinds[tu.EventID] = tu.IsCustom
-		}
+	events, _, err := w.svc.audit.ListEvents(ctx, inv.InvocationID, invocation.EventListFilter{Limit: 200})
+	if err != nil {
+		w.log().Debug("could not recover persisted tool-use kind", "tool_use_event_id", toolUseEventID, "invocation_id", inv.InvocationID, "error", err)
+		return false, false
 	}
+	isCustom, ok := findPersistedToolUseKind(events, toolUseEventID)
 	w.mu.Lock()
 	if w.toolUseCustom == nil {
-		w.toolUseCustom = make(map[string]bool, len(kinds))
+		w.toolUseCustom = make(map[string]bool)
 	}
-	for id, isCustom := range kinds {
-		w.toolUseCustom[id] = isCustom
+	if ok {
+		w.toolUseCustom[toolUseEventID] = isCustom
 	}
-	w.toolUseKindSet = true
-	isCustom, ok := w.toolUseCustom[toolUseEventID]
 	w.mu.Unlock()
 	return isCustom, ok
 }
 
-func (w *watcher) cachedCustomToolUse(toolUseEventID string) (isCustom bool, ok bool, loaded bool) {
+func findPersistedToolUseKind(events []invocation.Event, toolUseEventID string) (bool, bool) {
+	for _, evt := range events {
+		if evt.EventType != toolUseKindEvent {
+			continue
+		}
+		var payload struct {
+			EventID  string `json:"event_id"`
+			IsCustom bool   `json:"is_custom"`
+		}
+		if err := json.Unmarshal(evt.Payload, &payload); err != nil {
+			continue
+		}
+		if payload.EventID == toolUseEventID {
+			return payload.IsCustom, true
+		}
+	}
+	return false, false
+}
+
+func (w *watcher) cachedCustomToolUse(toolUseEventID string) (isCustom bool, ok bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.toolUseCustom == nil {
-		return false, false, w.toolUseKindSet
+		return false, false
 	}
 	isCustom, ok = w.toolUseCustom[toolUseEventID]
-	return isCustom, ok, w.toolUseKindSet
+	return isCustom, ok
 }
 
 func (w *watcher) advanceCursor(ctx context.Context, eventID string) {

@@ -20,6 +20,7 @@ type InvocationAuditStore interface {
 	Create(ctx context.Context, inv invocation.Invocation) error
 	GetByIdempotencyKey(ctx context.Context, key string) (invocation.Invocation, error)
 	CreateEvent(ctx context.Context, evt invocation.Event) error
+	ListEvents(ctx context.Context, invocationID string, filter invocation.EventListFilter) ([]invocation.Event, int, error)
 }
 
 func sessionAuditKey(sessionID string) string {
