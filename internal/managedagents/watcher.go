@@ -21,8 +21,9 @@ type pendingCall struct {
 
 // watcher streams one session's events and drives the approval lifecycle.
 type watcher struct {
-	svc *Service
-	reg SessionRegistration
+	svc  *Service
+	acct account // the Anthropic account (client + cfg) this session belongs to
+	reg  SessionRegistration
 
 	auditID     string
 	lastEventID string
@@ -55,7 +56,7 @@ func (w *watcher) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(w.svc.cfg.ReconnectBackoff):
+		case <-time.After(w.acct.cfg.ReconnectBackoff):
 		}
 	}
 }
@@ -63,7 +64,7 @@ func (w *watcher) run(ctx context.Context) {
 // catchUp replays events that arrived while disconnected, using the persisted
 // cursor. Tool-use creation is idempotent so replays are safe.
 func (w *watcher) catchUp(ctx context.Context) error {
-	events, err := w.svc.client.ListEventsSince(ctx, w.reg.SessionID, w.lastEventID)
+	events, err := w.acct.client.ListEventsSince(ctx, w.reg.SessionID, w.lastEventID)
 	if err != nil {
 		return err
 	}
@@ -78,7 +79,7 @@ func (w *watcher) catchUp(ctx context.Context) error {
 
 // follow consumes the live SSE stream until it errors or the context is done.
 func (w *watcher) follow(ctx context.Context) error {
-	stream, err := w.svc.client.StreamEvents(ctx, w.reg.SessionID)
+	stream, err := w.acct.client.StreamEvents(ctx, w.reg.SessionID)
 	if err != nil {
 		return err
 	}
@@ -133,7 +134,7 @@ func (w *watcher) ensureAudit(ctx context.Context) error {
 	if w.auditID != "" {
 		return nil
 	}
-	id, err := w.svc.ensureSessionAuditInvocation(ctx, w.reg)
+	id, err := w.svc.ensureSessionAuditInvocation(ctx, w.reg, w.acct.cfg)
 	if err != nil {
 		return err
 	}
@@ -159,8 +160,8 @@ func (w *watcher) handleToolUse(ctx context.Context, evt RawEvent) {
 		RequestID:      &eventID,
 		IdempotencyKey: &eventID, // dedupe across stream reconnects/replays
 		ThreadID:       w.reg.SessionID,
-		ClientName:     w.svc.cfg.ClientName,
-		ClientVersion:  w.svc.cfg.ClientVersion,
+		ClientName:     w.acct.cfg.ClientName,
+		ClientVersion:  w.acct.cfg.ClientVersion,
 		AgentID:        w.reg.AgentID,
 	})
 	if err != nil {
@@ -221,7 +222,7 @@ func (w *watcher) resolveDecision(ctx context.Context, blockingID string, pc pen
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(w.svc.cfg.PollInterval):
+			case <-time.After(w.acct.cfg.PollInterval):
 			}
 		}
 	}
@@ -229,7 +230,7 @@ func (w *watcher) resolveDecision(ctx context.Context, blockingID string, pc pen
 
 func (w *watcher) sendAllow(ctx context.Context, blockingID string, pc pendingCall) {
 	evt := allowEvent(blockingID, pc)
-	if err := w.svc.client.SendEvents(ctx, w.reg.SessionID, []OutboundEvent{evt}); err != nil {
+	if err := w.acct.client.SendEvents(ctx, w.reg.SessionID, []OutboundEvent{evt}); err != nil {
 		w.log().Warn("send allow failed", "tool_use_event_id", blockingID, "error", err)
 		return
 	}
@@ -242,7 +243,7 @@ func (w *watcher) sendAllow(ctx context.Context, blockingID string, pc pendingCa
 
 func (w *watcher) sendDeny(ctx context.Context, blockingID string, pc pendingCall, reason string) {
 	evt := denyEvent(blockingID, pc, reason)
-	if err := w.svc.client.SendEvents(ctx, w.reg.SessionID, []OutboundEvent{evt}); err != nil {
+	if err := w.acct.client.SendEvents(ctx, w.reg.SessionID, []OutboundEvent{evt}); err != nil {
 		w.log().Warn("send deny failed", "tool_use_event_id", blockingID, "error", err)
 		return
 	}
@@ -292,7 +293,7 @@ func (w *watcher) cfgSource(tu toolUse) string {
 	if tu.Kind == evtAgentMCPToolUse && tu.ServerName != "" {
 		return tu.ServerName
 	}
-	return w.svc.cfg.ClientName
+	return w.acct.cfg.ClientName
 }
 
 func isToolUse(eventType string) bool {

@@ -170,8 +170,10 @@ func itoa(n int) string {
 // --- helpers ---
 
 func newTestWatcher(g InvocationGateway, c AnthropicClient, a InvocationAuditStore) *watcher {
-	svc := NewService(c, g, &fakeSessionStore{}, a, Config{PollInterval: time.Millisecond})
-	return &watcher{svc: svc, reg: SessionRegistration{SessionID: "sess_1", AgentID: "agent-1"}, pending: map[string]pendingCall{}}
+	cfg := Config{PollInterval: time.Millisecond}.withDefaults()
+	svc := NewService(g, &fakeSessionStore{}, a, []Account{{Client: c, Config: cfg}})
+	acct := svc.accounts[cfg.Name]
+	return &watcher{svc: svc, acct: acct, reg: SessionRegistration{SessionID: "sess_1", Account: cfg.Name, AgentID: "agent-1"}, pending: map[string]pendingCall{}}
 }
 
 func toolUseEvent(id, eventType, name string, input map[string]any) RawEvent {

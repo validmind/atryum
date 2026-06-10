@@ -14,6 +14,7 @@ import (
 // stream drop or restart.
 type ManagedAgentSession struct {
 	SessionID   string
+	Account     string
 	AgentID     string
 	Description string
 	LastEventID string
@@ -44,10 +45,14 @@ func (r *ManagedAgentSessionRepo) Upsert(ctx context.Context, s ManagedAgentSess
 	if s.CreatedAt.IsZero() {
 		s.CreatedAt = now
 	}
+	if s.Account == "" {
+		s.Account = "default"
+	}
 	query, args, err := r.sb.Insert("managed_agent_sessions").
-		Columns("session_id", "agent_id", "description", "last_event_id", "created_at", "updated_at").
-		Values(s.SessionID, s.AgentID, s.Description, s.LastEventID, s.CreatedAt, now).
+		Columns("session_id", "account", "agent_id", "description", "last_event_id", "created_at", "updated_at").
+		Values(s.SessionID, s.Account, s.AgentID, s.Description, s.LastEventID, s.CreatedAt, now).
 		Suffix(`ON CONFLICT (session_id) DO UPDATE SET
+			account     = excluded.account,
 			agent_id    = excluded.agent_id,
 			description = excluded.description,
 			updated_at  = excluded.updated_at`).
@@ -61,7 +66,7 @@ func (r *ManagedAgentSessionRepo) Upsert(ctx context.Context, s ManagedAgentSess
 
 func (r *ManagedAgentSessionRepo) Get(ctx context.Context, sessionID string) (ManagedAgentSession, error) {
 	query, args, err := r.sb.
-		Select("session_id", "agent_id", "description", "last_event_id", "created_at", "updated_at").
+		Select("session_id", "account", "agent_id", "description", "last_event_id", "created_at", "updated_at").
 		From("managed_agent_sessions").
 		Where(sq.Eq{"session_id": sessionID}).
 		ToSql()
@@ -74,7 +79,7 @@ func (r *ManagedAgentSessionRepo) Get(ctx context.Context, sessionID string) (Ma
 
 func (r *ManagedAgentSessionRepo) List(ctx context.Context) ([]ManagedAgentSession, error) {
 	query, args, err := r.sb.
-		Select("session_id", "agent_id", "description", "last_event_id", "created_at", "updated_at").
+		Select("session_id", "account", "agent_id", "description", "last_event_id", "created_at", "updated_at").
 		From("managed_agent_sessions").
 		OrderBy("created_at ASC").
 		ToSql()
@@ -113,7 +118,7 @@ func (r *ManagedAgentSessionRepo) UpdateCursor(ctx context.Context, sessionID, l
 
 func scanManagedAgentSession(row interface{ Scan(dest ...any) error }) (ManagedAgentSession, error) {
 	var s ManagedAgentSession
-	if err := row.Scan(&s.SessionID, &s.AgentID, &s.Description, &s.LastEventID, &s.CreatedAt, &s.UpdatedAt); err != nil {
+	if err := row.Scan(&s.SessionID, &s.Account, &s.AgentID, &s.Description, &s.LastEventID, &s.CreatedAt, &s.UpdatedAt); err != nil {
 		return ManagedAgentSession{}, err
 	}
 	return s, nil

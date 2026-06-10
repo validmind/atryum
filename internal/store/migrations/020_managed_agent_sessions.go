@@ -8,6 +8,7 @@ func migration020() Definition {
 			RawDialect("create managed_agent_sessions table", `
 				CREATE TABLE IF NOT EXISTS managed_agent_sessions (
 					session_id    TEXT      PRIMARY KEY,
+					account       TEXT      NOT NULL DEFAULT 'default',
 					agent_id      TEXT      NOT NULL DEFAULT '',
 					description   TEXT      NOT NULL DEFAULT '',
 					last_event_id TEXT      NOT NULL DEFAULT '',
@@ -17,6 +18,7 @@ func migration020() Definition {
 			`, `
 				CREATE TABLE IF NOT EXISTS managed_agent_sessions (
 					session_id    TEXT        PRIMARY KEY,
+					account       TEXT        NOT NULL DEFAULT 'default',
 					agent_id      TEXT        NOT NULL DEFAULT '',
 					description   TEXT        NOT NULL DEFAULT '',
 					last_event_id TEXT        NOT NULL DEFAULT '',

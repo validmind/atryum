@@ -247,35 +247,40 @@ func runServer(args []string) error {
 	// sessions, streams their events into the invocations table, and gates
 	// blocking tool calls through the normal approval rules.
 	var managedSvc *managedagents.Service
-	if cfg.ManagedAgents.APIKey != "" {
-		managedSessionRepo := store.NewManagedAgentSessionRepoWithDialect(db, dialect)
-		managedClient := managedagents.NewAnthropicHTTPClient(managedagents.Config{
-			BaseURL:       cfg.ManagedAgents.BaseURL,
-			APIKey:        cfg.ManagedAgents.APIKey,
-			ClientName:    cfg.ManagedAgents.ClientName,
-			ClientVersion: cfg.ManagedAgents.ClientVersion,
+	var managedAccounts []managedagents.Account
+	for _, ma := range cfg.ManagedAgents {
+		if ma.APIKey == "" {
+			continue
+		}
+		acctCfg := managedagents.Config{
+			Name:             ma.Name,
+			BaseURL:          ma.BaseURL,
+			APIKey:           ma.APIKey,
+			PollInterval:     time.Duration(ma.PollIntervalMillis) * time.Millisecond,
+			ReconnectBackoff: time.Duration(ma.ReconnectBackoffSeconds) * time.Second,
+			ClientName:       ma.ClientName,
+			ClientVersion:    ma.ClientVersion,
+		}
+		managedAccounts = append(managedAccounts, managedagents.Account{
+			Client: managedagents.NewAnthropicHTTPClient(acctCfg),
+			Config: acctCfg,
 		})
+	}
+	if len(managedAccounts) > 0 {
+		managedSessionRepo := store.NewManagedAgentSessionRepoWithDialect(db, dialect)
 		managedSvc = managedagents.NewService(
-			managedClient,
 			service, // *invocation.Service satisfies InvocationGateway
 			&managedSessionStoreAdapter{repo: managedSessionRepo},
 			&managedAuditAdapter{inv: invRepo, events: eventRepo},
-			managedagents.Config{
-				BaseURL:          cfg.ManagedAgents.BaseURL,
-				APIKey:           cfg.ManagedAgents.APIKey,
-				PollInterval:     time.Duration(cfg.ManagedAgents.PollIntervalMillis) * time.Millisecond,
-				ReconnectBackoff: time.Duration(cfg.ManagedAgents.ReconnectBackoffSeconds) * time.Second,
-				ClientName:       cfg.ManagedAgents.ClientName,
-				ClientVersion:    cfg.ManagedAgents.ClientVersion,
-			},
+			managedAccounts,
 		)
 		if err := managedSvc.Start(context.Background()); err != nil {
 			return fmt.Errorf("start managed agents bridge: %w", err)
 		}
 		handler.SetManagedAgents(managedSvc)
-		log.Printf("claude managed agents bridge enabled")
+		log.Printf("claude managed agents bridge enabled (%d account(s))", len(managedAccounts))
 	} else {
-		log.Printf("claude managed agents bridge disabled (no [managed_agents].api_key)")
+		log.Printf("claude managed agents bridge disabled (no [[managed_agents]] entry with api_key)")
 	}
 
 	srv := &http.Server{
@@ -315,6 +320,7 @@ type managedSessionStoreAdapter struct {
 func (a *managedSessionStoreAdapter) Upsert(ctx context.Context, s managedagents.SessionRegistration) error {
 	return a.repo.Upsert(ctx, store.ManagedAgentSession{
 		SessionID:   s.SessionID,
+		Account:     s.Account,
 		AgentID:     s.AgentID,
 		Description: s.Description,
 		LastEventID: s.LastEventID,
@@ -349,6 +355,7 @@ func (a *managedSessionStoreAdapter) UpdateCursor(ctx context.Context, sessionID
 func managedSessionToReg(row store.ManagedAgentSession) managedagents.SessionRegistration {
 	return managedagents.SessionRegistration{
 		SessionID:   row.SessionID,
+		Account:     row.Account,
 		AgentID:     row.AgentID,
 		Description: row.Description,
 		LastEventID: row.LastEventID,

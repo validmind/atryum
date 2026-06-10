@@ -25,15 +25,19 @@ type Config struct {
 	// (GET /invocations/{agent_id}, GET /agent_ids). When key or secret is
 	// empty, those endpoints refuse every request.
 	APIKey auth.APIKeyConfig `toml:"api_key"`
-	// ManagedAgents configures the optional Claude Managed Agents events
-	// bridge. When api_key is empty the bridge is disabled.
-	ManagedAgents ManagedAgentsConfig `toml:"managed_agents"`
+	// ManagedAgents configures zero or more Claude Managed Agents events
+	// bridges, one per Anthropic account/workspace. Declare each as a
+	// repeated `[[managed_agents]]` table. An entry with an empty api_key is
+	// skipped.
+	ManagedAgents []ManagedAgentsConfig `toml:"managed_agents"`
 }
 
-// ManagedAgentsConfig configures Atryum's outbound connection to Anthropic's
-// Claude Managed Agents "events and streaming" API. When APIKey is empty the
-// bridge is disabled and no sessions are watched.
+// ManagedAgentsConfig configures one outbound connection to Anthropic's Claude
+// Managed Agents "events and streaming" API. When APIKey is empty the entry is
+// skipped. Name distinguishes entries when more than one is configured and is
+// used by the session-registration API to target a specific account.
 type ManagedAgentsConfig struct {
+	Name                    string `toml:"name"`
 	BaseURL                 string `toml:"base_url"`
 	APIKey                  string `toml:"api_key"`
 	PollIntervalMillis      int    `toml:"poll_interval_millis"`
@@ -42,13 +46,26 @@ type ManagedAgentsConfig struct {
 	ClientVersion           string `toml:"client_version"`
 }
 
-// ApplyEnv lets ANTHROPIC_API_KEY / ATRYUM_MANAGED_AGENTS_API_KEY override the
-// TOML api_key (the env var wins when set).
-func (c *ManagedAgentsConfig) ApplyEnv() {
-	if value := os.Getenv("ATRYUM_MANAGED_AGENTS_API_KEY"); value != "" {
-		c.APIKey = value
-	} else if value := os.Getenv("ANTHROPIC_API_KEY"); value != "" && c.APIKey == "" {
-		c.APIKey = value
+// applyManagedAgentsEnv lets ANTHROPIC_API_KEY / ATRYUM_MANAGED_AGENTS_API_KEY
+// configure the bridge without TOML in the common single-account case. The env
+// key is applied only when exactly zero or one entries are configured: with one
+// entry it fills an empty api_key; with none it creates a default entry. When
+// multiple entries are configured each must set its own api_key in TOML.
+func (c *Config) applyManagedAgentsEnv() {
+	envKey := os.Getenv("ATRYUM_MANAGED_AGENTS_API_KEY")
+	if envKey == "" {
+		envKey = os.Getenv("ANTHROPIC_API_KEY")
+	}
+	if envKey == "" {
+		return
+	}
+	switch len(c.ManagedAgents) {
+	case 0:
+		c.ManagedAgents = []ManagedAgentsConfig{{APIKey: envKey}}
+	case 1:
+		if c.ManagedAgents[0].APIKey == "" {
+			c.ManagedAgents[0].APIKey = envKey
+		}
 	}
 }
 
@@ -131,7 +148,7 @@ func Load(path string) (Config, error) {
 		return cfg, err
 	}
 	cfg.Backend.ApplyEnv()
-	cfg.ManagedAgents.ApplyEnv()
+	cfg.applyManagedAgentsEnv()
 	return cfg, nil
 }
 

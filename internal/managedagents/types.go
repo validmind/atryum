@@ -28,8 +28,11 @@ const (
 	defaultReconnectBackoff = 2 * time.Second
 )
 
-// Config holds the bridge's runtime settings.
+// Config holds one account's runtime settings.
 type Config struct {
+	// Name identifies the account when more than one is configured. Empty is
+	// allowed (and normalized to "default") for the single-account case.
+	Name             string
 	BaseURL          string
 	APIKey           string
 	PollInterval     time.Duration
@@ -38,7 +41,13 @@ type Config struct {
 	ClientVersion    string
 }
 
+// DefaultAccountName is used when an account is configured without a name.
+const DefaultAccountName = "default"
+
 func (c Config) withDefaults() Config {
+	if c.Name == "" {
+		c.Name = DefaultAccountName
+	}
 	if c.BaseURL == "" {
 		c.BaseURL = defaultBaseURL
 	}
@@ -82,8 +91,11 @@ func (e OutboundEvent) MarshalJSON() ([]byte, error) {
 }
 
 // RegisterSessionRequest is the admin API payload to start watching a session.
+// Account selects which configured Anthropic account watches the session; it may
+// be omitted when only one account is configured.
 type RegisterSessionRequest struct {
 	SessionID   string `json:"session_id"`
+	Account     string `json:"account,omitempty"`
 	AgentID     string `json:"agent_id,omitempty"`
 	Description string `json:"description,omitempty"`
 }
@@ -91,6 +103,7 @@ type RegisterSessionRequest struct {
 // SessionRegistration is returned to the admin caller and persisted.
 type SessionRegistration struct {
 	SessionID   string    `json:"session_id"`
+	Account     string    `json:"account"`
 	AgentID     string    `json:"agent_id,omitempty"`
 	Description string    `json:"description,omitempty"`
 	LastEventID string    `json:"last_event_id,omitempty"`

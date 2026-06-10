@@ -29,7 +29,7 @@ func sessionAuditKey(sessionID string) string {
 // ensureSessionAuditInvocation returns the invocation ID of the session's audit
 // row, creating it on first use. It is idempotent across restarts via the
 // session-scoped idempotency key.
-func (s *Service) ensureSessionAuditInvocation(ctx context.Context, reg SessionRegistration) (string, error) {
+func (s *Service) ensureSessionAuditInvocation(ctx context.Context, reg SessionRegistration, cfg Config) (string, error) {
 	key := sessionAuditKey(reg.SessionID)
 	if existing, err := s.audit.GetByIdempotencyKey(ctx, key); err == nil && existing.InvocationID != "" {
 		return existing.InvocationID, nil
@@ -50,8 +50,8 @@ func (s *Service) ensureSessionAuditInvocation(ctx context.Context, reg SessionR
 		}),
 		SubmittedAt:   now,
 		CompletedAt:   &now,
-		ClientName:    strPtr(s.cfg.ClientName),
-		ClientVersion: optStrPtr(s.cfg.ClientVersion),
+		ClientName:    strPtr(cfg.ClientName),
+		ClientVersion: optStrPtr(cfg.ClientVersion),
 		AgentID:       optStrPtr(reg.AgentID),
 	}
 	if err := s.audit.Create(ctx, inv); err != nil {

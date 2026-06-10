@@ -65,9 +65,15 @@ Because Atryum answers the harness's own confirmation prompts, it can gate the
 
 ### 1. Enable the bridge in `atryum.toml`
 
+Declare one `[[managed_agents]]` table per Anthropic account/workspace. The
+`name` is a unique label the session-registration API uses to target a specific
+account.
+
 ```toml
-[managed_agents]
-# Anthropic API key. Env overrides: ATRYUM_MANAGED_AGENTS_API_KEY, then ANTHROPIC_API_KEY.
+[[managed_agents]]
+name    = "default"   # unique label; targeted by the registration "account" field
+# Anthropic API key. Env overrides (single account only):
+# ATRYUM_MANAGED_AGENTS_API_KEY, then ANTHROPIC_API_KEY.
 api_key = "sk-ant-..."
 # Optional tuning (defaults shown):
 # base_url                  = "https://api.anthropic.com"
@@ -75,10 +81,17 @@ api_key = "sk-ant-..."
 # reconnect_backoff_seconds = 2      # SSE reconnect backoff
 # client_name               = "claude-managed-agents"  # shown in the Agent column
 # client_version            = ""
+
+# Watch a second account by repeating the table:
+# [[managed_agents]]
+# name    = "staging"
+# api_key = "sk-ant-..."
 ```
 
-When `api_key` is empty the bridge is disabled and the admin endpoint returns
-`501`.
+Entries with an empty `api_key` are skipped; when no account has a usable key
+the bridge is disabled and the admin endpoint returns `501`. The
+`ATRYUM_MANAGED_AGENTS_API_KEY` / `ANTHROPIC_API_KEY` env overrides apply only
+when zero or one `[[managed_agents]]` entry is configured.
 
 ### 2. Create an agent whose tools ask for confirmation
 
@@ -110,6 +123,7 @@ curl -sS -X POST http://localhost:8080/api/v1/admin/managed-agents/sessions \
   -H "content-type: application/json" \
   -d '{
     "session_id": "sess_...",
+    "account": "default",          // optional when only one [[managed_agents]] is configured; required to disambiguate when several are
     "agent_id": "my-agent",        // optional: tags invocations & enables agent-scoped rules
     "description": "prod coding agent"
   }'

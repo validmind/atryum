@@ -28,14 +28,27 @@ type SessionStore interface {
 	UpdateCursor(ctx context.Context, sessionID, lastEventID string) error
 }
 
-// Service owns the Anthropic client, the session registry, and one watcher
-// goroutine per registered session.
+// Account pairs an Anthropic API client with its (defaulted) config.
+type account struct {
+	client AnthropicClient
+	cfg    Config
+}
+
+// Account is a configured Anthropic account the bridge can watch sessions for.
+type Account struct {
+	Client AnthropicClient
+	Config Config
+}
+
+// Service owns one Anthropic client per configured account, the session
+// registry, and one watcher goroutine per registered session.
 type Service struct {
-	client   AnthropicClient
 	inv      InvocationGateway
 	sessions SessionStore
 	audit    InvocationAuditStore
-	cfg      Config
+
+	accounts       map[string]account
+	defaultAccount string // the sole account's name, when exactly one is configured
 
 	rootCtx context.Context
 	cancel  context.CancelFunc
@@ -45,15 +58,26 @@ type Service struct {
 	wg       sync.WaitGroup
 }
 
-func NewService(client AnthropicClient, inv InvocationGateway, sessions SessionStore, audit InvocationAuditStore, cfg Config) *Service {
-	return &Service{
-		client:   client,
+// NewService builds a bridge over one or more Anthropic accounts. Each account's
+// config is normalized (name defaulted) on construction.
+func NewService(inv InvocationGateway, sessions SessionStore, audit InvocationAuditStore, accounts []Account) *Service {
+	s := &Service{
 		inv:      inv,
 		sessions: sessions,
 		audit:    audit,
-		cfg:      cfg.withDefaults(),
+		accounts: make(map[string]account, len(accounts)),
 		watchers: make(map[string]context.CancelFunc),
 	}
+	for _, a := range accounts {
+		cfg := a.Config.withDefaults()
+		s.accounts[cfg.Name] = account{client: a.Client, cfg: cfg}
+	}
+	if len(s.accounts) == 1 {
+		for name := range s.accounts {
+			s.defaultAccount = name
+		}
+	}
+	return s
 }
 
 // Start resumes watching every previously-registered session. It is safe to
@@ -64,10 +88,16 @@ func (s *Service) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list managed-agent sessions: %w", err)
 	}
+	started := 0
 	for _, reg := range regs {
+		if _, ok := s.accounts[reg.Account]; !ok {
+			slog.Warn("managed agents: skipping session for unknown account", "session_id", reg.SessionID, "account", reg.Account)
+			continue
+		}
 		s.startWatcher(reg)
+		started++
 	}
-	slog.Info("managed agents: started", "watched_sessions", len(regs))
+	slog.Info("managed agents: started", "accounts", len(s.accounts), "watched_sessions", started)
 	return nil
 }
 
@@ -86,9 +116,14 @@ func (s *Service) RegisterSession(ctx context.Context, req RegisterSessionReques
 	if sessionID == "" {
 		return SessionRegistration{}, fmt.Errorf("session_id is required")
 	}
+	accountName, err := s.resolveAccount(strings.TrimSpace(req.Account))
+	if err != nil {
+		return SessionRegistration{}, err
+	}
 	now := time.Now().UTC()
 	reg := SessionRegistration{
 		SessionID:   sessionID,
+		Account:     accountName,
 		AgentID:     strings.TrimSpace(req.AgentID),
 		Description: strings.TrimSpace(req.Description),
 		CreatedAt:   now,
@@ -106,12 +141,32 @@ func (s *Service) RegisterSession(ctx context.Context, req RegisterSessionReques
 	return stored, nil
 }
 
+// resolveAccount validates a requested account name (or picks the sole account
+// when the name is empty and exactly one account is configured).
+func (s *Service) resolveAccount(name string) (string, error) {
+	if name == "" {
+		if s.defaultAccount != "" {
+			return s.defaultAccount, nil
+		}
+		return "", fmt.Errorf("account is required (multiple managed-agent accounts are configured)")
+	}
+	if _, ok := s.accounts[name]; !ok {
+		return "", fmt.Errorf("unknown managed-agent account %q", name)
+	}
+	return name, nil
+}
+
 // startWatcher launches (or restarts) the watcher goroutine for a session.
 func (s *Service) startWatcher(reg SessionRegistration) {
 	if s.rootCtx == nil {
 		// Start() hasn't run yet; this happens only if RegisterSession is
 		// called before Start. Use a background root so the watcher still runs.
 		s.rootCtx, s.cancel = context.WithCancel(context.Background())
+	}
+	acct, ok := s.accounts[reg.Account]
+	if !ok {
+		slog.Warn("managed agents: cannot watch session for unknown account", "session_id", reg.SessionID, "account", reg.Account)
+		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -120,7 +175,7 @@ func (s *Service) startWatcher(reg SessionRegistration) {
 	}
 	ctx, cancel := context.WithCancel(s.rootCtx)
 	s.watchers[reg.SessionID] = cancel
-	w := &watcher{svc: s, reg: reg, lastEventID: reg.LastEventID, pending: make(map[string]pendingCall)}
+	w := &watcher{svc: s, acct: acct, reg: reg, lastEventID: reg.LastEventID, pending: make(map[string]pendingCall)}
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
