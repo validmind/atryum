@@ -121,14 +121,7 @@ func TestBusinessToolErrorMarksInvocationFailed(t *testing.T) {
 }
 
 func TestResolverBootstrapsServersFromConfigWhenDBEmpty(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if err := store.InitDB(db); err != nil {
-		t.Fatal(err)
-	}
+	db := newSQLiteTestDB(t)
 	repo := store.NewServerRepo(db)
 	resolver := mcp.NewResolver(repo, config.Config{Upstreams: []config.UpstreamConfig{{Name: "bootstrap", Mode: "http", BaseURL: "http://example.com", Enabled: true, TimeoutSeconds: 7}}})
 	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
@@ -147,14 +140,7 @@ func TestResolverBootstrapsServersFromConfigWhenDBEmpty(t *testing.T) {
 }
 
 func TestServerStatusPersistsAfterUpdate(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if err := store.InitDB(db); err != nil {
-		t.Fatal(err)
-	}
+	db := newSQLiteTestDB(t)
 	repo := store.NewServerRepo(db)
 	upstream := mcp.FromConfig(config.UpstreamConfig{Name: "status-demo", Mode: "http", BaseURL: "http://example.com", Enabled: true, TimeoutSeconds: 5})
 	if err := repo.CreateServer(context.Background(), upstream); err != nil {
@@ -195,14 +181,7 @@ func TestServerStatusPersistsAfterUpdate(t *testing.T) {
 }
 
 func TestSetSummaryPersistsSummaryAndRecordsEvent(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if err := store.InitDB(db); err != nil {
-		t.Fatal(err)
-	}
+	db := newSQLiteTestDB(t)
 	invRepo := store.NewInvocationRepo(db)
 	eventRepo := store.NewEventRepo(db)
 	service := invocation.NewService(invRepo, eventRepo, nil, nil, policy.AlwaysApproveProvider{}, 5*time.Second, nil, nil, nil, nil)
@@ -251,14 +230,7 @@ func TestSetSummaryPersistsSummaryAndRecordsEvent(t *testing.T) {
 }
 
 func TestSubmitPendingApprovalAutomaticallySummarizesInvocation(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if err := store.InitDB(db); err != nil {
-		t.Fatal(err)
-	}
+	db := newSQLiteTestDB(t)
 	invRepo := store.NewInvocationRepo(db)
 	eventRepo := store.NewEventRepo(db)
 	service := invocation.NewService(invRepo, eventRepo, nil, nil, nil, 5*time.Second, nil, nil, nil, summarySettingsStub{
@@ -312,14 +284,7 @@ func TestSubmitPendingApprovalAutomaticallySummarizesInvocation(t *testing.T) {
 }
 
 func TestSubmitAIEvaluationUsesDefaultAgentRecordForUnmappedAgentID(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if err := store.InitDB(db); err != nil {
-		t.Fatal(err)
-	}
+	db := newSQLiteTestDB(t)
 	invRepo := store.NewInvocationRepo(db)
 	eventRepo := store.NewEventRepo(db)
 	evaluator := &evaluateClientStub{
@@ -382,14 +347,7 @@ func TestSubmitAIEvaluationUsesDefaultAgentRecordForUnmappedAgentID(t *testing.T
 
 func newTestService(t *testing.T, cfg config.Config) *invocation.Service {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := store.InitDB(db); err != nil {
-		t.Fatal(err)
-	}
+	db := newSQLiteTestDB(t)
 	serverRepo := store.NewServerRepo(db)
 	resolver := mcp.NewResolver(serverRepo, cfg)
 	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {

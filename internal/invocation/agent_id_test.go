@@ -2,7 +2,6 @@ package invocation_test
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -36,14 +35,7 @@ func TestInvokeUsesAuthenticatedAgentIDForRulesAndEvents(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if err := store.InitDB(db); err != nil {
-		t.Fatal(err)
-	}
+	db := newSQLiteTestDB(t)
 	cfg := config.Config{
 		Defaults:  config.DefaultsConfig{RequestTimeoutSeconds: 5},
 		Upstreams: []config.UpstreamConfig{{Name: "demo", Mode: "http", BaseURL: upstream.URL, Enabled: true, TimeoutSeconds: 5}},
@@ -125,14 +117,7 @@ func TestInvokeWithoutAgentIDPersistsClientInfoFromRequest(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if err := store.InitDB(db); err != nil {
-		t.Fatal(err)
-	}
+	db := newSQLiteTestDB(t)
 	cfg := config.Config{
 		Defaults:  config.DefaultsConfig{RequestTimeoutSeconds: 5},
 		Upstreams: []config.UpstreamConfig{{Name: "demo", Mode: "http", BaseURL: upstream.URL, Enabled: true, TimeoutSeconds: 5}},
@@ -179,14 +164,7 @@ func TestInvokeWithoutAuthFallsBackToRequestIDForRules(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if err := store.InitDB(db); err != nil {
-		t.Fatal(err)
-	}
+	db := newSQLiteTestDB(t)
 	cfg := config.Config{
 		Defaults:  config.DefaultsConfig{RequestTimeoutSeconds: 5},
 		Upstreams: []config.UpstreamConfig{{Name: "demo", Mode: "http", BaseURL: upstream.URL, Enabled: true, TimeoutSeconds: 5}},
@@ -226,14 +204,7 @@ func TestInvokeWithoutAuthFallsBackToRequestIDForRules(t *testing.T) {
 // agents.agent_ids resolution / agent-scoped rule matching all light up.
 // A verified OAuth identity in context still wins when both are present.
 func TestExternalSubmitUsesSelfDeclaredAgentIDWhenNoAuthIdentity(t *testing.T) {
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if err := store.InitDB(db); err != nil {
-		t.Fatal(err)
-	}
+	db := newSQLiteTestDB(t)
 	svc := invocation.NewService(
 		store.NewInvocationRepo(db), store.NewEventRepo(db), nil,
 		nil, policy.AlwaysApproveProvider{},
