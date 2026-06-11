@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"mime"
 	"net/http"
 	"os"
 	"sort"
@@ -988,17 +989,26 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		if forwarded.ProtocolVersion != "" {
 			setMCPProtocolVersionHeader(w, forwarded.ProtocolVersion)
 		}
-		if forwarded.ContentType != "" {
-			w.Header().Set("Content-Type", forwarded.ContentType)
-		} else {
-			w.Header().Set("Content-Type", "application/json")
+		if req.IsNotification() {
+			w.WriteHeader(http.StatusAccepted)
+			return
 		}
+		body, contentType, err := responseBodyForDownstream(r, req.ID, forwarded)
+		if err != nil {
+			status := forwarded.StatusCode
+			if status == 0 {
+				status = http.StatusOK
+			}
+			h.writeRPCErrorStatus(w, status, req.ID, -32000, err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", contentType)
 		status := forwarded.StatusCode
 		if status == 0 {
 			status = http.StatusOK
 		}
 		w.WriteHeader(status)
-		_, _ = w.Write(forwarded.Body)
+		_, _ = w.Write(body)
 	}
 }
 
@@ -3319,6 +3329,44 @@ func (h *Handler) forwardProxyEnvelope(ctx context.Context, server string, envel
 	return result, true
 }
 
+func responseBodyForDownstream(r *http.Request, id json.RawMessage, forwarded mcp.ForwardResult) ([]byte, string, error) {
+	contentType := forwarded.ContentType
+	if contentType == "" {
+		contentType = "application/json"
+	}
+	if !strings.Contains(strings.ToLower(contentType), "text/event-stream") {
+		return forwarded.Body, contentType, nil
+	}
+	if acceptsEventStream(r) {
+		return forwarded.Body, contentType, nil
+	}
+	body, err := mcp.DecodeJSONRPCPayload(forwarded, id)
+	if err != nil {
+		return nil, "", err
+	}
+	return body, "application/json", nil
+}
+
+func acceptsEventStream(r *http.Request) bool {
+	for _, value := range strings.Split(r.Header.Get("Accept"), ",") {
+		mediaType, params, err := mime.ParseMediaType(strings.TrimSpace(value))
+		if err != nil {
+			continue
+		}
+		if !strings.EqualFold(mediaType, "text/event-stream") {
+			continue
+		}
+		if q, ok := params["q"]; ok {
+			weight, err := strconv.ParseFloat(q, 64)
+			if err != nil || weight <= 0 {
+				continue
+			}
+		}
+		return true
+	}
+	return false
+}
+
 func negotiateProtocolVersion(method, header string, params json.RawMessage) string {
 	var payload struct {
 		ProtocolVersion string `json:"protocolVersion"`
@@ -3369,8 +3417,12 @@ func setMCPProtocolVersionHeader(w http.ResponseWriter, version string) {
 }
 
 func (h *Handler) writeRPCError(w http.ResponseWriter, id json.RawMessage, code int, message string) {
+	h.writeRPCErrorStatus(w, http.StatusOK, id, code, message)
+}
+
+func (h *Handler) writeRPCErrorStatus(w http.ResponseWriter, status int, id json.RawMessage, code int, message string) {
 	errBody, _ := json.Marshal(map[string]any{"code": code, "message": message})
-	writeJSON(w, http.StatusOK, jsonRPCResponse{JSONRPC: "2.0", ID: id, Error: errBody})
+	writeJSON(w, status, jsonRPCResponse{JSONRPC: "2.0", ID: id, Error: errBody})
 }
 
 func normalizeToolCallResult(raw json.RawMessage, isError bool) any {
