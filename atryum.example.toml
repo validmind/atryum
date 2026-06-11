@@ -46,6 +46,36 @@ connection_timeout_seconds = 5
 [defaults]
 request_timeout_seconds = 30
 
+# Optional Claude Managed Agents events bridge. Declare one [[managed_agents]]
+# table per Anthropic account/workspace you want to watch. When an entry's
+# api_key is set, Atryum connects outbound to Anthropic's Managed Agents
+# "events and streaming" API for every session registered (via
+# POST /api/v1/admin/managed-agents/sessions) against that account. It records
+# each session event in the invocations table and, when a session blocks on a
+# tool call (permission_policy = always_ask, or a custom tool), runs the normal
+# approval rules and replies to Claude with the decision. Entries with an empty
+# api_key are skipped; with no usable entry the bridge is disabled. See
+# examples/managed-agents/.
+#
+# Environment overrides for api_key (single-account convenience only):
+# ATRYUM_MANAGED_AGENTS_API_KEY (highest), then ANTHROPIC_API_KEY. These apply
+# only when zero or one [[managed_agents]] entry is configured. With multiple
+# entries each must set its own api_key in TOML.
+[[managed_agents]]
+name    = "default"   # unique label; targeted by the session-registration "account" field
+api_key = ""
+# Optional tuning (defaults shown):
+# base_url                  = "https://api.anthropic.com"
+# poll_interval_millis      = 1000
+# reconnect_backoff_seconds = 2
+# client_name               = "claude-managed-agents"
+# client_version            = ""
+
+# Add more accounts by repeating the table:
+# [[managed_agents]]
+# name    = "staging"
+# api_key = ""
+
 # Agent sync and AI evaluation settings (org, record type, constitution field)
 # are managed through the Atryum Settings UI and stored in the database.
 # They no longer need to be configured here.
