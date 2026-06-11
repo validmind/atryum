@@ -1,0 +1,46 @@
+# Upstream MCP servers used as integration test targets.
+#
+# Atryum bootstraps these into mcp_servers on first run (empty DB).
+
+mcp_targets:
+  - id: calculator
+    display_name: githejie/mcp-server-calculator
+    description: >
+      Safe stdio calculator MCP server. Tool `calculate` evaluates arithmetic
+      expressions — ideal PoC upstream with no external credentials.
+    upstream:
+      name: calculator
+      mode: stdio
+      command: __INTEGRATIONS_PYTHON__
+      args: ["-m", "mcp_server_calculator"]
+      timeout_seconds: 30
+      enabled: true
+    verify:
+      tool: calculate
+      arguments:
+        expression: "17 * 23"
+      expect_substrings: ["391"]
+    prompt: |
+      Use the calculator_via_atryum MCP server's calculate tool to evaluate
+      17 * 23. Reply with only the numeric result, nothing else.
+
+  - id: calc-mcp
+    display_name: "@coo-quack/calc-mcp (Atryum demo default)"
+    description: >
+      The calc server bundled with `atryum setup demo`. Kept as an alternate
+      target when the pip calculator package is unavailable.
+    upstream:
+      name: calc
+      mode: stdio
+      command: npx
+      args: ["-y", "@coo-quack/calc-mcp@latest"]
+      timeout_seconds: 30
+      enabled: true
+    verify:
+      tool: math
+      arguments:
+        expression: "17 + 23"
+      expect_substrings: ["40"]
+    prompt: |
+      Use the calc_via_atryum MCP server's math tool to evaluate 17 + 23.
+      Reply with only the numeric result, nothing else.

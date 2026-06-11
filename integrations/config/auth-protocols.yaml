@@ -1,0 +1,98 @@
+# Harness → Atryum authentication protocols to exercise in the matrix.
+#
+# Each protocol describes how to configure inbound auth on Atryum and how
+# harnesses should present credentials when connecting to /mcp/{server}.
+#
+# status:
+#   implemented — wired end-to-end in this suite
+#   placeholder — listed for future work; runner skips with a note
+
+auth_protocols:
+  - id: no-auth
+    display_name: No inbound auth
+    status: implemented
+    description: >
+      No [[auth]] blocks in atryum.toml. Harnesses may pass ?agent_id= on the
+      MCP URL for best-effort identity tagging.
+    atryum_template: fixtures/atryum/base.toml
+    harness_auth:
+      type: query_param
+      agent_id_from: harness_id
+    env: {}
+
+  - id: oauth-client-credentials
+    display_name: OAuth client credentials (pre-shared)
+    status: implemented
+    description: >
+      Lightweight mock OIDC issues tokens via client_credentials grant.
+      Mirrors Keycloak confidential-client setup without running Keycloak.
+    atryum_template: fixtures/atryum/oauth-client-credentials.toml
+    harness_auth:
+      type: bearer
+      token_command: >
+        curl -fsS -X POST "$MOCK_OIDC_TOKEN_URL"
+        -d "grant_type=client_credentials"
+        -d "client_id=$MOCK_OIDC_CLIENT_ID"
+        -d "client_secret=$MOCK_OIDC_CLIENT_SECRET"
+        -d "scope=atryum:mcp" | jq -r .access_token
+    env:
+      MOCK_OIDC_CLIENT_ID: test-client
+      MOCK_OIDC_CLIENT_SECRET: test-secret
+    requires: [mock-oidc]
+
+  - id: oauth-dcr
+    display_name: OAuth Dynamic Client Registration (RFC 7591)
+    status: implemented
+    description: >
+      Harness-side MCP clients self-register against the mock OIDC DCR endpoint,
+      then obtain tokens. Mirrors Claude Code / MCP SDK DCR flows.
+    atryum_template: fixtures/atryum/oauth-dcr.toml
+    harness_auth:
+      type: oauth-dcr
+      registration_url_env: MOCK_OIDC_DCR_URL
+      token_url_env: MOCK_OIDC_TOKEN_URL
+      scope: atryum:mcp
+    env: {}
+    requires: [mock-oidc]
+
+  - id: static-bearer
+    display_name: Static bearer token (pre-generated JWT)
+    status: placeholder
+    description: >
+      Placeholder for deployments that pin a long-lived service token out-of-band.
+      Would pass Authorization: Bearer on MCP requests without a live token endpoint.
+    atryum_template: fixtures/atryum/static-bearer.toml
+    harness_auth:
+      type: bearer
+      token_env: ATRYUM_STATIC_BEARER_TOKEN
+    env:
+      ATRYUM_STATIC_BEARER_TOKEN: ""
+    requires: [mock-oidc]
+
+  - id: basic-auth
+    display_name: HTTP Basic authentication
+    status: placeholder
+    description: >
+      Placeholder — Atryum inbound /mcp/ auth is OIDC bearer-only today.
+      Listed so the matrix can grow when basic auth lands.
+    atryum_template: fixtures/atryum/basic-auth.toml
+    harness_auth:
+      type: basic
+      username_env: ATRYUM_BASIC_USER
+      password_env: ATRYUM_BASIC_PASSWORD
+    env: {}
+    requires: []
+
+  - id: api-key-pair
+    display_name: API key + secret (legacy reporting endpoints)
+    status: placeholder
+    description: >
+      Placeholder for X-API-Key / X-API-Secret on legacy read endpoints.
+      Not used for /mcp/ today but reserved for future harness auth modes.
+    atryum_template: fixtures/atryum/api-key-pair.toml
+    harness_auth:
+      type: api-key
+      key_env: ATRYUM_API_KEY
+      secret_env: ATRYUM_API_SECRET
+    env: {}
+    requires: []

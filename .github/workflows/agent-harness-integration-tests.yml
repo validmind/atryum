@@ -1,0 +1,124 @@
+name: Agent harness integration tests
+
+on:
+  push:
+    branches: [main, integrations-suite]
+    paths:
+      - "integrations/**"
+      - "internal/**"
+      - "cmd/**"
+      - "examples/**"
+      - "scripts/fake_agent.py"
+      - ".github/workflows/agent-harness-integration-tests.yml"
+  pull_request:
+    paths:
+      - "integrations/**"
+      - "internal/**"
+      - "cmd/**"
+      - "examples/**"
+      - "scripts/fake_agent.py"
+      - ".github/workflows/agent-harness-integration-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-harness-integration-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  baseline:
+    name: Baseline (fake-agent)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run integration baseline matrix
+        working-directory: integrations
+        run: |
+          chmod +x scripts/agent_harness_integration_tests.sh
+          ./scripts/agent_harness_integration_tests.sh matrix \
+            --only-passing \
+            --harnesses fake-agent \
+            --targets calculator
+
+  live-harnesses:
+    name: Live harnesses (repository secrets)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: baseline
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      vars.RUN_LIVE_HARNESS_INTEGRATION_TESTS == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - harness: codex
+            auth: no-auth
+            api_key_secret: OPENAI_API_KEY
+            install: npm install -g @openai/codex
+          - harness: claude-code
+            auth: no-auth
+            api_key_secret: ANTHROPIC_API_KEY
+            install: npm install -g @anthropic-ai/claude-code
+          - harness: amp
+            auth: no-auth
+            api_key_secret: AMP_API_KEY
+            install: npm install -g @sourcegraph/amp
+          - harness: grok
+            auth: no-auth
+            api_key_secret: XAI_API_KEY
+            install: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install harness CLI
+        if: matrix.install != ''
+        run: ${{ matrix.install }}
+
+      - name: Run harness case
+        working-directory: integrations
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+        run: |
+          key_name='${{ matrix.api_key_secret }}'
+          if [ -z "${!key_name:-}" ]; then
+            echo "Skipping ${{ matrix.harness }}: ${key_name} secret not configured"
+            exit 0
+          fi
+          chmod +x scripts/agent_harness_integration_tests.sh
+          ./scripts/agent_harness_integration_tests.sh run \
+            --harness "${{ matrix.harness }}" \
+            --auth "${{ matrix.auth }}" \
+            --target calculator

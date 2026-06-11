@@ -150,3 +150,16 @@ release-push tag:
         else
           gh release create "{{tag}}" "${artifacts[@]}" --generate-notes
         fi
+
+# List registered harnesses, auth protocols, and MCP targets
+integration-list:
+	integrations/scripts/agent_harness_integration_tests.sh list
+
+# Run a single integration case (override harness/auth/target via env or args)
+integration-test harness="fake-agent" auth="no-auth" target="calculator":
+	integrations/scripts/agent_harness_integration_tests.sh run \
+	  --harness {{harness}} --auth {{auth}} --target {{target}}
+
+# Run the full integration matrix (skips unavailable harnesses and placeholder auth)
+integration-test-matrix *args:
+	integrations/scripts/agent_harness_integration_tests.sh matrix --only-passing {{args}}

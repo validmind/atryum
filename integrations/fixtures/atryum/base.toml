@@ -1,0 +1,17 @@
+[server]
+listen_addr = ":__ATRYUM_PORT__"
+public_base_url = "http://localhost:__ATRYUM_PORT__"
+database_path = "__RUN_DIR__/atryum.db"
+database_url = ""
+log_level = "info"
+
+[backend]
+base_url = ""
+
+[defaults]
+request_timeout_seconds = 30
+
+[auth_debug]
+skip_verify = false
+
+__UPSTREAMS_BLOCK__
