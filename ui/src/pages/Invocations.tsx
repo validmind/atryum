@@ -12,6 +12,7 @@ import {
   Flex,
   FormControl,
   FormLabel,
+  Heading,
   HStack,
   Icon,
   IconButton,
@@ -284,7 +285,7 @@ const Invocations: React.FC = () => {
       (item) => item.invocation_id === selectedId,
     );
     return stillSelected ? selectedId : items[0].invocation_id;
-  }, [items, selectedId]);
+  }, [items, selectedId, detailClosed]);
 
   const { data: detail, isLoading: detailLoading } =
     useInvocationDetail(resolvedSelectedId);
@@ -867,78 +868,83 @@ const Invocations: React.FC = () => {
                       align="start"
                       wrap="nowrap"
                       gap={2}>
-                      <VStack align="start" gap={1}>
-                        <HStack gap={2}>
-                          {(() => {
-                            const statusColor =
-                              STATUS_COLOR[detail.status] ?? "gray";
-                            return (
-                              <Tag
-                                colorScheme={statusColor}
-                                size="md"
-                                textTransform="capitalize">
-                                <Box
-                                  as="span"
-                                  boxSize="8px"
-                                  borderRadius="full"
-                                  bg={`${statusColor}.500`}
-                                  mr={1.5}
-                                />
-                                {STATUS_LABEL[detail.status] ?? detail.status}
-                              </Tag>
-                            );
-                          })()}
-                          {getDisposition(detail).map((d) =>
-                            d.label !== "—" ? (
-                              <Badge
-                                key={d.label}
-                                colorScheme={d.color}
-                                fontSize="xs">
-                                {d.label}
-                              </Badge>
-                            ) : null,
-                          )}
-                          {isAIEvaluated(detail) &&
-                            detail.approval?.confidence_score != null && (
-                              <Badge
-                                colorScheme={getConfidenceColor(
-                                  detail.approval.confidence_score,
-                                )}
-                                fontSize="xs">
-                                Confidence:{" "}
-                                {formatConfidence(
-                                  detail.approval.confidence_score,
-                                )}
-                              </Badge>
-                            )}
-                        </HStack>
-                        {detail.approval?.reason && (
+                      <VStack align="start" gap={4}>
+                        <VStack align="start" gap={1}>
+                          <Heading size="md" fontFamily="mono">
+                            {detail.server_name || "none"} ·{" "}
+                            {detail.tool_name || "—"}
+                          </Heading>
+                          <Text fontSize="sm">
+                            {formatDate(detail.submitted_at)}
+                          </Text>
                           <Text
                             fontSize="xs"
                             fontFamily="mono"
                             color="text.subtle">
-                            {detail.approval.reason}
+                            {detail.invocation_id}
                           </Text>
-                        )}
+                        </VStack>
+                        <VStack align="start" gap={1}>
+                          <HStack gap={2}>
+                            {(() => {
+                              const statusColor =
+                                STATUS_COLOR[detail.status] ?? "gray";
+                              return (
+                                <Tag
+                                  colorScheme={statusColor}
+                                  size="md"
+                                  textTransform="capitalize">
+                                  <Box
+                                    as="span"
+                                    boxSize="8px"
+                                    borderRadius="full"
+                                    bg={`${statusColor}.500`}
+                                    mr={1.5}
+                                  />
+                                  {STATUS_LABEL[detail.status] ?? detail.status}
+                                </Tag>
+                              );
+                            })()}
+                            {getDisposition(detail).map((d) =>
+                              d.label !== "—" ? (
+                                <Badge
+                                  key={d.label}
+                                  colorScheme={d.color}
+                                  fontSize="sm">
+                                  {d.label}
+                                </Badge>
+                              ) : null,
+                            )}
+                            {isAIEvaluated(detail) &&
+                              detail.approval?.confidence_score != null && (
+                                <Badge
+                                  colorScheme={getConfidenceColor(
+                                    detail.approval.confidence_score,
+                                  )}
+                                  fontSize="xs">
+                                  Confidence:{" "}
+                                  {formatConfidence(
+                                    detail.approval.confidence_score,
+                                  )}
+                                </Badge>
+                              )}
+                          </HStack>
+                          {detail.approval?.reason && (
+                            <Text
+                              fontSize="xs"
+                              fontFamily="mono"
+                              color="text.subtle">
+                              {detail.approval.reason}
+                            </Text>
+                          )}
+                        </VStack>
                         {detail.matched_rule_id && (
                           <Text fontSize="xs" color="text.subtle">
                             Matched rule:{" "}
                             <Code fontSize="xs">{detail.matched_rule_id}</Code>
                           </Text>
                         )}
-                        <Text fontSize="sm" color="text.subtle">
-                          {formatDate(detail.submitted_at)}
-                        </Text>
-                        <Text fontSize="sm" color="text.subtle">
-                          {detail.server_name || "none"} ·{" "}
-                          {detail.tool_name || "—"}
-                        </Text>
-                        <Text
-                          fontSize="xs"
-                          fontFamily="mono"
-                          color="text.subtle">
-                          {detail.invocation_id}
-                        </Text>
+
                         {(detail.agent_id ||
                           detail.agent_client_name ||
                           detail.user_id) && (

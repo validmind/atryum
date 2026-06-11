@@ -1,4 +1,4 @@
-import React from 'react';
+import React from "react";
 import {
   Box,
   Flex,
@@ -10,9 +10,9 @@ import {
   Stack,
   Text,
   VStack,
-} from '@chakra-ui/react';
-import { Link as RouterLink, useLocation } from 'react-router-dom';
-import type { ComponentType } from 'react';
+} from "@chakra-ui/react";
+import { Link as RouterLink, useLocation } from "react-router-dom";
+import type { ComponentType } from "react";
 
 import {
   CircleStackIcon,
@@ -20,7 +20,7 @@ import {
   CpuChipIcon,
   QueueListIcon,
   ShieldCheckIcon,
-} from '@heroicons/react/24/outline';
+} from "@heroicons/react/24/outline";
 
 type NavItem = {
   label: string;
@@ -29,11 +29,11 @@ type NavItem = {
 };
 
 const NAV_ITEMS: NavItem[] = [
-  { label: 'Invocations', icon: QueueListIcon, path: '/invocations' },
-  { label: 'Agents', icon: CpuChipIcon, path: '/agents' },
-  { label: 'Servers', icon: CircleStackIcon, path: '/servers' },
-  { label: 'Rules', icon: ShieldCheckIcon, path: '/rules' },
-  { label: 'Settings', icon: Cog6ToothIcon, path: '/settings' },
+  { label: "Invocations", icon: QueueListIcon, path: "/invocations" },
+  { label: "Agents", icon: CpuChipIcon, path: "/agents" },
+  { label: "Servers", icon: CircleStackIcon, path: "/servers" },
+  { label: "Rules", icon: ShieldCheckIcon, path: "/rules" },
+  { label: "Settings", icon: Cog6ToothIcon, path: "/settings" },
 ];
 
 type NavItemRowProps = NavItem & { isActive: boolean };
@@ -48,28 +48,30 @@ const NavItemRow: React.FC<NavItemRowProps> = ({
     as={RouterLink}
     to={path}
     textDecoration="none"
-    _hover={{ textDecoration: 'none' }}
-    _focus={{ textDecoration: 'none' }}
-  >
+    _hover={{ textDecoration: "none" }}
+    _focus={{ textDecoration: "none" }}>
     <Flex
       pt={3}
       pb={3}
       pl={6}
       transition="background 0.2s"
-      boxShadow={isActive ? 'inset 4px 0px 0px 0px var(--chakra-colors-blue-500)' : 'none'}
+      boxShadow={
+        isActive
+          ? "inset 4px 0px 0px 0px var(--chakra-colors-blue-500)"
+          : "none"
+      }
       bg="transparent"
       color={
         isActive
-          ? 'component.sidebar.main.menuitem.selected.text'
-          : 'component.sidebar.main.menuitem.up.text'
+          ? "component.sidebar.main.menuitem.selected.text"
+          : "component.sidebar.main.menuitem.up.text"
       }
       _hover={{
-        bg: 'component.sidebar.main.menuitem.hover.background',
+        bg: "component.sidebar.main.menuitem.hover.background",
         color: isActive
-          ? 'component.sidebar.main.menuitem.selected.text'
-          : 'component.sidebar.main.menuitem.hover.text',
-      }}
-    >
+          ? "component.sidebar.main.menuitem.selected.text"
+          : "component.sidebar.main.menuitem.hover.text",
+      }}>
       <HStack gap={2.5} alignItems="flex-start">
         <Icon as={icon} boxSize={6} />
         <Text fontWeight="bold" pt={0.5}>
@@ -101,20 +103,18 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         position="fixed"
         h="full"
         display="flex"
-        flexDirection="column"
-      >
+        flexDirection="column">
         <VStack gap={4} alignItems="stretch" flex={1}>
           <Stack ml={6} mr={2} mb={2} mt={6} alignItems="stretch">
             <Link
               as={RouterLink}
               to="/invocations"
-              _hover={{ textDecoration: 'none' }}
-            >
+              _hover={{ textDecoration: "none" }}>
               <Image
-                src="/ui/atryum-logo.png"
+                src="/ui/atryum-logo.svg"
                 alt="Atryum"
                 objectFit="contain"
-                h="36px"
+                h="45px"
                 fallback={
                   <Heading size="md" color="blue.600">
                     Atryum
