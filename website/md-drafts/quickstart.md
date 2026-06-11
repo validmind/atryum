@@ -103,7 +103,7 @@ For example — if the server is `calc`, then approve the call automatically. Le
 
 5. (Optional) Add a Description so you can remember why the rule exists.
 
-6. Make sure that **Enabled** is checked, then click **Create**.
+6. Make sure that **Enabled** is checked, then click **Create Rule**.
 
 7. Try a calculator prompt from your agent again. Atryum should apply the new rule instead of treating the call like a brand-new manual decision:
 
@@ -112,7 +112,22 @@ For example — if the server is `calc`, then approve the call automatically. Le
 
 #### Create a rule from existing invocation
 
-You can also create a rule from an existing invocation by clicking on the invocation to expand details, then selecting **Create Rule From This**.
+1. In Atryum, click **Invocations** in the left sidebar.
+
+2. Click on the invocation you want to deny.
+
+3. On the invocations detail panel and select **Create Rule From This**.
+
+4. Select the:
+
+    - **Action** — What Atryum should do when the rule matches: Auto Approve or Auto Deny
+    - **Server patterns** — The MCP server or coding harness source names this rule applies to in comma-separated format. Leave this empty, or use `*`, to match all servers.
+    - **Tool patterns** — The tool names this rule applies to in comma-separated format. Leave this empty, or use `*`, to match all tools on the selected server.
+    - **User pattern** — The authenticated agent ID this rule applies to. Leave this empty, or use `*`, to match any agent.
+
+5. (Optional) Enter in a Description so you can remember why the rule exists.
+
+6. Click **Save Rule** to create your rule.
 
 ## Integrate Atryum
 

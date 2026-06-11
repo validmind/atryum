@@ -657,7 +657,7 @@ const Servers: React.FC = () => {
                       isLoading={createServer.isLoading || updateServer.isLoading}
                       onClick={handleSave}
                     >
-                      {isCreating ? 'Create' : 'Save'}
+                      {isCreating ? 'Create Server' : 'Save'}
                     </Button>
                     {!isCreating && (
                       <>

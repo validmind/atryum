@@ -609,7 +609,7 @@ const Rules: React.FC = () => {
               isDisabled={isBusy}
               onClick={handleSave}
             >
-              {isCreating ? 'Create' : 'Save'}
+              {isCreating ? 'Create Rule' : 'Save'}
             </Button>
           </ModalFooter>
         </ModalContent>
