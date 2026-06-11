@@ -56,86 +56,12 @@ curl -L https://github.com/validmind/atryum/releases/download/0.0.2/atryum-mac -
     - Under Approval Required, select **Approve** to let the tool call run.
     - Verify that the invocation's <span style="font-variant: small-caps;">auth</span> is `Succeeded` and that the approval was <span style="font-variant: small-caps;">decided by</span> a <span style="font-variant: small-caps;">human</span>.
 
-#### Approval timeout
-
-Human approvals have a default timeout of 30 seconds. To adjust the timeout, update your local Atryum config file (`atryum.toml`), then restart Atryum. For example:
-
-```toml
-[defaults]
-request_timeout_seconds = 120
-```
-
-#### Invocation denials
-
-1. In Atryum, click **Invocations** in the left sidebar.
-
-2. Click on the invocation you want to deny.
-
-3. On the invocations detail panel and select **Deny** under Approval Required.
-
-4. (Optional) Enter in a reason for denial — this reason is returned to the agent so you can steer what it does next.
-
-5. Click **Deny** to confirm the denial.
-
-### Set up rules for Atryum
-
-Rules are if/then policies that tell Atryum how to handle tool calls:
-
-- Rules let you reuse manual decisions for future tool calls that match the same conditions.
-- Rules are applied from top to bottom — the first matching rule wins.
-
-For example — if the server is `calc`, then approve the call automatically. Let's add a rule to control future matching tool calls:
-
-1. In Atryum, click **Rules** in the left sidebar.
-
-2. Click **New Rule**.
-
-3. Choose an Action:
-    - **Auto Approve** lets matching tool calls run without stopping for manual approval.
-    - **Auto Deny** blocks matching tool calls automatically.
-    - **Human Approval** pauses matching tool calls until a human approves or denies them.
-
-    For this demo, select **Auto Approve**.
-
-4. Choose the Agents, Servers / Sources, and Tools that the rule should apply to.
-
-    For this demo, select `calc` under **Servers/Sources** to apply the rule only to calls to the test calculator server.
-
-5. (Optional) Add a Description so you can remember why the rule exists.
-
-6. Make sure that **Enabled** is checked, then click **Create Rule**.
-
-7. Try a calculator prompt from your agent again. Atryum should apply the new rule instead of treating the call like a brand-new manual decision:
-
-    -  Within Atryum, click **Invocations** in the left sidebar and confirm that your new call `Succeeded`.
-    - Verify that the approval was <span style="font-variant: small-caps;">decided by</span> a <span style="font-variant: small-caps;">rule</span>.
-
-#### Create a rule from existing invocation
-
-1. In Atryum, click **Invocations** in the left sidebar.
-
-2. Click on the invocation you want to deny.
-
-3. On the invocations detail panel and select **Create Rule From This**.
-
-4. Select the:
-
-    - **Action** — What Atryum should do when the rule matches: Auto Approve or Auto Deny
-    - **Server patterns** — The MCP server or coding harness source names this rule applies to in comma-separated format. Leave this empty, or use `*`, to match all servers.
-    - **Tool patterns** — The tool names this rule applies to in comma-separated format. Leave this empty, or use `*`, to match all tools on the selected server.
-    - **User pattern** — The authenticated agent ID this rule applies to. Leave this empty, or use `*`, to match any agent.
-
-5. (Optional) Enter in a Description so you can remember why the rule exists.
-
-6. Click **Save Rule** to create your rule.
-
 ## Integrate Atryum
 
 ### With coding agents
 
-Coding agents can be connected to atryum at the harness level. Hooks and extensions are available for Claude Code, Cursor, Amp, Pi, and Codex.
+Connect your coding agents to Atryum, allowing Atryum to review tool calls before your agents run them. Hooks and extensions are available for Claude Code, Cursor, Amp, Pi, and Codex.
 
-Run
 
 ```
 ./atryum hooks

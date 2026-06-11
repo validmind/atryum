@@ -28,3 +28,57 @@ We reccomend you create 4 sections of rules:
 - In the middle put your auto approves: list/read operations you want to just happen. Speeds up agents and saves on tokens.
 - Below that put your AI Evaluations
 - Lastly put an explicit blanket Auto Deny or Human Approval.
+
+
+
+### Set up rules for Atryum
+
+Rules are if/then policies that tell Atryum how to handle tool calls:
+
+- Rules let you reuse manual decisions for future tool calls that match the same conditions.
+- Rules are applied from top to bottom — the first matching rule wins.
+
+For example — if the server is `calc`, then approve the call automatically. Let's add a rule to control future matching tool calls:
+
+1. In Atryum, click **Rules** in the left sidebar.
+
+2. Click **New Rule**.
+
+3. Choose an Action:
+    - **Auto Approve** lets matching tool calls run without stopping for manual approval.
+    - **Auto Deny** blocks matching tool calls automatically.
+    - **Human Approval** pauses matching tool calls until a human approves or denies them.
+
+    For this demo, select **Auto Approve**.
+
+4. Choose the Agents, Servers / Sources, and Tools that the rule should apply to.
+
+    For this demo, select `calc` under **Servers/Sources** to apply the rule only to calls to the test calculator server.
+
+5. (Optional) Add a Description so you can remember why the rule exists.
+
+6. Make sure that **Enabled** is checked, then click **Create Rule**.
+
+7. Try a calculator prompt from your agent again. Atryum should apply the new rule instead of treating the call like a brand-new manual decision:
+
+    -  Within Atryum, click **Invocations** in the left sidebar and confirm that your new call `Succeeded`.
+    - Verify that the approval was <span style="font-variant: small-caps;">decided by</span> a <span style="font-variant: small-caps;">rule</span>.
+
+#### Create a rule from existing invocation
+
+1. In Atryum, click **Invocations** in the left sidebar.
+
+2. Click on the invocation you want to deny.
+
+3. On the invocations detail panel and select **Create Rule From This**.
+
+4. Select the:
+
+    - **Action** — What Atryum should do when the rule matches: Auto Approve or Auto Deny
+    - **Server patterns** — The MCP server or agent source names this rule applies to in comma-separated format. Leave this empty, or use `*`, to match all servers.
+    - **Tool patterns** — The tool names this rule applies to in comma-separated format. Leave this empty, or use `*`, to match all tools on the selected server.
+    - **User pattern** — The authenticated agent ID this rule applies to. Leave this empty, or use `*`, to match any agent.
+
+5. (Optional) Enter in a Description so you can remember why the rule exists.
+
+6. Click **Save Rule** to create your rule.
