@@ -6,7 +6,7 @@ To retrieve the available setup options for each supported coding agent:
 ./atryum hooks --help
 ```
 
-#### Install Atryum hooks
+## Install Atryum hooks
 
 The hooks command currently supports direct setup for Cursor and Claude Code. Other agent integrations may use separate extensions or MCP configuration.
 

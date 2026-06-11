@@ -1,4 +1,6 @@
-# Connect ValidMind#### Prerequisites
+# Connect ValidMind
+
+## Prerequisites
 
 Before connecting Atryum to ValidMind:
 
@@ -7,7 +9,7 @@ Before connecting Atryum to ValidMind:
 - [x] Create at least one record in that record type and fill in its constitution field. ([Register records in the inventory](https://docs.validmind.ai/guide/inventory/register-records-in-inventory.html))
 - [x] Make sure you have valid ValidMind API and secret keys for the organization you want Atryum to connect to. ([Manage your profile](https://docs.validmind.ai/guide/configuration/manage-your-profile.html#access-keys))
 
-#### Connect Atryum to ValidMind
+## Connect Atryum to ValidMind
 
 1. Set up ValidMind for Atryum:
 
@@ -44,7 +46,7 @@ Before connecting Atryum to ValidMind:
 
 7. Click **Save Settings** to apply your changes.
 
-#### Set up AI evaluation rule
+## Set up AI evaluation rule
 
 Create a rule in Atryum to route matching tool invocations to a record that evaluates the call against the agent's constitution:
 
