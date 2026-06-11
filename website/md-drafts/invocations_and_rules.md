@@ -65,7 +65,7 @@ Rules are if/then policies that tell Atryum how to handle tool calls:
 
 For example — if the server is `calc`, then approve the call automatically. Let's add a rule to control future matching tool calls:
 
-1. In Atryum, click **Rules** in the left sidebar.
+1. In Constitution, click **Rules** in the left sidebar.
 
 2. Click **New Rule**.
 
@@ -73,6 +73,7 @@ For example — if the server is `calc`, then approve the call automatically. Le
     - **Auto Approve** lets matching tool calls run without stopping for manual approval.
     - **Auto Deny** blocks matching tool calls automatically.
     - **Human Approval** pauses matching tool calls until a human approves or denies them.
+    - **AI Evaluation** sends matching tool calls to a model for review against an agent's constitution. Requires Atryum to be synced to ValidMind. ([Atryum quickstart](quickstart.md))
 
     For this demo, select **Auto Approve**.
 
