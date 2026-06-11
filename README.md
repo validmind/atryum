@@ -101,6 +101,7 @@ A single TOML file configures process and bootstrap settings; runtime entities (
 ```toml
 [server]
 listen_addr     = ":8080"
+public_base_url = "http://localhost:8080" # browser-facing API URL for OAuth callbacks
 database_path   = "./atryum.db"   # or set database_url for Postgres
 database_url    = ""              # postgres://, postgresql://, sqlite://, file:, or a SQLite path
 log_level       = "info"

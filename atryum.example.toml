@@ -1,9 +1,9 @@
 [server]
 listen_addr = ":8080"
 # Public browser-facing base URL used for OAuth redirect_uri generation.
-# In Docker Compose dev this can point at the Vite frontend proxy; in
-# production/Kubernetes it should be the ingress URL.
-public_base_url = "http://localhost:5175"
+# In local dev this should point at the Atryum API server, not the Vite UI.
+# In production/Kubernetes it should be the ingress URL.
+public_base_url = "http://localhost:8080"
 # SQLite remains the default. database_path is used when database_url is empty.
 database_path = "./atryum.db"
 # Optional: select storage provider by URL scheme.

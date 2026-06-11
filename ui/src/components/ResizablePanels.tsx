@@ -3,7 +3,7 @@ import { Box, Flex } from '@chakra-ui/react';
 
 interface ResizablePanelsProps {
   left: React.ReactNode;
-  right: React.ReactNode;
+  right?: React.ReactNode;
   initialSplit?: number;
   minLeft?: number;
   minRight?: number;
@@ -45,6 +45,18 @@ const ResizablePanels: React.FC<ResizablePanelsProps> = ({
     },
     [minLeft, minRight],
   );
+
+  const hasRight = right != null && right !== false;
+
+  if (!hasRight) {
+    return (
+      <Flex ref={containerRef} h="full" overflow="hidden" position="relative">
+        <Box flex={1} overflow="auto" h="full" minW={0}>
+          {left}
+        </Box>
+      </Flex>
+    );
+  }
 
   return (
     <Flex ref={containerRef} h="full" overflow="hidden" position="relative">
