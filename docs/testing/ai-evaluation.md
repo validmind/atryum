@@ -15,7 +15,7 @@ This guide walks through manually testing the AI Evaluation rule type end-to-end
 
 ## Step 1 — Configure `atryum.toml`
 
-`atryum.toml` only needs two sections for AI Evaluation: `[backend]` (ValidMind credentials) and `[[auth]]` (JWT validation). Agent sync and constitution settings have moved to the UI — see **Step 1b** below.
+`atryum.toml` only needs two sections for AI Evaluation: `[backend]` (ValidMind credentials) and `[[auth]]` (JWT validation). Agent sync and charter settings have moved to the UI — see **Step 1b** below.
 
 ```toml
 # ValidMind backend connection (machine-user credentials).
@@ -42,7 +42,7 @@ agent_id_claim = "sub"   # claim that carries the agent's unique identity
 
 ## Step 1b — Configure Agent Sync in the UI
 
-The organization, record type, and constitution field are now configured in the Atryum UI under **Settings → Agent Record Sync**. This replaces the old `[agent_sync]` and `[ai_evaluation]` TOML sections.
+The organization, record type, and charter field are now configured in the Atryum UI under **Settings → Agent Record Sync**. This replaces the old `[agent_sync]` and `[ai_evaluation]` TOML sections.
 
 1. Open the Atryum UI and navigate to **Settings**.
 2. Under **Agent Record Sync**, fill in the three fields:
@@ -51,7 +51,7 @@ The organization, record type, and constitution field are now configured in the 
    |---|---|
    | **Organization** | Select the ValidMind organization whose agent records should be synced |
    | **Record Type** | Select the primary record type that identifies agent inventory models (e.g. `ai-agents`) |
-   | **Constitution Field** | Select the custom field key on inventory models that stores the constitution text (e.g. `constitution`) |
+   | **Charter Field** | Select the custom field key on inventory models that stores the charter text (e.g. `charter`) |
 
    The dropdowns are cascading — selecting an organization loads its record types; selecting a record type loads the custom fields available on that type.
 
@@ -89,13 +89,13 @@ In your identity provider (e.g. Auth0):
 3. Click the agent to open it, then paste the **user ID** (`sub` value) from Step 3 into the **Agent IDs** field.
 4. Save.
 
-Atryum will now recognise bearer tokens issued for that user as belonging to this agent, enabling constitution lookup and org cross-validation when an AI Evaluation rule fires.
+Atryum will now recognise bearer tokens issued for that user as belonging to this agent, enabling charter lookup and org cross-validation when an AI Evaluation rule fires.
 
 ---
 
-## Step 5 — Author the Agent Constitution
+## Step 5 — Author the Agent Charter
 
-The constitution is stored as a custom field (key = `constitution_field_key`) on the agent's Inventory Model in ValidMind. It is free-form Markdown, but the LLM-as-judge recognises the following sections to decide its verdict:
+The charter is stored as a custom field (key = `charter_field_key`) on the agent's Inventory Model in ValidMind. It is free-form Markdown, but the LLM-as-judge recognises the following sections to decide its verdict:
 
 ### Permission tiers (tool-level)
 
@@ -112,7 +112,7 @@ List conditions under which the LLM should route the invocation to the human app
 ```markdown
 ### Human approval required when
 - The SQL query modifies data (INSERT, UPDATE, DELETE, DROP, …)
-- The request targets a table not explicitly listed in the constitution
+- The request targets a table not explicitly listed in the charter
 - The query returns more than 10,000 rows
 ```
 
@@ -125,20 +125,20 @@ List conditions under which the LLM should pass evaluation to the next matching 
 - The tool is not a database tool (let downstream rules handle it)
 ```
 
-### Constitution chain and precedence
+### Charter chain and precedence
 
-If the agent's Inventory Model has upstream dependencies, Atryum collects constitutions from the entire chain (most-upstream ancestor first, this agent last) and presents them all to the LLM. The judge applies these precedence rules:
+If the agent's Inventory Model has upstream dependencies, Atryum collects charters from the entire chain (most-upstream ancestor first, this agent last) and presents them all to the LLM. The judge applies these precedence rules:
 
-1. **Downstream wins**: later constitutions in the chain are more specific and override earlier ones when they conflict.
-2. **Explicit delegation is honoured**: if an upstream says "downstream constitutions may override this", a downstream grant (even conditional) replaces the upstream rule.
-3. **Most specific match first**: apply the innermost rule that covers the action; fall back to upstream only when no downstream constitution addresses it.
+1. **Downstream wins**: later charters in the chain are more specific and override earlier ones when they conflict.
+2. **Explicit delegation is honoured**: if an upstream says "downstream charters may override this", a downstream grant (even conditional) replaces the upstream rule.
+3. **Most specific match first**: apply the innermost rule that covers the action; fall back to upstream only when no downstream charter addresses it.
 4. **Grants override blanket denials**: a downstream "allow with human approval" beats an upstream "deny all".
 
 **Example:**
 
 ```
 [Upstream agent]
-Deny all Postgres queries. Downstream constitutions may override this.
+Deny all Postgres queries. Downstream charters may override this.
 
 ---
 
@@ -178,8 +178,8 @@ Send a tool call through Atryum using a bearer token issued for the agent identi
 
 1. Atryum receives the invocation and matches it to the AI Evaluation rule.
 2. It resolves the agent's Inventory Model CUID and org CUID from the stored record.
-3. It calls `POST /api/atryum/unstable/evaluate` on the ValidMind backend with the agent details, constitution field key, and tool call context.
-4. The backend fetches the constitution chain from the Inventory Model's custom fields, builds a prompt with precedence rules, and asks the configured LLM for a verdict.
+3. It calls `POST /api/atryum/unstable/evaluate` on the ValidMind backend with the agent details, charter field key, and tool call context.
+4. The backend fetches the charter chain from the Inventory Model's custom fields, builds a prompt with precedence rules, and asks the configured LLM for a verdict.
 5. Atryum receives `{ verdict, reason }` and routes the invocation accordingly:
 
    | Verdict | Disposition | UI outcome |
@@ -199,7 +199,7 @@ In the Atryum UI, open **Invocations** to see the outcome and the disposition re
 |---|---|
 | No agents in startup log | `org_cuid` or `agent_record_type_slug` is wrong, or backend credentials are incorrect |
 | Rule never matches | Agent IDs field is empty, the user's `sub` doesn't match `agent_id_claim`, or the bearer token is not being sent by the agent |
-| Evaluation falls back to `human_approval` | `constitution_field_key` doesn't match the custom field name in VM, or the LLM call failed (check logs) |
+| Evaluation falls back to `human_approval` | `charter_field_key` doesn't match the custom field name in VM, or the LLM call failed (check logs) |
 | 403 from `/evaluate` | `org_cuid` in the request doesn't match the agent's organization in ValidMind |
 | Upstream deny overrides downstream grant | Backend not yet redeployed with the precedence-rules prompt update; check that `verdict` (not `approved`) is present in the `/evaluate` response |
-| `next_rule` never advances | Rules are not stacked in priority order, or the constitution does not contain a `### Defer to next rule when` section |
+| `next_rule` never advances | Rules are not stacked in priority order, or the charter does not contain a `### Defer to next rule when` section |

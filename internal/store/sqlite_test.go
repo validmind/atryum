@@ -760,7 +760,7 @@ func TestAgentSyncSettingsRepo_UpsertOnEmptyTable(t *testing.T) {
 	err = repo.Save(ctx, AgentSyncSettings{
 		OrgCUID:                "org-abc",
 		AgentRecordTypeSlug:    "ai-agents",
-		ConstitutionFieldKey:   "constitution",
+		CharterFieldKey:        "charter",
 		SummaryModelConfigCUID: "model-abc",
 		DefaultAgentVMCUID:     "agent-vm-abc",
 	})

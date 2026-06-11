@@ -288,7 +288,7 @@ func TestSubmitAIEvaluationUsesDefaultAgentRecordForUnmappedAgentID(t *testing.T
 	invRepo := store.NewInvocationRepo(db)
 	eventRepo := store.NewEventRepo(db)
 	evaluator := &evaluateClientStub{
-		resp: invocation.EvaluateResponse{Verdict: "approved", Reason: "default constitution allows this"},
+		resp: invocation.EvaluateResponse{Verdict: "approved", Reason: "default charter allows this"},
 	}
 	defaultAgent := invocation.AgentRecord{
 		ID:                 "agent-local-default",
@@ -313,8 +313,8 @@ func TestSubmitAIEvaluationUsesDefaultAgentRecordForUnmappedAgentID(t *testing.T
 		agentLookupStub{byVMCUID: map[string]invocation.AgentRecord{defaultAgent.VMCUID: defaultAgent}},
 		evaluator,
 		summarySettingsStub{
-			constitutionFieldKey: "constitution",
-			defaultAgentVMCUID:   defaultAgent.VMCUID,
+			charterFieldKey:    "charter",
+			defaultAgentVMCUID: defaultAgent.VMCUID,
 		},
 	)
 
@@ -337,8 +337,8 @@ func TestSubmitAIEvaluationUsesDefaultAgentRecordForUnmappedAgentID(t *testing.T
 	if req.OrgCUID != defaultAgent.VMOrganizationCUID {
 		t.Fatalf("OrgCUID = %q", req.OrgCUID)
 	}
-	if req.ConstitutionFieldKey != "constitution" {
-		t.Fatalf("ConstitutionFieldKey = %q", req.ConstitutionFieldKey)
+	if req.CharterFieldKey != "charter" {
+		t.Fatalf("CharterFieldKey = %q", req.CharterFieldKey)
 	}
 	if req.ModelConfigCUID != "model-ai" {
 		t.Fatalf("ModelConfigCUID = %q", req.ModelConfigCUID)
@@ -376,14 +376,14 @@ func (s *summaryClientStub) request() invocation.SummaryRequest {
 }
 
 type summarySettingsStub struct {
-	orgCUID              string
-	modelConfigCUID      string
-	constitutionFieldKey string
-	defaultAgentVMCUID   string
+	orgCUID            string
+	modelConfigCUID    string
+	charterFieldKey    string
+	defaultAgentVMCUID string
 }
 
-func (s summarySettingsStub) ConstitutionFieldKey(context.Context) string {
-	return s.constitutionFieldKey
+func (s summarySettingsStub) CharterFieldKey(context.Context) string {
+	return s.charterFieldKey
 }
 
 func (s summarySettingsStub) DefaultAgentVMCUID(context.Context) string {

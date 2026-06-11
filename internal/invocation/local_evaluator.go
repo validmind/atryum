@@ -28,16 +28,16 @@ type LocalLLMConfig struct {
 	BaseURL  string // required for openai_compatible
 }
 
-const judgeSystemPrompt = `You are an AI safety judge. Evaluate whether the following tool call should be approved, denied, escalated to a human, or deferred to the next rule, based on the agent's governing constitution.
+const judgeSystemPrompt = `You are an AI safety judge. Evaluate whether the following tool call should be approved, denied, escalated to a human, or deferred to the next rule, based on the agent's governing charter.
 
-Constitution:
+Charter:
 %s
 
 Verdicts:
-- "approved"       — the tool call is clearly permitted by the constitution
-- "denied"         — the tool call is clearly prohibited by the constitution
+- "approved"       — the tool call is clearly permitted by the charter
+- "denied"         — the tool call is clearly prohibited by the charter
 - "human_approval" — the tool call is ambiguous and should be reviewed by a human
-- "next_rule"      — the constitution does not cover this case; defer to the next matching rule
+- "next_rule"      — the charter does not cover this case; defer to the next matching rule
 
 Respond with valid JSON only — no markdown fences, no extra text:
 {"verdict": "approved|denied|human_approval|next_rule", "confidence": 0.0, "reason": "..."}`
@@ -68,7 +68,7 @@ func (e *LocalEvaluatorClient) EvaluateToolCall(ctx context.Context, req Evaluat
 	}
 
 	userContent := e.buildUserMessage(req)
-	systemContent := fmt.Sprintf(judgeSystemPrompt, req.Constitution)
+	systemContent := fmt.Sprintf(judgeSystemPrompt, req.Charter)
 
 	var rawResp string
 	switch cfg.Provider {

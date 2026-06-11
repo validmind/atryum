@@ -80,7 +80,7 @@ const CreateAgentModal: React.FC<CreateAgentModalProps> = ({ isOpen, onClose }) 
   const [form, setForm] = useState<AgentCreateInput>({
     name: '',
     description: '',
-    constitution: '',
+    charter: '',
     enabled: true,
     agent_ids: [],
   });
@@ -89,7 +89,7 @@ const CreateAgentModal: React.FC<CreateAgentModalProps> = ({ isOpen, onClose }) 
   const noOptionsMessage = useCallback(() => null, []);
 
   const handleClose = () => {
-    setForm({ name: '', description: '', constitution: '', enabled: true, agent_ids: [] });
+    setForm({ name: '', description: '', charter: '', enabled: true, agent_ids: [] });
     setStatusMsg(null);
     onClose();
   };
@@ -141,12 +141,12 @@ const CreateAgentModal: React.FC<CreateAgentModalProps> = ({ isOpen, onClose }) 
               />
             </FormControl>
             <FormControl>
-              <FormLabel fontSize="sm">Constitution (optional)</FormLabel>
+              <FormLabel fontSize="sm">Charter (optional)</FormLabel>
               <Textarea
                 size="sm"
                 placeholder="Define the rules and constraints governing this agent's behavior. Used by local LLM-as-judge evaluation rules."
-                value={form.constitution ?? ''}
-                onChange={(e) => setForm((f) => ({ ...f, constitution: e.target.value }))}
+                value={form.charter ?? ''}
+                onChange={(e) => setForm((f) => ({ ...f, charter: e.target.value }))}
                 rows={5}
                 fontFamily="mono"
                 fontSize="xs"
@@ -206,7 +206,7 @@ type EditAgentModalProps = {
 const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose }) => {
   const [name, setName] = useState(agent.name);
   const [description, setDescription] = useState(agent.description ?? '');
-  const [constitution, setConstitution] = useState(agent.constitution ?? '');
+  const [charter, setCharter] = useState(agent.charter ?? '');
   const [enabled, setEnabled] = useState(agent.enabled);
   const [agentIDs, setAgentIDs] = useState<string[]>(agent.agent_ids);
   const [statusMsg, setStatusMsg] = useState<{ text: string; isError: boolean } | null>(null);
@@ -219,7 +219,7 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
       setStatusMsg({ text: 'Name is required.', isError: true });
       return;
     }
-    const input: AgentUpdateInput = { name, description, enabled, agent_ids: agentIDs, constitution };
+    const input: AgentUpdateInput = { name, description, enabled, agent_ids: agentIDs, charter };
     try {
       await updateMutation.mutateAsync({ cuid: agent.cuid, input });
       setStatusMsg(null);
@@ -283,7 +283,7 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
 
             <FormControl>
               <FormLabel fontSize="sm">
-                Constitution
+                Charter
                 {agent.synced && (
                   <Text as="span" fontSize="xs" color="text.subtle" fontWeight="normal" ml={2}>
                     (read-only — managed by ValidMind sync)
@@ -292,13 +292,13 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
               </FormLabel>
               <Textarea
                 size="sm"
-                value={constitution}
-                onChange={(e) => setConstitution(e.target.value)}
+                value={charter}
+                onChange={(e) => setCharter(e.target.value)}
                 isReadOnly={agent.synced}
                 rows={6}
                 placeholder={
                   agent.synced
-                    ? 'Constitution is managed by ValidMind sync'
+                    ? 'Charter is managed by ValidMind sync'
                     : 'Define the rules and constraints governing this agent\'s behavior. Used by local LLM-as-judge evaluation rules.'
                 }
                 fontFamily="mono"

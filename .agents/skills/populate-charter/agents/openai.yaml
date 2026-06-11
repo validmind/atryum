@@ -1,0 +1,4 @@
+interface:
+  display_name: "Populate Charter"
+  short_description: "Draft agent charters from prompts"
+  default_prompt: "Use $populate-charter to draft a charter from this agent brief."

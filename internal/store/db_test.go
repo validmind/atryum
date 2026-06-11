@@ -73,6 +73,7 @@ func TestMigrationRegistryPreservesExistingVersionsAndNames(t *testing.T) {
 		{18, "018_rule_llm_config"},
 		{19, "019_settings_summary_llm"},
 		{20, "020_managed_agent_sessions"},
+		{21, "021_rename_constitution_to_charter"},
 	}
 	for i, w := range want {
 		if migrations[i].Version != w.version || migrations[i].Name != w.name {

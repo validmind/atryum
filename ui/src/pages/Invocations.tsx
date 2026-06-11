@@ -1444,23 +1444,6 @@ const Invocations: React.FC = () => {
                               </FormControl>
                               <FormControl size="sm">
                                 <FormLabel fontSize="xs" mb={1}>
-                                  User pattern
-                                </FormLabel>
-                                <Input
-                                  size="sm"
-                                  fontFamily="mono"
-                                  placeholder="* for any"
-                                  value={ruleForm.user_pattern}
-                                  onChange={(e) =>
-                                    setRuleForm((f) => ({
-                                      ...f,
-                                      user_pattern: e.target.value,
-                                    }))
-                                  }
-                                />
-                              </FormControl>
-                              <FormControl size="sm">
-                                <FormLabel fontSize="xs" mb={1}>
                                   Description (optional)
                                 </FormLabel>
                                 <Input
@@ -1572,23 +1555,6 @@ const Invocations: React.FC = () => {
                                   setCreateRuleForm((f) => ({
                                     ...f,
                                     tool_patterns: e.target.value,
-                                  }))
-                                }
-                              />
-                            </FormControl>
-                            <FormControl size="sm">
-                              <FormLabel fontSize="xs" mb={1}>
-                                User pattern
-                              </FormLabel>
-                              <Input
-                                size="sm"
-                                fontFamily="mono"
-                                placeholder="* for any"
-                                value={createRuleForm.user_pattern}
-                                onChange={(e) =>
-                                  setCreateRuleForm((f) => ({
-                                    ...f,
-                                    user_pattern: e.target.value,
                                   }))
                                 }
                               />
