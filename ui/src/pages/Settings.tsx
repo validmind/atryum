@@ -113,7 +113,7 @@ const LLMConfigForm: React.FC<LLMConfigFormProps> = ({ initial, onSave, onClose,
           onChange={(e) => setApiKey(e.target.value)}
           placeholder={initial?.api_key === '***' ? '(leave blank to keep existing)' : 'sk-…'}
         />
-        <FormHelperText fontSize="xs">Stored encrypted. Leave blank to keep the existing key when editing.</FormHelperText>
+        <FormHelperText fontSize="xs">Leave blank to keep the existing key when editing.</FormHelperText>
       </FormControl>
 
       {provider === 'openai_compatible' && (
