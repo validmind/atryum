@@ -1,8 +1,8 @@
-# Atryum rules
+# Rules
 
 Configure rules that control how Atryum handles future tool calls.
 
-## Rules
+## What are rules?
 
 Rules are if/then policies that tell Atryum how to handle tool invocations. Rules let you reuse manual decisions for future tool calls that match the same conditions.
 

@@ -1,4 +1,4 @@
-# Atryum quickstart
+# Quickstart
 
 Install and initialize Atryum, then integrate Atryum with your coding agents and ValidMind.
 
