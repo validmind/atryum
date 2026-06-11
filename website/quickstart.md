@@ -6,15 +6,11 @@ Install and initialize Atryum, then integrate Atryum with your coding agents and
 
 ### Download Atryum
 
-Download Atryum for your operating system:
-
 **Linux**
 
 ```bash
 curl -L https://github.com/validmind/atryum/releases/download/0.0.2/atryum-linux -o atryum && chmod +x atryum
 ```
-
-**Microsoft Windows:** Use Windows Subsystem for Linux.
 
 **macOS**
 
