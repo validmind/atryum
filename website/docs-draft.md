@@ -1,8 +1,8 @@
 # Atryum quickstart
 
-Set up Atryum, then connect coding agents and ValidMind to Atryum to route tool use through human approval and policy rules.
+Install and initialize Atryum, then connect coding agents and ValidMind to Atryum to route tool use through human approval and policy rules.
 
-# Set up Atryum
+## Install & initialize Atryum
 
 Download atryum
 
@@ -55,7 +55,7 @@ One cool trick: as a human you can deny the tool with a message, allowing you to
 
 Quickstart complete.
 
-# Integrate Atryum
+## Integrate Atryum
 
 ## Coding Agents
 
