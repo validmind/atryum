@@ -25,17 +25,16 @@ The **Invocations** page is where you review those calls, approve or deny reques
 
 The detail panel shows:
 
-- Server and tool name (for example, `{server} · {tool}`), submission time, and full invocation ID.
+- Server and tool name, submission time, and full invocation ID.
 - Current status badge and who or what made the decision. AI-evaluated invocations may also show a confidence score.
 - The rule ID that handled the invocation, when a rule matched.
 - Agent type and version (for example, `opencode 1.14.31`).
-- **<span style="font-variant: small-caps;">summary</span>** — A plain-language description of the call. Click **Summarize** or **Re-summarize** to generate one. Requires invocation summarization to be set up.*
-- **<span style="font-variant: small-caps;">arguments</span>** — Tool input as a key/value table. Click **Show raw JSON** for the full payload. File-edit tools may show a diff instead.
-- **<span style="font-variant: small-caps;">approval required</span>** — Shown for `Pending Approval` invocations. Approve or deny the call, or choose **Always approve** / **Always deny** to create a rule.
-- **<span style="font-variant: small-caps;">create rule from this</span>** — Opens a form to save an Auto Approve or Auto Deny rule scoped to this invocation.
-- **<span style="font-variant: small-caps;">result</span>** — Tool output as JSON when the call succeeded.
-- **<span style="font-variant: small-caps;">error</span>** — Error details as JSON when the call failed or was denied.
-- **<span style="font-variant: small-caps;">events</span>** — Chronological lifecycle log. Expand a row to see event payload details.
+- A plain-language summary of the call — Click **Summarize** or **Re-summarize** to generate or regenerate one. Requires invocation summarization to be set up.*
+- Tool input as a key/value arguments table — Click **Show raw JSON** for the full payload. File-edit tools may show a diff instead.
+- If a invocation is `Pending Approval`, options to approve or deny the call. ([Approve or deny invocations](#approve-or-deny-invocations))
+- Option to create a rule from this invocation's logic. ([Rules](rules.md#create-rules-from-existing-invocations))
+- Tool output as JSON result when the call succeeds, or error details as JSON result when the call fails or is denied.
+- Chronological event log. Expand a row to see event payload details.
 
 #### Filter invocation list
 
