@@ -74,31 +74,40 @@ Run the hooks command to see the available setup options for each supported codi
 
 ### With ValidMind
 
-To connect your atryum to ValidMind run:
+Connect Atryum to ValidMind to sync AI agent records and evaluate tool calls against each agent’s constitution.
 
-```
+#### Prerequisites
+
+Before connecting Atryum to ValidMind, prepare the agent records that Atryum will sync:
+
+- Create or choose a ValidMind primary record type for AI agents, such as `ai-agents`.
+- Add a custom long-text field to that record type for each agent's constitution. For example, use a field key like `constitution`.
+- Create at least one agent record in that record type and fill in its constitution field.
+- Make sure you have a ValidMind API key and secret for the environment you want Atryum to connect to.
+
+#### Connect Atryum to ValidMind
+
+1. Run the ValidMind setup command for Atryum:
+
+```bash
 ./atryum setup validmind
-ValidMind Base URL: (you probably want dev)
-ValidMind API key: abcd1234
-ValidMind API secret: arstarst
-updated ValidMind credentials in $HOME/.config/atryum/atryum.toml
 ```
 
-Once setup, restart and return to the UI:
+2. Follow the prompts:
 
-[`localhost:8080/settings`](http://localhost:8080/settings)
+    - **ValidMind Base URL** — Enter the ValidMind environment you want Atryum to connect to.
+    - **ValidMind API key** and **ValidMind API secret** — Enter credentials for that environment.
 
-Fill out the form. It is helpful to have the following setup in ValidMind:
+    Atryum saves the credentials to `$HOME/.config/atryum/atryum.toml`.
 
-- A primary record type specifically for ai-agents.
-- A long text field on that record for agent charters.
+3. Restart Atryum so it loads the updated ValidMind credentials.
 
-The charter is where you define "allowed to do X", "deny the agent trying to do Y", and "pass requests to do Z for human approval".
+4. In your browser, navigate to [`localhost:8080/settings`](http://localhost:8080/settings).
 
-![ValidMind charter configuration example](assets/charter.png)
+5. Under **Agent Record Sync**, select the ValidMind organization, AI agent record type, and custom constitution field to use for synced agents.
 
-Since this is a quick demo, set the default agent in the settings page. We'll connect with agent identity later.
+6. Click **Save Settings**.
 
-Finally you need a rule, relatively high in priority, mapping that default Agent Record to AI Evaluation.
+7. Create an AI Evaluation rule in Atryum. This routes matching tool calls to a model that evaluates the call against the agent's constitution.
 
-With all that setup, you're ready to rock and roll. Ask the agent to do work, then use the charter in ValidMind to restrict its scope.
+The constitution defines what the agent is allowed to do, what it must not do, and which requests should require human approval.
