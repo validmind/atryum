@@ -1,4 +1,4 @@
-# Invocation Summary Model
+# Invocation summarization 
 
 Choose the LLM Atryum uses to generate plain-language summaries for tool invocations on the **Invocations** page.
 

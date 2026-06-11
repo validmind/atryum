@@ -1,8 +1,57 @@
-# Invocations & rules
+# Atryum invocations
 
-## Atryum invocations
+Invocations are durable audit records for every tool call that passes through Atryum.
 
-#### Approval timeout
+## Invocations
+
+The **Invocations** page is where you review those calls, approve or deny requests that need human input, and turn one-off decisions into reusable rules Invocations are displayed in a table:
+
+- **<span style="font-variant: small-caps;">agent</span>** — The client that made the tool call.
+- **<span style="font-variant: small-caps;">id</span>** — The unique invocation identifier. Hover to see the full ID.
+- **<span style="font-variant: small-caps;">server</span>** — The server or agent source the tool call targeted.
+- **<span style="font-variant: small-caps;">tool</span>** — The tool name the agent requested to run.
+- **<span style="font-variant: small-caps;">agent record</span>** — The ValidMind agent record linked to this invocation, when Atryum is synced to ValidMind. ([Connect ValidMind](connect-validmind.md))
+- **<span style="font-variant: small-caps;">status</span>** — The current state of the invocation: `Pending Approval`, `Approved`, `Denied`, `Executing`, `Succeeded`, `Failed`, `Expired`, `Cancelled`, or `Received`.
+- **<span style="font-variant: small-caps;">decided by</span>** — Who or what made the approval decision: a <span style="font-variant: small-caps;">human</span>, a matching <span style="font-variant: small-caps;">rule</span>, or <span style="font-variant: small-caps;">ai evaluation</span>.
+- **<span style="font-variant: small-caps;">submitted</span>** — When the agent submitted the tool call.
+
+### View or filter invocations
+
+#### View invocation details
+
+1. In Atryum, click **Invocations** in the left sidebar.
+
+2. To view an invocation's details, click on it.
+
+The detail panel shows:
+
+- Server and tool name (for example, `{server} · {tool}`), submission time, and full invocation ID.
+- Current status badge and who or what made the decision. AI-evaluated invocations may also show a confidence score.
+- The rule ID that handled the invocation, when a rule matched.
+- Agent type and version (for example, `opencode 1.14.31`).
+- **<span style="font-variant: small-caps;">summary</span>** — A plain-language description of the call. Click **Summarize** or **Re-summarize** to generate one. Requires invocation summarization to be set up.*
+- **<span style="font-variant: small-caps;">arguments</span>** — Tool input as a key/value table. Click **Show raw JSON** for the full payload. File-edit tools may show a diff instead.
+- **<span style="font-variant: small-caps;">approval required</span>** — Shown for `Pending Approval` invocations. Approve or deny the call, or choose **Always approve** / **Always deny** to create a rule.
+- **<span style="font-variant: small-caps;">create rule from this</span>** — Opens a form to save an Auto Approve or Auto Deny rule scoped to this invocation.
+- **<span style="font-variant: small-caps;">result</span>** — Tool output as JSON when the call succeeded.
+- **<span style="font-variant: small-caps;">error</span>** — Error details as JSON when the call failed or was denied.
+- **<span style="font-variant: small-caps;">events</span>** — Chronological lifecycle log. Expand a row to see event payload details.
+
+#### Filter invocation list
+
+1. In Atryum, click **Invocations** in the left sidebar.
+
+2. To narrow down the list of invocations, click **Filter**.
+
+3. Select your filters:
+    - **Server** — Server or agent sources the tool call targeted.
+    - **Tool** — Tool names the agent requested to run.
+    - **Agent** — Clients that made the tool call.
+    - **Status** — State of the invocation: `Pending Approval`, `Approved`, `Denied`, `Executing`, `Succeeded`, `Failed`, `Expired`, `Cancelled`, or `Received`.
+
+4. Click **Apply Filter** to apply your selections.
+
+### Approve or deny invocations
 
 Human approvals have a default timeout of 30 seconds. To adjust the timeout, update your local Atryum config file (`atryum.toml`), then restart Atryum. For example:
 
@@ -11,7 +60,19 @@ Human approvals have a default timeout of 30 seconds. To adjust the timeout, upd
 request_timeout_seconds = 120
 ```
 
-#### Invocation denials
+#### Approve invocations
+
+1. In Atryum, click **Invocations** in the left sidebar.
+
+2. Click on the invocation you want to approve.
+
+3. On the invocations detail panel and select **Deny** under Approval Required.
+
+4. (Optional) Enter a reason for denial — this reason is returned to the agent so you can steer what it does next.
+
+5. Click **Deny** to confirm the denial.
+
+#### Deny invocations
 
 1. In Atryum, click **Invocations** in the left sidebar.
 
@@ -22,118 +83,4 @@ request_timeout_seconds = 120
 4. (Optional) Enter a reason for denial — this reason is returned to the agent so you can steer what it does next.
 
 5. Click **Deny** to confirm the denial.
-
-## Atryum rules
-
-Rules are if/then policies that tell Atryum how to handle tool invocations. Rules let you reuse manual decisions for future tool calls that match the same conditions.
-
-Rules support four types of actions:
-
-1. **Auto Approve** — Allows matching tool calls run without stopping for manual approval.
-2. **Auto Deny** — Blocks matching tool calls automatically.
-3. **Human Approval** — Pauses matching tool calls until a human approves or denies them.
-4. **AI Evaluation** — Sends matching tool calls to a record for review against an agent's constitution — requires Atryum to be synced to ValidMind. ([Connect ValidMind](connect_validmind.md))
-
-### Rules best practices
-
-#### Rule ordering
-
-Rules are generally applied from top to bottom — the first matching rule wins, with the except of AI Evaluation Actions. In the case of AI Evaluations, when the agent's constitution does not apply to the tool call, the evaluation model can defer to the next matching rule instead of deciding.
-
-As such, we recommend you curate four tiers of rules:
-
-1. At the top, put rules for tools you never want automatically run. Set their **Action**s to `Human Approval` or `Auto Deny`.
-2. Then, put rules for list/read operations you want to automatically run. Set their **Action**s to `Auto Approve` — this speeds up agents and saves on tokens.
-3. Below that, set your rules for `AI Evaluation` **Action**s.
-4. Finally, set up an explicit blanket rule with the **Action** set to `Auto Deny` or `Human Approval`.
-
-#### Rule matching
-
-- When no rule matches a tool call, Atryum uses the fallback action set in your `atryum.toml` configuration file under `policy.provider`. Available values:
-
-    - **`always_approve`** — Run the tool call without stopping for approval.
-    - **`manual_approval`** — Pause the call until a human approves or denies it. Manual approval is the default when unset.
-    - **`always_deny`** — Block the tool call automatically.
-
-- Each rule can apply to specific agents, Model Context Protocol (MCP) servers, and tools. Leave a field empty or use `*` to match all agents, servers, or tools in that category.
-
-#### Harness-level tools
-
-Some tools are built into your coding agent's harness (for example, `read` and `write` in Cursor or Claude Code) rather than coming from MCP servers registered in Atryum.
-
-These are not listed automatically on the Rules page — enter the exact tool name manually when creating a rule.
-
-### Create new rules
-
-1. In Atryum, click **Rules** in the left sidebar.
-
-2. Click **New Rule**.
-
-3. Select an **Action** type.
-
-4. Select the **Agents**, **Servers / Sources**, and **Tools** that the rule should apply to.
-
-    (AI Evaluation Action only) Select the **Evaluation Model** — The large language model (LLM) that reviews matching tool calls against the agent's constitution and decides whether to approve, deny, escalate to a human, or defer to the next rule. ([LLM configurations](llm-configurations.md))
-
-5. (Optional) Add a **Description** so you can remember why the rule exists.
-
-6. Make sure that **Enabled** is checked, then click **Create Rule**.
-
-#### Create rules from existing invocations
-
-1. In Atryum, click **Invocations** in the left sidebar.
-
-2. Click on the invocation you want to create a rule from.
-
-3. On the invocations detail panel, select **Create Rule From This**.
-
-4. Select the:
-
-    - **Action** — What Atryum should do when the rule matches: Auto Approve or Auto Deny
-    - **Server patterns** — The MCP server or agent source names this rule applies to in comma-separated format. Leave this empty, or use `*`, to match all servers.
-    - **Tool patterns** — The tool names this rule applies to in comma-separated format. Leave this empty, or use `*`, to match all tools on the selected server.
-    - **User pattern** — The authenticated agent ID this rule applies to. Leave this empty, or use `*`, to match any agent.
-
-5. (Optional) Enter a **Description** so you can remember why the rule exists.
-
-6. Click **Save Rule** to create your rule.
-
-### Edit or reorder rules
-
-#### Edit rules
-
-1. In Atryum, click **Rules** in the left sidebar.
-
-2. Click on the rule you want to edit to make your changes to:
-
-    - The **Action** type
-    - The **Agents**, **Servers / Sources**, and **Tools** that the rule should apply to
-    - (AI Evaluation Action only) The **Evaluation Model** that reviews matching tool calls against the agent's constitution and decides whether to approve, deny, escalate to a human, or defer to the next rule. ([LLM configurations](llm-configurations.md))
-    - (Optional) The rule **Description**
-
-3. To turn rules on or off:
-
-    - Check **Enabled** to turn the rule on.
-    - Uncheck **Enabled** to turn the rule off.
-
-4. Click **Save** to apply your changes.
-
-#### Reorder rules
-
-1. In Atryum, click **Rules** in the left sidebar.
-
-2. Hover over the rule you want to reorder.
-
-3. Under the <span style="font-variant: small-caps;">order</span> column, click:
-
-    - **&#8743;** to move the rule up.
-    - **&#8744;** to move the rule down.
-
-Changes to rule ordering is saved automatically.
-
-
-
-
-
-
 

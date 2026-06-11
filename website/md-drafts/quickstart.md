@@ -59,6 +59,8 @@ curl -L https://github.com/validmind/atryum/releases/download/0.0.2/atryum-mac -
     - Under Approval Required, select **Approve** to let the tool call run.
     - Verify that the invocation's <span style="font-variant: small-caps;">auth</span> is `Succeeded` and that the approval was <span style="font-variant: small-caps;">decided by</span> a <span style="font-variant: small-caps;">human</span>.
 
+To learn more about working with invocations, refer to **[Invocations](invocations.md)**.
+
 ### Set up calculation server rule
 
 Rules are if/then policies that tell Atryum how to handle tool invocations. For example — if the server is `calc`, then approve the call automatically.
@@ -80,11 +82,14 @@ Let's add a rule to control future matching tool calls:
     -  Within Atryum, click **Invocations** in the left sidebar and confirm that your new call `Succeeded`.
     - Verify that the approval was <span style="font-variant: small-caps;">decided by</span> a <span style="font-variant: small-caps;">rule</span>.
 
-To learn more about working with invocations and what rules you can set up to manage invocations, refer to **[Invocations & rules](invocations-rules.md)**.
+To learn more about setting up rules to manage invocations, refer to **[Rules](rules.md)**.
 
 ## Integrate Atryum
 
 After setting up your test calculator server, connect Atryum with your coding agents and ValidMind to streamline your agent oversight in one platform.
+
+To learn more about connecting ValidMind or agents with Atryum, refer to **[Integrations](integrations.md)**.
+
 
 ### With ValidMind
 
@@ -92,12 +97,8 @@ Sync your ValidMind organization's agent records to Atryum to map tool invocatio
 
 Connecting agent records from ValidMind also allows you to optionally use Atryum to evaluate tool invocations against each agent’s *constitution*. A constitution is a plain-language policy that describes what an agent can do, what it cannot do, and which actions require human approval.
 
-To learn more about connecting ValidMind with Atryum, refer to **[Connect agents](connect-validmind.md)**.
-
 ### With coding agents
 
 Connect your coding agents to Atryum, allowing Atryum to review tool invocations before your agents run them. Hooks and extensions are available for [Claude Code](https://www.anthropic.com/claude-code), [Cursor](https://cursor.com), [Amp](https://ampcode.com), [Pi](https://pi.dev), and [Codex](https://openai.com/codex).
-
-To learn more about connecting agents with Atryum, refer to **[Connect agents](connect-agents.md)**.
 
 
