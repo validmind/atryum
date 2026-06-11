@@ -532,8 +532,8 @@ func (c *Client) invokeHTTP(ctx context.Context, upstream Upstream, tool string,
 	if err != nil {
 		return InvokeResult{}, err
 	}
-	var rpcResp rpcResponse
-	if err := json.Unmarshal(result.Body, &rpcResp); err != nil {
+	rpcResp, err := decodeRPCResponse(result)
+	if err != nil {
 		return InvokeResult{}, err
 	}
 	if len(rpcResp.Error) > 0 && string(rpcResp.Error) != "null" {
@@ -545,8 +545,8 @@ func (c *Client) invokeHTTP(ctx context.Context, upstream Upstream, tool string,
 			if err != nil {
 				return InvokeResult{}, err
 			}
-			rpcResp = rpcResponse{}
-			if err := json.Unmarshal(result.Body, &rpcResp); err != nil {
+			rpcResp, err = decodeRPCResponse(result)
+			if err != nil {
 				return InvokeResult{}, err
 			}
 		}
@@ -575,8 +575,8 @@ func (c *Client) listToolsHTTP(ctx context.Context, upstream Upstream) ([]Tool, 
 	if err != nil {
 		return nil, err
 	}
-	var rpcResp rpcResponse
-	if err := json.Unmarshal(result.Body, &rpcResp); err != nil {
+	rpcResp, err := decodeRPCResponse(result)
+	if err != nil {
 		return nil, err
 	}
 	if len(rpcResp.Error) > 0 && string(rpcResp.Error) != "null" {
@@ -588,8 +588,8 @@ func (c *Client) listToolsHTTP(ctx context.Context, upstream Upstream) ([]Tool, 
 			if err != nil {
 				return nil, err
 			}
-			rpcResp = rpcResponse{}
-			if err := json.Unmarshal(result.Body, &rpcResp); err != nil {
+			rpcResp, err = decodeRPCResponse(result)
+			if err != nil {
 				return nil, err
 			}
 		}
@@ -663,13 +663,6 @@ func (c *Client) doHTTPEnvelope(ctx context.Context, upstream Upstream, body []b
 	if sessionExpired {
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		return ForwardResult{StatusCode: resp.StatusCode, Body: bodyBytes, ContentType: contentType, ProtocolVersion: resp.Header.Get("MCP-Protocol-Version"), SessionExpired: true, SessionID: sessionID}, nil
-	}
-	if strings.Contains(contentType, "text/event-stream") {
-		data, sseErr := extractFirstSSEData(resp.Body)
-		if sseErr != nil {
-			return ForwardResult{}, sseErr
-		}
-		return ForwardResult{StatusCode: resp.StatusCode, Body: data, ContentType: "application/json", ProtocolVersion: resp.Header.Get("MCP-Protocol-Version"), SessionID: sessionID}, nil
 	}
 	respBody := new(bytes.Buffer)
 	_, err = respBody.ReadFrom(resp.Body)
@@ -834,9 +827,14 @@ func (c *Client) initializeHTTPSession(ctx context.Context, upstream Upstream, p
 		c.clearSession(upstream.Name)
 		return false, fmt.Errorf("upstream initialize using MCP %s failed: http %d: %s", protocolVersion, result.StatusCode, extractErrorDetail(result.Body))
 	}
-	if len(bytes.TrimSpace(result.Body)) > 0 {
+	resultBody, err := decodeRPCPayload(result)
+	if err != nil {
+		c.clearSession(upstream.Name)
+		return false, fmt.Errorf("upstream initialize using MCP %s returned invalid SSE JSON-RPC: %w", protocolVersion, err)
+	}
+	if len(bytes.TrimSpace(resultBody)) > 0 {
 		var rpcResp rpcResponse
-		if err := json.Unmarshal(result.Body, &rpcResp); err != nil {
+		if err := json.Unmarshal(resultBody, &rpcResp); err != nil {
 			c.clearSession(upstream.Name)
 			return false, fmt.Errorf("upstream initialize using MCP %s returned invalid JSON-RPC: %w", protocolVersion, err)
 		}
@@ -856,6 +854,25 @@ func (c *Client) initializeHTTPSession(ctx context.Context, upstream Upstream, p
 		}
 	}
 	return hadSession, nil
+}
+
+func decodeRPCResponse(result ForwardResult) (rpcResponse, error) {
+	body, err := decodeRPCPayload(result)
+	if err != nil {
+		return rpcResponse{}, err
+	}
+	var rpcResp rpcResponse
+	if err := json.Unmarshal(body, &rpcResp); err != nil {
+		return rpcResponse{}, err
+	}
+	return rpcResp, nil
+}
+
+func decodeRPCPayload(result ForwardResult) ([]byte, error) {
+	if strings.Contains(strings.ToLower(result.ContentType), "text/event-stream") {
+		return extractFirstSSEData(bytes.NewReader(result.Body))
+	}
+	return result.Body, nil
 }
 
 func (c *Client) invokeStdio(ctx context.Context, upstream Upstream, tool string, input map[string]any) (InvokeResult, error) {

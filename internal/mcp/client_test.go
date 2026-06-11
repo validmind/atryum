@@ -132,6 +132,96 @@ func TestListToolsRetriesInitializeWithCompatibleProtocol(t *testing.T) {
 	}
 }
 
+func TestListToolsDecodesSSEResponseAfterMissingSessionReinitialize(t *testing.T) {
+	var toolsListCount int
+	var sessions []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req Envelope
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		switch req.Method {
+		case "initialize":
+			sessionID := "sid-1"
+			if len(sessions) > 0 {
+				sessionID = "sid-2"
+			}
+			sessions = append(sessions, sessionID)
+			w.Header().Set("Mcp-Session-Id", sessionID)
+			writeTestRPC(w, req.ID, map[string]any{"protocolVersion": r.Header.Get("MCP-Protocol-Version"), "capabilities": map[string]any{}}, nil)
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			toolsListCount++
+			if toolsListCount == 1 {
+				writeTestRPC(w, req.ID, nil, map[string]any{"code": -32000, "message": "No session ID provided for non-initialization request"})
+				return
+			}
+			if got := r.Header.Get("Mcp-Session-Id"); got != "sid-2" {
+				t.Fatalf("retry tools/list used session %q, want sid-2", got)
+			}
+			writeTestRPCSSE(w, req.ID, map[string]any{"tools": []map[string]any{{"name": "stories.search"}}}, nil)
+		default:
+			t.Fatalf("unexpected method %q", req.Method)
+		}
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient()
+	client.httpClient = server.Client()
+	tools, err := client.ListTools(context.Background(), Upstream{Name: "shortcut", Mode: UpstreamModeHTTP, BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("ListTools returned error: %v", err)
+	}
+	if len(tools) != 1 || tools[0].Name != "stories.search" {
+		t.Fatalf("unexpected tools: %#v", tools)
+	}
+	if toolsListCount != 2 {
+		t.Fatalf("tools/list count = %d, want 2", toolsListCount)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("initialize sessions = %#v, want two sessions", sessions)
+	}
+}
+
+func TestInitializeDecodesSSEResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req Envelope
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		switch req.Method {
+		case "initialize":
+			w.Header().Set("Mcp-Session-Id", "sid-sse")
+			writeTestRPCSSE(w, req.ID, map[string]any{"protocolVersion": r.Header.Get("MCP-Protocol-Version"), "capabilities": map[string]any{}}, nil)
+		case "notifications/initialized":
+			if got := r.Header.Get("Mcp-Session-Id"); got != "sid-sse" {
+				t.Fatalf("initialized notification missing session id: %q", got)
+			}
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			if got := r.Header.Get("Mcp-Session-Id"); got != "sid-sse" {
+				t.Fatalf("tools/list missing session id: %q", got)
+			}
+			writeTestRPC(w, req.ID, map[string]any{"tools": []map[string]any{{"name": "stories.search"}}}, nil)
+		default:
+			t.Fatalf("unexpected method %q", req.Method)
+		}
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient()
+	client.httpClient = server.Client()
+	tools, err := client.ListTools(context.Background(), Upstream{Name: "shortcut", Mode: UpstreamModeHTTP, BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("ListTools returned error: %v", err)
+	}
+	if len(tools) != 1 || tools[0].Name != "stories.search" {
+		t.Fatalf("unexpected tools: %#v", tools)
+	}
+}
+
 func TestMissingSessionRPCErrorDetection(t *testing.T) {
 	if !isMissingSessionRPCError(json.RawMessage(`{"code":-32000,"message":"No session ID provided for non-initialization request"}`)) {
 		t.Fatal("expected missing session error to be detected")
@@ -416,4 +506,20 @@ func writeTestRPC(w http.ResponseWriter, id json.RawMessage, result any, rpcErr 
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		panic(err)
 	}
+}
+
+func writeTestRPCSSE(w http.ResponseWriter, id json.RawMessage, result any, rpcErr any) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	resp := map[string]any{"jsonrpc": "2.0", "id": id}
+	if rpcErr != nil {
+		resp["error"] = rpcErr
+	} else {
+		resp["result"] = result
+	}
+	payload, err := json.Marshal(resp)
+	if err != nil {
+		panic(err)
+	}
+	_, _ = w.Write([]byte("event: message\n"))
+	_, _ = w.Write([]byte("data: " + string(payload) + "\n\n"))
 }
