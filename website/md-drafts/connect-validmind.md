@@ -23,7 +23,7 @@ Before connecting Atryum to ValidMind:
     - **ValidMind API key**  — Your organization API Key.
     - **ValidMind API secret** — Your organization Secret Key.
 
-3. Atryum prints the path to the updated `atryum.toml` file. Open the file and verify that it has been edited with your submitted configurations:
+3. Atryum prints the path to your updated `atryum.toml` configuration file. Open the file and verify that it has been edited with your submitted values:
     - On macOS, this is typically under `~/Library/Application Support/atryum/atryum.toml`.
     - On Linux, this is typically under `~/.config/atryum/atryum.toml`.
 
