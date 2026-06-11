@@ -198,12 +198,16 @@
     margin-bottom: 20px;
   }
 
-  .docs-content h2 {
-    font-size: 1.35rem;
-    margin-top: 40px;
-    margin-bottom: 14px;
+  .docs-content h1:not(:first-child) {
+    margin-top: 48px;
     padding-top: 8px;
     border-top: 1px solid var(--neutral-100);
+  }
+
+  .docs-content h2 {
+    font-size: 1.35rem;
+    margin-top: 26px;
+    margin-bottom: 12px;
   }
 
   .docs-content p,
@@ -327,11 +331,11 @@
   <main>
     <div class="docs-shell">
       <div class="docs-kicker">Documentation</div>
-      <h1 class="docs-title">Atryum quickstart & integration</h1>
-      <p class="docs-intro">A minimal docs page generated from <code>docs.md</code>, using the same typography, spacing, and chrome as the homepage.</p>
+      <h1 class="docs-title">Atryum quickstart</h1>
+      <p class="docs-intro">Set up Atryum, then connect coding agents and ValidMind to Atryum to route tool use through human approval and policy rules.</p>
 
       <article class="docs-content">
-        <h1>Quickstart</h1>
+        <h1>Set up Atryum</h1>
 
         <p>Download atryum</p>
         <p><strong>Linux</strong></p>
@@ -363,6 +367,8 @@
         <p>One cool trick: as a human you can deny the tool with a message, allowing you to steer the agent.</p>
 
         <p>Quickstart complete.</p>
+
+        <h1>Integrate Atryum</h1>
 
         <h2>Coding Agents</h2>
 
