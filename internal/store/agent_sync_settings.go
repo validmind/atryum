@@ -14,13 +14,13 @@ import (
 // synchronisation from the ValidMind backend. All fields are empty strings
 // when the user has not yet configured sync (i.e. no row exists yet).
 type AgentSyncSettings struct {
-	OrgCUID                    string
-	AgentRecordTypeSlug        string
-	CharterFieldKey            string
-	SummaryModelConfigCUID     string
-	SummaryAtryumLLMConfigID   string
-	DefaultAgentVMCUID         string
-	UpdatedAt                  time.Time
+	OrgCUID                  string
+	AgentRecordTypeSlug      string
+	CharterFieldKey          string
+	SummaryModelConfigCUID   string
+	SummaryAtryumLLMConfigID string
+	DefaultAgentVMCUID       string
+	UpdatedAt                time.Time
 }
 
 var agentSyncSettingsColumns = []string{

@@ -265,7 +265,7 @@ func (r *AgentsRepo) DeleteAll(ctx context.Context) error {
 }
 
 // DeleteSynced removes only agent records that originated from a ValidMind
-// sync (vm_organization_cuid != ''). Manually-created agents (empty
+// sync (vm_organization_cuid != ”). Manually-created agents (empty
 // vm_organization_cuid) are preserved.
 func (r *AgentsRepo) DeleteSynced(ctx context.Context) error {
 	query, args, err := r.sb.Delete("agents").

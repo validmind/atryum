@@ -85,4 +85,3 @@ func matchPatterns(patterns []string, value string) bool {
 	}
 	return false
 }
-

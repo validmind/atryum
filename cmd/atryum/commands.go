@@ -12,7 +12,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-
 )
 
 const validMindSetupBaseURL = "https://app.dev.vm.validmind.ai"
