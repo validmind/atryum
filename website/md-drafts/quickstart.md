@@ -4,6 +4,8 @@ Install and initialize Atryum, then integrate Atryum with your coding agents and
 
 ## Install & initialize Atryum
 
+Dowload Atryum and register a server in Atryum for testing.
+
 ### Download Atryum
 
 **Linux**
@@ -58,12 +60,15 @@ curl -L https://github.com/validmind/atryum/releases/download/0.0.2/atryum-mac -
 
 ## Integrate Atryum
 
+After setting up your test test calculator server, connect Atryum up with your coding agents and ValidMind.
+
 ### With coding agents
 
-Connect your coding agents to Atryum, allowing Atryum to review tool calls before your agents run them. Hooks and extensions are available for Claude Code, Cursor, Amp, Pi, and Codex.
+Connect your coding agents to Atryum, allowing Atryum to review tool calls before your agents run them. Hooks and extensions are available for [Claude Code](https://www.anthropic.com/claude-code), [Cursor](https://cursor.com), [Amp](https://ampcode.com), [Pi](https://pi.dev), and [Codex](https://openai.com/codex).
 
+Run the hooks command to see the available setup options for each supported coding agent:
 
-```
+```bash
 ./atryum hooks
 ```
 
