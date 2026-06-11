@@ -159,7 +159,7 @@ const Settings: React.FC = () => {
   // ── Form state ────────────────────────────────────────────────────────────────
   const [orgCUID, setOrgCUID] = useState('');
   const [recordTypeSlug, setRecordTypeSlug] = useState('');
-  const [constitutionFieldKey, setConstitutionFieldKey] = useState('');
+  const [charterFieldKey, setCharterFieldKey] = useState('');
   const [summaryModelConfigCUID, setSummaryModelConfigCUID] = useState('');
   const [summaryAtryumLLMConfigID, setSummaryAtryumLLMConfigID] = useState('');
 
@@ -187,7 +187,7 @@ const Settings: React.FC = () => {
     if (!savedSettings) return;
     setOrgCUID(savedSettings.org_cuid ?? '');
     setRecordTypeSlug(savedSettings.agent_record_type_slug ?? '');
-    setConstitutionFieldKey(savedSettings.constitution_field_key ?? '');
+    setCharterFieldKey(savedSettings.charter_field_key ?? '');
     setSummaryModelConfigCUID(savedSettings.summary_model_config_cuid ?? '');
     setSummaryAtryumLLMConfigID(savedSettings.summary_atryum_llm_config_id ?? '');
   }, [savedSettings]);
@@ -271,7 +271,7 @@ const Settings: React.FC = () => {
   const hasSyncChanges =
     orgCUID !== (savedSettings?.org_cuid ?? '') ||
     recordTypeSlug !== (savedSettings?.agent_record_type_slug ?? '') ||
-    constitutionFieldKey !== (savedSettings?.constitution_field_key ?? '');
+    charterFieldKey !== (savedSettings?.charter_field_key ?? '');
 
   const hasSummaryChanges =
     summaryModelConfigCUID !== (savedSettings?.summary_model_config_cuid ?? '') ||
@@ -286,13 +286,13 @@ const Settings: React.FC = () => {
   const handleOrgChange = useCallback((e: React.ChangeEvent<HTMLSelectElement>) => {
     setOrgCUID(e.target.value);
     setRecordTypeSlug('');
-    setConstitutionFieldKey('');
+    setCharterFieldKey('');
   }, []);
 
   const handleRecordTypeChange = useCallback(
     (e: React.ChangeEvent<HTMLSelectElement>) => {
       setRecordTypeSlug(e.target.value);
-      setConstitutionFieldKey('');
+      setCharterFieldKey('');
     },
     [],
   );
@@ -305,7 +305,7 @@ const Settings: React.FC = () => {
       const saved = await updateMutation.mutateAsync({
         org_cuid: orgCUID,
         agent_record_type_slug: recordTypeSlug,
-        constitution_field_key: constitutionFieldKey,
+        charter_field_key: charterFieldKey,
         summary_model_config_cuid: savedSettings?.summary_model_config_cuid ?? '',
         summary_atryum_llm_config_id: savedSettings?.summary_atryum_llm_config_id ?? '',
       });
@@ -337,7 +337,7 @@ const Settings: React.FC = () => {
   }, [
     orgCUID,
     recordTypeSlug,
-    constitutionFieldKey,
+    charterFieldKey,
     savedSettings,
     updateMutation,
     toast,
@@ -349,7 +349,7 @@ const Settings: React.FC = () => {
       await updateMutation.mutateAsync({
         org_cuid: savedSettings?.org_cuid ?? '',
         agent_record_type_slug: savedSettings?.agent_record_type_slug ?? '',
-        constitution_field_key: savedSettings?.constitution_field_key ?? '',
+        charter_field_key: savedSettings?.charter_field_key ?? '',
         summary_model_config_cuid: summaryModelConfigCUID,
         summary_atryum_llm_config_id: summaryAtryumLLMConfigID,
       });
@@ -490,7 +490,7 @@ const Settings: React.FC = () => {
               Agent Record Sync
             </Heading>
             <Text fontSize="sm" color="text.subtle">
-              Select the ValidMind organization, record type, and constitution field
+              Select the ValidMind organization, record type, and charter field
               used when syncing agents. Leave blank to disable sync.
             </Text>
           </Stack>
@@ -556,18 +556,18 @@ const Settings: React.FC = () => {
             )}
           </FormControl>
 
-          {/* Constitution Field */}
+          {/* Charter Field */}
           <FormControl>
-            <FormLabel fontWeight="semibold" fontSize="sm">Constitution Field (optional)</FormLabel>
+            <FormLabel fontWeight="semibold" fontSize="sm">Charter Field (optional)</FormLabel>
             <Text fontSize="xs" color="text.subtle" mb={2}>
-              Custom field key storing the agent's governing constitution text.
+              Custom field key storing the agent's governing charter text.
             </Text>
             {loadingCustomFields ? (
               <Spinner size="sm" />
             ) : (
               <Select
-                value={constitutionFieldKey}
-                onChange={(e) => setConstitutionFieldKey(e.target.value)}
+                value={charterFieldKey}
+                onChange={(e) => setCharterFieldKey(e.target.value)}
                 placeholder={recordTypeSlug ? 'Select a field…' : 'Select a record type first'}
                 isDisabled={!recordTypeSlug}
                 size="sm"

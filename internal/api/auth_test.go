@@ -182,8 +182,7 @@ func TestMCPAcceptsValidTokenAndPlumbsAgentID(t *testing.T) {
 func TestAgentRulesRequiresAuthAndUsesTokenAgentID(t *testing.T) {
 	rig := newAuthTestRig(t)
 	rules := &stubRulesRepo{rules: []store.Rule{
-		{ID: "own-rule", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentIDPattern: "agent-007", Enabled: true, Order: 0},
-		{ID: "other-rule", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentIDPattern: "other", Enabled: true, Order: 1},
+		{ID: "auto-rule", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, Enabled: true, Order: 0},
 	}}
 	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
 	h.SetAuthValidator(rig.v)
@@ -209,13 +208,10 @@ func TestAgentRulesRequiresAuthAndUsesTokenAgentID(t *testing.T) {
 		t.Fatal(err)
 	}
 	if resp.AgentID != "agent-007" {
-		t.Fatalf("expected token agent_id to win, got %q", resp.AgentID)
+		t.Fatalf("expected token agent_id to win over query param, got %q", resp.AgentID)
 	}
 	if resp.Action != invocation.RuleActionAutoApprove {
-		t.Fatalf("expected own rule action, got %q", resp.Action)
-	}
-	if len(resp.Items) != 1 || resp.Items[0].ID != "own-rule" {
-		t.Fatalf("expected only own rule, got %#v", resp.Items)
+		t.Fatalf("expected auto_approve action, got %q", resp.Action)
 	}
 }
 

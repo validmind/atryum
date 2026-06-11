@@ -76,7 +76,7 @@ api_key = ""
 # name    = "staging"
 # api_key = ""
 
-# Agent sync and AI evaluation settings (org, record type, constitution field)
+# Agent sync and AI evaluation settings (org, record type, charter field)
 # are managed through the Atryum Settings UI and stored in the database.
 # They no longer need to be configured here.
 
