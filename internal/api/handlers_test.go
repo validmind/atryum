@@ -15,6 +15,7 @@ import (
 	"atryum/internal/auth"
 	backendclient "atryum/internal/backend"
 	"atryum/internal/invocation"
+	"atryum/internal/managedagents"
 	"atryum/internal/mcp"
 	"atryum/internal/store"
 )
@@ -146,6 +147,19 @@ func (s *stubSummarizer) SummarizeInvocation(_ context.Context, req backendclien
 	return s.resp, s.err
 }
 
+type stubManagedAgentsAdmin struct {
+	err error
+	req managedagents.RegisterSessionRequest
+}
+
+func (s *stubManagedAgentsAdmin) RegisterSession(_ context.Context, req managedagents.RegisterSessionRequest) (managedagents.SessionRegistration, error) {
+	s.req = req
+	if s.err != nil {
+		return managedagents.SessionRegistration{}, s.err
+	}
+	return managedagents.SessionRegistration{SessionID: req.SessionID, Account: req.Account, AgentID: req.AgentID}, nil
+}
+
 type stubAgentSyncSettingsRepo struct {
 	settings store.AgentSyncSettings
 }
@@ -202,6 +216,50 @@ func TestAdminServerTestDebugLogsRequestContext(t *testing.T) {
 	}
 }
 
+func TestManagedAgentSessionRegistrationDebugLogsFailure(t *testing.T) {
+	t.Setenv("ATRYUM_MCP_DEBUG", "1")
+
+	var logs bytes.Buffer
+	prevWriter := log.Writer()
+	prevFlags := log.Flags()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(prevWriter)
+		log.SetFlags(prevFlags)
+	}()
+
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	h.SetManagedAgents(&stubManagedAgentsAdmin{err: fmt.Errorf("unknown managed-agent account %q", "default")})
+	body := strings.NewReader(`{
+		"session_id": "sesn_01K1L93ktjwd7CgFs7L5ZDXs",
+		"account": "default",
+		"agent_id": "agent_013popGjeyhH8qPYqziHxdLk"
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/managed-agents/sessions", body)
+	req.Header.Set("content-type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", w.Code, w.Body.String())
+	}
+	got := logs.String()
+	for _, want := range []string{
+		"managed-agents session registration request",
+		"session_id=\"sesn_01K1L93ktjwd7CgFs7L5ZDXs\"",
+		"account=\"default\"",
+		"agent_id=\"agent_013popGjeyhH8qPYqziHxdLk\"",
+		"managed-agents session registration failed",
+		"unknown managed-agent account \"default\"",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected logs to contain %q, got:\n%s", want, got)
+		}
+	}
+}
+
 type stubAgentsRepo struct {
 	records     []store.AgentRecord
 	err         error
@@ -254,9 +312,9 @@ func (s *stubAgentsRepo) UpdateAgentIDs(context.Context, string, string) error {
 func (s *stubAgentsRepo) UpdateMeta(context.Context, string, string, string, string) error {
 	return nil
 }
-func (s *stubAgentsRepo) Create(_ context.Context, _ store.AgentRecord) error      { return nil }
-func (s *stubAgentsRepo) Delete(context.Context, string) error                     { return nil }
-func (s *stubAgentsRepo) DeleteSynced(context.Context) error                       { return nil }
+func (s *stubAgentsRepo) Create(_ context.Context, _ store.AgentRecord) error { return nil }
+func (s *stubAgentsRepo) Delete(context.Context, string) error                { return nil }
+func (s *stubAgentsRepo) DeleteSynced(context.Context) error                  { return nil }
 func (s *stubAgentsRepo) DeleteAll(context.Context) error {
 	return nil
 }

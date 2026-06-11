@@ -25,6 +25,7 @@ import (
 	backendclient "atryum/internal/backend"
 	"atryum/internal/invocation"
 	"atryum/internal/invocation/policy"
+	"atryum/internal/managedagents"
 	"atryum/internal/mcp"
 	authprovider "atryum/internal/mcp/auth_provider"
 	"atryum/internal/store"
@@ -144,6 +145,16 @@ type Handler struct {
 	// absent we fall back to remote IP + User-Agent.
 	clientInfoMu    sync.RWMutex
 	clientInfoCache map[string]clientInfoSnapshot
+
+	// managedAgents is the optional Claude Managed Agents events bridge.
+	// nil when not configured (no anthropic api key).
+	managedAgents managedAgentsAdmin
+}
+
+// managedAgentsAdmin is the slice of the managed-agents service the admin API
+// needs to register a session for watching.
+type managedAgentsAdmin interface {
+	RegisterSession(ctx context.Context, req managedagents.RegisterSessionRequest) (managedagents.SessionRegistration, error)
 }
 
 type PolicyStatusResponse struct {
@@ -472,6 +483,12 @@ func (h *Handler) SetAuthDebugSkipVerify(enabled bool) {
 	h.authDebugSkip = enabled
 }
 
+// SetManagedAgents installs the optional Claude Managed Agents events bridge,
+// enabling the POST /api/v1/admin/managed-agents/sessions endpoint.
+func (h *Handler) SetManagedAgents(m managedAgentsAdmin) {
+	h.managedAgents = m
+}
+
 // SetAPIKeyAuth installs the static api-key/secret pair used to protect the
 // read-only invocation reporting endpoints.
 func (h *Handler) SetAPIKeyAuth(cfg auth.APIKeyConfig) {
@@ -517,6 +534,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/api/v1/admin/vm/custom-fields", h.adminVMCustomFields)
 	mux.HandleFunc("/api/v1/admin/oauth/callback", h.oauthCallback)
 	mux.HandleFunc("/api/v1/admin/policy", h.adminPolicy)
+	mux.HandleFunc("/api/v1/admin/managed-agents/sessions", h.adminManagedAgentSessions)
 	agentRulesHandler := auth.MiddlewareWithOptions(h.authValidator, "/.well-known/oauth-protected-resource", auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})(http.HandlerFunc(h.agentRules))
 	agentRulesHandler = h.noAuthAgentIDHint(agentRulesHandler)
 	mux.Handle("/api/v1/agent/rules", agentRulesHandler)
@@ -2105,25 +2123,25 @@ func (h *Handler) adminModelConfigs(w http.ResponseWriter, r *http.Request) {
 // and PUT /admin/settings. SyncError is non-empty when the post-save agent
 // sync failed; settings are persisted regardless.
 type AgentSyncSettingsResponse struct {
-	OrgCUID                    string `json:"org_cuid"`
-	AgentRecordTypeSlug        string `json:"agent_record_type_slug"`
-	ConstitutionFieldKey       string `json:"constitution_field_key"`
-	SummaryModelConfigCUID     string `json:"summary_model_config_cuid"`
-	SummaryAtryumLLMConfigID   string `json:"summary_atryum_llm_config_id"`
-	DefaultAgentVMCUID         string `json:"default_agent_vm_cuid"`
-	UpdatedAt                  string `json:"updated_at,omitempty"`
-	SyncError                  string `json:"sync_error,omitempty"`
-	BackendConfigured          bool   `json:"backend_configured"`
+	OrgCUID                  string `json:"org_cuid"`
+	AgentRecordTypeSlug      string `json:"agent_record_type_slug"`
+	ConstitutionFieldKey     string `json:"constitution_field_key"`
+	SummaryModelConfigCUID   string `json:"summary_model_config_cuid"`
+	SummaryAtryumLLMConfigID string `json:"summary_atryum_llm_config_id"`
+	DefaultAgentVMCUID       string `json:"default_agent_vm_cuid"`
+	UpdatedAt                string `json:"updated_at,omitempty"`
+	SyncError                string `json:"sync_error,omitempty"`
+	BackendConfigured        bool   `json:"backend_configured"`
 }
 
 // AgentSyncSettingsInput is the JSON body accepted by PUT /admin/settings.
 type AgentSyncSettingsInput struct {
-	OrgCUID                    string `json:"org_cuid"`
-	AgentRecordTypeSlug        string `json:"agent_record_type_slug"`
-	ConstitutionFieldKey       string `json:"constitution_field_key"`
-	SummaryModelConfigCUID     string `json:"summary_model_config_cuid"`
-	SummaryAtryumLLMConfigID   string `json:"summary_atryum_llm_config_id"`
-	DefaultAgentVMCUID         string `json:"default_agent_vm_cuid"`
+	OrgCUID                  string `json:"org_cuid"`
+	AgentRecordTypeSlug      string `json:"agent_record_type_slug"`
+	ConstitutionFieldKey     string `json:"constitution_field_key"`
+	SummaryModelConfigCUID   string `json:"summary_model_config_cuid"`
+	SummaryAtryumLLMConfigID string `json:"summary_atryum_llm_config_id"`
+	DefaultAgentVMCUID       string `json:"default_agent_vm_cuid"`
 }
 
 // ─── Local LLM Config handlers ────────────────────────────────────────────────
@@ -3122,6 +3140,37 @@ func (h *Handler) externalInvocations(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// adminManagedAgentSessions registers a Claude Managed Agents session for
+// Atryum to watch. Once registered, Atryum streams the session's events into
+// the invocations table and gates blocking tool calls through approval rules.
+func (h *Handler) adminManagedAgentSessions(w http.ResponseWriter, r *http.Request) {
+	if h.managedAgents == nil {
+		h.debugf("managed-agents session registration rejected: bridge not configured method=%s path=%s remote=%s", r.Method, r.URL.Path, r.RemoteAddr)
+		writeError(w, http.StatusNotImplemented, "managed agents bridge not configured (set [managed_agents].api_key)")
+		return
+	}
+	if r.Method != http.MethodPost {
+		h.debugf("managed-agents session registration rejected: method not allowed method=%s path=%s remote=%s", r.Method, r.URL.Path, r.RemoteAddr)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req managedagents.RegisterSessionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.debugf("managed-agents session registration rejected: invalid json remote=%s err=%v", r.RemoteAddr, err)
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	h.debugf("managed-agents session registration request session_id=%q account=%q agent_id=%q description=%q remote=%s", req.SessionID, req.Account, req.AgentID, req.Description, r.RemoteAddr)
+	resp, err := h.managedAgents.RegisterSession(r.Context(), req)
+	if err != nil {
+		h.debugf("managed-agents session registration failed session_id=%q account=%q agent_id=%q err=%v", req.SessionID, req.Account, req.AgentID, err)
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	h.debugf("managed-agents session registered session_id=%q account=%q agent_id=%q last_event_id=%q", resp.SessionID, resp.Account, resp.AgentID, resp.LastEventID)
 	writeJSON(w, http.StatusOK, resp)
 }
 

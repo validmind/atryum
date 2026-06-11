@@ -1,0 +1,4 @@
+PyYAML==6.0.2
+PyJWT[crypto]==2.10.1
+cryptography==44.0.2
+mcp-server-calculator==0.1.1

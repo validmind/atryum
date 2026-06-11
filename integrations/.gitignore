@@ -1,0 +1,18 @@
+# Local nix shell — not committed (developers on NixOS may use it locally)
+shell.nix
+
+# Runtime artifacts
+.run/
+*.db
+*.db-journal
+*.log
+*.pid
+
+# Harness config snapshots written during tests
+.harness-config/
+
+# Python venv for mock OIDC
+.venv/
+
+# Test results
+results/

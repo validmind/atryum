@@ -50,7 +50,7 @@ import { useServers } from '../hooks/useServers';
 import { useAgents } from '../hooks/useAgents';
 import { useSettings } from '../hooks/useSettings';
 import { useLLMConfigs } from '../hooks/useLLMConfigs';
-import { type LLMConfig, type Rule, type RuleAction, type RuleInput, modelConfigsApi } from '../api/AtryumAPI';
+import { type Agent, type LLMConfig, type Rule, type RuleAction, type RuleInput, modelConfigsApi } from '../api/AtryumAPI';
 
 const ACTION_COLOR: Record<RuleAction, string> = {
   auto_approve: 'green',
@@ -124,6 +124,7 @@ const stopPropagation = (e: React.MouseEvent): void => e.stopPropagation();
 
 type RuleRowProps = {
   rule: Rule;
+  agents: Agent[];
   index: number;
   totalCount: number;
   isBusy: boolean;
@@ -133,6 +134,7 @@ type RuleRowProps = {
 
 const RuleRow: React.FC<RuleRowProps> = ({
   rule,
+  agents,
   index,
   totalCount,
   isBusy,
@@ -142,6 +144,8 @@ const RuleRow: React.FC<RuleRowProps> = ({
   const handleClick = useCallback(() => onEdit(rule), [onEdit, rule]);
   const handleMoveUp = useCallback(() => onMove(rule.id, 'up'), [onMove, rule.id]);
   const handleMoveDown = useCallback(() => onMove(rule.id, 'down'), [onMove, rule.id]);
+  const selectedAgentCuids = rule.agent_cuids ?? [];
+  const agentByCuid = new Map(agents.map((agent) => [agent.cuid, agent]));
 
   return (
     <Tr
@@ -174,11 +178,35 @@ const RuleRow: React.FC<RuleRowProps> = ({
           />
         </HStack>
       </Td>
-      <Td><Text fontSize="sm">{rule.description || '—'}</Text></Td>
       <Td>
         <Badge colorScheme={ACTION_COLOR[rule.action]} fontSize="2xs" whiteSpace="nowrap">
           {ACTION_LABEL[rule.action]}
         </Badge>
+      </Td>
+      <Td><Text fontSize="sm">{rule.description || '—'}</Text></Td>
+      <Td>
+        {selectedAgentCuids.length === 0 ? (
+          <Badge colorScheme="gray" fontSize="2xs" variant="subtle">
+            All agents
+          </Badge>
+        ) : (
+          <HStack gap={1} wrap="wrap">
+            {selectedAgentCuids.map((cuid) => {
+              const agent = agentByCuid.get(cuid);
+              return (
+                <Badge
+                  key={cuid}
+                  colorScheme={agent?.enabled === false ? 'gray' : 'blue'}
+                  fontSize="2xs"
+                  variant="subtle"
+                  title={agent ? cuid : `Unknown agent: ${cuid}`}
+                >
+                  {agent?.name ?? cuid}
+                </Badge>
+              );
+            })}
+          </HStack>
+        )}
       </Td>
       <Td>
         <Text
@@ -381,8 +409,9 @@ const Rules: React.FC = () => {
             <Thead bg="background.table.header">
               <Tr>
                 <Th w="60px">Order</Th>
-                <Th>Description</Th>
                 <Th>Action</Th>
+                <Th>Description</Th>
+                <Th>Agent</Th>
                 <Th>Servers</Th>
                 <Th>Tools</Th>
                 <Th>Enabled</Th>
@@ -393,6 +422,7 @@ const Rules: React.FC = () => {
                 <RuleRow
                   key={rule.id}
                   rule={rule}
+                  agents={agentsData?.items ?? []}
                   index={idx}
                   totalCount={rules.length}
                   isBusy={isBusy}
