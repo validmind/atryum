@@ -9,11 +9,11 @@ import (
 	"atryum/internal/auth"
 )
 
-
 type Config struct {
 	Server    ServerConfig     `toml:"server"`
 	Backend   BackendConfig    `toml:"backend"`
 	Defaults  DefaultsConfig   `toml:"defaults"`
+	KV        KVConfig         `toml:"kv"`
 	Policy    PolicyConfig     `toml:"policy"`
 	Upstreams []UpstreamConfig `toml:"upstreams"`
 	// Auth holds zero or more inbound OAuth bearer-token validators
@@ -89,6 +89,11 @@ type AuthDebugConfig struct {
 	SkipVerify bool `toml:"skip_verify"`
 }
 
+type KVConfig struct {
+	URL               string `toml:"url"`
+	DefaultTTLSeconds int    `toml:"default_ttl_seconds"`
+}
+
 // PolicyConfig selects the active approval policy provider at startup.
 // Valid provider values: "always_approve", "manual_approval", "always_deny".
 type PolicyConfig struct {
@@ -141,6 +146,9 @@ func Load(path string) (Config, error) {
 		},
 		Defaults: DefaultsConfig{
 			RequestTimeoutSeconds: 30,
+		},
+		KV: KVConfig{
+			DefaultTTLSeconds: 3600,
 		},
 	}
 	_, err := toml.DecodeFile(path, &cfg)

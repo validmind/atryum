@@ -25,6 +25,7 @@ import (
 	backendclient "atryum/internal/backend"
 	"atryum/internal/invocation"
 	"atryum/internal/invocation/policy"
+	"atryum/internal/kv"
 	"atryum/internal/managedagents"
 	"atryum/internal/mcp"
 	authprovider "atryum/internal/mcp/auth_provider"
@@ -36,10 +37,12 @@ var webFS embed.FS
 
 type service interface {
 	Invoke(ctx context.Context, req invocation.CreateInvocationRequest) (invocation.InvocationResponse, error)
+	InvokeAsync(ctx context.Context, req invocation.CreateInvocationRequest, opts invocation.TaskCreateOptions) (invocation.InvocationResponse, error)
 	ListTools(ctx context.Context, server string) ([]mcp.Tool, error)
 	ListAllTools(ctx context.Context) ([]mcp.Tool, error)
 	ResolveToolServer(ctx context.Context, toolName string) (string, error)
 	Get(ctx context.Context, id string) (invocation.InvocationResponse, error)
+	WaitForCompletion(ctx context.Context, id string) (invocation.InvocationResponse, error)
 	List(ctx context.Context, filter invocation.InvocationListFilter) (invocation.InvocationListResponse, error)
 	ListAgentIDs(ctx context.Context) ([]string, error)
 	Events(ctx context.Context, invocationID string, filter invocation.EventListFilter) (invocation.EventListResponse, error)
@@ -77,6 +80,7 @@ type rulesRepo interface {
 	Create(ctx context.Context, rule store.Rule) error
 	Get(ctx context.Context, id string) (store.Rule, error)
 	List(ctx context.Context) ([]store.Rule, error)
+	ListApprovalRules(ctx context.Context) ([]invocation.ApprovalRule, error)
 	NextOrder(ctx context.Context) (int, error)
 	Update(ctx context.Context, rule store.Rule) error
 	Delete(ctx context.Context, id string) error
@@ -149,6 +153,20 @@ type Handler struct {
 	// managedAgents is the optional Claude Managed Agents events bridge.
 	// nil when not configured (no anthropic api key).
 	managedAgents managedAgentsAdmin
+
+	kvStore       kv.Store
+	mcpSessionTTL time.Duration
+}
+
+type HandlerOption func(*Handler)
+
+type mcpSessionProfile struct {
+	SessionID                     string
+	ProtocolVersion               string
+	ClientDeclaredTasks           bool
+	SawTaskAugmentedToolCall      bool
+	SawSyncCallToRequiredTaskTool bool
+	LastSeen                      time.Time
 }
 
 // managedAgentsAdmin is the slice of the managed-agents service the admin API
@@ -459,7 +477,7 @@ type invocationStreamEnvelope struct {
 	Items []invocation.InvocationResponse `json:"items"`
 }
 
-func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Registry, rules rulesRepo, agents agentsRepo, agentSyncSettings agentSyncSettingsRepo, llmConfigs llmConfigsRepo, syncAgents func(ctx context.Context) error, bc *backendclient.Client, localSummarizer localInvocationSummarizer) *Handler {
+func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Registry, rules rulesRepo, agents agentsRepo, agentSyncSettings agentSyncSettingsRepo, llmConfigs llmConfigsRepo, syncAgents func(ctx context.Context) error, bc *backendclient.Client, localSummarizer localInvocationSummarizer, opts ...HandlerOption) *Handler {
 	staticSub, err := fs.Sub(webFS, "web")
 	if err != nil {
 		panic(err)
@@ -469,7 +487,28 @@ func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Reg
 	if f, ok := svc.(mcpEnvelopeForwarder); ok {
 		forwarder = f
 	}
-	return &Handler{svc: svc, serverSvc: serverSvc, policyRegistry: policyRegistry, rulesRepo: rules, agentsRepo: agents, agentSyncSettingsRepo: agentSyncSettings, llmConfigsRepo: llmConfigs, backendClient: bc, summarizeClient: bc, localSummarizer: localSummarizer, syncAgentsFn: syncAgents, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug, clientInfoCache: make(map[string]clientInfoSnapshot)}
+	handler := &Handler{svc: svc, serverSvc: serverSvc, policyRegistry: policyRegistry, rulesRepo: rules, agentsRepo: agents, agentSyncSettingsRepo: agentSyncSettings, llmConfigsRepo: llmConfigs, backendClient: bc, summarizeClient: bc, localSummarizer: localSummarizer, syncAgentsFn: syncAgents, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug, clientInfoCache: make(map[string]clientInfoSnapshot), kvStore: kv.NewMemoryStore(), mcpSessionTTL: time.Hour}
+	for _, opt := range opts {
+		opt(handler)
+	}
+	if handler.kvStore == nil {
+		handler.kvStore = kv.NewMemoryStore()
+	}
+	if handler.mcpSessionTTL <= 0 {
+		handler.mcpSessionTTL = time.Hour
+	}
+	return handler
+}
+
+func WithKVStore(store kv.Store, defaultTTL time.Duration) HandlerOption {
+	return func(h *Handler) {
+		if store != nil {
+			h.kvStore = store
+		}
+		if defaultTTL > 0 {
+			h.mcpSessionTTL = defaultTTL
+		}
+	}
 }
 
 // SetAuthValidator installs the inbound auth validator. When non-nil, the
@@ -887,7 +926,13 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		req.JSONRPC = "2.0"
 	}
 	requestID := compactRequestID(req.ID)
+	headerProtocolVersion := normalizeProtocolVersion(r.Header.Get("MCP-Protocol-Version"))
 	protocolVersion := negotiateProtocolVersion(req.Method, r.Header.Get("MCP-Protocol-Version"), req.Params)
+	if req.Method != "initialize" && headerProtocolVersion == "" {
+		if profile := h.mcpProfileForRequest(r, server); profile != nil && profile.ProtocolVersion != "" {
+			protocolVersion = profile.ProtocolVersion
+		}
+	}
 	h.debugf("server-side mcp request server=%s method=%s id=%s", server, req.Method, requestID)
 	defer func() {
 		h.debugf("server-side mcp complete server=%s method=%s id=%s duration_ms=%d", server, req.Method, requestID, time.Since(started).Milliseconds())
@@ -897,6 +942,10 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 	switch req.Method {
 	case "initialize":
 		h.recordInitializeClientInfo(r, req.Params)
+		profile, sessionID := h.recordMCPInitialize(r, server, protocolVersion, req.Params)
+		if sessionID != "" {
+			w.Header().Set("MCP-Session-Id", sessionID)
+		}
 		result := map[string]any{
 			"protocolVersion": protocolVersion,
 			"serverInfo": map[string]any{
@@ -905,8 +954,20 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			},
 			"capabilities": map[string]any{
 				"tools": map[string]any{},
+				"tasks": map[string]any{
+					"requests": map[string]any{
+						"tools": map[string]any{
+							"call": map[string]any{},
+						},
+					},
+				},
 			},
 			"instructions": atryumInitializeInstructions,
+		}
+		if profile != nil {
+			result["_meta"] = map[string]any{
+				"atryum/client-tasks-declared": profile.ClientDeclaredTasks,
+			}
 		}
 		h.writeRPCResult(w, req.ID, result)
 	case "notifications/initialized":
@@ -925,12 +986,15 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		}
 		tools = appendAtryumTools(tools)
 		_ = h.emitTraceEvent(r.Context(), server, "mcp.tools.list", map[string]any{"tool_count": len(tools), "request_id": requestID})
-		annotated := h.annotateToolsWithPolicy(r.Context(), server, tools)
-		h.writeRPCResult(w, req.ID, map[string]any{"tools": annotated})
+		profile := h.mcpProfileForRequest(r, server)
+		h.writeRPCResult(w, req.ID, map[string]any{"tools": h.withTaskSupport(r.Context(), tools, server, profile)})
 	case "tools/call":
 		var params struct {
 			Name      string         `json:"name"`
 			Arguments map[string]any `json:"arguments"`
+			Task      *struct {
+				TTL *int64 `json:"ttl,omitempty"`
+			} `json:"task,omitempty"`
 		}
 		if err := json.Unmarshal(req.Params, &params); err != nil {
 			h.writeRPCError(w, req.ID, -32602, "invalid params")
@@ -966,6 +1030,24 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			toolReq.ClientName = snap.Name
 			toolReq.ClientVersion = snap.Version
 		}
+		if params.Task != nil {
+			h.markSawTaskAugmentedToolCall(r, server)
+			resp, err := h.svc.InvokeAsync(r.Context(), toolReq, invocation.TaskCreateOptions{TTLMillis: params.Task.TTL})
+			if err != nil {
+				h.writeRPCError(w, req.ID, -32000, err.Error())
+				return
+			}
+			tracePayload := map[string]any{"request_id": requestID, "status": resp.Status, "invocation_id": resp.InvocationID, "tool": params.Name, "task": true}
+			_ = h.emitTraceEvent(r.Context(), server, "mcp.tools.call", tracePayload)
+			h.writeRPCResult(w, req.ID, createTaskResult(resp, params.Task.TTL))
+			return
+		}
+		profile := h.mcpProfileForRequest(r, server)
+		if h.requiresTaskCall(r.Context(), profile, callServer, params.Name) {
+			h.markSawSyncCallToRequiredTaskTool(r, server)
+			h.writeRPCError(w, req.ID, -32601, fmt.Sprintf("tool %q requires task-augmented tools/call; retry with params.task and poll tasks/get or tasks/result", params.Name))
+			return
+		}
 		resp, err := h.svc.Invoke(r.Context(), toolReq)
 		if err != nil {
 			h.writeRPCError(w, req.ID, -32000, err.Error())
@@ -982,6 +1064,42 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			return
 		}
 		h.writeRPCResult(w, req.ID, normalizeToolCallResult(resp.Result, false))
+	case "tasks/get":
+		var params struct {
+			TaskID string `json:"taskId"`
+		}
+		if err := json.Unmarshal(req.Params, &params); err != nil || strings.TrimSpace(params.TaskID) == "" {
+			h.writeRPCError(w, req.ID, -32602, "invalid params")
+			return
+		}
+		resp, err := h.svc.Get(r.Context(), params.TaskID)
+		if err != nil {
+			h.writeRPCError(w, req.ID, -32000, err.Error())
+			return
+		}
+		h.writeRPCResult(w, req.ID, taskFromInvocation(resp, nil))
+	case "tasks/result":
+		var params struct {
+			TaskID string `json:"taskId"`
+		}
+		if err := json.Unmarshal(req.Params, &params); err != nil || strings.TrimSpace(params.TaskID) == "" {
+			h.writeRPCError(w, req.ID, -32602, "invalid params")
+			return
+		}
+		resp, err := h.svc.WaitForCompletion(r.Context(), params.TaskID)
+		if err != nil {
+			if r.Context().Err() != nil {
+				return
+			}
+			h.writeRPCError(w, req.ID, -32000, err.Error())
+			return
+		}
+		result := taskResultFromInvocation(resp)
+		if acceptsEventStream(r) {
+			h.writeRPCResultSSE(w, req.ID, result)
+			return
+		}
+		h.writeRPCResult(w, req.ID, result)
 	default:
 		forwarded, forwardedOK := h.forwardProxyEnvelope(r.Context(), server, req, protocolVersion)
 		if !forwardedOK {
@@ -1199,6 +1317,7 @@ type annotatedTool struct {
 	Description string             `json:"description,omitempty"`
 	InputSchema json.RawMessage    `json:"inputSchema,omitempty"`
 	Annotations *atryumAnnotations `json:"annotations,omitempty"`
+	Execution   map[string]any     `json:"execution,omitempty"`
 }
 
 type atryumAnnotations struct {
@@ -1219,14 +1338,14 @@ func (h *Handler) annotateToolsWithPolicy(ctx context.Context, server string, to
 	out := make([]any, len(tools))
 	if h.rulesRepo == nil || strings.TrimSpace(server) == "" {
 		for i, t := range tools {
-			out[i] = t
+			out[i] = toolListEntry(t, "", "")
 		}
 		return out
 	}
 	rules, err := h.rulesRepo.List(ctx)
 	if err != nil {
 		for i, t := range tools {
-			out[i] = t
+			out[i] = toolListEntry(t, "", "")
 		}
 		return out
 	}
@@ -1234,7 +1353,7 @@ func (h *Handler) annotateToolsWithPolicy(ctx context.Context, server string, to
 	agentCUID := h.resolveAgentRecordForRules(ctx, agentID)
 	for i, t := range tools {
 		if t.Name == agentRulesToolName {
-			out[i] = t
+			out[i] = toolListEntry(t, "", "")
 			continue
 		}
 		action, matched := effectiveActionForTool(rules, server, t.Name, agentID, agentCUID)
@@ -1247,17 +1366,32 @@ func (h *Handler) annotateToolsWithPolicy(ctx context.Context, server string, to
 				desc = prefix + desc
 			}
 		}
-		out[i] = annotatedTool{
-			Name:        t.Name,
-			Description: desc,
-			InputSchema: t.InputSchema,
-			Annotations: &atryumAnnotations{Atryum: atryumToolPolicy{
-				EffectiveAction: action,
-				MatchedRuleID:   matched,
-			}},
-		}
+		out[i] = toolListEntry(t, desc, action, matched)
 	}
 	return out
+}
+
+func toolListEntry(tool mcp.Tool, description string, policyParts ...string) annotatedTool {
+	if description == "" {
+		description = tool.Description
+	}
+	entry := annotatedTool{
+		Name:        tool.Name,
+		Description: description,
+		InputSchema: tool.InputSchema,
+		Execution:   map[string]any{"taskSupport": "optional"},
+	}
+	if len(policyParts) > 0 && policyParts[0] != "" {
+		matched := ""
+		if len(policyParts) > 1 {
+			matched = policyParts[1]
+		}
+		entry.Annotations = &atryumAnnotations{Atryum: atryumToolPolicy{
+			EffectiveAction: policyParts[0],
+			MatchedRuleID:   matched,
+		}}
+	}
+	return entry
 }
 
 // effectiveActionForTool returns the action of the first enabled rule that
@@ -3321,6 +3455,18 @@ func (h *Handler) writeRPCResult(w http.ResponseWriter, id json.RawMessage, resu
 	writeJSON(w, http.StatusOK, jsonRPCResponse{JSONRPC: "2.0", ID: id, Result: body})
 }
 
+func (h *Handler) writeRPCResultSSE(w http.ResponseWriter, id json.RawMessage, result any) {
+	body, _ := json.Marshal(jsonRPCResponse{JSONRPC: "2.0", ID: id, Result: mustRawJSON(result)})
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", body)
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
 func (h *Handler) forwardProxyEnvelope(ctx context.Context, server string, envelope mcp.Envelope, protocolVersion string) (mcp.ForwardResult, bool) {
 	if h.forwarder == nil {
 		return mcp.ForwardResult{}, false
@@ -3490,6 +3636,290 @@ func sessionKeyFromRequest(r *http.Request) string {
 		return ""
 	}
 	return "addr:" + host + "|ua:" + ua
+}
+
+func mustRawJSON(v any) json.RawMessage {
+	b, _ := json.Marshal(v)
+	return b
+}
+
+func createTaskResult(resp invocation.InvocationResponse, ttlMillis *int64) map[string]any {
+	result := map[string]any{
+		"task": taskFromInvocation(resp, ttlMillis),
+	}
+	result["_meta"] = map[string]any{
+		"io.modelcontextprotocol/model-immediate-response": taskImmediateResponse(resp),
+	}
+	return result
+}
+
+func taskFromInvocation(resp invocation.InvocationResponse, ttlMillis *int64) map[string]any {
+	lastUpdated := resp.SubmittedAt
+	if resp.CompletedAt != nil {
+		lastUpdated = *resp.CompletedAt
+	}
+	task := map[string]any{
+		"taskId":        resp.InvocationID,
+		"status":        taskStatusFromInvocation(resp.Status),
+		"statusMessage": taskStatusMessage(resp),
+		"createdAt":     resp.SubmittedAt.UTC().Format(time.RFC3339),
+		"lastUpdatedAt": lastUpdated.UTC().Format(time.RFC3339),
+		"pollInterval":  2000,
+		"ttl":           nil,
+	}
+	if ttlMillis != nil {
+		task["ttl"] = *ttlMillis
+	}
+	return task
+}
+
+func taskResultFromInvocation(resp invocation.InvocationResponse) any {
+	var raw json.RawMessage
+	isError := false
+	if len(resp.Error) > 0 {
+		raw = resp.Error
+		isError = true
+	} else {
+		raw = resp.Result
+	}
+	normalized := normalizeToolCallResult(raw, isError)
+	body, ok := normalized.(map[string]any)
+	if !ok {
+		return normalized
+	}
+	meta, _ := body["_meta"].(map[string]any)
+	if meta == nil {
+		meta = map[string]any{}
+	}
+	meta["io.modelcontextprotocol/related-task"] = map[string]any{"taskId": resp.InvocationID}
+	body["_meta"] = meta
+	return body
+}
+
+func taskStatusFromInvocation(status invocation.Status) string {
+	switch status {
+	case invocation.StatusSucceeded:
+		return "completed"
+	case invocation.StatusCancelled, invocation.StatusExpired:
+		return "cancelled"
+	case invocation.StatusDenied, invocation.StatusFailed:
+		return "failed"
+	case invocation.StatusPendingApproval:
+		return "input_required"
+	default:
+		return "working"
+	}
+}
+
+func taskStatusMessage(resp invocation.InvocationResponse) string {
+	switch resp.Status {
+	case invocation.StatusPendingApproval:
+		return "Awaiting approval."
+	case invocation.StatusApproved:
+		return "Approved. Execution will begin shortly."
+	case invocation.StatusExecuting:
+		return "The operation is now in progress."
+	case invocation.StatusSucceeded:
+		return "The operation completed successfully."
+	case invocation.StatusDenied:
+		return "The operation was denied by policy or a reviewer."
+	case invocation.StatusCancelled:
+		return "The operation was cancelled."
+	case invocation.StatusExpired:
+		return "The operation expired before completion."
+	case invocation.StatusFailed:
+		return "The operation failed."
+	default:
+		return "The operation is now in progress."
+	}
+}
+
+func taskImmediateResponse(resp invocation.InvocationResponse) string {
+	switch resp.Status {
+	case invocation.StatusPendingApproval:
+		return "Tool call submitted and awaiting approval. Continue with other work while the task is pending."
+	case invocation.StatusExecuting, invocation.StatusApproved:
+		return "Tool call accepted as a task and is running asynchronously."
+	case invocation.StatusDenied, invocation.StatusFailed:
+		return "Tool call completed with an error. Retrieve the task result for details."
+	default:
+		return "Tool call accepted as a task."
+	}
+}
+
+func (h *Handler) withTaskSupport(ctx context.Context, tools []mcp.Tool, server string, profile *mcpSessionProfile) []any {
+	out := h.annotateToolsWithPolicy(ctx, server, tools)
+	for i, tool := range tools {
+		taskSupport := "optional"
+		if h.requiresTaskCall(ctx, profile, server, tool.Name) {
+			taskSupport = "required"
+		}
+		switch entry := out[i].(type) {
+		case annotatedTool:
+			entry.Execution = map[string]any{"taskSupport": taskSupport}
+			out[i] = entry
+		case mcp.Tool:
+			item := toolListEntry(entry, "", "")
+			item.Execution = map[string]any{"taskSupport": taskSupport}
+			out[i] = item
+		}
+	}
+	return out
+}
+
+func (h *Handler) requiresTaskCall(ctx context.Context, profile *mcpSessionProfile, server string, tool string) bool {
+	if profile == nil || profile.ProtocolVersion != mcp.MCPProtocolVersion2025 {
+		return false
+	}
+	return h.toolRequiresApproval(ctx, server, tool)
+}
+
+func (h *Handler) toolRequiresApproval(ctx context.Context, server string, tool string) bool {
+	if h.rulesRepo != nil {
+		if rules, err := h.rulesRepo.ListApprovalRules(ctx); err == nil {
+			if matched := firstMatchingApprovalRule(rules, server, tool, ""); matched != nil {
+				return matched.Action == invocation.RuleActionHumanApproval
+			}
+		}
+	}
+	if h.policyRegistry == nil {
+		return false
+	}
+	active := h.policyRegistry.Active()
+	if active == nil {
+		return true
+	}
+	return active.ID() == "manual_approval" || active.ID() == "registry"
+}
+
+func firstMatchingApprovalRule(rules []invocation.ApprovalRule, server string, tool string, user string) *invocation.ApprovalRule {
+	for i := range rules {
+		rule := &rules[i]
+		if !rule.Enabled {
+			continue
+		}
+		if !matchesPatternList(rule.ServerPatterns, server) {
+			continue
+		}
+		if !matchesPatternList(rule.ToolPatterns, tool) {
+			continue
+		}
+		if !matchesUserPattern(rule.AgentIDPattern, user) {
+			continue
+		}
+		return rule
+	}
+	return nil
+}
+
+func matchesPatternList(patterns []string, value string) bool {
+	if len(patterns) == 0 {
+		return true
+	}
+	for _, pattern := range patterns {
+		if pattern == "*" || pattern == value {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesUserPattern(pattern string, user string) bool {
+	return pattern == "" || pattern == "*" || pattern == user
+}
+
+func (h *Handler) recordMCPInitialize(r *http.Request, server string, protocolVersion string, params json.RawMessage) (*mcpSessionProfile, string) {
+	sessionID := strings.TrimSpace(r.Header.Get("MCP-Session-Id"))
+	if sessionID == "" {
+		var err error
+		sessionID, err = randomToken(18)
+		if err != nil {
+			sessionID = fallbackMCPSessionKey(r, server)
+		}
+	}
+	profile := &mcpSessionProfile{
+		SessionID:           sessionID,
+		ProtocolVersion:     protocolVersion,
+		ClientDeclaredTasks: clientDeclaredTasksCapability(params),
+		LastSeen:            time.Now().UTC(),
+	}
+	_ = h.kvStore.Set(r.Context(), mcpSessionKey(sessionID), profile, h.mcpSessionTTL)
+	_ = h.kvStore.Set(r.Context(), mcpSessionKey(fallbackMCPSessionKey(r, server)), profile, h.mcpSessionTTL)
+	return profile, sessionID
+}
+
+func (h *Handler) mcpProfileForRequest(r *http.Request, server string) *mcpSessionProfile {
+	key := strings.TrimSpace(r.Header.Get("MCP-Session-Id"))
+	if key == "" {
+		key = fallbackMCPSessionKey(r, server)
+	}
+	var profile mcpSessionProfile
+	found, err := h.kvStore.Get(r.Context(), mcpSessionKey(key), &profile)
+	if err != nil || !found {
+		if version := normalizeProtocolVersion(r.Header.Get("MCP-Protocol-Version")); version != "" {
+			return &mcpSessionProfile{ProtocolVersion: version, LastSeen: time.Now().UTC()}
+		}
+		return nil
+	}
+	profile.LastSeen = time.Now().UTC()
+	_ = h.kvStore.Set(r.Context(), mcpSessionKey(key), profile, h.mcpSessionTTL)
+	return &profile
+}
+
+func (h *Handler) markSawTaskAugmentedToolCall(r *http.Request, server string) {
+	h.updateMCPProfile(r, server, func(profile *mcpSessionProfile) {
+		profile.SawTaskAugmentedToolCall = true
+	})
+}
+
+func (h *Handler) markSawSyncCallToRequiredTaskTool(r *http.Request, server string) {
+	h.updateMCPProfile(r, server, func(profile *mcpSessionProfile) {
+		profile.SawSyncCallToRequiredTaskTool = true
+	})
+}
+
+func (h *Handler) updateMCPProfile(r *http.Request, server string, update func(*mcpSessionProfile)) {
+	key := strings.TrimSpace(r.Header.Get("MCP-Session-Id"))
+	if key == "" {
+		key = fallbackMCPSessionKey(r, server)
+	}
+	_, _ = h.kvStore.Update(r.Context(), mcpSessionKey(key), h.mcpSessionTTL, func(payload []byte) ([]byte, error) {
+		var profile mcpSessionProfile
+		if err := json.Unmarshal(payload, &profile); err != nil {
+			return nil, err
+		}
+		update(&profile)
+		profile.LastSeen = time.Now().UTC()
+		return json.Marshal(profile)
+	})
+	if key != fallbackMCPSessionKey(r, server) {
+		if profile := h.mcpProfileForRequest(r, server); profile != nil {
+			_ = h.kvStore.Set(r.Context(), mcpSessionKey(fallbackMCPSessionKey(r, server)), profile, h.mcpSessionTTL)
+		}
+	}
+}
+
+func fallbackMCPSessionKey(r *http.Request, server string) string {
+	return "remote:" + server + ":" + r.RemoteAddr
+}
+
+func mcpSessionKey(sessionID string) string {
+	return "mcp_session:" + sessionID
+}
+
+func clientDeclaredTasksCapability(params json.RawMessage) bool {
+	var payload struct {
+		Capabilities map[string]json.RawMessage `json:"capabilities"`
+	}
+	if err := json.Unmarshal(params, &payload); err != nil {
+		return false
+	}
+	raw, ok := payload.Capabilities["tasks"]
+	return ok && len(raw) > 0 && string(raw) != "null"
+}
+
+func acceptsEventStream(r *http.Request) bool {
+	return strings.Contains(strings.ToLower(r.Header.Get("Accept")), "text/event-stream")
 }
 
 func compactRequestID(id json.RawMessage) string {

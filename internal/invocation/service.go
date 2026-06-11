@@ -96,15 +96,15 @@ type SyncSettingsProvider interface {
 // EvaluateRequest mirrors backend.EvaluateRequest so the service package does
 // not import the backend package directly.
 type EvaluateRequest struct {
-	ModelConfigCUID      string         `json:"model_config_cuid"`
-	OrgCUID              string         `json:"org_cuid,omitempty"`
-	AgentVMCUID          string         `json:"agent_vm_cuid,omitempty"`
-	ConstitutionFieldKey string         `json:"constitution_field_key,omitempty"`
+	ModelConfigCUID      string `json:"model_config_cuid"`
+	OrgCUID              string `json:"org_cuid,omitempty"`
+	AgentVMCUID          string `json:"agent_vm_cuid,omitempty"`
+	ConstitutionFieldKey string `json:"constitution_field_key,omitempty"`
 	// AtryumLLMConfigID references a local LLM config for native evaluation.
 	// When set, the local evaluator is used instead of the VM backend.
 	AtryumLLMConfigID string `json:"atryum_llm_config_id,omitempty"`
 	// Constitution is the agent's governing text sent to the local LLM judge.
-	Constitution string `json:"constitution,omitempty"`
+	Constitution string         `json:"constitution,omitempty"`
 	ServerName   string         `json:"server_name"`
 	ToolName     string         `json:"tool_name"`
 	ToolArgs     map[string]any `json:"tool_args,omitempty"`
@@ -179,6 +179,10 @@ type Service struct {
 	pendingApprovals map[string]chan approvalDecision
 }
 
+type TaskCreateOptions struct {
+	TTLMillis *int64
+}
+
 func NewService(
 	inv invocationRepo,
 	evt eventRepo,
@@ -212,29 +216,103 @@ func (s *Service) SetInvocationSummarizer(client SummaryClient) {
 	s.summarizer = client
 }
 
+func (s *Service) InvokeAsync(ctx context.Context, req CreateInvocationRequest, opts TaskCreateOptions) (InvocationResponse, error) {
+	inv, upstream, decision, _, aiConfidence, existing, err := s.prepareInvocation(ctx, req)
+	if err != nil {
+		return InvocationResponse{}, err
+	}
+	if existing {
+		return s.toResponse(inv), nil
+	}
+	switch decision.Disposition {
+	case policy.DispositionNever:
+		resp, err := s.denyByPolicy(ctx, inv, decision.Reason, aiConfidence)
+		if err != nil {
+			return InvocationResponse{}, err
+		}
+		return resp, nil
+	case policy.DispositionAuto:
+		inv.Status = StatusExecuting
+		inv.Approval = newApproval("auto_approved", decision.Reason, aiConfidence)
+		if err := s.invocations.UpdateResult(ctx, inv); err != nil {
+			return InvocationResponse{}, err
+		}
+		_ = s.events.Create(ctx, Event{
+			InvocationID: inv.InvocationID,
+			EventType:    "invocation.executing",
+			Payload: mustJSON(map[string]any{
+				"upstream": upstream.Name, "request_id": req.RequestID,
+				"input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input),
+				"auto_approved": true, "auto_reason": decision.Reason, "task": true,
+			}),
+			CreatedAt: time.Now().UTC(),
+		})
+		s.executeInvocationAsync(inv, upstream, req)
+		return s.toResponse(inv), nil
+	default:
+		inv.Status = StatusPendingApproval
+		if err := s.invocations.UpdateResult(ctx, inv); err != nil {
+			return InvocationResponse{}, err
+		}
+		_ = s.events.Create(ctx, Event{
+			InvocationID: inv.InvocationID,
+			EventType:    "invocation.pending_approval",
+			Payload: mustJSON(map[string]any{
+				"tool": req.Tool, "upstream": upstream.Name,
+				"request_id": req.RequestID,
+				"input":      json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input),
+				"task": true,
+			}),
+			CreatedAt: time.Now().UTC(),
+		})
+		return s.toResponse(inv), nil
+	}
+}
+
 func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (InvocationResponse, error) {
+	inv, upstream, decision, _, aiConfidence, existing, err := s.prepareInvocation(ctx, req)
+	if err != nil {
+		return InvocationResponse{}, err
+	}
+	if existing {
+		return s.toResponse(inv), nil
+	}
+	switch decision.Disposition {
+	case policy.DispositionNever:
+		return s.denyByPolicy(ctx, inv, decision.Reason, aiConfidence)
+	case policy.DispositionAuto:
+		return s.executeNow(ctx, inv, upstream, req, decision.Reason, aiConfidence)
+	default:
+		// DispositionHuman, DispositionWorkflow, and dispositionAIEscalated all gate
+		// on a human decision. AI-escalated invocations are already tagged on inv.Approval
+		// above; waitForHumanApproval will persist the pending_approval status.
+		return s.waitForHumanApproval(ctx, inv, upstream, req)
+	}
+}
+
+func (s *Service) prepareInvocation(ctx context.Context, req CreateInvocationRequest) (Invocation, mcp.Upstream, policy.Decision, *string, *float64, bool, error) {
 	if req.Server == "" {
-		return InvocationResponse{}, fmt.Errorf("server is required")
+		return Invocation{}, mcp.Upstream{}, policy.Decision{}, nil, nil, false, fmt.Errorf("server is required")
 	}
 	if req.Tool == "" {
-		return InvocationResponse{}, fmt.Errorf("tool is required")
+		return Invocation{}, mcp.Upstream{}, policy.Decision{}, nil, nil, false, fmt.Errorf("tool is required")
 	}
 	if req.IdempotencyKey != nil && *req.IdempotencyKey != "" {
 		existing, err := s.invocations.GetByIdempotencyKey(ctx, *req.IdempotencyKey)
 		if err == nil {
-			return s.toResponse(existing), nil
+			return existing, mcp.Upstream{Name: existing.Upstream}, policy.Decision{}, existing.MatchedRuleID, nil, true, nil
 		}
 		if err != nil && err != sql.ErrNoRows {
-			return InvocationResponse{}, err
+			return Invocation{}, mcp.Upstream{}, policy.Decision{}, nil, nil, false, err
 		}
 	}
 	upstream, err := s.resolver.ResolveContext(ctx, req.Server)
 	if err != nil {
-		return InvocationResponse{}, err
+		return Invocation{}, mcp.Upstream{}, policy.Decision{}, nil, nil, false, err
 	}
 	inputJSON, err := json.Marshal(req.Input)
 	if err != nil {
-		return InvocationResponse{}, err
+		return Invocation{}, mcp.Upstream{}, policy.Decision{}, nil, nil, false, err
 	}
 
 	// agentID is the authenticated agent identity from middleware. When auth
@@ -266,7 +344,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		inv.ClientVersion = &v
 	}
 	if err := s.invocations.Create(ctx, inv); err != nil {
-		return InvocationResponse{}, err
+		return Invocation{}, mcp.Upstream{}, policy.Decision{}, nil, nil, false, err
 	}
 
 	// Determine disposition: check rules first (fine-grained), then fall back to policy (global).
@@ -347,18 +425,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		Payload:      mustJSON(receivedPayload),
 		CreatedAt:    now,
 	})
-
-	switch decision.Disposition {
-	case policy.DispositionNever:
-		return s.denyByPolicy(ctx, inv, decision.Reason, aiConfidence)
-	case policy.DispositionAuto:
-		return s.executeNow(ctx, inv, upstream, req, decision.Reason, aiConfidence)
-	default:
-		// DispositionHuman, DispositionWorkflow, and dispositionAIEscalated all gate
-		// on a human decision. AI-escalated invocations are already tagged on inv.Approval
-		// above; waitForHumanApproval will persist the pending_approval status.
-		return s.waitForHumanApproval(ctx, inv, upstream, req)
-	}
+	return inv, upstream, decision, matchedRuleID, aiConfidence, false, nil
 }
 
 // resolveAgentRecord looks up the Atryum agent record for the given runtime
@@ -734,6 +801,9 @@ func (s *Service) recordExternalDecision(ctx context.Context, invocationID strin
 			return err
 		}
 		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.approved", Payload: mustJSON(map[string]any{"input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input)}), CreatedAt: now})
+		if inv.Upstream != "external" {
+			go s.executeApprovedInvocation(inv)
+		}
 		return nil
 	}
 	inv.Status = StatusDenied
@@ -993,6 +1063,26 @@ func (s *Service) summarizePendingApproval(invocationID string) {
 	}()
 }
 
+func (s *Service) WaitForCompletion(ctx context.Context, invocationID string) (InvocationResponse, error) {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		inv, err := s.invocations.Get(ctx, invocationID)
+		if err != nil {
+			return InvocationResponse{}, err
+		}
+		resp := s.toResponse(inv)
+		if isTerminalStatus(resp.Status) {
+			return resp, nil
+		}
+		select {
+		case <-ctx.Done():
+			return InvocationResponse{}, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 // RecordExecution updates an externally-executed invocation with the outcome
 // reported by the executor. Valid execStatus values:
 //
@@ -1207,6 +1297,62 @@ func (s *Service) toResponse(inv Invocation) InvocationResponse {
 		resp.Error = json.RawMessage(inv.Error)
 	}
 	return resp
+}
+
+func (s *Service) executeInvocationAsync(inv Invocation, upstream mcp.Upstream, req CreateInvocationRequest) {
+	go func() {
+		_, _ = s.finishExecution(context.Background(), inv, upstream, req)
+	}()
+}
+
+func (s *Service) executeApprovedInvocation(inv Invocation) {
+	var input map[string]any
+	if len(inv.Input) > 0 {
+		_ = json.Unmarshal(inv.Input, &input)
+	}
+	req := CreateInvocationRequest{
+		Server:         inv.Upstream,
+		Tool:           inv.Tool,
+		Input:          input,
+		RequestID:      inv.RequestID,
+		IdempotencyKey: inv.IdempotencyKey,
+	}
+	upstream, err := s.resolver.ResolveContext(context.Background(), inv.Upstream)
+	if err != nil {
+		completed := time.Now().UTC()
+		inv.Status = StatusFailed
+		inv.CompletedAt = &completed
+		inv.Error = mustJSON(map[string]any{"message": err.Error()})
+		_ = s.invocations.UpdateResult(context.Background(), inv)
+		_ = s.events.Create(context.Background(), Event{InvocationID: inv.InvocationID, EventType: "invocation.failed", Payload: inv.Error, CreatedAt: completed})
+		return
+	}
+	inv.Status = StatusExecuting
+	if err := s.invocations.UpdateResult(context.Background(), inv); err != nil {
+		return
+	}
+	_ = s.events.Create(context.Background(), Event{
+		InvocationID: inv.InvocationID,
+		EventType:    "invocation.executing",
+		Payload: mustJSON(map[string]any{
+			"upstream":   upstream.Name,
+			"request_id": inv.RequestID,
+			"input":      json.RawMessage(inv.Input),
+			"arguments":  json.RawMessage(inv.Input),
+			"task":       true,
+		}),
+		CreatedAt: time.Now().UTC(),
+	})
+	_, _ = s.finishExecution(context.Background(), inv, upstream, req)
+}
+
+func isTerminalStatus(status Status) bool {
+	switch status {
+	case StatusSucceeded, StatusFailed, StatusDenied, StatusCancelled, StatusExpired:
+		return true
+	default:
+		return false
+	}
 }
 
 func mustJSON(v any) []byte {
