@@ -875,7 +875,7 @@ const Invocations: React.FC = () => {
                             return (
                               <Tag
                                 colorScheme={statusColor}
-                                size="sm"
+                                size="md"
                                 textTransform="capitalize">
                                 <Box
                                   as="span"
@@ -1176,6 +1176,16 @@ const Invocations: React.FC = () => {
                                   <Button
                                     variant="link"
                                     size="xs"
+                                    leftIcon={
+                                      <Icon
+                                        as={
+                                          showArgsJson
+                                            ? ChevronUpIcon
+                                            : ChevronDownIcon
+                                        }
+                                        boxSize={4}
+                                      />
+                                    }
                                     onClick={() => setShowArgsJson((v) => !v)}
                                     data-testid="invocation-arguments-json-toggle">
                                     {showArgsJson
