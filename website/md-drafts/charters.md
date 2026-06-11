@@ -1,4 +1,4 @@
-Charters
+# Charters
 
 Charters are only used during AI Evaluation. The LLM sees only the one tool call and the charter. For a wider scope (more metadata, past tool calls, agentic) connect to ValidMind Agent Authority.
 

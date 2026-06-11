@@ -4,7 +4,7 @@ Install and initialize Atryum, then integrate Atryum with your coding agents and
 
 ## Install & initialize Atryum
 
-Dowload Atryum and register a server in Atryum for testing.
+Download Atryum and register a server in Atryum for testing.
 
 ### Download Atryum
 
@@ -45,7 +45,7 @@ curl -L https://github.com/validmind/atryum/releases/download/0.0.2/atryum-mac -
 
 5. Connect your preferred coding agent to Atryum. Open your agent's MCP settings and add a standard MCP server with the calc server address: `localhost:8080/mcp/calc`.
 
-    The agent will think it is talking to a calculator MCP server, but its tool calls now pass through Atryum first.
+    The agent will think it is talking to a calculator MCP server, but its tool invocations now pass through Atryum first.
 
 6. Trigger a test tool call from your agent. For example:
 
@@ -53,61 +53,82 @@ curl -L https://github.com/validmind/atryum/releases/download/0.0.2/atryum-mac -
     Use the calculator tools and show me 2*2
     ```
 
-7. Within Atryum, click **Invocations** in the left sidebar. Confirm that you see the calculator invocation `Pending Approval` — human approval is required by default.
+7. Within Atryum, click **Invocations** in the left sidebar. Confirm that the calculator invocation request is `Pending Approval` — human approval is required by default.
 
     - Under Approval Required, select **Approve** to let the tool call run.
     - Verify that the invocation's <span style="font-variant: small-caps;">auth</span> is `Succeeded` and that the approval was <span style="font-variant: small-caps;">decided by</span> a <span style="font-variant: small-caps;">human</span>.
 
+To learn more about working with invocations and what rules you can set up to manage invocations, refer to **[Invocations & rules](invocations_and_rules.md)**.
+
 ## Integrate Atryum
 
-After setting up your test test calculator server, connect Atryum up with your coding agents and ValidMind.
+After setting up your test calculator server, connect Atryum with your coding agents and ValidMind to streamline your agent oversight in one platform.
 
 ### With coding agents
 
-Connect your coding agents to Atryum, allowing Atryum to review tool calls before your agents run them. Hooks and extensions are available for [Claude Code](https://www.anthropic.com/claude-code), [Cursor](https://cursor.com), [Amp](https://ampcode.com), [Pi](https://pi.dev), and [Codex](https://openai.com/codex).
+Connect your coding agents to Atryum, allowing Atryum to review tool invocations before your agents run them. Hooks and extensions are available for [Claude Code](https://www.anthropic.com/claude-code), [Cursor](https://cursor.com), [Amp](https://ampcode.com), [Pi](https://pi.dev), and [Codex](https://openai.com/codex).
 
-Run the hooks command to see the available setup options for each supported coding agent:
+To retrieve the available setup options for each supported coding agent:
 
 ```bash
-./atryum hooks
+./atryum hooks --help
 ```
+
+To learn more about connecting agents with Atryum, refer to **[Connect agents](connect_agents.md)**.
 
 ### With ValidMind
 
-Connect Atryum to ValidMind to sync AI agent records and evaluate tool calls against each agent’s constitution.
+Sync your ValidMind organization's agent records to Atryum to map tool invocations to agent records, and use agent-scoped rules.
+
+Connecting agent records from ValidMind allows you to use Atryum to evaluate tool invocations against each agent’s *constitution*. A constitution is a plain-language policy that describes what an agent can do, what it cannot do, and which actions require human approval.
 
 #### Prerequisites
 
 Before connecting Atryum to ValidMind, prepare the agent records that Atryum will sync:
 
-- Create or choose a ValidMind primary record type for AI agents, such as `ai-agents`.
-- Add a custom long-text field to that record type for each agent's constitution. For example, use a field key like `constitution`.
-- Create at least one agent record in that record type and fill in its constitution field.
-- Make sure you have a ValidMind API key and secret for the environment you want Atryum to connect to.
+- [x] Set up a ValidMind record type for AI agents if one does not already exist. ([Manage inventory record types](https://docs.validmind.ai/guide/inventory/manage-inventory-record-types.html))
+- [x] Add a custom long text field to that record type for each agent's constitution. ([Manage inventory fields](https://docs.validmind.ai/guide/inventory/manage-inventory-fields.html))
+- [x] Create at least one record in that record type and fill in its constitution field. ([Register records in the inventory](https://docs.validmind.ai/guide/inventory/register-records-in-inventory.html))
+- [x] Make sure you have valid ValidMind API and secret keys for the organization you want Atryum to connect to. ([Manage your profile](https://docs.validmind.ai/guide/configuration/manage-your-profile.html#access-keys))
 
 #### Connect Atryum to ValidMind
 
-1. Run the ValidMind setup command for Atryum:
+1. Set up ValidMind for Atryum:
 
 ```bash
 ./atryum setup validmind
 ```
 
-2. Follow the prompts:
+2. Follow the prompts and enter your:
 
-    - **ValidMind Base URL** — Enter the ValidMind environment you want Atryum to connect to.
-    - **ValidMind API key** and **ValidMind API secret** — Enter credentials for that environment.
+    - **ValidMind Base URL** — The URL for ValidMind organization you want Atryum to connect to. For example: `https://app.prod.validmind.ai/`
+    - **ValidMind API key**  — Your organization API Key.
+    - **ValidMind API secret** — Your organization Secret Key.
 
-    Atryum saves the credentials to `$HOME/.config/atryum/atryum.toml`.
+3. Atryum prints the path to the updated `atryum.toml` file. Open the file and verify that it has been edited with your submitted configurations:
+    - On macOS, this is typically under `~/Library/Application Support/atryum/atryum.toml`.
+    - On Linux, this is typically under `~/.config/atryum/atryum.toml`.
 
-3. Restart Atryum so it loads the updated ValidMind credentials.
+4. Restart Atryum so it loads the updated ValidMind credentials:
 
-4. In your browser, navigate to [`localhost:8080/settings`](http://localhost:8080/settings).
+    a. In the terminal where Atryum is running, press `Ctrl+C` to stop it.
+    b. Start Atryum again:
 
-5. Under **Agent Record Sync**, select the ValidMind organization, AI agent record type, and custom constitution field to use for synced agents.
+        ```bash
+        ./atryum run --init-servers
+        ```
 
-6. Click **Save Settings**.
+5. In your browser, navigate to [`localhost:8080/ui/settings`](http://localhost:8080/ui/settings).
 
-7. Create an AI Evaluation rule in Atryum. This routes matching tool calls to a model that evaluates the call against the agent's constitution.
+6. Under **Agent Record Sync**, select the:
 
-The constitution defines what the agent is allowed to do, what it must not do, and which requests should require human approval.
+    - ValidMind **Organization**
+    - Organization **Record Type**
+    - **Constitution Field**
+
+    The UI labels the constitution field as optional because agent sync can run without it. For this quickstart, select it because AI Evaluation needs the constitution field to evaluate tool invocations against each agent's policy.
+
+7. Click **Save Settings** to apply your changes.
+
+8. Create an AI Evaluation rule in Atryum. This routes matching tool invocations to a model that evaluates the call against the agent's constitution.
+
