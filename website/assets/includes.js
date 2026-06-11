@@ -6,8 +6,8 @@
       return 'home';
     }
 
-    if (filename === 'docs.html') {
-      return 'docs';
+    if (filename === 'quickstart.html') {
+      return 'quickstart';
     }
 
     return '';
