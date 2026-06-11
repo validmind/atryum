@@ -15,9 +15,9 @@ The **Invocations** page is where you review those calls, approve or deny reques
 - **<span style="font-variant: small-caps;">decided by</span>** — Who or what made the approval decision: a <span style="font-variant: small-caps;">human</span>, a matching <span style="font-variant: small-caps;">rule</span>, or <span style="font-variant: small-caps;">ai evaluation</span>.
 - **<span style="font-variant: small-caps;">submitted</span>** — When the agent submitted the tool call.
 
-### View or filter invocations
+## View or filter invocations
 
-#### View invocation details
+### View invocation details
 
 1. In Atryum, click **Invocations** in the left sidebar.
 
@@ -36,7 +36,7 @@ The detail panel shows:
 - Tool output as JSON result when the call succeeds, or error details as JSON result when the call fails or is denied.
 - Chronological event log. Expand a row to see event payload details.
 
-#### Filter invocation list
+### Filter invocation list
 
 1. In Atryum, click **Invocations** in the left sidebar.
 
@@ -50,36 +50,44 @@ The detail panel shows:
 
 4. Click **Apply Filter** to apply your selections.
 
-### Approve or deny invocations
+## Approve or deny invocations
 
+:::
 Human approvals have a default timeout of 30 seconds. To adjust the timeout, update your local Atryum config file (`atryum.toml`), then restart Atryum. For example:
 
 ```toml
 [defaults]
 request_timeout_seconds = 120
 ```
+:::
 
-#### Approve invocations
-
-1. In Atryum, click **Invocations** in the left sidebar.
-
-2. Click on the invocation you want to approve.
-
-3. On the invocations detail panel and select **Deny** under Approval Required.
-
-4. (Optional) Enter a reason for denial — this reason is returned to the agent so you can steer what it does next.
-
-5. Click **Deny** to confirm the denial.
-
-#### Deny invocations
+### Approve invocations
 
 1. In Atryum, click **Invocations** in the left sidebar.
 
-2. Click on the invocation you want to deny.
+2. Click on the invocation you want to approve:
 
-3. On the invocations detail panel and select **Deny** under Approval Required.
+    - On the invocations detail panel, select **Approve** under Approval Required to approve that single invocation.
+    - To approve all invocations for calls matching similar criteria going forward:
 
-4. (Optional) Enter a reason for denial — this reason is returned to the agent so you can steer what it does next.
+        a. Click **&#9660; Customize rule scope** to edit the criteria the rule should match against. ([Rules](rules.md#create-rules-from-existing-invocations))
 
-5. Click **Deny** to confirm the denial.
+        b. Click **&#8744;** next to Approve and select **Always approve**.
+
+### Deny invocations
+
+1. In Atryum, click **Invocations** in the left sidebar.
+
+2. Click on the invocation you want to deny:
+
+    - On the invocations detail panel, select **Deny** under Approval Required to deny that single invocation.
+    - To deny all invocations for calls matching similar criteria going forward:
+
+        a. Click **&#9660; Customize rule scope** to edit the criteria the rule should match against. ([Rules](rules.md#create-rules-from-existing-invocations))
+
+        b. Click **&#8744;** next to Deny and select **Always deny**.
+
+3. (Optional) Enter a reason for denial — this reason is returned to the agent so you can steer what it does next.
+
+## Set up invocation summarization
 

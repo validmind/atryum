@@ -59,7 +59,9 @@ curl -L https://github.com/validmind/atryum/releases/download/0.0.2/atryum-mac -
     - Under Approval Required, select **Approve** to let the tool call run.
     - Verify that the invocation's <span style="font-variant: small-caps;">auth</span> is `Succeeded` and that the approval was <span style="font-variant: small-caps;">decided by</span> a <span style="font-variant: small-caps;">human</span>.
 
+:::
 To learn more about working with invocations, refer to **[Invocations](invocations.md)**.
+:::
 
 ### Set up calculation server rule
 
@@ -82,14 +84,17 @@ Let's add a rule to control future matching tool calls:
     -  Within Atryum, click **Invocations** in the left sidebar and confirm that your new call `Succeeded`.
     - Verify that the approval was <span style="font-variant: small-caps;">decided by</span> a <span style="font-variant: small-caps;">rule</span>.
 
+:::
 To learn more about setting up rules to manage invocations, refer to **[Rules](rules.md)**.
+:::
 
 ## Integrate Atryum
 
 After setting up your test calculator server, connect Atryum with your coding agents and ValidMind to streamline your agent oversight in one platform.
 
+:::
 To learn more about connecting ValidMind or agents with Atryum, refer to **[Integrations](integrations.md)**.
-
+:::
 
 ### With ValidMind
 
