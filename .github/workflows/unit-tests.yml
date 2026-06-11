@@ -40,5 +40,16 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
+      - name: Check Go formatting
+        run: |
+          unformatted="$(gofmt -l $(find . -name '*.go' -not -path './.git/*'))"
+          if [ -n "$unformatted" ]; then
+            echo "The following Go files are not gofmt-formatted:"
+            echo "$unformatted"
+            echo
+            echo "Run: gofmt -w \$(find . -name '*.go' -not -path './.git/*')"
+            exit 1
+          fi
+
       - name: Run unit tests
         run: go test ./...
