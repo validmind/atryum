@@ -67,7 +67,7 @@ func (r *RulesRepo) Create(ctx context.Context, rule Rule) error {
 		Columns(ruleColumns...).
 		Values(
 			rule.ID, rule.Action, serverJSON, toolJSON, rule.AgentIDPattern,
-			emptyToNil(rule.ModelConfigCUID), emptyToNil(rule.AtryumLLMConfigID), agentCUIDsJSON,
+			emptyToNil(rule.ModelConfigCUID), rule.AtryumLLMConfigID, agentCUIDsJSON,
 			emptyToNil(rule.Description), boolToInt(rule.Enabled), rule.Order, now, now,
 		).ToSql()
 	if err != nil {
@@ -139,7 +139,7 @@ func (r *RulesRepo) Update(ctx context.Context, rule Rule) error {
 		Set("tool_pattern", toolJSON).
 		Set("agent_id_pattern", rule.AgentIDPattern).
 		Set("model_config_cuid", emptyToNil(rule.ModelConfigCUID)).
-		Set("atryum_llm_config_id", emptyToNil(rule.AtryumLLMConfigID)).
+		Set("atryum_llm_config_id", rule.AtryumLLMConfigID).
 		Set("agent_cuids", agentCUIDsJSON).
 		Set("description", emptyToNil(rule.Description)).
 		Set("enabled", boolToInt(rule.Enabled)).
@@ -386,7 +386,7 @@ func (r *RulesRepo) InsertBefore(ctx context.Context, anchorID string, rule Rule
 		Columns(ruleColumns...).
 		Values(
 			rule.ID, rule.Action, serverJSON, toolJSON, rule.AgentIDPattern,
-			emptyToNil(rule.ModelConfigCUID), emptyToNil(rule.AtryumLLMConfigID), agentCUIDsJSON,
+			emptyToNil(rule.ModelConfigCUID), rule.AtryumLLMConfigID, agentCUIDsJSON,
 			emptyToNil(rule.Description), boolToInt(rule.Enabled), rule.Order, now, now,
 		).ToSql()
 	if err != nil {
