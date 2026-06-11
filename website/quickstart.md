@@ -56,39 +56,63 @@ curl -L https://github.com/validmind/atryum/releases/download/0.0.2/atryum-mac -
     - Under Approval Required, select **Approve** to let the tool call run.
     - Verify that the invocation's <span style="font-variant: small-caps;">auth</span> is `Succeeded` and that the approval was <span style="font-variant: small-caps;">decided by</span> a <span style="font-variant: small-caps;">human</span>.
 
-    Human approvals have a default timeout of 30 seconds. To adjust the timeout, update your local Atryum config file (`atryum.toml`), then restart Atryum:
+#### Approval timeout
 
-    ```toml
-    [defaults]
-    request_timeout_seconds = 120
-    ```
+Human approvals have a default timeout of 30 seconds. To adjust the timeout, update your local Atryum config file (`atryum.toml`), then restart Atryum. For example:
+
+```toml
+[defaults]
+request_timeout_seconds = 120
+```
+
+#### Invocation denials
+
+1. In Atryum, click **Invocations** in the left sidebar.
+
+2. Click on the invocation you want to deny.
+
+3. On the invocations detail panel and select **Deny** under Approval Required.
+
+4. (Optional) Enter in a reason for denial — this reason is returned to the agent so you can steer what it does next.
+
+5. Click **Deny** to confirm the denial.
 
 ### Set up rules for Atryum
 
-Rules are if/then policies that tell Atryum how to handle tool calls. Rules let you reuse manual decisions for future tool calls that match the same conditions. For example — if the server is `calc`, then approve the call automatically.
+Rules are if/then policies that tell Atryum how to handle tool calls:
 
-Add a rule to control future matching tool calls:
+- Rules let you reuse manual decisions for future tool calls that match the same conditions.
+- Rules are applied from top to bottom — the first matching rule wins.
 
-1. In Atryum, click **Rules** in the left navigation.
+For example — if the server is `calc`, then approve the call automatically. Let's add a rule to control future matching tool calls:
+
+1. In Atryum, click **Rules** in the left sidebar.
 
 2. Click **New Rule**.
 
-3. Choose an action:
+3. Choose an Action:
     - **Auto Approve** lets matching tool calls run without stopping for manual approval.
     - **Auto Deny** blocks matching tool calls automatically.
     - **Human Approval** pauses matching tool calls until a human approves or denies them.
 
-4. Choose the servers, tools, or agents the rule should apply to. For this demo, choose the `calc` server if you want the rule to apply only to calculator calls.
+    For this demo, select **Auto Approve**.
 
-5. (Optional) Add a description so you can remember why the rule exists.
+4. Choose the Agents, Servers / Sources, and Tools that the rule should apply to.
 
-6. Click **Create**.
+    For this demo, select `calc` under **Servers/Sources** to apply the rule only to calls to the test calculator server.
 
-7. Try the calculator prompt again. Atryum should apply the new rule instead of treating the call like a brand-new manual decision.
+5. (Optional) Add a Description so you can remember why the rule exists.
 
-- Rules are applied from top to bottom — the first matching rule wins.
-- You can also create a rule from an existing invocation by opening the invocation and clicking **Create Rule From This**.
-- As a human, you can deny a tool call with a message — which is returned to the agent so you can steer what it does next.
+6. Make sure that **Enabled** is checked, then click **Create**.
+
+7. Try a calculator prompt from your agent again. Atryum should apply the new rule instead of treating the call like a brand-new manual decision:
+
+    -  Within Atryum, click **Invocations** in the left sidebar and confirm that your new call `Succeeded`.
+    - Verify that the approval was <span style="font-variant: small-caps;">decided by</span> a <span style="font-variant: small-caps;">rule</span>.
+
+#### Create a rule from existing invocation
+
+You can also create a rule from an existing invocation by clicking on the invocation to expand details, then selecting **Create Rule From This**.
 
 ## Integrate Atryum
 
