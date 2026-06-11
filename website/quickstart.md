@@ -34,14 +34,14 @@ curl -L https://github.com/validmind/atryum/releases/download/0.0.2/atryum-mac -
 
 3. In your browser, navigate to [`localhost:8080`](http://localhost:8080) to open the Atryum local web user interface.
 
-    Here, you can view servers, tool calls, approvals, and rules.
+    Here, you can view servers, manage tool invocation approvals, configure rules, and more.
 
-4. Click **Servers** in the left sidebar, and confirm that Atryum successfully registered your test calculator server:
+4. Within Atryum, click **Servers** in the left sidebar. Confirm that your test calculator server was successfully registered:
 
-    - Confirm that the server's <span style="font-variant: small-caps;">CONNECTON</span> and <span style="font-variant: small-caps;">AUTH</span> both display as <span style="font-variant: small-caps;">`READY`</span>.
-    - Confirm that Atryum exposed the server at [`localhost:8080/mcp/calc`](http://localhost:8080/mcp/calc).
+    - Verify that the server's <span style="font-variant: small-caps;">connection</span> and <span style="font-variant: small-caps;">auth</span> both display as <span style="font-variant: small-caps;">`ready`</span>.
+    - Verify that Atryum exposed the server at [`localhost:8080/mcp/calc`](http://localhost:8080/mcp/calc).
 
-5. Connect your coding agent to Atryum. Open your agent's MCP settings and add a standard MCP server with the calc server address: `localhost:8080/mcp/calc`.
+5. Connect your preferred coding agent to Atryum. Open your agent's MCP settings and add a standard MCP server with the calc server address: `localhost:8080/mcp/calc`.
 
     The agent will think it is talking to a calculator MCP server, but its tool calls now pass through Atryum first.
 
@@ -51,10 +51,17 @@ curl -L https://github.com/validmind/atryum/releases/download/0.0.2/atryum-mac -
     Use the calculator tools and show me 2*2
     ```
 
-7. Within Atryum, you should see the calculator invocation:
+7. Within Atryum, click **Invocations** in the left sidebar. Confirm that you see the calculator invocation `Pending Approval` — human approval is required by default.
 
-    - By default, it should be pending human approval.
-    - Approve it to let the tool call run.
+    - Under Approval Required, select **Approve** to let the tool call run.
+    - Verify that the invocation's <span style="font-variant: small-caps;">auth</span> is `Succeeded` and that the approval was <span style="font-variant: small-caps;">decided by</span> a <span style="font-variant: small-caps;">human</span>.
+
+    Human approvals have a default timeout of 30 seconds. To adjust the timeout, update your local Atryum config file (`atryum.toml`), then restart Atryum:
+
+    ```toml
+    [defaults]
+    request_timeout_seconds = 120
+    ```
 
 ### Set up rules for Atryum
 
