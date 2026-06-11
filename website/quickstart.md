@@ -32,12 +32,14 @@ curl -L https://github.com/validmind/atryum/releases/download/0.0.2/atryum-mac -
     ./atryum run --init-servers
     ```
 
-3. In your browser, navigate to [`localhost:8080`](http://localhost:8080) to open the Atryum local web user interface. Here, you can view servers, tool calls, approvals, and rules.
+3. In your browser, navigate to [`localhost:8080`](http://localhost:8080) to open the Atryum local web user interface.
 
-4. Confirm that Atryum registered the calculator server:
+    Here, you can view servers, tool calls, approvals, and rules.
 
-    - Click **Servers** in the left navigation, and confirm that the calc server appears without errors.
-    - Atryum exposes this server at [`localhost:8080/mcp/calc`](http://localhost:8080/mcp/calc).
+4. Click **Servers** in the left sidebar, and confirm that Atryum successfully registered your test calculator server:
+
+    - Confirm that the server's <span style="font-variant: small-caps;">CONNECTON</span> and <span style="font-variant: small-caps;">AUTH</span> both display as <span style="font-variant: small-caps;">`READY`</span>.
+    - Confirm that Atryum exposed the server at [`localhost:8080/mcp/calc`](http://localhost:8080/mcp/calc).
 
 5. Connect your coding agent to Atryum. Open your agent's MCP settings and add a standard MCP server with the calc server address: `localhost:8080/mcp/calc`.
 
