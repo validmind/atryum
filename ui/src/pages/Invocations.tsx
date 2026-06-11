@@ -130,7 +130,6 @@ const matchesAnyPattern = (
 };
 
 const matchesRuleScope = (invocation: Invocation, rule: RuleInput): boolean =>
-  rule.user_pattern === "*" &&
   matchesAnyPattern(rule.server_patterns, invocation.server_name) &&
   matchesAnyPattern(rule.tool_patterns, invocation.tool_name);
 
@@ -239,7 +238,6 @@ const Invocations: React.FC = () => {
   const [ruleForm, setRuleForm] = useState({
     server_patterns: "",
     tool_patterns: "",
-    user_pattern: "*",
     description: "",
   });
   const [showCreateRule, setShowCreateRule] = useState(false);
@@ -247,13 +245,11 @@ const Invocations: React.FC = () => {
     action: RuleAction;
     server_patterns: string;
     tool_patterns: string;
-    user_pattern: string;
     description: string;
   }>({
     action: "auto_approve",
     server_patterns: "",
     tool_patterns: "",
-    user_pattern: "*",
     description: "",
   });
 
@@ -353,7 +349,6 @@ const Invocations: React.FC = () => {
           .map((s) => s.trim())
           .filter(Boolean)
       : [],
-    user_pattern: ruleForm.user_pattern || "*",
     description: ruleForm.description || undefined,
     enabled: true,
   });
@@ -362,7 +357,6 @@ const Invocations: React.FC = () => {
     setRuleForm({
       server_patterns: serverName ?? "",
       tool_patterns: toolName ?? "",
-      user_pattern: "*",
       description: "",
     });
     setShowCustomizeScope(false);
@@ -373,7 +367,6 @@ const Invocations: React.FC = () => {
       action: "auto_approve",
       server_patterns: serverName ?? "",
       tool_patterns: toolName ?? "",
-      user_pattern: "*",
       description: "",
     });
     setShowCreateRule(false);
@@ -475,7 +468,6 @@ const Invocations: React.FC = () => {
             .map((s) => s.trim())
             .filter(Boolean)
         : [],
-      user_pattern: createRuleForm.user_pattern || "*",
       description: createRuleForm.description || undefined,
       enabled: true,
     };

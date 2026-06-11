@@ -21,7 +21,6 @@ type ApprovalRule struct {
 	Action            string   // one of the RuleAction* constants
 	ServerPatterns    []string // empty slice = match any server
 	ToolPatterns      []string // empty slice = match any tool
-	AgentIDPattern    string   // "*" or "" = match any agent
 	ModelConfigCUID   string   // VM agent model config to use for ai_evaluation rules
 	AtryumLLMConfigID string   // local LLM config ID for native ai_evaluation (alternative to ModelConfigCUID)
 	AgentCUIDs        []string // Atryum agent CUIDs this rule targets; empty = all
@@ -39,10 +38,8 @@ type rulesStore interface {
 // and stop at the first rule that produces a final verdict; an empty slice means no
 // rule matches and the caller should fall back to the global policy.
 //
-// The agentID is the authenticated agent identity (empty when auth is disabled —
-// callers fall back to request_id for parity with pre-auth behavior).
 // The agentCUID is the Atryum-local agent record CUID used by ai_evaluation rules.
-func matchRules(rules []ApprovalRule, server, tool, agentID, agentCUID string) []ApprovalRule {
+func matchRules(rules []ApprovalRule, server, tool, agentCUID string) []ApprovalRule {
 	var matched []ApprovalRule
 	for _, r := range rules {
 		if !r.Enabled {
@@ -52,9 +49,6 @@ func matchRules(rules []ApprovalRule, server, tool, agentID, agentCUID string) [
 			continue
 		}
 		if !matchPatterns(r.ToolPatterns, tool) {
-			continue
-		}
-		if !matchAgentIDPattern(r.AgentIDPattern, agentID) {
 			continue
 		}
 		if !matchAgentCUIDs(r.AgentCUIDs, agentCUID) {
@@ -92,8 +86,3 @@ func matchPatterns(patterns []string, value string) bool {
 	return false
 }
 
-// matchAgentIDPattern returns true when the rule's agent_id pattern matches the
-// authenticated agent identity. An empty or "*" pattern matches any agent.
-func matchAgentIDPattern(pattern, agentID string) bool {
-	return pattern == "" || pattern == "*" || pattern == agentID
-}

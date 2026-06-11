@@ -15,8 +15,6 @@ import (
 	"atryum/internal/invocation/policy"
 	"atryum/internal/mcp"
 	"atryum/internal/store"
-
-	_ "modernc.org/sqlite"
 )
 
 // stubRulesStore returns a fixed rule list so the test can pin the user
@@ -45,13 +43,10 @@ func TestInvokeUsesAuthenticatedAgentIDForRulesAndEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Rule that auto-approves only the authenticated agent_id; if the
-	// service incorrectly matched on request_id (legacy behavior) the rule
-	// would NOT match and the call would fall back to manual approval.
 	rules := stubRulesStore{rules: []invocation.ApprovalRule{{
-		ID: "rule_agent_007", Action: invocation.RuleActionAutoApprove,
+		ID: "rule_auto_approve", Action: invocation.RuleActionAutoApprove,
 		ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"},
-		AgentIDPattern: "agent-007", Enabled: true,
+		Enabled: true,
 	}}}
 
 	svc := invocation.NewService(
@@ -68,7 +63,7 @@ func TestInvokeUsesAuthenticatedAgentIDForRulesAndEvents(t *testing.T) {
 		t.Fatalf("Invoke: %v", err)
 	}
 	if resp.Status != invocation.StatusSucceeded {
-		t.Fatalf("expected succeeded (rule auto_approve matched on agent_id), got %s", resp.Status)
+		t.Fatalf("expected succeeded (rule auto_approve), got %s", resp.Status)
 	}
 	if resp.Approval == nil || resp.Approval.Status != "auto_approved" {
 		t.Fatalf("expected auto_approved approval, got %#v", resp.Approval)
@@ -158,44 +153,6 @@ func TestInvokeWithoutAgentIDPersistsClientInfoFromRequest(t *testing.T) {
 	}
 }
 
-func TestInvokeWithoutAuthFallsBackToRequestIDForRules(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"content": []map[string]any{{"type": "text", "text": "ok"}}}})
-	}))
-	defer upstream.Close()
-
-	db := newSQLiteTestDB(t)
-	cfg := config.Config{
-		Defaults:  config.DefaultsConfig{RequestTimeoutSeconds: 5},
-		Upstreams: []config.UpstreamConfig{{Name: "demo", Mode: "http", BaseURL: upstream.URL, Enabled: true, TimeoutSeconds: 5}},
-	}
-	resolver := mcp.NewResolver(store.NewServerRepo(db), cfg)
-	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-
-	rules := stubRulesStore{rules: []invocation.ApprovalRule{{
-		ID: "rule_legacy", Action: invocation.RuleActionAutoApprove,
-		ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"},
-		AgentIDPattern: "legacy-request-id", Enabled: true,
-	}}}
-	svc := invocation.NewService(
-		store.NewInvocationRepo(db), store.NewEventRepo(db), resolver,
-		mcp.NewHTTPClient(), policy.AlwaysDenyProvider{},
-		5*time.Second, rules, nil, nil, nil,
-	)
-
-	rid := "legacy-request-id"
-	resp, err := svc.Invoke(context.Background(), invocation.CreateInvocationRequest{
-		Server: "demo", Tool: "demo_tool", Input: map[string]any{"x": 1}, RequestID: &rid,
-	})
-	if err != nil {
-		t.Fatalf("Invoke: %v", err)
-	}
-	if resp.Status != invocation.StatusSucceeded {
-		t.Fatalf("expected succeeded via request_id fallback, got %s", resp.Status)
-	}
-}
 
 // External (non-MCP) callers like the amp-plugin example don't run behind
 // the auth middleware today, so there is no identity in context. They can

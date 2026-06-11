@@ -26,7 +26,6 @@ func TestRulesRepo_CreateVMPathAIEvaluationRule(t *testing.T) {
 		Action:          "ai_evaluation",
 		ServerPatterns:  []string{},
 		ToolPatterns:    []string{},
-		AgentIDPattern:  "*",
 		ModelConfigCUID: "model-config-cuid-123",
 		// AtryumLLMConfigID intentionally left empty: VM backend path.
 		Enabled: true,

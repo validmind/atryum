@@ -277,11 +277,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	ruleMatched := false
 	if s.rules != nil {
 		if approvalRules, err := s.rules.ListApprovalRules(ctx); err == nil {
-			user := agentID
-			if user == "" && req.RequestID != nil {
-				user = *req.RequestID
-			}
-			for _, rule := range matchRules(approvalRules, upstream.Name, req.Tool, user, agentRec.ID) {
+			for _, rule := range matchRules(approvalRules, upstream.Name, req.Tool, agentRec.ID) {
 				r := rule
 				ruleMatched = true
 				if r.ID != "" {
@@ -833,11 +829,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	var resolvedAIConfidence *float64
 	if s.rules != nil {
 		if approvalRules, err := s.rules.ListApprovalRules(ctx); err == nil {
-			user := agentID
-			if user == "" && req.RequestID != nil {
-				user = *req.RequestID
-			}
-			for _, rule := range matchRules(approvalRules, source, req.Tool, user, agentRec.ID) {
+			for _, rule := range matchRules(approvalRules, source, req.Tool, agentRec.ID) {
 				r := rule
 				if r.Action == RuleActionAIEvaluation {
 					d, conf := s.runAIEvaluation(ctx, &r, source, req.Tool, req.Input, agentID, agentRec)

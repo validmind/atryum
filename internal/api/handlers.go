@@ -272,7 +272,6 @@ type AdminRule struct {
 	Action            string    `json:"action"`
 	ServerPatterns    []string  `json:"server_patterns"`
 	ToolPatterns      []string  `json:"tool_patterns"`
-	AgentIDPattern    string    `json:"agent_id_pattern"`
 	ModelConfigCUID   string    `json:"model_config_cuid,omitempty"`
 	AtryumLLMConfigID string    `json:"atryum_llm_config_id,omitempty"`
 	AgentCUIDs        []string  `json:"agent_cuids"`
@@ -287,7 +286,6 @@ type AdminRuleInput struct {
 	Action            string   `json:"action"`
 	ServerPatterns    []string `json:"server_patterns"`
 	ToolPatterns      []string `json:"tool_patterns"`
-	AgentIDPattern    string   `json:"agent_id_pattern"`
 	ModelConfigCUID   string   `json:"model_config_cuid,omitempty"`
 	AtryumLLMConfigID string   `json:"atryum_llm_config_id,omitempty"`
 	AgentCUIDs        []string `json:"agent_cuids"`
@@ -422,7 +420,6 @@ type AgentRule struct {
 	Action         string   `json:"action"`
 	ServerPatterns []string `json:"server_patterns"`
 	ToolPatterns   []string `json:"tool_patterns"`
-	AgentIDPattern string   `json:"agent_id_pattern"`
 	Description    string   `json:"description,omitempty"`
 	Order          int      `json:"order"`
 }
@@ -768,7 +765,7 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 	agentCUID := h.resolveAgentRecordForRules(ctx, agentID)
 
 	for _, rule := range rules {
-		if !apiRuleMatches(rule, server, tool, agentID, agentCUID, false) {
+		if !apiRuleMatches(rule, server, tool, agentCUID, false) {
 			continue
 		}
 		resp.Items = append(resp.Items, AgentRule{
@@ -776,12 +773,11 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 			Action:         rule.Action,
 			ServerPatterns: rule.ServerPatterns,
 			ToolPatterns:   rule.ToolPatterns,
-			AgentIDPattern: rule.AgentIDPattern,
 			Description:    rule.Description,
 			Order:          rule.Order,
 		})
 		if resp.Action == "" && server != "" && tool != "" &&
-			apiRuleMatches(rule, server, tool, agentID, agentCUID, true) {
+			apiRuleMatches(rule, server, tool, agentCUID, true) {
 			resp.Action = rule.Action
 			if rule.ID != "" {
 				id := rule.ID
@@ -819,7 +815,7 @@ func (h *Handler) resolveAgentRecordForRules(ctx context.Context, agentID string
 	return rec.ID
 }
 
-func apiRuleMatches(rule store.Rule, server, tool, agentID, agentCUID string, includeServerTool bool) bool {
+func apiRuleMatches(rule store.Rule, server, tool, agentCUID string, includeServerTool bool) bool {
 	if !rule.Enabled {
 		return false
 	}
@@ -830,9 +826,6 @@ func apiRuleMatches(rule store.Rule, server, tool, agentID, agentCUID string, in
 		if !apiMatchPatterns(rule.ToolPatterns, tool) {
 			return false
 		}
-	}
-	if !apiMatchAgentIDPattern(rule.AgentIDPattern, agentID) {
-		return false
 	}
 	return apiMatchAgentCUIDs(rule.AgentCUIDs, agentCUID)
 }
@@ -1186,9 +1179,6 @@ func apiMatchPatterns(patterns []string, value string) bool {
 	return false
 }
 
-func apiMatchAgentIDPattern(pattern, agentID string) bool {
-	return pattern == "" || pattern == "*" || pattern == agentID
-}
 
 // annotatedTool is the on-the-wire shape used for tools/list when atryum is
 // able to compute a per-tool policy disposition. It mirrors mcp.Tool but adds
@@ -1237,7 +1227,7 @@ func (h *Handler) annotateToolsWithPolicy(ctx context.Context, server string, to
 			out[i] = t
 			continue
 		}
-		action, matched := effectiveActionForTool(rules, server, t.Name, agentID, agentCUID)
+		action, matched := effectiveActionForTool(rules, server, t.Name, agentCUID)
 		desc := t.Description
 		if action != "" {
 			prefix := "[atryum policy: " + action + "] "
@@ -1261,11 +1251,11 @@ func (h *Handler) annotateToolsWithPolicy(ctx context.Context, server string, to
 }
 
 // effectiveActionForTool returns the action of the first enabled rule that
-// matches (server, tool, agentID, agentCUID), mirroring invocation.matchRules priority order.
+// matches (server, tool, agentCUID), mirroring invocation.matchRules priority order.
 // When no rule matches, it returns RuleActionHumanApproval (the default).
-func effectiveActionForTool(rules []store.Rule, server, tool, agentID, agentCUID string) (string, string) {
+func effectiveActionForTool(rules []store.Rule, server, tool, agentCUID string) (string, string) {
 	for _, r := range rules {
-		if !apiRuleMatches(r, server, tool, agentID, agentCUID, true) {
+		if !apiRuleMatches(r, server, tool, agentCUID, true) {
 			continue
 		}
 		return r.Action, r.ID
@@ -1473,23 +1463,22 @@ func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) 
 			if req.CreateRule.Enabled != nil {
 				enabled = *req.CreateRule.Enabled
 			}
-			newRule := store.Rule{
-				ID:              "rule_" + newUUID(),
-				Action:          req.CreateRule.Action,
-				ServerPatterns:  normalizePatternSlice(req.CreateRule.ServerPatterns),
-				ToolPatterns:    normalizePatternSlice(req.CreateRule.ToolPatterns),
-				AgentIDPattern:  defaultPattern(req.CreateRule.AgentIDPattern),
-				ModelConfigCUID: req.CreateRule.ModelConfigCUID,
-				AgentCUIDs:      normalizePatternSlice(req.CreateRule.AgentCUIDs),
-				Description:     req.CreateRule.Description,
-				Enabled:         enabled,
-			}
-			if err := h.rulesRepo.InsertBefore(r.Context(), anchorID, newRule); err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
-				return
-			}
+		newRule := store.Rule{
+			ID:              "rule_" + newUUID(),
+			Action:          req.CreateRule.Action,
+			ServerPatterns:  normalizePatternSlice(req.CreateRule.ServerPatterns),
+			ToolPatterns:    normalizePatternSlice(req.CreateRule.ToolPatterns),
+			ModelConfigCUID: req.CreateRule.ModelConfigCUID,
+			AgentCUIDs:      normalizePatternSlice(req.CreateRule.AgentCUIDs),
+			Description:     req.CreateRule.Description,
+			Enabled:         enabled,
 		}
-		if err := h.svc.Approve(r.Context(), id); err != nil {
+		if err := h.rulesRepo.InsertBefore(r.Context(), anchorID, newRule); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if err := h.svc.Approve(r.Context(), id); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -1533,23 +1522,22 @@ func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) 
 			if req.CreateRule.Enabled != nil {
 				enabled = *req.CreateRule.Enabled
 			}
-			newRule := store.Rule{
-				ID:              "rule_" + newUUID(),
-				Action:          req.CreateRule.Action,
-				ServerPatterns:  normalizePatternSlice(req.CreateRule.ServerPatterns),
-				ToolPatterns:    normalizePatternSlice(req.CreateRule.ToolPatterns),
-				AgentIDPattern:  defaultPattern(req.CreateRule.AgentIDPattern),
-				ModelConfigCUID: req.CreateRule.ModelConfigCUID,
-				AgentCUIDs:      normalizePatternSlice(req.CreateRule.AgentCUIDs),
-				Description:     req.CreateRule.Description,
-				Enabled:         enabled,
-			}
-			if err := h.rulesRepo.InsertBefore(r.Context(), anchorID, newRule); err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
-				return
-			}
+		newRule := store.Rule{
+			ID:              "rule_" + newUUID(),
+			Action:          req.CreateRule.Action,
+			ServerPatterns:  normalizePatternSlice(req.CreateRule.ServerPatterns),
+			ToolPatterns:    normalizePatternSlice(req.CreateRule.ToolPatterns),
+			ModelConfigCUID: req.CreateRule.ModelConfigCUID,
+			AgentCUIDs:      normalizePatternSlice(req.CreateRule.AgentCUIDs),
+			Description:     req.CreateRule.Description,
+			Enabled:         enabled,
 		}
-		if err := h.svc.Deny(r.Context(), id, req.Message); err != nil {
+		if err := h.rulesRepo.InsertBefore(r.Context(), anchorID, newRule); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if err := h.svc.Deny(r.Context(), id, req.Message); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -1962,7 +1950,6 @@ func (h *Handler) adminRules(w http.ResponseWriter, r *http.Request) {
 			Action:            req.Action,
 			ServerPatterns:    normalizePatternSlice(req.ServerPatterns),
 			ToolPatterns:      normalizePatternSlice(req.ToolPatterns),
-			AgentIDPattern:    defaultPattern(req.AgentIDPattern),
 			ModelConfigCUID:   req.ModelConfigCUID,
 			AtryumLLMConfigID: req.AtryumLLMConfigID,
 			AgentCUIDs:        normalizePatternSlice(req.AgentCUIDs),
@@ -2063,7 +2050,6 @@ func (h *Handler) adminRuleDetail(w http.ResponseWriter, r *http.Request) {
 		existing.Action = req.Action
 		existing.ServerPatterns = normalizePatternSlice(req.ServerPatterns)
 		existing.ToolPatterns = normalizePatternSlice(req.ToolPatterns)
-		existing.AgentIDPattern = defaultPattern(req.AgentIDPattern)
 		existing.ModelConfigCUID = req.ModelConfigCUID
 		existing.AtryumLLMConfigID = req.AtryumLLMConfigID
 		existing.AgentCUIDs = normalizePatternSlice(req.AgentCUIDs)
@@ -2553,7 +2539,6 @@ func toAdminRule(r store.Rule) AdminRule {
 		Action:            r.Action,
 		ServerPatterns:    sp,
 		ToolPatterns:      tp,
-		AgentIDPattern:    r.AgentIDPattern,
 		ModelConfigCUID:   r.ModelConfigCUID,
 		AtryumLLMConfigID: r.AtryumLLMConfigID,
 		AgentCUIDs:        ac,
@@ -2778,13 +2763,6 @@ func validateRuleInput(req AdminRuleInput) error {
 		return fmt.Errorf("action must be one of: auto_approve, auto_deny, human_approval, ai_evaluation")
 	}
 	return nil
-}
-
-func defaultPattern(p string) string {
-	if strings.TrimSpace(p) == "" {
-		return "*"
-	}
-	return p
 }
 
 func newUUID() string {

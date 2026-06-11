@@ -287,7 +287,6 @@ export interface Rule {
   action: RuleAction;
   server_patterns: string[];
   tool_patterns: string[];
-  user_pattern: string;
   /** Agent CUIDs this rule applies to; empty means all agents. */
   agent_cuids?: string[];
   description?: string;
@@ -303,7 +302,6 @@ export interface RuleInput {
   action: RuleAction;
   server_patterns: string[];
   tool_patterns: string[];
-  user_pattern: string;
   agent_cuids?: string[];
   description?: string;
   model_config_cuid?: string;

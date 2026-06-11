@@ -677,7 +677,7 @@ func TestMCPAgentIDQueryHintIgnoredWhenAuthConfigured(t *testing.T) {
 
 func TestMCPRulesToolReturnsApplicableRulesWithoutInvocation(t *testing.T) {
 	rules := &stubRulesRepo{rules: []store.Rule{
-		{ID: "read-auto", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Read"}, AgentIDPattern: "*", Enabled: true, Order: 0},
+		{ID: "read-auto", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Read"}, Enabled: true, Order: 0},
 	}}
 	svc := &stubService{}
 	h := NewHandler(svc, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
@@ -712,10 +712,10 @@ func TestMCPRulesToolReturnsApplicableRulesWithoutInvocation(t *testing.T) {
 
 func TestAgentRulesListsApplicableRulesAndDisposition(t *testing.T) {
 	rules := &stubRulesRepo{rules: []store.Rule{
-		{ID: "other-agent", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentIDPattern: "agent-other", Enabled: true, Order: 0},
-		{ID: "read-auto", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentIDPattern: "agent-007", Description: "Read is safe", Enabled: true, Order: 1},
-		{ID: "fallback-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, AgentIDPattern: "*", Enabled: true, Order: 2},
-		{ID: "disabled", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Bash"}, AgentIDPattern: "agent-007", Enabled: false, Order: 3},
+		{ID: "bash-deny", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Bash"}, Enabled: true, Order: 0},
+		{ID: "read-auto", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, Description: "Read is safe", Enabled: true, Order: 1},
+		{ID: "fallback-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 2},
+		{ID: "disabled", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, Enabled: false, Order: 3},
 	}}
 	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?agent_id=agent-007&source=amp&tool=Read", nil)
@@ -739,10 +739,10 @@ func TestAgentRulesListsApplicableRulesAndDisposition(t *testing.T) {
 	if resp.MatchedRuleID == nil || *resp.MatchedRuleID != "read-auto" {
 		t.Fatalf("expected matched rule read-auto, got %#v", resp.MatchedRuleID)
 	}
-	if len(resp.Items) != 2 {
-		t.Fatalf("expected two applicable rules, got %#v", resp.Items)
+	if len(resp.Items) != 3 {
+		t.Fatalf("expected three applicable rules, got %#v", resp.Items)
 	}
-	if resp.Items[0].ID != "read-auto" || resp.Items[1].ID != "fallback-human" {
+	if resp.Items[0].ID != "bash-deny" || resp.Items[1].ID != "read-auto" || resp.Items[2].ID != "fallback-human" {
 		t.Fatalf("unexpected applicable rules order: %#v", resp.Items)
 	}
 }
@@ -750,9 +750,9 @@ func TestAgentRulesListsApplicableRulesAndDisposition(t *testing.T) {
 func TestAgentRulesUsesDefaultAgentRecordForAgentScopedRules(t *testing.T) {
 	defaultAgent := store.AgentRecord{ID: "agent-default", VMCUID: "vm-default", AgentIDs: "[]"}
 	rules := &stubRulesRepo{rules: []store.Rule{
-		{ID: "other-agent", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentIDPattern: "*", AgentCUIDs: []string{"agent-other"}, Enabled: true, Order: 0},
-		{ID: "default-agent", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentIDPattern: "*", AgentCUIDs: []string{defaultAgent.ID}, Enabled: true, Order: 1},
-		{ID: "fallback-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentIDPattern: "*", Enabled: true, Order: 2},
+		{ID: "other-agent", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentCUIDs: []string{"agent-other"}, Enabled: true, Order: 0},
+		{ID: "default-agent", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentCUIDs: []string{defaultAgent.ID}, Enabled: true, Order: 1},
+		{ID: "fallback-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, Enabled: true, Order: 2},
 	}}
 	agents := &stubAgentsRepo{byVMCUID: map[string]store.AgentRecord{defaultAgent.VMCUID: defaultAgent}}
 	settings := &stubAgentSyncSettingsRepo{settings: store.AgentSyncSettings{DefaultAgentVMCUID: defaultAgent.VMCUID}}
@@ -785,8 +785,8 @@ func TestAgentRulesUsesDefaultAgentRecordForAgentScopedRules(t *testing.T) {
 
 func TestMCPToolsListAnnotatesEffectiveAction(t *testing.T) {
 	rules := &stubRulesRepo{rules: []store.Rule{
-		{ID: "read-auto", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Read"}, AgentIDPattern: "*", Enabled: true, Order: 0},
-		{ID: "bash-deny", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Bash"}, AgentIDPattern: "*", Enabled: true, Order: 1},
+		{ID: "read-auto", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Read"}, Enabled: true, Order: 0},
+		{ID: "bash-deny", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Bash"}, Enabled: true, Order: 1},
 	}}
 	svc := &stubService{tools: []mcp.Tool{{Name: "Read", Description: "read a file"}, {Name: "Bash", Description: "run a shell command"}, {Name: "Other"}}}
 	h := NewHandler(svc, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
@@ -843,9 +843,9 @@ func TestMCPToolsListAnnotatesEffectiveAction(t *testing.T) {
 func TestMCPToolsListAnnotationsUseDefaultAgentScopedRules(t *testing.T) {
 	defaultAgent := store.AgentRecord{ID: "agent-default", VMCUID: "vm-default", AgentIDs: "[]"}
 	rules := &stubRulesRepo{rules: []store.Rule{
-		{ID: "bash-deny-other", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Bash"}, AgentIDPattern: "*", AgentCUIDs: []string{"agent-other"}, Enabled: true, Order: 0},
-		{ID: "bash-auto-default", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Bash"}, AgentIDPattern: "*", AgentCUIDs: []string{defaultAgent.ID}, Enabled: true, Order: 1},
-		{ID: "bash-human-fallback", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Bash"}, AgentIDPattern: "*", Enabled: true, Order: 2},
+		{ID: "bash-deny-other", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Bash"}, AgentCUIDs: []string{"agent-other"}, Enabled: true, Order: 0},
+		{ID: "bash-auto-default", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Bash"}, AgentCUIDs: []string{defaultAgent.ID}, Enabled: true, Order: 1},
+		{ID: "bash-human-fallback", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Bash"}, Enabled: true, Order: 2},
 	}}
 	svc := &stubService{tools: []mcp.Tool{{Name: "Bash", Description: "run a shell command"}}}
 	agents := &stubAgentsRepo{byVMCUID: map[string]store.AgentRecord{defaultAgent.VMCUID: defaultAgent}}
@@ -897,7 +897,7 @@ func TestMCPToolsListAnnotationsUseDefaultAgentScopedRules(t *testing.T) {
 func TestMCPToolsCallDenialIncludesRulesContext(t *testing.T) {
 	now := time.Now().UTC()
 	rules := &stubRulesRepo{rules: []store.Rule{
-		{ID: "bash-deny", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Bash"}, AgentIDPattern: "*", Enabled: true, Order: 0},
+		{ID: "bash-deny", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Bash"}, Enabled: true, Order: 0},
 	}}
 	svc := &stubService{invoke: invocation.InvocationResponse{
 		InvocationID: "inv_denied", ServerName: "demo", ToolName: "Bash",
