@@ -21,18 +21,18 @@ import (
 // AgentCUIDs is a JSON-encoded list of Atryum agent CUIDs the rule applies to;
 // an empty slice means "match all agents".
 type Rule struct {
-	ID                 string
-	Action             string
-	ServerPatterns     []string
-	ToolPatterns       []string
-	ModelConfigCUID    string
-	AtryumLLMConfigID  string
-	AgentCUIDs         []string
-	Description        string
-	Enabled            bool
-	Order              int
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	ID                string
+	Action            string
+	ServerPatterns    []string
+	ToolPatterns      []string
+	ModelConfigCUID   string
+	AtryumLLMConfigID string
+	AgentCUIDs        []string
+	Description       string
+	Enabled           bool
+	Order             int
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // RulesRepo provides CRUD and ordering operations for approval_rules.

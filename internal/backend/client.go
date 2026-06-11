@@ -345,14 +345,14 @@ func (c *Client) FetchCustomFields(ctx context.Context, orgCUID, primaryRecordTy
 // EvaluateRequest is sent to the VM backend to ask the LLM whether a tool
 // call should be approved or denied.
 type EvaluateRequest struct {
-	ModelConfigCUID      string         `json:"model_config_cuid"`
-	OrgCUID              string         `json:"org_cuid,omitempty"`
-	AgentVMCUID          string         `json:"agent_vm_cuid,omitempty"`
+	ModelConfigCUID string         `json:"model_config_cuid"`
+	OrgCUID         string         `json:"org_cuid,omitempty"`
+	AgentVMCUID     string         `json:"agent_vm_cuid,omitempty"`
 	CharterFieldKey string         `json:"charter_field_key,omitempty"`
-	ServerName           string         `json:"server_name"`
-	ToolName             string         `json:"tool_name"`
-	ToolArgs             map[string]any `json:"tool_args,omitempty"`
-	Context              string         `json:"context,omitempty"`
+	ServerName      string         `json:"server_name"`
+	ToolName        string         `json:"tool_name"`
+	ToolArgs        map[string]any `json:"tool_args,omitempty"`
+	Context         string         `json:"context,omitempty"`
 }
 
 // EvaluateResponse is the result returned by the VM backend after LLM evaluation.

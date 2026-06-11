@@ -153,7 +153,6 @@ func TestInvokeWithoutAgentIDPersistsClientInfoFromRequest(t *testing.T) {
 	}
 }
 
-
 // External (non-MCP) callers like the amp-plugin example don't run behind
 // the auth middleware today, so there is no identity in context. They can
 // instead self-declare via the new `agent_id` field on ExternalSubmitRequest,

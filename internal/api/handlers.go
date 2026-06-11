@@ -339,14 +339,14 @@ type RuleListResponse struct {
 // ─── Agent admin types ────────────────────────────────────────────────────────
 
 type AdminAgent struct {
-	CUID         string    `json:"cuid"`
-	OrgName      string    `json:"org_name"`
-	Name         string    `json:"name"`
-	Description  string    `json:"description,omitempty"`
-	AgentIDs     []string  `json:"agent_ids"`
-	SyncedAt     time.Time `json:"synced_at"`
-	Enabled      bool      `json:"enabled"`
-	Charter string `json:"charter,omitempty"`
+	CUID        string    `json:"cuid"`
+	OrgName     string    `json:"org_name"`
+	Name        string    `json:"name"`
+	Description string    `json:"description,omitempty"`
+	AgentIDs    []string  `json:"agent_ids"`
+	SyncedAt    time.Time `json:"synced_at"`
+	Enabled     bool      `json:"enabled"`
+	Charter     string    `json:"charter,omitempty"`
 	// Synced is true when this agent originated from a ValidMind sync
 	// (vm_organization_cuid is non-empty). Synced agents cannot be deleted
 	// manually — they are removed by re-syncing with a different org/record-type.
@@ -376,15 +376,15 @@ type AgentListResponse struct {
 func toAdminAgent(a store.AgentRecord) AdminAgent {
 	ids := parseAgentIDs(a.AgentIDs)
 	return AdminAgent{
-		CUID:         a.ID,
-		OrgName:      a.VMOrganizationName,
-		Name:         a.VMName,
-		Description:  a.VMDescription,
-		AgentIDs:     ids,
-		SyncedAt:     a.SyncedAt,
-		Enabled:      a.Enabled,
-		Charter: a.Charter,
-		Synced:       a.VMOrganizationCUID != "",
+		CUID:        a.ID,
+		OrgName:     a.VMOrganizationName,
+		Name:        a.VMName,
+		Description: a.VMDescription,
+		AgentIDs:    ids,
+		SyncedAt:    a.SyncedAt,
+		Enabled:     a.Enabled,
+		Charter:     a.Charter,
+		Synced:      a.VMOrganizationCUID != "",
 	}
 }
 
@@ -1179,7 +1179,6 @@ func apiMatchPatterns(patterns []string, value string) bool {
 	return false
 }
 
-
 // annotatedTool is the on-the-wire shape used for tools/list when atryum is
 // able to compute a per-tool policy disposition. It mirrors mcp.Tool but adds
 // an `annotations` block plus a description prefix so models that ignore
@@ -1463,22 +1462,22 @@ func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) 
 			if req.CreateRule.Enabled != nil {
 				enabled = *req.CreateRule.Enabled
 			}
-		newRule := store.Rule{
-			ID:              "rule_" + newUUID(),
-			Action:          req.CreateRule.Action,
-			ServerPatterns:  normalizePatternSlice(req.CreateRule.ServerPatterns),
-			ToolPatterns:    normalizePatternSlice(req.CreateRule.ToolPatterns),
-			ModelConfigCUID: req.CreateRule.ModelConfigCUID,
-			AgentCUIDs:      normalizePatternSlice(req.CreateRule.AgentCUIDs),
-			Description:     req.CreateRule.Description,
-			Enabled:         enabled,
+			newRule := store.Rule{
+				ID:              "rule_" + newUUID(),
+				Action:          req.CreateRule.Action,
+				ServerPatterns:  normalizePatternSlice(req.CreateRule.ServerPatterns),
+				ToolPatterns:    normalizePatternSlice(req.CreateRule.ToolPatterns),
+				ModelConfigCUID: req.CreateRule.ModelConfigCUID,
+				AgentCUIDs:      normalizePatternSlice(req.CreateRule.AgentCUIDs),
+				Description:     req.CreateRule.Description,
+				Enabled:         enabled,
+			}
+			if err := h.rulesRepo.InsertBefore(r.Context(), anchorID, newRule); err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
 		}
-		if err := h.rulesRepo.InsertBefore(r.Context(), anchorID, newRule); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-	}
-	if err := h.svc.Approve(r.Context(), id); err != nil {
+		if err := h.svc.Approve(r.Context(), id); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -1522,22 +1521,22 @@ func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) 
 			if req.CreateRule.Enabled != nil {
 				enabled = *req.CreateRule.Enabled
 			}
-		newRule := store.Rule{
-			ID:              "rule_" + newUUID(),
-			Action:          req.CreateRule.Action,
-			ServerPatterns:  normalizePatternSlice(req.CreateRule.ServerPatterns),
-			ToolPatterns:    normalizePatternSlice(req.CreateRule.ToolPatterns),
-			ModelConfigCUID: req.CreateRule.ModelConfigCUID,
-			AgentCUIDs:      normalizePatternSlice(req.CreateRule.AgentCUIDs),
-			Description:     req.CreateRule.Description,
-			Enabled:         enabled,
+			newRule := store.Rule{
+				ID:              "rule_" + newUUID(),
+				Action:          req.CreateRule.Action,
+				ServerPatterns:  normalizePatternSlice(req.CreateRule.ServerPatterns),
+				ToolPatterns:    normalizePatternSlice(req.CreateRule.ToolPatterns),
+				ModelConfigCUID: req.CreateRule.ModelConfigCUID,
+				AgentCUIDs:      normalizePatternSlice(req.CreateRule.AgentCUIDs),
+				Description:     req.CreateRule.Description,
+				Enabled:         enabled,
+			}
+			if err := h.rulesRepo.InsertBefore(r.Context(), anchorID, newRule); err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
 		}
-		if err := h.rulesRepo.InsertBefore(r.Context(), anchorID, newRule); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-	}
-	if err := h.svc.Deny(r.Context(), id, req.Message); err != nil {
+		if err := h.svc.Deny(r.Context(), id, req.Message); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}

@@ -5,7 +5,7 @@ func migration011() Definition {
 		Version: 11,
 		Name:    "011_agent_sync_settings",
 		Steps: []Step{
-		RawDialect("create agent_sync_settings table", `
+			RawDialect("create agent_sync_settings table", `
 			CREATE TABLE IF NOT EXISTS agent_sync_settings (
 				id                     INTEGER  PRIMARY KEY DEFAULT 1,
 				org_cuid               TEXT     NOT NULL DEFAULT '',

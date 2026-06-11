@@ -527,14 +527,14 @@ type evaluatorAdapter struct {
 
 func (e *evaluatorAdapter) EvaluateToolCall(ctx context.Context, req invocation.EvaluateRequest) (invocation.EvaluateResponse, error) {
 	resp, err := e.client.EvaluateToolCall(ctx, backendclient.EvaluateRequest{
-		ModelConfigCUID:      req.ModelConfigCUID,
-		OrgCUID:              req.OrgCUID,
-		AgentVMCUID:          req.AgentVMCUID,
+		ModelConfigCUID: req.ModelConfigCUID,
+		OrgCUID:         req.OrgCUID,
+		AgentVMCUID:     req.AgentVMCUID,
 		CharterFieldKey: req.CharterFieldKey,
-		ServerName:           req.ServerName,
-		ToolName:             req.ToolName,
-		ToolArgs:             req.ToolArgs,
-		Context:              req.Context,
+		ServerName:      req.ServerName,
+		ToolName:        req.ToolName,
+		ToolArgs:        req.ToolArgs,
+		Context:         req.Context,
 	})
 	if err != nil {
 		return invocation.EvaluateResponse{}, err

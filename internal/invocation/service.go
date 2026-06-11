@@ -96,19 +96,19 @@ type SyncSettingsProvider interface {
 // EvaluateRequest mirrors backend.EvaluateRequest so the service package does
 // not import the backend package directly.
 type EvaluateRequest struct {
-	ModelConfigCUID      string         `json:"model_config_cuid"`
-	OrgCUID              string         `json:"org_cuid,omitempty"`
-	AgentVMCUID          string         `json:"agent_vm_cuid,omitempty"`
-	CharterFieldKey string         `json:"charter_field_key,omitempty"`
+	ModelConfigCUID string `json:"model_config_cuid"`
+	OrgCUID         string `json:"org_cuid,omitempty"`
+	AgentVMCUID     string `json:"agent_vm_cuid,omitempty"`
+	CharterFieldKey string `json:"charter_field_key,omitempty"`
 	// AtryumLLMConfigID references a local LLM config for native evaluation.
 	// When set, the local evaluator is used instead of the VM backend.
 	AtryumLLMConfigID string `json:"atryum_llm_config_id,omitempty"`
 	// Charter is the agent's governing text sent to the local LLM judge.
-	Charter string `json:"charter,omitempty"`
-	ServerName   string         `json:"server_name"`
-	ToolName     string         `json:"tool_name"`
-	ToolArgs     map[string]any `json:"tool_args,omitempty"`
-	Context      string         `json:"context,omitempty"`
+	Charter    string         `json:"charter,omitempty"`
+	ServerName string         `json:"server_name"`
+	ToolName   string         `json:"tool_name"`
+	ToolArgs   map[string]any `json:"tool_args,omitempty"`
+	Context    string         `json:"context,omitempty"`
 }
 
 // EvaluateResponse mirrors backend.EvaluateResponse.
@@ -491,9 +491,9 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 		OrgCUID:         orgCUID,
 		AgentVMCUID:     agentVMCUID,
 		CharterFieldKey: charterFieldKey,
-		ServerName:           serverName,
-		ToolName:             toolName,
-		ToolArgs:             toolArgs,
+		ServerName:      serverName,
+		ToolName:        toolName,
+		ToolArgs:        toolArgs,
 	})
 	if err != nil {
 		slog.Error("ai_evaluation: LLM evaluation failed; falling back to human_approval",
