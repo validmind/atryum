@@ -164,6 +164,9 @@ const Invocations: React.FC = () => {
   const [detailClosed, setDetailClosed] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
   const [showArgsJson, setShowArgsJson] = useState(false);
+  const [clearedInvocationIds, setClearedInvocationIds] = useState<
+    Set<string>
+  >(() => new Set());
   const [denyMode, setDenyMode] = useState<"once" | "always">("once");
   const [showCustomizeScope, setShowCustomizeScope] = useState(false);
   const [ruleForm, setRuleForm] = useState({
@@ -198,7 +201,13 @@ const Invocations: React.FC = () => {
   const { data, isLoading, isError } = useInvocations(filters);
   const { data: agentsData } = useAgents();
 
-  const items = useMemo(() => data?.items ?? [], [data?.items]);
+  const rawItems = useMemo(() => data?.items ?? [], [data?.items]);
+  const items = useMemo(
+    () =>
+      rawItems.filter((item) => !clearedInvocationIds.has(item.invocation_id)),
+    [clearedInvocationIds, rawItems],
+  );
+  const hasClearedLoadedInvocations = rawItems.length > 0 && items.length === 0;
 
   const agentByAgentID = useMemo(() => {
     const map = new Map<string, { cuid: string; name: string }>();
@@ -218,7 +227,7 @@ const Invocations: React.FC = () => {
       (item) => item.invocation_id === selectedId,
     );
     return stillSelected ? selectedId : items[0].invocation_id;
-  }, [items, selectedId]);
+  }, [detailClosed, items, selectedId]);
 
   const { data: detail, isLoading: detailLoading } =
     useInvocationDetail(resolvedSelectedId);
@@ -308,6 +317,21 @@ const Invocations: React.FC = () => {
   const handleCloseDetail = () => {
     setDetailClosed(true);
     setSelectedId(null);
+  };
+
+  const handleClearInvocations = () => {
+    if (items.length === 0) return;
+    setClearedInvocationIds((ids) => {
+      const nextIds = new Set(ids);
+      for (const item of items) {
+        nextIds.add(item.invocation_id);
+      }
+      return nextIds;
+    });
+    setSelectedId(null);
+    setShowDenyInput(false);
+    setShowArgsJson(false);
+    setDenyMessage("");
   };
 
   const handleApproveOnce = async () => {
@@ -449,7 +473,15 @@ const Invocations: React.FC = () => {
               overflow="hidden"
               h="full">
               <Box p={3} borderBottomWidth={1} borderColor="border.base">
-                <Flex justify="flex-end">
+                <Flex justify="flex-end" gap={2}>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleClearInvocations}
+                    isDisabled={items.length === 0}
+                    data-testid="invocations-clear-button">
+                    Clear
+                  </Button>
                   {showFilters ? (
                     <CloseButton
                       size="sm"
@@ -567,7 +599,9 @@ const Invocations: React.FC = () => {
                   </Text>
                 ) : items.length === 0 ? (
                   <Text p={4} color="text.subtle" fontSize="sm">
-                    No invocations match the current filters.
+                    {hasClearedLoadedInvocations
+                      ? "Cleared. New invocations will appear here."
+                      : "No invocations match the current filters."}
                   </Text>
                 ) : (
                   <Table size="sm" variant="simple">
