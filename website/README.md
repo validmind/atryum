@@ -15,14 +15,15 @@ website/
 ```
 
 ## Author documentation
+
 1. Add or edit a file under `md-drafts/`.
 
-    **Filename convention:** prefix files and folders with a number to control nav order, then use dashes for the slug — for example `1_quickstart.md`, `1_integrations/2_connect-agents.md`. Numeric prefixes are stripped from generated HTML paths and nav labels. Follow the **[ValidMind style guide](https://docs.validmind.ai/about/contributing/style-guide/style-guide.html)** for prose.
+    - **Filename convention:** Prefix files and folders with a number to control nav order, then use dashes for the slug — for example `1_quickstart.md`, `1_integrations/2_connect-agents.md`. Numeric prefixes are stripped from generated HTML paths and nav labels.
+    - Follow the **[ValidMind style guide](https://docs.validmind.ai/about/contributing/style-guide/style-guide.html)** for prose.
 
 2. Run `make docs` from the repo root.
 
 3. Commit the `.md` source and the generated HTML.
-
 
 ### Page structure
 
