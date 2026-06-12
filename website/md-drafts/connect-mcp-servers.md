@@ -35,7 +35,7 @@ Use stdio mode for MCP servers that run locally as a subprocess — for example,
 
 5. Click **Test** to confirm Atryum can reach the server.
 
-    Confirm that the server's <span style="font-variant: small-caps;">connection</span> column shows as <span style="font-variant: small-caps;">`ready`</span>.
+    Confirm that the server's <span style="font-variant: small-caps;">connection</span> and  style="font-variant: small-caps;">auth</span> columns shows as <span style="font-variant: small-caps;">`ready`</span> — stdio servers do not use separate credentials, so no further action is needed.
 
 :::
 stdio servers do not use OAuth. You will not see a **Connect** button for this mode.
@@ -89,7 +89,9 @@ Use HTTP mode when the upstream MCP server requires OAuth. Atryum holds the upst
 
     Click **Connect** and complete the browser authorization flow.
 
-6. After authorization succeeds, confirm that the server's <span style="font-variant: small-caps;">connection</span> and <span style="font-variant: small-caps;">auth</span> columns both show as <span style="font-variant: small-caps;">`ready`</span>.
+6. After authorization succeeds, confirm that the server's <span style="font-variant: small-caps;">connection</span> and <span style="font-variant: small-caps;">auth</span> columns both show as <span style="font-variant: small-caps;">`ready`</span>. 
+
+    A successful **Connect** sets both — you do not need to click **Test** separately.
 
 7. Point your coding agent at Atryum's MCP proxy for this server: `http://<atryum-host-and-port>/mcp/<server_name>`.
 
