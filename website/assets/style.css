@@ -105,6 +105,12 @@ nav {
   color: var(--bs-800);
 }
 
+.nav-dropdown.is-active > summary.nav-link,
+.nav-dropdown.is-active > summary.nav-link:hover {
+  background: var(--bs-50);
+  color: var(--bs-800);
+}
+
 .nav-link svg { width: 17px; height: 17px; }
 
 .nav-dropdown {
@@ -162,16 +168,21 @@ nav {
 
 .nav-menu-heading {
   padding: 6px 10px 4px;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
   letter-spacing: 0.04em;
   font-variant: small-caps;
   color: var(--bs-300);
 }
 
-.nav-menu a:hover,
 .nav-menu a[aria-current="page"] {
   background: var(--bs-50);
+  color: var(--bs-800);
+  font-weight: 600;
+}
+
+.nav-menu a:hover:not([aria-current="page"]) {
+  background: rgba(216, 247, 250, 0.45);
   color: var(--bs-800);
 }
 
@@ -241,6 +252,27 @@ body.page-home main {
 
 .hero-meta a { color: var(--bs-700); font-weight: 500; }
 .hero-meta a:hover { color: var(--brand-400); }
+
+.hero-quickstart {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 28px;
+  padding: 10px 18px;
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--bs-900);
+  background: var(--bs-300);
+  border: 1px solid var(--bs-300);
+  transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.hero-quickstart:hover {
+  background: var(--bs-700);
+  border-color: var(--bs-700);
+  color: #fff;
+}
 
 main {
   flex: 1;

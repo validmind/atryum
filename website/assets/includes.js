@@ -14,16 +14,39 @@
     return filename.replace(/\.html$/, '');
   }
 
+  function isDocsPage(page) {
+    if (page && page !== 'home') {
+      return true;
+    }
+
+    return window.location.pathname.indexOf('/documentation/') !== -1;
+  }
+
   function setActiveNav() {
     var page = currentPage();
+    var onDocsPage = isDocsPage(page);
+    var navDropdown = document.querySelector('.nav-dropdown');
 
-    document.querySelectorAll('[data-page]').forEach(function (link) {
+    document.querySelectorAll('.nav-menu a[data-page]').forEach(function (link) {
       if (link.dataset.page === page) {
         link.setAttribute('aria-current', 'page');
       } else {
         link.removeAttribute('aria-current');
       }
     });
+
+    if (navDropdown) {
+      navDropdown.classList.toggle('is-active', onDocsPage);
+    }
+
+    var docSummary = document.querySelector('.nav-dropdown summary.nav-link');
+    if (docSummary) {
+      if (onDocsPage) {
+        docSummary.setAttribute('aria-current', 'page');
+      } else {
+        docSummary.removeAttribute('aria-current');
+      }
+    }
   }
 
   function initToc() {
