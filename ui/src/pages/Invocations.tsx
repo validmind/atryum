@@ -617,11 +617,12 @@ const Invocations: React.FC = () => {
                           Status
                         </FormLabel>
                         <Select
-                          classNamePrefix="chakra-react-select"
                           isClearable
                           options={STATUS_OPTIONS}
                           placeholder="Any"
                           size="sm"
+                          menuPortalTarget={document.body}
+                          menuPosition="fixed"
                           value={
                             STATUS_OPTIONS.find(
                               (o) => o.value === draftFilters.status,
