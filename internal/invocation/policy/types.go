@@ -46,4 +46,3 @@ type Provider interface {
 	DisplayName() string
 	Evaluate(ctx context.Context, call CallContext) (Decision, error)
 }
-

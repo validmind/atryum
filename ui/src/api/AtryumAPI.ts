@@ -287,7 +287,6 @@ export interface Rule {
   action: RuleAction;
   server_patterns: string[];
   tool_patterns: string[];
-  user_pattern: string;
   /** Agent CUIDs this rule applies to; empty means all agents. */
   agent_cuids?: string[];
   description?: string;
@@ -303,7 +302,6 @@ export interface RuleInput {
   action: RuleAction;
   server_patterns: string[];
   tool_patterns: string[];
-  user_pattern: string;
   agent_cuids?: string[];
   description?: string;
   model_config_cuid?: string;
@@ -359,7 +357,7 @@ export interface Agent {
   /** True when this agent originated from a ValidMind sync and cannot be deleted manually. */
   synced: boolean;
   /** Governing text used by local LLM-as-judge evaluation. Only editable for non-synced agents. */
-  constitution?: string;
+  charter?: string;
 }
 
 export interface AgentCreateInput {
@@ -367,7 +365,7 @@ export interface AgentCreateInput {
   description?: string;
   enabled: boolean;
   agent_ids?: string[];
-  constitution?: string;
+  charter?: string;
 }
 
 export interface AgentUpdateInput {
@@ -375,7 +373,7 @@ export interface AgentUpdateInput {
   description?: string;
   enabled: boolean;
   agent_ids?: string[];
-  constitution?: string;
+  charter?: string;
 }
 
 export const agentsApi = {
@@ -413,7 +411,7 @@ export const agentsApi = {
 export interface AgentSyncSettings {
   org_cuid: string;
   agent_record_type_slug: string;
-  constitution_field_key: string;
+  charter_field_key: string;
   summary_model_config_cuid: string;
   summary_atryum_llm_config_id: string;
   backend_configured?: boolean;

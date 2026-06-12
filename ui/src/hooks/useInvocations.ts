@@ -16,6 +16,7 @@ export const normalizeInvocationFilters = (
   if (filters.server) normalized.server = filters.server;
   if (filters.tool) normalized.tool = filters.tool;
   if (filters.status) normalized.status = filters.status;
+  if (filters.client_name) normalized.client_name = filters.client_name;
   if (filters.offset != null) normalized.offset = filters.offset;
   return normalized;
 };

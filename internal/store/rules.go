@@ -15,26 +15,24 @@ import (
 // Rule is the store-level representation of an approval rule.
 // ServerPatterns and ToolPatterns are serialized as JSON arrays in the
 // server_pattern / tool_pattern TEXT columns; an empty slice means "match all".
-// AgentIDPattern is the literal authenticated agent_id (or "*"/"" for any).
 // ModelConfigCUID references the VM agent model configuration for ai_evaluation rules.
 // AtryumLLMConfigID references a locally-configured LLM for ai_evaluation rules
 // (alternative to ModelConfigCUID; exactly one should be set for ai_evaluation rules).
 // AgentCUIDs is a JSON-encoded list of Atryum agent CUIDs the rule applies to;
 // an empty slice means "match all agents".
 type Rule struct {
-	ID                 string
-	Action             string
-	ServerPatterns     []string
-	ToolPatterns       []string
-	AgentIDPattern     string
-	ModelConfigCUID    string
-	AtryumLLMConfigID  string
-	AgentCUIDs         []string
-	Description        string
-	Enabled            bool
-	Order              int
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	ID                string
+	Action            string
+	ServerPatterns    []string
+	ToolPatterns      []string
+	ModelConfigCUID   string
+	AtryumLLMConfigID string
+	AgentCUIDs        []string
+	Description       string
+	Enabled           bool
+	Order             int
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // RulesRepo provides CRUD and ordering operations for approval_rules.
@@ -52,7 +50,7 @@ func NewRulesRepoWithDialect(db *sql.DB, dialect Dialect) *RulesRepo {
 }
 
 var ruleColumns = []string{
-	"id", "action", "server_pattern", "tool_pattern", "agent_id_pattern",
+	"id", "action", "server_pattern", "tool_pattern",
 	"model_config_cuid", "atryum_llm_config_id", "agent_cuids",
 	"description", "enabled", "rule_order", "created_at", "updated_at",
 }
@@ -66,7 +64,7 @@ func (r *RulesRepo) Create(ctx context.Context, rule Rule) error {
 	query, args, err := r.sb.Insert("approval_rules").
 		Columns(ruleColumns...).
 		Values(
-			rule.ID, rule.Action, serverJSON, toolJSON, rule.AgentIDPattern,
+			rule.ID, rule.Action, serverJSON, toolJSON,
 			emptyToNil(rule.ModelConfigCUID), rule.AtryumLLMConfigID, agentCUIDsJSON,
 			emptyToNil(rule.Description), boolToInt(rule.Enabled), rule.Order, now, now,
 		).ToSql()
@@ -137,7 +135,6 @@ func (r *RulesRepo) Update(ctx context.Context, rule Rule) error {
 		Set("action", rule.Action).
 		Set("server_pattern", serverJSON).
 		Set("tool_pattern", toolJSON).
-		Set("agent_id_pattern", rule.AgentIDPattern).
 		Set("model_config_cuid", emptyToNil(rule.ModelConfigCUID)).
 		Set("atryum_llm_config_id", rule.AtryumLLMConfigID).
 		Set("agent_cuids", agentCUIDsJSON).
@@ -281,7 +278,7 @@ func scanRule(scanner interface{ Scan(dest ...any) error }) (Rule, error) {
 	var modelConfigCUID, atryumLLMConfigID, description sql.NullString
 	var enabled int
 	if err := scanner.Scan(
-		&rule.ID, &rule.Action, &serverJSON, &toolJSON, &rule.AgentIDPattern,
+		&rule.ID, &rule.Action, &serverJSON, &toolJSON,
 		&modelConfigCUID, &atryumLLMConfigID, &agentCUIDsJSON,
 		&description, &enabled, &rule.Order, &rule.CreatedAt, &rule.UpdatedAt,
 	); err != nil {
@@ -329,7 +326,6 @@ func (r *RulesRepo) ListApprovalRules(ctx context.Context) ([]invocation.Approva
 			Action:            rule.Action,
 			ServerPatterns:    rule.ServerPatterns,
 			ToolPatterns:      rule.ToolPatterns,
-			AgentIDPattern:    rule.AgentIDPattern,
 			ModelConfigCUID:   rule.ModelConfigCUID,
 			AtryumLLMConfigID: rule.AtryumLLMConfigID,
 			AgentCUIDs:        rule.AgentCUIDs,
@@ -385,7 +381,7 @@ func (r *RulesRepo) InsertBefore(ctx context.Context, anchorID string, rule Rule
 	insQ, insArgs, err := r.sb.Insert("approval_rules").
 		Columns(ruleColumns...).
 		Values(
-			rule.ID, rule.Action, serverJSON, toolJSON, rule.AgentIDPattern,
+			rule.ID, rule.Action, serverJSON, toolJSON,
 			emptyToNil(rule.ModelConfigCUID), rule.AtryumLLMConfigID, agentCUIDsJSON,
 			emptyToNil(rule.Description), boolToInt(rule.Enabled), rule.Order, now, now,
 		).ToSql()

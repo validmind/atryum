@@ -9,7 +9,6 @@ import (
 	"atryum/internal/auth"
 )
 
-
 type Config struct {
 	Server    ServerConfig     `toml:"server"`
 	Backend   BackendConfig    `toml:"backend"`

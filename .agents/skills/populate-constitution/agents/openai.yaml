@@ -1,4 +1,0 @@
-interface:
-  display_name: "Populate Constitution"
-  short_description: "Draft agent constitutions from prompts"
-  default_prompt: "Use $populate-constitution to draft a constitution from this agent brief."

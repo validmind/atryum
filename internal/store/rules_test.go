@@ -8,7 +8,7 @@ import (
 // TestRulesRepo_CreateVMPathAIEvaluationRule is a regression test for the
 // VM-backend ai_evaluation rule path. Such rules set only ModelConfigCUID and
 // leave AtryumLLMConfigID empty. Migration 018 added atryum_llm_config_id as
-// TEXT NOT NULL DEFAULT '', so writing SQL NULL (the old emptyToNil behavior)
+// TEXT NOT NULL DEFAULT ”, so writing SQL NULL (the old emptyToNil behavior)
 // for an empty value violated the NOT NULL constraint and made VM-path rules
 // impossible to create. The empty string must be persisted directly instead.
 func TestRulesRepo_CreateVMPathAIEvaluationRule(t *testing.T) {
@@ -26,7 +26,6 @@ func TestRulesRepo_CreateVMPathAIEvaluationRule(t *testing.T) {
 		Action:          "ai_evaluation",
 		ServerPatterns:  []string{},
 		ToolPatterns:    []string{},
-		AgentIDPattern:  "*",
 		ModelConfigCUID: "model-config-cuid-123",
 		// AtryumLLMConfigID intentionally left empty: VM backend path.
 		Enabled: true,

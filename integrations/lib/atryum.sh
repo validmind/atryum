@@ -87,7 +87,6 @@ seed_auto_approve_rules() {
     "action": "auto_approve",
     "server_patterns": ["*"],
     "tool_patterns": ["*"],
-    "agent_id_pattern": "*",
     "description": "integration test catch-all auto-approve"
   }'
   curl -fsS -X POST "$ATRYUM_URL/api/v1/admin/rules" \

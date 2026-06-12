@@ -1,4 +1,4 @@
-# CONSTITUTION.md - {Agent Name}
+# CHARTER.md - {Agent Name}
 
 **Version:** 1.0  
 **Owner:** {Owner or team}  
@@ -43,8 +43,8 @@
 <!-- The LLM-as-judge will pass evaluation to the next matching approval rule
      when any of these conditions are met, rather than making a final decision.
      Use sparingly — prefer explicit approve/deny/human-approval tiers. -->
-- {Condition where this constitution has no opinion and should defer}
-- {Condition where this constitution has no opinion and should defer}
+- {Condition where this charter has no opinion and should defer}
+- {Condition where this charter has no opinion and should defer}
 
 ---
 

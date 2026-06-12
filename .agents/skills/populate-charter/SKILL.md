@@ -1,22 +1,22 @@
 ---
-name: populate-constitution
-description: Draft a complete agent constitution from an instructional prompt or agent brief. Use when Codex needs to create, populate, revise, or normalize CONSTITUTION.md-style governance documents that define an agent's purpose, scope, permissions, safety rules, handoff conditions, scenario-specific operating rules, and change log.
+name: populate-charter
+description: Draft a complete agent charter from an instructional prompt or agent brief. Use when Codex needs to create, populate, revise, or normalize CHARTER.md-style governance documents that define an agent's purpose, scope, permissions, safety rules, handoff conditions, scenario-specific operating rules, and change log.
 ---
 
-# Populate Constitution
+# Populate Charter
 
 ## Workflow
 
 1. Read the user's instructional prompt and identify the agent's job, users, connected systems, recurring cadence, autonomous actions, approval boundaries, and expected outputs.
-2. Load `assets/constitution-template.md` when the exact output structure is needed.
+2. Load `assets/charter-template.md` when the exact output structure is needed.
 3. If the prompt is underspecified, make conservative assumptions and mark them with bracketed placeholders such as `[Owner]`, `[Review cadence]`, or `[Confirm system]`.
 4. Populate the foundational sections and add scenario-specific sections where the prompt needs more operational detail. Do not leave generic filler; write concrete rules derived from the prompt.
-5. Preserve the constitution style: concise, operational, safety-forward, and written as binding instructions for the future agent and the tool-use governance system mediating it.
+5. Preserve the charter style: concise, operational, safety-forward, and written as binding instructions for the future agent and the tool-use governance system mediating it.
 6. Add a one-row change log with today's date unless the user provides another date.
 
 ## Drafting Rules
 
-- Use a specific title: `# CONSTITUTION.md - {Agent Name}`.
+- Use a specific title: `# CHARTER.md - {Agent Name}`.
 - Keep `Purpose` to one or two paragraphs plus a concrete `Success looks like` sentence.
 - Define `Scope` with three subsections: `In scope`, `Out of scope`, and `Handoff conditions`.
 - Define permission tiers as `Auto`, `Notify`, `Approve`, and `Never`, even if some tiers are sparse.
@@ -29,7 +29,7 @@ description: Draft a complete agent constitution from an instructional prompt or
 
 ## Interpreting Prompts
 
-Map the prompt into constitution sections:
+Map the prompt into charter sections:
 
 - Agent mission, cadence, and audience -> `Purpose`
 - Things the agent may inspect, summarize, change, create, or send -> `In scope`
@@ -45,7 +45,7 @@ Map the prompt into constitution sections:
 
 Before finalizing, verify that:
 
-- The constitution can stand alone without the original prompt.
+- The charter can stand alone without the original prompt.
 - Every autonomous action has a matching permission tier and a failure default.
 - The `Never` tier contains hard blocks, not preferences.
 - Sensitive data handling is explicit.

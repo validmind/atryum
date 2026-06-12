@@ -41,8 +41,8 @@ func TestInitDB_FreshDatabase(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 20 {
-		t.Fatalf("expected 20 migrations, got %d", count)
+	if count != 22 {
+		t.Fatalf("expected 22 migrations, got %d", count)
 	}
 
 	// Verify all tables exist
@@ -70,8 +70,8 @@ func TestInitDB_Idempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 20 {
-		t.Fatalf("expected 20 migrations after double init, got %d", count)
+	if count != 22 {
+		t.Fatalf("expected 22 migrations after double init, got %d", count)
 	}
 }
 
@@ -760,7 +760,7 @@ func TestAgentSyncSettingsRepo_UpsertOnEmptyTable(t *testing.T) {
 	err = repo.Save(ctx, AgentSyncSettings{
 		OrgCUID:                "org-abc",
 		AgentRecordTypeSlug:    "ai-agents",
-		ConstitutionFieldKey:   "constitution",
+		CharterFieldKey:        "charter",
 		SummaryModelConfigCUID: "model-abc",
 		DefaultAgentVMCUID:     "agent-vm-abc",
 	})

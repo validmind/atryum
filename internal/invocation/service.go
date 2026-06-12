@@ -66,9 +66,9 @@ type AgentLookup interface {
 // invocation package to avoid a circular import.
 type AgentRecord struct {
 	ID                 string // local Atryum agent UUID (used for rule matching)
-	VMCUID             string // VM inventory model CUID (used for constitution lookup)
+	VMCUID             string // VM inventory model CUID (used for charter lookup)
 	VMOrganizationCUID string // VM organization CUID (used for cross-tenant validation)
-	Constitution       string // governing text for local LLM-as-judge evaluation
+	Charter            string // governing text for local LLM-as-judge evaluation
 }
 
 // EvaluatorClient is the minimal interface required by the invocation service
@@ -85,10 +85,10 @@ type SummaryClient interface {
 
 // SyncSettingsProvider lets the invocation service read the current agent sync
 // configuration on demand without importing the store package. The service
-// calls ConstitutionFieldKey on every AI evaluation so that changes saved via
+// calls CharterFieldKey on every AI evaluation so that changes saved via
 // the Settings UI are picked up immediately without a restart.
 type SyncSettingsProvider interface {
-	ConstitutionFieldKey(ctx context.Context) string
+	CharterFieldKey(ctx context.Context) string
 	DefaultAgentVMCUID(ctx context.Context) string
 	SummarySettings(ctx context.Context) (orgCUID string, modelConfigCUID string)
 }
@@ -96,19 +96,19 @@ type SyncSettingsProvider interface {
 // EvaluateRequest mirrors backend.EvaluateRequest so the service package does
 // not import the backend package directly.
 type EvaluateRequest struct {
-	ModelConfigCUID      string         `json:"model_config_cuid"`
-	OrgCUID              string         `json:"org_cuid,omitempty"`
-	AgentVMCUID          string         `json:"agent_vm_cuid,omitempty"`
-	ConstitutionFieldKey string         `json:"constitution_field_key,omitempty"`
+	ModelConfigCUID string `json:"model_config_cuid"`
+	OrgCUID         string `json:"org_cuid,omitempty"`
+	AgentVMCUID     string `json:"agent_vm_cuid,omitempty"`
+	CharterFieldKey string `json:"charter_field_key,omitempty"`
 	// AtryumLLMConfigID references a local LLM config for native evaluation.
 	// When set, the local evaluator is used instead of the VM backend.
 	AtryumLLMConfigID string `json:"atryum_llm_config_id,omitempty"`
-	// Constitution is the agent's governing text sent to the local LLM judge.
-	Constitution string `json:"constitution,omitempty"`
-	ServerName   string         `json:"server_name"`
-	ToolName     string         `json:"tool_name"`
-	ToolArgs     map[string]any `json:"tool_args,omitempty"`
-	Context      string         `json:"context,omitempty"`
+	// Charter is the agent's governing text sent to the local LLM judge.
+	Charter    string         `json:"charter,omitempty"`
+	ServerName string         `json:"server_name"`
+	ToolName   string         `json:"tool_name"`
+	ToolArgs   map[string]any `json:"tool_args,omitempty"`
+	Context    string         `json:"context,omitempty"`
 }
 
 // EvaluateResponse mirrors backend.EvaluateResponse.
@@ -173,7 +173,7 @@ type Service struct {
 	agents           AgentLookup
 	evaluator        EvaluatorClient
 	summarizer       SummaryClient
-	syncSettings     SyncSettingsProvider // nil = no constitution lookup
+	syncSettings     SyncSettingsProvider // nil = no charter lookup
 	defaultTimeout   time.Duration
 	mu               sync.Mutex
 	pendingApprovals map[string]chan approvalDecision
@@ -277,11 +277,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	ruleMatched := false
 	if s.rules != nil {
 		if approvalRules, err := s.rules.ListApprovalRules(ctx); err == nil {
-			user := agentID
-			if user == "" && req.RequestID != nil {
-				user = *req.RequestID
-			}
-			for _, rule := range matchRules(approvalRules, upstream.Name, req.Tool, user, agentRec.ID) {
+			for _, rule := range matchRules(approvalRules, upstream.Name, req.Tool, agentRec.ID) {
 				r := rule
 				ruleMatched = true
 				if r.ID != "" {
@@ -406,12 +402,12 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 
 	// --- Local LLM path ---
 	if rule.AtryumLLMConfigID != "" {
-		if agentRec.Constitution == "" {
-			slog.Error("ai_evaluation (local): agent has no constitution configured; denying tool call",
+		if agentRec.Charter == "" {
+			slog.Error("ai_evaluation (local): agent has no charter configured; denying tool call",
 				"rule_id", rule.ID, "server", serverName, "tool", toolName, "agent_id", agentID)
 			return policy.Decision{
 				Disposition: policy.DispositionNever,
-				Reason:      "ai_evaluation denied: no constitution configured for this agent",
+				Reason:      "ai_evaluation denied: no charter configured for this agent",
 			}, nil
 		}
 
@@ -428,7 +424,7 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 
 		resp, err := s.evaluator.EvaluateToolCall(evalCtx, EvaluateRequest{
 			AtryumLLMConfigID: rule.AtryumLLMConfigID,
-			Constitution:      agentRec.Constitution,
+			Charter:           agentRec.Charter,
 			ServerName:        serverName,
 			ToolName:          toolName,
 			ToolArgs:          toolArgs,
@@ -456,23 +452,23 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 	agentVMCUID := agentRec.VMCUID
 	orgCUID := agentRec.VMOrganizationCUID
 
-	constitutionFieldKey := ""
+	charterFieldKey := ""
 	if s.syncSettings != nil {
-		constitutionFieldKey = s.syncSettings.ConstitutionFieldKey(ctx)
+		charterFieldKey = s.syncSettings.CharterFieldKey(ctx)
 	}
 
-	if agentVMCUID == "" || constitutionFieldKey == "" {
-		slog.Error("ai_evaluation: missing agent or constitution context; denying tool call",
+	if agentVMCUID == "" || charterFieldKey == "" {
+		slog.Error("ai_evaluation: missing agent or charter context; denying tool call",
 			"rule_id", rule.ID,
 			"server", serverName,
 			"tool", toolName,
 			"agent_id", agentID,
 			"agent_vm_cuid", agentVMCUID,
-			"constitution_field_key", constitutionFieldKey,
+			"charter_field_key", charterFieldKey,
 		)
 		return policy.Decision{
 			Disposition: policy.DispositionNever,
-			Reason:      "ai_evaluation denied: no constitution available for this agent",
+			Reason:      "ai_evaluation denied: no charter available for this agent",
 		}, nil
 	}
 
@@ -484,20 +480,20 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 		"agent_vm_cuid", agentVMCUID,
 		"org_cuid", orgCUID,
 		"model_config_cuid", rule.ModelConfigCUID,
-		"constitution_field_key", constitutionFieldKey,
+		"charter_field_key", charterFieldKey,
 	)
 
 	evalCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
 	resp, err := s.evaluator.EvaluateToolCall(evalCtx, EvaluateRequest{
-		ModelConfigCUID:      rule.ModelConfigCUID,
-		OrgCUID:              orgCUID,
-		AgentVMCUID:          agentVMCUID,
-		ConstitutionFieldKey: constitutionFieldKey,
-		ServerName:           serverName,
-		ToolName:             toolName,
-		ToolArgs:             toolArgs,
+		ModelConfigCUID: rule.ModelConfigCUID,
+		OrgCUID:         orgCUID,
+		AgentVMCUID:     agentVMCUID,
+		CharterFieldKey: charterFieldKey,
+		ServerName:      serverName,
+		ToolName:        toolName,
+		ToolArgs:        toolArgs,
 	})
 	if err != nil {
 		slog.Error("ai_evaluation: LLM evaluation failed; falling back to human_approval",
@@ -833,11 +829,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	var resolvedAIConfidence *float64
 	if s.rules != nil {
 		if approvalRules, err := s.rules.ListApprovalRules(ctx); err == nil {
-			user := agentID
-			if user == "" && req.RequestID != nil {
-				user = *req.RequestID
-			}
-			for _, rule := range matchRules(approvalRules, source, req.Tool, user, agentRec.ID) {
+			for _, rule := range matchRules(approvalRules, source, req.Tool, agentRec.ID) {
 				r := rule
 				if r.Action == RuleActionAIEvaluation {
 					d, conf := s.runAIEvaluation(ctx, &r, source, req.Tool, req.Input, agentID, agentRec)

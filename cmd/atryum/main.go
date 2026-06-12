@@ -468,7 +468,7 @@ func (a *agentsLookupAdapter) GetByAgentID(ctx context.Context, agentID string) 
 	if err != nil {
 		return invocation.AgentRecord{}, err
 	}
-	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Constitution: rec.Constitution}, nil
+	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Charter: rec.Charter}, nil
 }
 
 func (a *agentsLookupAdapter) GetByVMCUID(ctx context.Context, vmCUID string) (invocation.AgentRecord, error) {
@@ -476,7 +476,7 @@ func (a *agentsLookupAdapter) GetByVMCUID(ctx context.Context, vmCUID string) (i
 	if err != nil {
 		return invocation.AgentRecord{}, err
 	}
-	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Constitution: rec.Constitution}, nil
+	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Charter: rec.Charter}, nil
 }
 
 // llmConfigsLookupAdapter bridges store.LLMConfigsRepo → invocation.LLMConfigProvider.
@@ -499,15 +499,15 @@ func (a *llmConfigsLookupAdapter) GetLLMConfig(ctx context.Context, id string) (
 }
 
 // syncSettingsAdapter bridges store.AgentSyncSettingsRepo → invocation.SyncSettingsProvider.
-// ConstitutionFieldKey is read from the DB on every call so that changes saved
+// CharterFieldKey is read from the DB on every call so that changes saved
 // via the Settings UI take effect immediately without a restart.
 type syncSettingsAdapter struct {
 	repo *store.AgentSyncSettingsRepo
 }
 
-func (a *syncSettingsAdapter) ConstitutionFieldKey(ctx context.Context) string {
+func (a *syncSettingsAdapter) CharterFieldKey(ctx context.Context) string {
 	s, _ := a.repo.Get(ctx)
-	return s.ConstitutionFieldKey
+	return s.CharterFieldKey
 }
 
 func (a *syncSettingsAdapter) DefaultAgentVMCUID(ctx context.Context) string {
@@ -527,14 +527,14 @@ type evaluatorAdapter struct {
 
 func (e *evaluatorAdapter) EvaluateToolCall(ctx context.Context, req invocation.EvaluateRequest) (invocation.EvaluateResponse, error) {
 	resp, err := e.client.EvaluateToolCall(ctx, backendclient.EvaluateRequest{
-		ModelConfigCUID:      req.ModelConfigCUID,
-		OrgCUID:              req.OrgCUID,
-		AgentVMCUID:          req.AgentVMCUID,
-		ConstitutionFieldKey: req.ConstitutionFieldKey,
-		ServerName:           req.ServerName,
-		ToolName:             req.ToolName,
-		ToolArgs:             req.ToolArgs,
-		Context:              req.Context,
+		ModelConfigCUID: req.ModelConfigCUID,
+		OrgCUID:         req.OrgCUID,
+		AgentVMCUID:     req.AgentVMCUID,
+		CharterFieldKey: req.CharterFieldKey,
+		ServerName:      req.ServerName,
+		ToolName:        req.ToolName,
+		ToolArgs:        req.ToolArgs,
+		Context:         req.Context,
 	})
 	if err != nil {
 		return invocation.EvaluateResponse{}, err

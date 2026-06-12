@@ -130,7 +130,6 @@ const matchesAnyPattern = (
 };
 
 const matchesRuleScope = (invocation: Invocation, rule: RuleInput): boolean =>
-  rule.user_pattern === "*" &&
   matchesAnyPattern(rule.server_patterns, invocation.server_name) &&
   matchesAnyPattern(rule.tool_patterns, invocation.tool_name);
 
@@ -239,7 +238,6 @@ const Invocations: React.FC = () => {
   const [ruleForm, setRuleForm] = useState({
     server_patterns: "",
     tool_patterns: "",
-    user_pattern: "*",
     description: "",
   });
   const [showCreateRule, setShowCreateRule] = useState(false);
@@ -247,13 +245,11 @@ const Invocations: React.FC = () => {
     action: RuleAction;
     server_patterns: string;
     tool_patterns: string;
-    user_pattern: string;
     description: string;
   }>({
     action: "auto_approve",
     server_patterns: "",
     tool_patterns: "",
-    user_pattern: "*",
     description: "",
   });
 
@@ -353,7 +349,6 @@ const Invocations: React.FC = () => {
           .map((s) => s.trim())
           .filter(Boolean)
       : [],
-    user_pattern: ruleForm.user_pattern || "*",
     description: ruleForm.description || undefined,
     enabled: true,
   });
@@ -362,7 +357,6 @@ const Invocations: React.FC = () => {
     setRuleForm({
       server_patterns: serverName ?? "",
       tool_patterns: toolName ?? "",
-      user_pattern: "*",
       description: "",
     });
     setShowCustomizeScope(false);
@@ -373,7 +367,6 @@ const Invocations: React.FC = () => {
       action: "auto_approve",
       server_patterns: serverName ?? "",
       tool_patterns: toolName ?? "",
-      user_pattern: "*",
       description: "",
     });
     setShowCreateRule(false);
@@ -475,7 +468,6 @@ const Invocations: React.FC = () => {
             .map((s) => s.trim())
             .filter(Boolean)
         : [],
-      user_pattern: createRuleForm.user_pattern || "*",
       description: createRuleForm.description || undefined,
       enabled: true,
     };
@@ -625,11 +617,12 @@ const Invocations: React.FC = () => {
                           Status
                         </FormLabel>
                         <Select
-                          classNamePrefix="chakra-react-select"
                           isClearable
                           options={STATUS_OPTIONS}
                           placeholder="Any"
                           size="sm"
+                          menuPortalTarget={document.body}
+                          menuPosition="fixed"
                           value={
                             STATUS_OPTIONS.find(
                               (o) => o.value === draftFilters.status,
@@ -902,7 +895,7 @@ const Invocations: React.FC = () => {
                       align="start"
                       wrap="nowrap"
                       gap={2}>
-                      <VStack align="start" gap={4}>
+                      <VStack align="start" gap={4} flex={1} minW={0}>
                         <VStack align="start" gap={1}>
                           <Heading size="md" fontFamily="mono">
                             {detail.server_name || "none"} ·{" "}
@@ -1040,6 +1033,7 @@ const Invocations: React.FC = () => {
                       </VStack>
                       <CloseButton
                         size="sm"
+                        flexShrink={0}
                         onClick={handleCloseDetail}
                         aria-label="Close details"
                         title="Close details"
@@ -1444,23 +1438,6 @@ const Invocations: React.FC = () => {
                               </FormControl>
                               <FormControl size="sm">
                                 <FormLabel fontSize="xs" mb={1}>
-                                  User pattern
-                                </FormLabel>
-                                <Input
-                                  size="sm"
-                                  fontFamily="mono"
-                                  placeholder="* for any"
-                                  value={ruleForm.user_pattern}
-                                  onChange={(e) =>
-                                    setRuleForm((f) => ({
-                                      ...f,
-                                      user_pattern: e.target.value,
-                                    }))
-                                  }
-                                />
-                              </FormControl>
-                              <FormControl size="sm">
-                                <FormLabel fontSize="xs" mb={1}>
                                   Description (optional)
                                 </FormLabel>
                                 <Input
@@ -1572,23 +1549,6 @@ const Invocations: React.FC = () => {
                                   setCreateRuleForm((f) => ({
                                     ...f,
                                     tool_patterns: e.target.value,
-                                  }))
-                                }
-                              />
-                            </FormControl>
-                            <FormControl size="sm">
-                              <FormLabel fontSize="xs" mb={1}>
-                                User pattern
-                              </FormLabel>
-                              <Input
-                                size="sm"
-                                fontFamily="mono"
-                                placeholder="* for any"
-                                value={createRuleForm.user_pattern}
-                                onChange={(e) =>
-                                  setCreateRuleForm((f) => ({
-                                    ...f,
-                                    user_pattern: e.target.value,
                                   }))
                                 }
                               />
