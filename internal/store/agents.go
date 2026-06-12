@@ -162,17 +162,39 @@ func (r *AgentsRepo) GetByVMCUID(ctx context.Context, vmCUID string) (AgentRecor
 
 // GetByAgentID returns the agent record whose agent_ids JSON array contains the
 // given agentID string. Returns sql.ErrNoRows when no match is found.
+// ORDER BY id ensures deterministic results when multiple agents share the same
+// agent_id (which is a misconfiguration, but we handle it gracefully).
 func (r *AgentsRepo) GetByAgentID(ctx context.Context, agentID string) (AgentRecord, error) {
 	cols := strings.Join(agentColumns, ", ")
 	var query string
 	if r.dialect == DialectPostgres {
 		// PostgreSQL: use the @> containment operator on JSONB.
-		query = `SELECT ` + cols + ` FROM agents WHERE agent_ids @> to_jsonb($1::text)::jsonb LIMIT 1`
+		query = `SELECT ` + cols + ` FROM agents WHERE agent_ids @> to_jsonb($1::text)::jsonb ORDER BY id LIMIT 1`
 	} else {
 		// SQLite: use json_each to expand the array and match the value.
-		query = `SELECT ` + cols + ` FROM agents WHERE EXISTS (SELECT 1 FROM json_each(agent_ids) WHERE value = ?) LIMIT 1`
+		query = `SELECT ` + cols + ` FROM agents WHERE EXISTS (SELECT 1 FROM json_each(agent_ids) WHERE value = ?) ORDER BY id LIMIT 1`
 	}
 	return scanAgent(r.db.QueryRowContext(ctx, query, agentID))
+}
+
+// CheckAgentIDConflict checks whether any of the given agentIDs are already
+// claimed by an agent other than the one with excludeID. It returns the first
+// conflicting agentID and the name of the owning agent, or empty strings when
+// no conflict exists. Pass an empty excludeID when creating a new agent.
+func (r *AgentsRepo) CheckAgentIDConflict(ctx context.Context, excludeID string, agentIDs []string) (conflictID, ownerName string, err error) {
+	for _, id := range agentIDs {
+		record, rerr := r.GetByAgentID(ctx, id)
+		if rerr == sql.ErrNoRows {
+			continue
+		}
+		if rerr != nil {
+			return "", "", rerr
+		}
+		if record.ID != excludeID {
+			return id, record.VMName, nil
+		}
+	}
+	return "", "", nil
 }
 
 // Create inserts a new manually-created agent record. The caller is responsible

@@ -90,6 +90,7 @@ type agentsRepo interface {
 	Get(ctx context.Context, id string) (store.AgentRecord, error)
 	GetByAgentID(ctx context.Context, agentID string) (store.AgentRecord, error)
 	GetByVMCUID(ctx context.Context, vmCUID string) (store.AgentRecord, error)
+	CheckAgentIDConflict(ctx context.Context, excludeID string, agentIDs []string) (conflictID, ownerName string, err error)
 	UpdateEnabled(ctx context.Context, id string, enabled bool) error
 	UpdateAgentIDs(ctx context.Context, id string, agentIDs string) error
 	UpdateMeta(ctx context.Context, id, name, description, charter string) error
@@ -399,7 +400,16 @@ func parseAgentIDs(raw string) []string {
 	if ids == nil {
 		return []string{}
 	}
-	return ids
+	// Deduplicate while preserving order.
+	seen := make(map[string]struct{}, len(ids))
+	out := ids[:0]
+	for _, id := range ids {
+		if _, ok := seen[id]; !ok {
+			seen[id] = struct{}{}
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 const agentRulesToolName = "atryum.rules.get"
@@ -2582,6 +2592,15 @@ func (h *Handler) adminAgents(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "name is required")
 			return
 		}
+		if len(req.AgentIDs) > 0 {
+			if conflictID, ownerName, err := h.agentsRepo.CheckAgentIDConflict(r.Context(), "", req.AgentIDs); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to check agent ID conflicts")
+				return
+			} else if conflictID != "" {
+				writeError(w, http.StatusConflict, fmt.Sprintf("agent ID %q is already claimed by agent %q", conflictID, ownerName))
+				return
+			}
+		}
 		id := uuid.New().String()
 		agentIDsJSON := "[]"
 		if len(req.AgentIDs) > 0 {
@@ -2684,6 +2703,15 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if req.AgentIDs != nil {
+			if len(req.AgentIDs) > 0 {
+				if conflictID, ownerName, err := h.agentsRepo.CheckAgentIDConflict(r.Context(), id, req.AgentIDs); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to check agent ID conflicts")
+					return
+				} else if conflictID != "" {
+					writeError(w, http.StatusConflict, fmt.Sprintf("agent ID %q is already claimed by agent %q", conflictID, ownerName))
+					return
+				}
+			}
 			idsJSON, err := json.Marshal(req.AgentIDs)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "failed to encode agent_ids")

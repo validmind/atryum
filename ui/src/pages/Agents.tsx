@@ -61,6 +61,12 @@ const formatDate = (iso: string): string => {
 };
 
 const errorMessage = (err: unknown, fallback: string): string => {
+  // Prefer the API response body: { error: { message: "..." } }
+  if (typeof err === 'object' && err !== null) {
+    const apiMsg = (err as { response?: { data?: { error?: { message?: unknown } } } }).response
+      ?.data?.error?.message;
+    if (typeof apiMsg === 'string' && apiMsg) return apiMsg;
+  }
   if (err instanceof Error) return err.message;
   if (typeof err === 'object' && err !== null && 'message' in err) {
     const msg = (err as { message: unknown }).message;
@@ -76,6 +82,8 @@ type CreateAgentModalProps = {
   onClose: () => void;
 };
 
+type StatusMsg = { text: string; isError: boolean; lines?: string[] };
+
 const CreateAgentModal: React.FC<CreateAgentModalProps> = ({ isOpen, onClose }) => {
   const [form, setForm] = useState<AgentCreateInput>({
     name: '',
@@ -84,8 +92,9 @@ const CreateAgentModal: React.FC<CreateAgentModalProps> = ({ isOpen, onClose }) 
     enabled: true,
     agent_ids: [],
   });
-  const [statusMsg, setStatusMsg] = useState<{ text: string; isError: boolean } | null>(null);
+  const [statusMsg, setStatusMsg] = useState<StatusMsg | null>(null);
   const createMutation = useCreateAgent();
+  const { data: agentsData } = useAgents();
   const noOptionsMessage = useCallback(() => null, []);
 
   const handleClose = () => {
@@ -97,6 +106,18 @@ const CreateAgentModal: React.FC<CreateAgentModalProps> = ({ isOpen, onClose }) 
   const handleCreate = async () => {
     if (!form.name.trim()) {
       setStatusMsg({ text: 'Name is required.', isError: true });
+      return;
+    }
+    const conflicts = (form.agent_ids ?? []).flatMap((id) => {
+      const owner = agentsData?.items.find((a) => a.agent_ids.includes(id));
+      return owner ? [`${id} is already in use by "${owner.name}"`] : [];
+    });
+    if (conflicts.length > 0) {
+      setStatusMsg({
+        text: 'Agent ID(s) already in use by another agent:',
+        lines: conflicts,
+        isError: true,
+      });
       return;
     }
     try {
@@ -118,7 +139,18 @@ const CreateAgentModal: React.FC<CreateAgentModalProps> = ({ isOpen, onClose }) 
             {statusMsg && (
               <Alert status={statusMsg.isError ? 'error' : 'success'} borderRadius="md" py={2}>
                 <AlertIcon />
-                <AlertDescription fontSize="sm">{statusMsg.text}</AlertDescription>
+                <AlertDescription fontSize="sm">
+                  <Text>{statusMsg.text}</Text>
+                  {statusMsg.lines && (
+                    <Stack as="ul" mt={1} gap={0} pl={4} listStyleType="disc">
+                      {statusMsg.lines.map((line) => (
+                        <Text as="li" key={line} fontSize="sm">
+                          {line}
+                        </Text>
+                      ))}
+                    </Stack>
+                  )}
+                </AlertDescription>
               </Alert>
             )}
             <FormControl isRequired>
@@ -209,14 +241,27 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
   const [charter, setCharter] = useState(agent.charter ?? '');
   const [enabled, setEnabled] = useState(agent.enabled);
   const [agentIDs, setAgentIDs] = useState<string[]>(agent.agent_ids);
-  const [statusMsg, setStatusMsg] = useState<{ text: string; isError: boolean } | null>(null);
+  const [statusMsg, setStatusMsg] = useState<StatusMsg | null>(null);
 
   const updateMutation = useUpdateAgent();
   const deleteMutation = useDeleteAgent();
+  const { data: agentsData } = useAgents();
 
   const handleUpdate = async () => {
     if (!name.trim()) {
       setStatusMsg({ text: 'Name is required.', isError: true });
+      return;
+    }
+    const conflicts = agentIDs.flatMap((id) => {
+      const owner = agentsData?.items.find((a) => a.cuid !== agent.cuid && a.agent_ids.includes(id));
+      return owner ? [`${id} is already in use by "${owner.name}"`] : [];
+    });
+    if (conflicts.length > 0) {
+      setStatusMsg({
+        text: 'Agent ID(s) already in use by another agent:',
+        lines: conflicts,
+        isError: true,
+      });
       return;
     }
     const input: AgentUpdateInput = { name, description, enabled, agent_ids: agentIDs, charter };
@@ -254,7 +299,18 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
             {statusMsg && (
               <Alert status={statusMsg.isError ? 'error' : 'success'} borderRadius="md" py={2}>
                 <AlertIcon />
-                <AlertDescription fontSize="sm">{statusMsg.text}</AlertDescription>
+                <AlertDescription fontSize="sm">
+                  <Text>{statusMsg.text}</Text>
+                  {statusMsg.lines && (
+                    <Stack as="ul" mt={1} gap={0} pl={4} listStyleType="disc">
+                      {statusMsg.lines.map((line) => (
+                        <Text as="li" key={line} fontSize="sm">
+                          {line}
+                        </Text>
+                      ))}
+                    </Stack>
+                  )}
+                </AlertDescription>
               </Alert>
             )}
 
