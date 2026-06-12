@@ -20,7 +20,7 @@ website/
 
     Filename convention: `use-dashes-please.md` (Align more or less with guide title. Follow the **[ValidMind style guide](https://docs.validmind.ai/about/contributing/style-guide/style-guide.html)**.)
 
-2. Run `make docs` from within this directory.
+2. Run `make docs` from the repo root.
 
 3. Commit the `.md` source and the generated HTML.
 
@@ -98,7 +98,7 @@ Standard pipe tables are supported.
 
 ## Build documentation website
 
-From this directory:
+From the repo root:
 
 ```bash
 make docs
@@ -113,7 +113,7 @@ Commit both the Markdown sources and the generated files. CI runs `make docs` on
 
 ### Preview website locally
 
-From this directory (`website/`):
+From the repo root:
 
 ```bash
 make preview
@@ -122,10 +122,8 @@ make preview
 Or equivalently:
 
 ```bash
-python3 -m http.server 8000
+python3 -m http.server 8000 --directory website
 ```
-
-Do not run the server from the repo root — there is no `index.html` there, so you'll get a directory listing instead of the site.
 
 - Open [http://localhost:8000/](http://localhost:8000/) for the homepage and [http://localhost:8000/documentation/quickstart.html](http://localhost:8000/documentation/quickstart.html) for docs.
 - Hard-refresh after CSS or JS changes.

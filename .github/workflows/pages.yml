@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "website/**"
+      - "Makefile"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -37,7 +38,7 @@ jobs:
         uses: actions/configure-pages@v5
 
       - name: Build documentation
-        run: make -C website docs
+        run: make docs
 
       - name: Verify generated documentation is committed
         run: git diff --exit-code -- website/documentation website/partials/docs-nav.html
