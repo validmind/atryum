@@ -275,7 +275,7 @@ Use no-auth mode for local development and quick setup. Use auth mode when you n
 In no-auth mode, agents identify themselves with a self-declared agent ID. Atryum treats this as best-effort identity — useful for tagging invocations and applying agent-scoped rules, but not cryptographically verified.
 
 - **MCP proxy clients** — Append `?agent_id=<your_id>` to the MCP proxy URL. For example: `http://localhost:8080/mcp/calc?agent_id=my-cool-id`
-- **Harness clients** — Send the agent ID through the integration API or set `ATRYUM_AGENT_ID` before starting your agent.
+- **Hook and extension agents** — Send the agent ID through the integration API or set `ATRYUM_AGENT_ID` before starting your agent.
 
 Refer to the setup examples in the [GitHub `examples` directory](https://github.com/validmind/atryum/tree/main/examples) for agent-specific configuration.
 
