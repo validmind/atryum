@@ -10,7 +10,7 @@ The **Invocations** page is where you review those calls, approve or deny reques
 - **<span style="font-variant: small-caps;">id</span>** — The unique invocation identifier. Hover to view the full ID.
 - **<span style="font-variant: small-caps;">server</span>** — The server or agent source the tool call targeted.
 - **<span style="font-variant: small-caps;">tool</span>** — The tool name the agent requested to run.
-- **<span style="font-variant: small-caps;">agent record</span>** — The ValidMind agent record linked to this invocation, when Atryum is synced to ValidMind. ([Connect ValidMind](connect-validmind.md))
+- **<span style="font-variant: small-caps;">agent record</span>** — The agent record linked to this invocation — a local record manually registered or a record synced from ValidMind. Populated when the call's agent identity matches an **Agent IDs** entry on that record; empty otherwise. ([Connect agents](connect-agents.md#tag-invocations-to-agent-records), [Connect ValidMind](connect-validmind.md))
 - **<span style="font-variant: small-caps;">status</span>** — The current state of the invocation: `Pending Approval`, `Approved`, `Denied`, `Executing`, `Succeeded`, `Failed`, `Expired`, `Cancelled`, or `Received`.
 - **<span style="font-variant: small-caps;">decided by</span>** — Who or what made the approval decision: a <span style="font-variant: small-caps;">human</span>, a matching <span style="font-variant: small-caps;">rule</span>, or <span style="font-variant: small-caps;">ai evaluation</span>.
 - **<span style="font-variant: small-caps;">submitted</span>** — When the agent submitted the tool call.

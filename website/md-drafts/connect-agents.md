@@ -73,9 +73,11 @@ Use this path when your agent speaks MCP and you want tool calls routed through 
 
 4. Replace `<server_name>` with the name you gave the MCP server under **Servers** in the Atryum platform left sidebar.
 
-5. Set `ATRYUM_URL` (and optionally `ATRYUM_AGENT_ID`) in the same terminal session where you start your agent ([Set environment variables](#set-environment-variables)), then start your agent.
+5. Start your agent. To tag invocations to an agent record in no-auth mode, append `?agent_id=<your_id>` to the MCP proxy URL — for example, `http://localhost:8080/mcp/calc?agent_id=amp-local`. See [Agent identity and authentication](#agent-identity-and-authentication).
 
 ### Set environment variables
+
+Use these variables for hook and extension integrations. MCP proxy clients do not read `ATRYUM_AGENT_ID` — tag agent identity with `?agent_id=` on the proxy URL instead.
 
 1. Open the terminal session you will use to start your agent.
 
@@ -97,12 +99,12 @@ Use this path when your agent speaks MCP and you want tool calls routed through 
 
 4. (Optional) Export these variables to label the agent in Atryum:
 
-    - **ATRYUM_CLIENT_NAME** — Harness name shown in the **Agent** column on **Invocations**. Defaults to each integration's source label when unset
-    - **ATRYUM_CLIENT_VERSION** — Harness version shown in Atryum. Some integrations also read their native version variables, such as `AMP_VERSION` or `PI_VERSION`
+    - `ATRYUM_CLIENT_NAME` — Harness name shown in the **Agent** column on **Invocations**. Defaults to each integration's source label when unset.
+    - `ATRYUM_CLIENT_VERSION` — Harness version shown in Atryum. Some integrations also read their native version variables, such as `AMP_VERSION` or `PI_VERSION`.
 
 5. Make sure Atryum is running and reachable at `ATRYUM_URL`, then start your agent from the same terminal session.
 
-    Pending tool calls appear under **Invocations** in the Atryum platform left sidebar
+    Pending tool calls appear under **Invocations** in the Atryum platform left sidebar.
 
 ### Tag invocations to agent records
 
@@ -118,7 +120,7 @@ To apply agent-scoped rules, attach invocations to an agent record, or supply a 
 
     - **Name**
     - (Optional) **Description**
-    - (Optional, but recommended) **Constitution** — Rhe rules and constraints governing this agent's behavior. Atryum uses this for local LLM-as-judge evaluation rules. ([Configure LLM providers](configure-llm-providers.md))
+    - (Optional, but recommended) **Constitution** — The rules and constraints governing this agent's behavior. Atryum uses this for local LLM-as-judge evaluation rules. ([Configure LLM providers](configure-llm-providers.md))
 
     b. Add a stable string to **Agent IDs** — Type the ID and press **Enter** to add it
 
@@ -174,7 +176,7 @@ Use no-auth mode for local development and quick setup. Use auth mode when you n
 
 ### No-auth mode
 
-In no-auth mode, agents and agents identify themselves with a self-declared agent ID. Atryum treats this as best-effort identity — useful for tagging invocations and applying agent-scoped rules, but not cryptographically verified.
+In no-auth mode, agents identify themselves with a self-declared agent ID. Atryum treats this as best-effort identity — useful for tagging invocations and applying agent-scoped rules, but not cryptographically verified.
 
 - **MCP proxy clients** — Append `?agent_id=<your_id>` to the MCP proxy URL. For example: `http://localhost:8080/mcp/calc?agent_id=my-cool-id`
 - **Harness clients** — Send the agent ID through the integration API or set `ATRYUM_AGENT_ID` before starting your agent. For MCP proxy setup, environment variables, and Agent Record mapping, refer to [Connect other coding agents](#connect-other-coding-agents).
@@ -187,7 +189,7 @@ Self-declared agent IDs are ignored as soon as inbound auth is configured. Do no
 
 ### Auth mode
 
-In auth mode, agents and agents must authenticate to Atryum with an OAuth bearer token. Atryum validates the token against one or more authorization servers configured in `atryum.toml`, then uses the token's **agent ID claim** — by default `client_id`, falling back to `azp`, then `sub` — as the authenticated agent ID when evaluating rules and recording invocations.
+In auth mode, agents must authenticate to Atryum with an OAuth bearer token. Atryum validates the token against one or more authorization servers configured in `atryum.toml`, then uses the token's **agent ID claim** — by default `client_id`, falling back to `azp`, then `sub` — as the authenticated agent ID when evaluating rules and recording invocations.
 
 1. Add one or more `[[auth]]` blocks to your `atryum.toml` configuration file:
 
