@@ -298,6 +298,24 @@ def list_item_continuation_separator(body_lines: list[str]) -> str:
     return ""
 
 
+def is_checklist_line(line: str) -> bool:
+    return bool(re.match(r"^\s*[-*]\s+\[x\]\s+", line))
+
+
+def convert_checklist_group(lines: list[str], index: int) -> tuple[str, int]:
+    parts = ['<ul class="docs-checklist">']
+    while index < len(lines):
+        if not is_checklist_line(lines[index]):
+            break
+        text = re.sub(r"^\s*[-*]\s+\[x\]\s+", "", lines[index])
+        parts.append(f"<li>{inline_format(text)}</li>")
+        index += 1
+        while index < len(lines) and not lines[index].strip():
+            index += 1
+    parts.append("</ul>")
+    return "".join(parts), index
+
+
 def convert_list_items(
     lines: list[str],
     index: int,
@@ -410,10 +428,9 @@ def convert_blocks(lines: list[str]) -> str:
                 html_parts.append(block)
                 continue
 
-        if re.match(r"^\s*[-*]\s+\[x\]\s+", line):
-            text = re.sub(r"^\s*[-*]\s+\[x\]\s+", "", line)
-            html_parts.append(f'<p class="docs-checklist">{inline_format(text)}</p>')
-            index += 1
+        if is_checklist_line(line):
+            block, index = convert_checklist_group(lines, index)
+            html_parts.append(block)
             continue
 
         if is_list_item_line(line):

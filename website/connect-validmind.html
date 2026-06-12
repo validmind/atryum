@@ -36,7 +36,7 @@
           <p class="docs-intro">Sync your ValidMind organization's agent records to Atryum to map tool invocations to agent records, use agent-scoped rules, and power invocation summarization.</p>
 
           <article class="docs-content">
-        <p>In addition to mapping tool invocations to agent records, allowing Atryum to use agent-scoped rules (<a href="rules.html">Rules</a>), and powering invocation summarization (<a href="invocations.html">Invocations</a>), the ValidMind integration also allows you to optionally use Atryum to evaluate tool invocations against each agent's <em>constitution</em>:</p>
+        <p>In addition to mapping tool invocations to agent records, allowing Atryum to use agent-scoped rules (<a href="rules.html">Rules</a>), and powering invocation summarization (<a href="invocations.html">Invocations</a>), the ValidMind integration also allows you to use Atryum to evaluate tool invocations against each agent's <em>constitution</em>:</p>
 
         <ul><li>A constitution is a plain-language policy that describes what an agent can do, what it cannot do, and which actions require human approval.</li><li>Constitutions can be as terse or expressive as you would like. It's good to call out specifics when you can but be sure to include general statements to give the LLM something to hold on to when seeing an unanticipated tool call.</li><li>Use our provided <a href="https://github.com/validmind/atryum/tree/main/.agents/skills/populate-constitution"><code>populate-constitution</code></a> skill to help you author effective constitutions.</li></ul>
 
@@ -44,13 +44,7 @@
 
         <p>Before connecting Atryum to ValidMind:</p>
 
-        <p class="docs-checklist">Set up a ValidMind record type for AI agents if one does not already exist. (<a href="https://docs.validmind.ai/guide/inventory/manage-inventory-record-types.html">Manage inventory record types</a>)</p>
-
-        <p class="docs-checklist">Add a custom long text field to that record type for each agent's constitution. (<a href="https://docs.validmind.ai/guide/inventory/manage-inventory-fields.html">Manage inventory fields</a>)</p>
-
-        <p class="docs-checklist">Create at least one record in that record type and fill in its constitution field. (<a href="https://docs.validmind.ai/guide/inventory/register-records-in-inventory.html">Register records in the inventory</a>)</p>
-
-        <p class="docs-checklist">Make sure you have valid ValidMind API and secret keys for the organization you want Atryum to connect to. (<a href="https://docs.validmind.ai/guide/configuration/manage-your-profile.html#access-keys">Manage your profile</a>)</p>
+        <ul class="docs-checklist"><li>Set up a ValidMind record type for AI agents if one does not already exist. (<a href="https://docs.validmind.ai/guide/inventory/manage-inventory-record-types.html">Manage inventory record types</a>)</li><li>Add a custom long text field to that record type for each agent's constitution. (<a href="https://docs.validmind.ai/guide/inventory/manage-inventory-fields.html">Manage inventory fields</a>)</li><li>Create at least one record in that record type and fill in its constitution field. (<a href="https://docs.validmind.ai/guide/inventory/register-records-in-inventory.html">Register records in the inventory</a>)</li><li>Make sure you have valid ValidMind API and secret keys for the organization you want Atryum to connect to. (<a href="https://docs.validmind.ai/guide/configuration/manage-your-profile.html#access-keys">Manage your profile</a>)</li></ul>
 
         <h2 id="connect-atryum-to-validmind">Connect Atryum to ValidMind</h2>
 
