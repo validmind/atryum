@@ -96,7 +96,7 @@ After setting up your test calculator server, connect Atryum with ValidMind and 
 
 Sync your ValidMind organization's agent records to Atryum to map tool invocations to agent records, use agent-scoped rules, and power invocation summarization.
 
-Connecting agent records from ValidMind also allows you to optionally use Atryum to evaluate tool invocations against each agent’s *constitution*, a plain-language policy that describes what an agent can do, what it cannot do, and which actions require human approval.
+Connecting agent records from ValidMind also allows you to optionally use Atryum to evaluate tool invocations against each agent's *constitution*, a plain-language policy that describes what an agent can do, what it cannot do, and which actions require human approval.
 
 :::
 To learn more about connecting ValidMind with Atryum, refer to **[Connect ValidMind](connect-validmind.md)**.

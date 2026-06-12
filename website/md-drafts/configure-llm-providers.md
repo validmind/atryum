@@ -42,7 +42,7 @@ Use local LLMs when you want to:
 
 ## Set up local LLM AI evaluation rules
 
-After you add at least one enabled local LLM, you can set up a rule for an `AI Evaluation` Action:
+After you add at least one enabled local LLM, you can set up a rule for an AI evaluation action:
 
 1. In Atryum, click **Rules** in the left sidebar.
 
