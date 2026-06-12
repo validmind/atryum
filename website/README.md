@@ -17,7 +17,7 @@ website/
 ## Author documentation
 1. Add or edit a file under `md-drafts/`.
 
-    Filename convention: `use-dashes-please.md` (Align more or less with guide title. Follow the **[ValidMind style guide](https://docs.validmind.ai/about/contributing/style-guide/style-guide.html)**.)
+    **Filename convention:** prefix files and folders with a number to control nav order, then use dashes for the slug — for example `1_quickstart.md`, `1_integrations/2_connect-agents.md`. Numeric prefixes are stripped from generated HTML paths and nav labels. Follow the **[ValidMind style guide](https://docs.validmind.ai/about/contributing/style-guide/style-guide.html)** for prose.
 
 2. Run `make docs` from the repo root.
 
@@ -42,17 +42,17 @@ The `#` heading becomes the page title and the first paragraph becomes the intro
 
 | Location | Result |
 | --- | --- |
-| `md-drafts/quickstart.md` | `documentation/quickstart.html` |
-| `md-drafts/integrations/connect-agents.md` | `documentation/integrations/connect-agents.html` |
+| `md-drafts/1_quickstart.md` | `documentation/1_quickstart.html` |
+| `md-drafts/1_integrations/2_connect-agents.md` | `documentation/1_integrations/2_connect-agents.html` |
 
-Subdirectories appear in the nav as lowercase section headings (for example, `integrations/` → **integrations**). The page kicker shows `Documentation / integrations`.
+Numeric prefixes control nav order. Folder prefixes are removed from section headings only (`1_integrations/` → **integrations**). Generated HTML paths keep the numbered source names.
 
 ### Cross-links
 
-Link to other docs with relative `.md` paths. The build resolves them to the correct HTML paths:
+Link to other docs with relative `.md` paths. Use the numbered source filenames; the build resolves them to the correct HTML paths:
 
 ```markdown
-See [Rules](../rules.md) and [Connect agents](integrations/connect-agents.md).
+See [Rules](3_rules.md) and [Connect agents](1_integrations/2_connect-agents.md).
 ```
 
 External links use full URLs as usual.
@@ -63,7 +63,7 @@ Wrap content in `:::` fences:
 
 ```markdown
 :::
-To learn more, refer to **[Invocations](invocations.md)**.
+To learn more, refer to **[Invocations](2_invocations.md)**.
 :::
 ```
 
@@ -126,17 +126,19 @@ python3 -m http.server 8000 --directory website
 ```
 
 - Open [http://localhost:8000/](http://localhost:8000/) for the homepage.
-- Hard-refresh after CSS or JS changes.
+- Partials such as `docs-nav.html` are loaded with JavaScript — a normal refresh picks up nav changes after `make docs`. Hard-refresh if you changed `includes.js` or CSS.
 
 ### Navigation logic
 
-The Documentation dropdown is generated from the draft tree. To control order, edit `scripts/md_to_html.py`:
+The Documentation dropdown is generated from the draft tree:
 
-- **`ROOT_NAV_ORDER`** — top-level pages (default: Quickstart, Invocations, Rules)
-- **`SUBDIR_NAV_ORDER`** — pages within a subdirectory
-- **`NAV_LABEL_OVERRIDES`** — optional menu labels when they should differ from the page `#` title (otherwise the H1 is used)
+1. **Root pages first** — sorted by numeric prefix (`1_quickstart.md`, `2_invocations.md`, …).
+2. **Subdirectories next** — sorted by folder numeric prefix (`1_integrations/`, …).
+3. **Pages within each section** — sorted by their numeric prefix.
 
-New pages and subdirectories are picked up automatically. Unlisted pages sort alphabetically after any explicit order.
+Section headings use the folder name with the numeric prefix removed (`1_integrations/` → **integrations**). Nav links and generated HTML paths keep the numbered source filenames.
+
+Use **`NAV_LABEL_OVERRIDES`** in `scripts/md_to_html.py` only when a menu label should differ from the page `#` title (otherwise the H1 is used).
 
 ### Quickstart install block
 
@@ -149,7 +151,7 @@ These files are generated or shared sitewide — change the source instead:
 | File | Edit instead |
 | --- | --- |
 | `documentation/**/*.html` | `md-drafts/**/*.md` |
-| `partials/docs-nav.html` | Add/reorder pages in `md-drafts/` and `md_to_html.py` nav config |
+| `partials/docs-nav.html` | Add/reorder pages in `md-drafts/` using numeric prefixes |
 
 These are maintained manually (or usually, agentically...):
 

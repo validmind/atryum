@@ -11,7 +11,7 @@ Rules support four types of actions:
 1. **Auto Approve** — Allows matching tool calls to run without stopping for manual approval.
 2. **Auto Deny** — Blocks matching tool calls automatically.
 3. **Human Approval** — Pauses matching tool calls until a human approves or denies them.
-4. **AI Evaluation** — Sends matching tool calls for review against an agent's constitution — requires Atryum to be synced to ValidMind or a configured local large language model (LLM). ([Connect ValidMind](integrations/connect-validmind.md), [Configure LLM providers](integrations/configure-llm-providers.md))
+4. **AI Evaluation** — Sends matching tool calls for review against an agent's constitution — requires Atryum to be synced to ValidMind or a configured local large language model (LLM). ([Connect ValidMind](1_integrations/1_connect-validmind.md), [Configure LLM providers](1_integrations/4_configure-llm-providers.md))
 
 ## Rules best practices
 
@@ -52,7 +52,7 @@ These are not listed automatically on the Rules page — enter the exact tool na
 
 4. Select the **Agents**, **Servers / Sources**, and **Tools** that the rule should apply to.
 
-    (AI Evaluation Action only) Select the **Evaluation Model** — The large language model (LLM) that reviews matching tool calls against the agent's constitution and decides whether to approve, deny, escalate to a human, or defer to the next rule. ([Connect ValidMind](integrations/connect-validmind.md), [Configure LLM providers](integrations/configure-llm-providers.md))
+    (AI Evaluation Action only) Select the **Evaluation Model** — The large language model (LLM) that reviews matching tool calls against the agent's constitution and decides whether to approve, deny, escalate to a human, or defer to the next rule. ([Connect ValidMind](1_integrations/1_connect-validmind.md), [Configure LLM providers](1_integrations/4_configure-llm-providers.md))
 
 5. (Optional) Add a **Description** so you can remember why the rule exists.
 
@@ -87,7 +87,7 @@ These are not listed automatically on the Rules page — enter the exact tool na
 
     - The **Action** type
     - The **Agents**, **Servers / Sources**, and **Tools** that the rule should apply to
-    - (AI Evaluation Action only) The **Evaluation Model** that reviews matching tool calls against the agent's constitution and decides whether to approve, deny, escalate to a human, or defer to the next rule. ([Connect ValidMind](integrations/connect-validmind.md), [Configure LLM providers](integrations/configure-llm-providers.md))
+    - (AI Evaluation Action only) The **Evaluation Model** that reviews matching tool calls against the agent's constitution and decides whether to approve, deny, escalate to a human, or defer to the next rule. ([Connect ValidMind](1_integrations/1_connect-validmind.md), [Configure LLM providers](1_integrations/4_configure-llm-providers.md))
     - (Optional) The rule **Description**
 
 3. To turn rules on or off:

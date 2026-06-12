@@ -6,13 +6,13 @@ Register upstream Model Context Protocol (MCP) servers so tool invocations pass 
 
 Atryum supports two server modes:
 
-- **stdio** — Run a local MCP server as a subprocess (for example, the demo `calc` server from the [Quickstart](../quickstart.md)).
+- **stdio** — Run a local MCP server as a subprocess (for example, the demo `calc` server from the [Quickstart](../1_quickstart.md)).
 - **HTTP** — Connect to a remote MCP server over the network. Atryum can authenticate on your behalf with a static bearer token or OAuth. Your coding agent never receives upstream credentials.
 
 After you register a server, point your coding agent at Atryum's proxy.
 
 :::
-For agent setup, refer to [Connect agents](connect-agents.md#connect-other-coding-agents).
+For agent setup, refer to [Connect agents](2_connect-agents.md#connect-other-coding-agents).
 :::
 
 ## Add local MCP servers (stdio)
@@ -64,7 +64,7 @@ Use HTTP mode with a **Bearer Token** when the upstream server accepts a static 
 6. Point your coding agent at Atryum's MCP proxy for this server: `http://<atryum-host-and-port>/mcp/<server_name>`.
 
 :::
-For agent setup, refer to [Connect agents](connect-agents.md#connect-other-coding-agents).
+For agent setup, refer to [Connect agents](2_connect-agents.md#connect-other-coding-agents).
 :::
 
 ## Add OAuth-protected MCP servers
@@ -96,7 +96,7 @@ Use HTTP mode when the upstream MCP server requires OAuth. Atryum holds the upst
 7. Point your coding agent at Atryum's MCP proxy for this server: `http://<atryum-host-and-port>/mcp/<server_name>`.
 
 :::
-For agent setup, refer to [Connect agents](connect-agents.md#connect-other-coding-agents).
+For agent setup, refer to [Connect agents](2_connect-agents.md#connect-other-coding-agents).
 :::
 
 
@@ -136,7 +136,7 @@ Leave **Bearer Token** blank when using the OAuth **Connect** flow. Atryum hides
 
 3. Update the fields as desired:
 
-    - **Name** is read-only after creation — Atryum does not support renaming servers. To use a new proxy path (`/mcp/<name>`), create a new server and update your agent's MCP configuration. ([Connect agents](connect-agents.md#connect-via-mcp-proxy))
+    - **Name** is read-only after creation — Atryum does not support renaming servers. To use a new proxy path (`/mcp/<name>`), create a new server and update your agent's MCP configuration. ([Connect agents](2_connect-agents.md#connect-via-mcp-proxy))
 
     - For stdio servers:
 
@@ -164,7 +164,7 @@ Leave **Bearer Token** blank when using the OAuth **Connect** flow. Atryum hides
 
     For OAuth HTTP servers, click **Reconnect** when credentials have expired or the <span style="font-variant: small-caps;">auth</span> column shows that action is required.
 
-7. When **Base URL**, credentials, or the server name (via a new registration) change, update your agent's MCP proxy URL to match. ([Connect agents](connect-agents.md#connect-via-mcp-proxy))
+7. When **Base URL**, credentials, or the server name (via a new registration) change, update your agent's MCP proxy URL to match. ([Connect agents](2_connect-agents.md#connect-via-mcp-proxy))
 
 ### Remove MCP servers
 
@@ -178,6 +178,6 @@ Deleting a server is permanent and cannot be undone.
 
 3. Click **Delete**, then select **OK** to confirm deletion.
 
-4. Remove or update the MCP proxy entry in your agent's configuration so it no longer points at the deleted server. ([Connect agents](connect-agents.md#disconnect-or-remove-agents))
+4. Remove or update the MCP proxy entry in your agent's configuration so it no longer points at the deleted server. ([Connect agents](2_connect-agents.md#disconnect-or-remove-agents))
 
 To stop routing calls without deleting the configuration, disable the server instead. ([Edit MCP servers](#edit-mcp-servers))

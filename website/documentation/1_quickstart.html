@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="../assets/style.css" />
 <script src="../assets/includes.js" defer></script>
 </head>
-<body data-page="quickstart">
+<body data-page="1_quickstart">
   <div data-include="../partials/header.html"></div>
 
   <main>
@@ -56,7 +56,7 @@
 
         <ol><li>Generate a minimal testing configuration with a simple calculator Model Context Protocol (MCP) server that does not require any external credentials:<div class="code-block"><pre><code class="language-bash">./atryum setup demo</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="./atryum setup demo" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div></li><li>Start the Atryum service and register the test calculator server in Atryum's local database:<div class="code-block"><pre><code class="language-bash">./atryum run --init-servers</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="./atryum run --init-servers" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div></li><li>In your browser, navigate to <a href="http://localhost:8080"><code>localhost:8080</code></a> to open the Atryum local web user interface.<br><p>Here, you can view servers, manage tool invocation approvals, configure rules, and more.</p></li><li>Within Atryum, click <strong>Servers</strong> in the left sidebar. Confirm that your test calculator server was successfully registered:<ul><li>Verify that the server's <span style="font-variant: small-caps;">connection</span> and <span style="font-variant: small-caps;">auth</span> both display as <span style="font-variant: small-caps;"><code>ready</code></span>.</li><li>Verify that Atryum exposed the server at <a href="http://localhost:8080/mcp/calc"><code>localhost:8080/mcp/calc</code></a>.</li></ul></li><li>Connect your preferred coding agent to Atryum:<ul><li>Open your agent's MCP settings and add a standard MCP server with the calc server address:<div class="code-block"><pre><code class="language-text">http://localhost:8080/mcp/calc</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="http://localhost:8080/mcp/calc" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div></li><li>The agent will think it is talking to a calculator MCP server, but its tool invocations now pass through Atryum first.</li></ul></li><li>Trigger a test tool call from your agent. For example:<div class="code-block"><pre><code class="language-text">Use the calculator tools and show me 2*2</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="Use the calculator tools and show me 2*2" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div></li><li>Within Atryum, click <strong>Invocations</strong> in the left sidebar to review tool calls. Confirm that the calculator invocation request is <code>Pending Approval</code> — human approval is required by default.<ul><li>Under Approval Required, select <strong>Approve</strong> to let the tool call run.</li><li>Verify that the invocation's <span style="font-variant: small-caps;">status</span> is <code>Succeeded</code> and that the approval was <span style="font-variant: small-caps;">decided by</span> a <span style="font-variant: small-caps;">human</span>.</li></ul></li></ol>
 
-        <aside class="docs-callout"><p>To learn more about working with invocations, refer to <strong><a href="invocations.html">Invocations</a></strong>.</p></aside>
+        <aside class="docs-callout"><p>To learn more about working with invocations, refer to <strong><a href="2_invocations.html">Invocations</a></strong>.</p></aside>
 
         <h3 id="set-up-calculation-server-rule">Set up calculation server rule</h3>
 
@@ -66,7 +66,7 @@
 
         <ol><li>In Atryum, click <strong>Rules</strong> in the left sidebar.</li><li>Click <strong>New Rule</strong>.</li><li>Under <strong>Action</strong>, select <code>Auto Approve</code>.</li><li>Under <strong>Servers / Sources</strong>, select <code>calc</code> to apply the rule only to calls to the test calculator server.</li><li>Make sure that <strong>Enabled</strong> is checked, then click <strong>Create Rule</strong>.</li><li>Try a calculator prompt from your agent again. Atryum should apply the new rule instead of treating the tool call like a brand-new manual decision:<ul><li>Within Atryum, click <strong>Invocations</strong> in the left sidebar and confirm that your new call <code>Succeeded</code>.</li><li>Verify that the approval was <span style="font-variant: small-caps;">decided by</span> a <span style="font-variant: small-caps;">rule</span>.</li></ul></li></ol>
 
-        <aside class="docs-callout"><p>To learn more about setting up rules to manage invocations, refer to <strong><a href="rules.html">Rules</a></strong>.</p></aside>
+        <aside class="docs-callout"><p>To learn more about setting up rules to manage invocations, refer to <strong><a href="3_rules.html">Rules</a></strong>.</p></aside>
 
         <h2 id="integrate-atryum">Integrate Atryum</h2>
 
@@ -78,13 +78,13 @@
 
         <p>Connecting agent records from ValidMind also allows you to use Atryum to evaluate tool invocations against each agent's <em>constitution</em>, a plain-language policy that describes what an agent can do, what it cannot do, and which actions require human approval.</p>
 
-        <aside class="docs-callout"><p>To learn more about connecting ValidMind with Atryum, refer to <strong><a href="integrations/connect-validmind.html">Connect ValidMind</a></strong>.</p></aside>
+        <aside class="docs-callout"><p>To learn more about connecting ValidMind with Atryum, refer to <strong><a href="1_integrations/1_connect-validmind.html">Connect ValidMind</a></strong>.</p></aside>
 
         <h3 id="with-coding-agents">With coding agents</h3>
 
         <p>Connect your coding agents to Atryum, allowing Atryum to review tool invocations before your agents run them. Hooks and extensions are available for <a href="https://www.anthropic.com/claude-code">Claude Code</a>, <a href="https://cursor.com">Cursor</a>, <a href="https://ampcode.com">Amp</a>, <a href="https://pi.dev">Pi</a>, and <a href="https://openai.com/codex">Codex</a>.</p>
 
-        <aside class="docs-callout"><p>To learn more about connecting agents with Atryum, refer to <strong><a href="integrations/connect-agents.html">Connect agents</a></strong>.</p></aside>
+        <aside class="docs-callout"><p>To learn more about connecting agents with Atryum, refer to <strong><a href="1_integrations/2_connect-agents.html">Connect agents</a></strong>.</p></aside>
 
         <h3 id="with-mcp-servers">With MCP servers</h3>
 
@@ -92,7 +92,7 @@
 
         <p>Connect MCP servers to add other upstream tools — such as local subprocess servers, remote HTTP servers with a static bearer token, or OAuth-protected services.</p>
 
-        <aside class="docs-callout"><p>To learn more about registering MCP servers in Atryum, refer to <strong><a href="integrations/connect-mcp-servers.html">Connect MCP servers</a></strong>.</p></aside>
+        <aside class="docs-callout"><p>To learn more about registering MCP servers in Atryum, refer to <strong><a href="1_integrations/3_connect-mcp-servers.html">Connect MCP servers</a></strong>.</p></aside>
 
         <h3 id="with-local-llm-providers">With local LLM providers</h3>
 
@@ -100,7 +100,7 @@
 
         <p>Local LLMs are useful for bring-your-own-key setups, on-prem or air-gapped deployments, and teams that want to register multiple models and pick the right one per rule or feature.</p>
 
-        <aside class="docs-callout"><p>To learn more about configuring local LLM providers in Atryum, refer to <strong><a href="integrations/configure-llm-providers.html">Configure LLM providers</a></strong>.</p></aside>
+        <aside class="docs-callout"><p>To learn more about configuring local LLM providers in Atryum, refer to <strong><a href="1_integrations/4_configure-llm-providers.html">Configure LLM providers</a></strong>.</p></aside>
           </article>
         </div>
       </div>

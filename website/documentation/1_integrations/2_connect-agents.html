@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="../../assets/style.css" />
 <script src="../../assets/includes.js" defer></script>
 </head>
-<body data-page="integrations/connect-agents">
+<body data-page="1_integrations/2_connect-agents">
   <div data-include="../../partials/header.html"></div>
 
   <main>
@@ -50,7 +50,7 @@
           <p class="docs-intro">Connect your coding agents to Atryum, allowing Atryum to review tool invocations before your agents run them.</p>
 
           <article class="docs-content">
-        <p>Connect your coding agents to Atryum so tool invocations pass through Atryum before they run. Atryum evaluates each call against your rules (<a href="../rules.html">Rules</a>), routes calls that need review to human approval, and records every outcome in the invocation audit log (<a href="../invocations.html">Invocations</a>).</p>
+        <p>Connect your coding agents to Atryum so tool invocations pass through Atryum before they run. Atryum evaluates each call against your rules (<a href="../3_rules.html">Rules</a>), routes calls that need review to human approval, and records every outcome in the invocation audit log (<a href="../2_invocations.html">Invocations</a>).</p>
 
         <h2 id="connect-cursor-and-claude-code">Connect Cursor and Claude Code</h2>
 
@@ -82,7 +82,7 @@
 
         <p>Use this path for agents that gate native tools (shell, file edits, in-process tools) through Atryum before execution:</p>
 
-        <ol><li>Make sure Atryum is running and reachable (<a href="../quickstart.html">Quickstart</a>).</li><li>Set <code>ATRYUM_URL</code> (and optionally <code>ATRYUM_AGENT_ID</code>) in the same terminal session where you start the agent. (<a href="#set-environment-variables">Set environment variables</a>)</li><li>Follow the setup steps in the example for your agent:<ul><li><a href="https://github.com/validmind/atryum/tree/main/examples/amp-plugin">Amp plugin</a> — Requires <code>PLUGINS=all</code> when starting Amp</li><li><a href="https://github.com/validmind/atryum/tree/main/examples/pi-extension">Pi extension</a></li><li><a href="https://github.com/validmind/atryum/tree/main/examples/claude-code-hook">Claude Code hooks</a> — Or use <a href="#connect-cursor-and-claude-code">Connect Cursor and Claude Code</a> to install hooks automatically.</li></ul></li><li>Start your agent from that terminal session. Pending tool calls appear under <strong>Invocations</strong> in the Atryum platform left sidebar.</li></ol>
+        <ol><li>Make sure Atryum is running and reachable (<a href="../1_quickstart.html">Quickstart</a>).</li><li>Set <code>ATRYUM_URL</code> (and optionally <code>ATRYUM_AGENT_ID</code>) in the same terminal session where you start the agent. (<a href="#set-environment-variables">Set environment variables</a>)</li><li>Follow the setup steps in the example for your agent:<ul><li><a href="https://github.com/validmind/atryum/tree/main/examples/amp-plugin">Amp plugin</a> — Requires <code>PLUGINS=all</code> when starting Amp</li><li><a href="https://github.com/validmind/atryum/tree/main/examples/pi-extension">Pi extension</a></li><li><a href="https://github.com/validmind/atryum/tree/main/examples/claude-code-hook">Claude Code hooks</a> — Or use <a href="#connect-cursor-and-claude-code">Connect Cursor and Claude Code</a> to install hooks automatically.</li></ul></li><li>Start your agent from that terminal session. Pending tool calls appear under <strong>Invocations</strong> in the Atryum platform left sidebar.</li></ol>
 
         <h4 id="set-environment-variables">Set environment variables</h4>
 
@@ -98,7 +98,7 @@
 
         <p>Use this path when your agent speaks MCP and you want tool calls routed through Atryum to an upstream server registered under <strong>Servers</strong>:</p>
 
-        <ol><li>Register the upstream server in Atryum before connecting your agent. (<a href="connect-mcp-servers.html">Connect MCP servers</a>)<br><p>Skip this if your server is already registered.</p></li><li>In your agent's MCP settings, add a standard MCP connection entry and point it at:<div class="code-block"><pre><code class="language-text">http://&lt;atryum-host-and-port&gt;/mcp/&lt;server_name&gt;</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="http://&lt;atryum-host-and-port&gt;/mcp/&lt;server_name&gt;" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div></li><li>Replace <code>&lt;atryum-host-and-port&gt;</code> with your Atryum base URL.<br><p>The default local address is <code>localhost:8080</code>.</p></li><li>Replace <code>&lt;server_name&gt;</code> with the name you gave the MCP server under <strong>Servers</strong> in the Atryum platform left sidebar.</li><li>Start your agent. To tag invocations to an agent record in no-auth mode, append <code>?agent_id=&lt;your_id&gt;</code> to the MCP proxy URL — for example, <code>http://localhost:8080/mcp/calc?agent_id=amp-local</code>. (<a href="#agent-identity-and-authentication">Agent identity and authentication</a>)</li></ol>
+        <ol><li>Register the upstream server in Atryum before connecting your agent. (<a href="3_connect-mcp-servers.html">Connect MCP servers</a>)<br><p>Skip this if your server is already registered.</p></li><li>In your agent's MCP settings, add a standard MCP connection entry and point it at:<div class="code-block"><pre><code class="language-text">http://&lt;atryum-host-and-port&gt;/mcp/&lt;server_name&gt;</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="http://&lt;atryum-host-and-port&gt;/mcp/&lt;server_name&gt;" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div></li><li>Replace <code>&lt;atryum-host-and-port&gt;</code> with your Atryum base URL.<br><p>The default local address is <code>localhost:8080</code>.</p></li><li>Replace <code>&lt;server_name&gt;</code> with the name you gave the MCP server under <strong>Servers</strong> in the Atryum platform left sidebar.</li><li>Start your agent. To tag invocations to an agent record in no-auth mode, append <code>?agent_id=&lt;your_id&gt;</code> to the MCP proxy URL — for example, <code>http://localhost:8080/mcp/calc?agent_id=amp-local</code>. (<a href="#agent-identity-and-authentication">Agent identity and authentication</a>)</li></ol>
 
         <h3 id="setup-examples">Setup examples</h3>
 
@@ -116,11 +116,11 @@
 
         <p>To apply agent-scoped rules, attach invocations to an agent record, or supply a constitution for local AI evaluation:</p>
 
-        <ol><li>In Atryum, click <strong>Agents</strong> in the left sidebar.</li><li>Click <strong>New Agent</strong> to create a local agent record, or click an existing agent — including records synced from ValidMind. (<a href="connect-validmind.html">Connect ValidMind</a>)<br><p>If creating a new local agent:</p>
+        <ol><li>In Atryum, click <strong>Agents</strong> in the left sidebar.</li><li>Click <strong>New Agent</strong> to create a local agent record, or click an existing agent — including records synced from ValidMind. (<a href="1_connect-validmind.html">Connect ValidMind</a>)<br><p>If creating a new local agent:</p>
 
         <p>a. Enter the:</p>
 
-        <ul><li><strong>Name</strong></li><li>(Optional) <strong>Description</strong></li><li>(Optional, but recommended) <strong>Constitution</strong> — The rules and constraints governing this agent's behavior. Atryum uses this for local LLM-as-judge evaluation rules. (<a href="configure-llm-providers.html">Configure LLM providers</a>)</li></ul>
+        <ul><li><strong>Name</strong></li><li>(Optional) <strong>Description</strong></li><li>(Optional, but recommended) <strong>Constitution</strong> — The rules and constraints governing this agent's behavior. Atryum uses this for local LLM-as-judge evaluation rules. (<a href="4_configure-llm-providers.html">Configure LLM providers</a>)</li></ul>
 
         <p>b. Add a stable string to <strong>Agent IDs</strong> — Type the ID and press <strong>Enter</strong> to add it.</p>
 
@@ -167,11 +167,11 @@ export ATRYUM_AGENT_ID=amp-local</code></pre><button class="copy-btn code-block-
 
         <ol><li>Open your agent's MCP configuration file — for example <code>~/.codex/config.toml</code> for Codex.</li><li>Update the proxy URL when Atryum's host, port, upstream <strong>Servers</strong> name, or <code>?agent_id=</code> value changes:<div class="code-block"><pre><code class="language-text">http://&lt;atryum-host-and-port&gt;/mcp/&lt;server_name&gt;?agent_id=&lt;your_id&gt;</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="http://&lt;atryum-host-and-port&gt;/mcp/&lt;server_name&gt;?agent_id=&lt;your_id&gt;" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div></li><li>Restart your agent so it reconnects with the updated URL.</li></ol>
 
-        <p>When the upstream MCP server itself changes, edit the registration under <strong>Servers</strong> in Atryum. (<a href="connect-mcp-servers.html">Connect MCP servers</a>)</p>
+        <p>When the upstream MCP server itself changes, edit the registration under <strong>Servers</strong> in Atryum. (<a href="3_connect-mcp-servers.html">Connect MCP servers</a>)</p>
 
         <h3 id="edit-agent-records">Edit agent records</h3>
 
-        <ol><li>In Atryum, click <strong>Agents</strong> in the left sidebar.</li><li>Click the agent you want to edit.</li><li>Update the fields as desired:<ul><li><strong>Name</strong></li><li><strong>Description</strong></li><li><strong>Constitution</strong> — Editable for local agent records only. Synced ValidMind records show the constitution as read-only — edit the source field in ValidMind instead. (<a href="connect-validmind.html">Connect ValidMind</a>)</li><li><strong>Agent IDs</strong> — Type an ID and press <strong>Enter</strong> to add it. Remove individual IDs with the control on each tag.</li></ul></li><li>To turn the record on or off:<ul><li>Check <strong>Enabled</strong> to mark the agent record as active.</li><li>Uncheck <strong>Enabled</strong> to mark it inactive.</li></ul></li><li>Click <strong>Save</strong>.</li></ol>
+        <ol><li>In Atryum, click <strong>Agents</strong> in the left sidebar.</li><li>Click the agent you want to edit.</li><li>Update the fields as desired:<ul><li><strong>Name</strong></li><li><strong>Description</strong></li><li><strong>Constitution</strong> — Editable for local agent records only. Synced ValidMind records show the constitution as read-only — edit the source field in ValidMind instead. (<a href="1_connect-validmind.html">Connect ValidMind</a>)</li><li><strong>Agent IDs</strong> — Type an ID and press <strong>Enter</strong> to add it. Remove individual IDs with the control on each tag.</li></ul></li><li>To turn the record on or off:<ul><li>Check <strong>Enabled</strong> to mark the agent record as active.</li><li>Uncheck <strong>Enabled</strong> to mark it inactive.</li></ul></li><li>Click <strong>Save</strong>.</li></ol>
 
         <p>When you change <strong>Agent IDs</strong>, update <code>ATRYUM_AGENT_ID</code> or the <code>?agent_id=</code> query parameter on the MCP proxy URL to match, then restart the agent. (<a href="#tag-invocations-to-agent-records">Tag invocations to agent records</a>)</p>
 
@@ -187,11 +187,11 @@ export ATRYUM_AGENT_ID=amp-local</code></pre><button class="copy-btn code-block-
 
         <ul><li><strong>Amp</strong> — Delete <code>atryum.ts</code> from <code>~/.config/amp/plugins/</code> or <code>.amp/plugins/</code> in your project.</li><li><strong>Pi</strong> — Delete <code>index.ts</code> from <code>~/.pi/agent/extensions/atryum/</code> or <code>.pi/extensions/atryum/</code> in your project.</li><li><strong>MCP proxy agents</strong> — Remove or comment out the Atryum MCP server entry in your agent's MCP configuration, then restart the agent.</li><li><strong>Local agent records</strong> — In Atryum, open the agent under <strong>Agents</strong> and click <strong>Delete</strong>. This action is permanent.</li></ul>
 
-        <p>Synced ValidMind agent records cannot be deleted from Atryum — remove them by changing Agent Record Sync settings or deleting the source record in ValidMind. (<a href="connect-validmind.html">Connect ValidMind</a>)</p>
+        <p>Synced ValidMind agent records cannot be deleted from Atryum — remove them by changing Agent Record Sync settings or deleting the source record in ValidMind. (<a href="1_connect-validmind.html">Connect ValidMind</a>)</p>
 
         <h2 id="agent-identity-and-authentication">Agent identity and authentication</h2>
 
-        <p>When coding agents connect to Atryum, they present an <em>agent identity</em> that Atryum uses to tag invocations and match rules (<a href="../rules.html">Rules</a>) scoped to specific agents. Atryum supports two inbound authentication modes:</p>
+        <p>When coding agents connect to Atryum, they present an <em>agent identity</em> that Atryum uses to tag invocations and match rules (<a href="../3_rules.html">Rules</a>) scoped to specific agents. Atryum supports two inbound authentication modes:</p>
 
         <ol><li><strong>No-auth mode</strong> — The default when no <code>[[auth]]</code> blocks are configured in <code>atryum.toml</code>. Agents self-declare an agent ID.</li><li><strong>Auth mode</strong> — Agents authenticate with OAuth bearer tokens. Atryum derives a verified agent ID from the token and ignores self-declared labels.</li></ol>
 

@@ -2,7 +2,7 @@
 
 Connect your coding agents to Atryum, allowing Atryum to review tool invocations before your agents run them.
 
-Connect your coding agents to Atryum so tool invocations pass through Atryum before they run. Atryum evaluates each call against your rules ([Rules](../rules.md)), routes calls that need review to human approval, and records every outcome in the invocation audit log ([Invocations](../invocations.md)).
+Connect your coding agents to Atryum so tool invocations pass through Atryum before they run. Atryum evaluates each call against your rules ([Rules](../3_rules.md)), routes calls that need review to human approval, and records every outcome in the invocation audit log ([Invocations](../2_invocations.md)).
 
 ## Connect Cursor and Claude Code
 
@@ -41,7 +41,7 @@ Hook and extension integrations do not use the MCP proxy URL steps below. MCP pr
 
 Use this path for agents that gate native tools (shell, file edits, in-process tools) through Atryum before execution:
 
-1. Make sure Atryum is running and reachable ([Quickstart](../quickstart.md)).
+1. Make sure Atryum is running and reachable ([Quickstart](../1_quickstart.md)).
 
 2. Set `ATRYUM_URL` (and optionally `ATRYUM_AGENT_ID`) in the same terminal session where you start the agent. ([Set environment variables](#set-environment-variables))
 
@@ -86,7 +86,7 @@ Use these variables for hook and extension integrations. MCP proxy clients do no
 
 Use this path when your agent speaks MCP and you want tool calls routed through Atryum to an upstream server registered under **Servers**:
 
-1. Register the upstream server in Atryum before connecting your agent. ([Connect MCP servers](connect-mcp-servers.md))
+1. Register the upstream server in Atryum before connecting your agent. ([Connect MCP servers](3_connect-mcp-servers.md))
 
     Skip this if your server is already registered.
 
@@ -125,7 +125,7 @@ To apply agent-scoped rules, attach invocations to an agent record, or supply a 
 
 1. In Atryum, click **Agents** in the left sidebar.
 
-2. Click **New Agent** to create a local agent record, or click an existing agent — including records synced from ValidMind. ([Connect ValidMind](connect-validmind.md))
+2. Click **New Agent** to create a local agent record, or click an existing agent — including records synced from ValidMind. ([Connect ValidMind](1_connect-validmind.md))
 
     If creating a new local agent:
     
@@ -133,7 +133,7 @@ To apply agent-scoped rules, attach invocations to an agent record, or supply a 
 
     - **Name**
     - (Optional) **Description**
-    - (Optional, but recommended) **Constitution** — The rules and constraints governing this agent's behavior. Atryum uses this for local LLM-as-judge evaluation rules. ([Configure LLM providers](configure-llm-providers.md))
+    - (Optional, but recommended) **Constitution** — The rules and constraints governing this agent's behavior. Atryum uses this for local LLM-as-judge evaluation rules. ([Configure LLM providers](4_configure-llm-providers.md))
 
     b. Add a stable string to **Agent IDs** — Type the ID and press **Enter** to add it.
 
@@ -216,7 +216,7 @@ To retag invocations to a different agent record, update **Agent IDs** in Atryum
 
 3. Restart your agent so it reconnects with the updated URL.
 
-When the upstream MCP server itself changes, edit the registration under **Servers** in Atryum. ([Connect MCP servers](connect-mcp-servers.md))
+When the upstream MCP server itself changes, edit the registration under **Servers** in Atryum. ([Connect MCP servers](3_connect-mcp-servers.md))
 
 ### Edit agent records
 
@@ -228,7 +228,7 @@ When the upstream MCP server itself changes, edit the registration under **Serve
 
     - **Name**
     - **Description**
-    - **Constitution** — Editable for local agent records only. Synced ValidMind records show the constitution as read-only — edit the source field in ValidMind instead. ([Connect ValidMind](connect-validmind.md))
+    - **Constitution** — Editable for local agent records only. Synced ValidMind records show the constitution as read-only — edit the source field in ValidMind instead. ([Connect ValidMind](1_connect-validmind.md))
     - **Agent IDs** — Type an ID and press **Enter** to add it. Remove individual IDs with the control on each tag.
 
 4. To turn the record on or off:
@@ -259,11 +259,11 @@ Restart Cursor or Claude Code after uninstalling hooks. The shared hook script r
 - **MCP proxy agents** — Remove or comment out the Atryum MCP server entry in your agent's MCP configuration, then restart the agent.
 - **Local agent records** — In Atryum, open the agent under **Agents** and click **Delete**. This action is permanent.
 
-Synced ValidMind agent records cannot be deleted from Atryum — remove them by changing Agent Record Sync settings or deleting the source record in ValidMind. ([Connect ValidMind](connect-validmind.md))
+Synced ValidMind agent records cannot be deleted from Atryum — remove them by changing Agent Record Sync settings or deleting the source record in ValidMind. ([Connect ValidMind](1_connect-validmind.md))
 
 ## Agent identity and authentication
 
-When coding agents connect to Atryum, they present an *agent identity* that Atryum uses to tag invocations and match rules ([Rules](../rules.md)) scoped to specific agents. Atryum supports two inbound authentication modes:
+When coding agents connect to Atryum, they present an *agent identity* that Atryum uses to tag invocations and match rules ([Rules](../3_rules.md)) scoped to specific agents. Atryum supports two inbound authentication modes:
 
 1. **No-auth mode** — The default when no `[[auth]]` blocks are configured in `atryum.toml`. Agents self-declare an agent ID.
 2. **Auth mode** — Agents authenticate with OAuth bearer tokens. Atryum derives a verified agent ID from the token and ignores self-declared labels.

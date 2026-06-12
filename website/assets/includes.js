@@ -166,6 +166,10 @@
     });
   }
 
+  function fetchInclude(url) {
+    return fetch(url, { cache: 'no-store' });
+  }
+
   function isAbsoluteUrl(url) {
     return /^[a-z][a-z0-9+.-]*:/i.test(url) || url.indexOf('//') === 0;
   }
@@ -200,7 +204,7 @@
         var nestedSrc = nested.getAttribute('data-include');
         var nestedResolved = resolveIncludeSrc(nestedSrc, baseUrl);
 
-        return fetch(nestedResolved)
+        return fetchInclude(nestedResolved)
           .then(function (response) {
             if (!response.ok) {
               throw new Error('Unable to load include: ' + nestedSrc);
@@ -226,7 +230,7 @@
     var baseUrl = target.dataset.includeBase || document.baseURI;
     var resolved = resolveIncludeSrc(src, baseUrl);
 
-    return fetch(resolved)
+    return fetchInclude(resolved)
       .then(function (response) {
         if (!response.ok) {
           throw new Error('Unable to load include: ' + src);

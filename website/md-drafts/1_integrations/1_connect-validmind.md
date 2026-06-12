@@ -2,7 +2,7 @@
 
 Sync your ValidMind organization's agent records to Atryum to map tool invocations to agent records, use agent-scoped rules, and power invocation summarization.
 
-In addition to mapping tool invocations to agent records, allowing Atryum to use agent-scoped rules ([Rules](../rules.md)), and powering invocation summarization ([Invocations](../invocations.md)), the ValidMind integration also allows you to use Atryum to evaluate tool invocations against each agent's *constitution*:
+In addition to mapping tool invocations to agent records, allowing Atryum to use agent-scoped rules ([Rules](../3_rules.md)), and powering invocation summarization ([Invocations](../2_invocations.md)), the ValidMind integration also allows you to use Atryum to evaluate tool invocations against each agent's *constitution*:
 
 - A constitution is a plain-language policy that describes what an agent can do, what it cannot do, and which actions require human approval.
 - Constitutions can be as terse or expressive as you would like. It's good to call out specifics when you can but be sure to include general statements to give the LLM something to hold on to when seeing an unanticipated tool call.

@@ -209,7 +209,7 @@ body.page-home main {
   align-items: center;
   justify-content: flex-start;
   text-align: center;
-  padding: clamp(72px, 14vh, 120px) 24px 40px;
+  padding: clamp(72px, 14vh, 120px) 24px 56px;
 }
 
 .hero-inner {
@@ -723,7 +723,7 @@ footer {
 @media (max-width: 700px) {
   header { padding: 0 18px; }
   main { padding: 48px 18px 72px; }
-  body.page-home main { padding: 48px 18px 32px; }
+  body.page-home main { padding: 48px 18px 40px; }
   .docs-content { padding: 24px 20px; }
   footer { flex-direction: column; align-items: flex-start; }
 }

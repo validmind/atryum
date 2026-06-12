@@ -2,7 +2,7 @@
 """Convert website/md-drafts/**/*.md to website/documentation/**/*.html.
 
 Generated on each run:
-  - website/documentation/**/*.html (mirrors md-drafts layout)
+  - website/documentation/**/*.html (mirrors numbered md-drafts layout)
   - website/partials/docs-nav.html (Documentation dropdown links)
 
 Maintained manually (not generated):
@@ -27,19 +27,6 @@ PARTIALS = ROOT / "partials"
 # Optional nav label overrides when the menu label should differ from the page H1.
 NAV_LABEL_OVERRIDES: dict[str, str] = {}
 
-# Root-level docs menu order. Unlisted pages sort alphabetically after these.
-ROOT_NAV_ORDER = ["quickstart", "invocations", "rules"]
-
-# Per-subdirectory docs menu order. Unlisted pages sort alphabetically after these.
-SUBDIR_NAV_ORDER: dict[str, list[str]] = {
-    "integrations": [
-        "connect-mcp-servers",
-        "connect-validmind",
-        "connect-agents",
-        "configure-llm-providers",
-    ],
-}
-
 CALLOUT_PLACEHOLDER = "__CALLOUT_{index}__"
 INSTALL_COMMANDS_PLACEHOLDER = "__INSTALL_COMMANDS__"
 QUICKSTART_INSTALL_HEADING = "download atryum"
@@ -51,6 +38,9 @@ COPY_ICON_SVG = (
     '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>'
     "</svg>"
 )
+
+# Optional numeric prefix for source ordering, e.g. 1_quickstart.md or 1_integrations/.
+NUMERIC_PREFIX = re.compile(r"^(\d+)_")
 
 _partials_prefix = "../partials"
 
@@ -75,27 +65,71 @@ def path_prefixes(depth: int) -> tuple[str, str]:
 
 
 def directory_label(name: str) -> str:
-    return name.replace("-", " ")
+    return output_dir_name(name).replace("-", " ")
+
+
+def strip_numeric_prefix(name: str) -> str:
+    return NUMERIC_PREFIX.sub("", name)
+
+
+def output_stem(path: Path) -> str:
+    return strip_numeric_prefix(path.stem)
+
+
+def output_dir_name(name: str) -> str:
+    return strip_numeric_prefix(name)
+
+
+def numeric_sort_key(name: str) -> tuple[int, int, str]:
+    match = NUMERIC_PREFIX.match(name)
+    if match:
+        return (0, int(match.group(1)), strip_numeric_prefix(name))
+    return (1, 9999, name)
 
 
 def page_slug(path: Path) -> str:
-    rel = path.relative_to(DRAFTS).with_suffix("")
-    return rel.as_posix()
+    return path.relative_to(DRAFTS).with_suffix("").as_posix()
 
 
 def nav_label(path: Path) -> str:
-    if path.stem in NAV_LABEL_OVERRIDES:
-        return NAV_LABEL_OVERRIDES[path.stem]
+    clean_stem = output_stem(path)
+    if clean_stem in NAV_LABEL_OVERRIDES:
+        return NAV_LABEL_OVERRIDES[clean_stem]
 
     for line in path.read_text(encoding="utf-8").splitlines():
         if line.startswith("# "):
             return line.lstrip("# ").strip()
 
-    return path.stem.replace("-", " ").title()
+    return output_stem(path).replace("-", " ").title()
 
 
 def html_output_path(path: Path) -> Path:
     return OUTPUT / path.relative_to(DRAFTS).with_suffix(".html")
+
+
+def find_md_by_output_stem(stem: str) -> list[Path]:
+    return sorted(
+        path
+        for path in DRAFTS.rglob("*.md")
+        if output_stem(path) == stem or path.stem == stem
+    )
+
+
+def find_md_in_output_dir(output_dir: str, stem: str) -> list[Path]:
+    matches: list[Path] = []
+    for path in DRAFTS.rglob("*.md"):
+        rel = path.relative_to(DRAFTS)
+        if len(rel.parts) < 2:
+            continue
+        if output_dir_name(rel.parts[0]) != output_dir_name(output_dir):
+            continue
+        if (
+            path.stem == stem
+            or output_stem(path) == strip_numeric_prefix(stem)
+            or path.stem.endswith(f"_{strip_numeric_prefix(stem)}")
+        ):
+            matches.append(path)
+    return sorted(matches)
 
 
 def resolve_md_target(source_md: Path, link: str) -> Path:
@@ -103,9 +137,28 @@ def resolve_md_target(source_md: Path, link: str) -> Path:
     if direct.exists():
         return direct
 
-    matches = sorted(DRAFTS.rglob(Path(link).name))
+    link_path = Path(link)
+    link_name = link_path.name
+    link_stem = Path(link_name).stem
+
+    matches = sorted(DRAFTS.rglob(link_name))
     if matches:
         return matches[0]
+
+    matches = sorted(DRAFTS.rglob(f"*_{link_stem}.md"))
+    if matches:
+        return matches[0]
+
+    matches = find_md_by_output_stem(link_stem)
+    if matches:
+        return matches[0]
+
+    if len(link_path.parts) > 1:
+        output_dir = output_dir_name(link_path.parts[0])
+        file_stem = strip_numeric_prefix(link_stem)
+        matches = find_md_in_output_dir(output_dir, file_stem)
+        if matches:
+            return matches[0]
 
     return direct
 
@@ -123,8 +176,8 @@ def md_href(source_md: Path, url: str) -> str:
         return url + anchor
 
     target_md = resolve_md_target(source_md, url)
-    target_html = target_md.relative_to(DRAFTS).with_suffix(".html")
-    source_html_parent = source_md.relative_to(DRAFTS).with_suffix(".html").parent
+    target_html = html_output_path(target_md)
+    source_html_parent = html_output_path(source_md).parent
     href = Path(os.path.relpath(target_html, source_html_parent)).as_posix()
     return href + anchor
 
@@ -626,15 +679,10 @@ def page_template(
 """
 
 
-def sort_by_stem(paths: list[Path], order: list[str]) -> list[Path]:
-    rank = {stem: index for index, stem in enumerate(order)}
-    return sorted(paths, key=lambda path: (rank.get(path.stem, len(order)), path.stem))
-
-
 def render_docs_nav(pages: list[Path]) -> str:
-    root_pages = sort_by_stem(
+    root_pages = sorted(
         [p for p in pages if len(p.relative_to(DRAFTS).parts) == 1],
-        ROOT_NAV_ORDER,
+        key=lambda path: numeric_sort_key(path.stem),
     )
     grouped: dict[str, list[Path]] = {}
     for path in pages:
@@ -644,23 +692,20 @@ def render_docs_nav(pages: list[Path]) -> str:
 
     parts: list[str] = []
     for path in root_pages:
-        rel_html = path.relative_to(DRAFTS).with_suffix(".html").as_posix()
+        rel_html = html_output_path(path).relative_to(OUTPUT).as_posix()
         slug = page_slug(path)
         parts.append(
             f'<a href="/documentation/{rel_html}" data-page="{html.escape(slug, quote=True)}">'
             f"{html.escape(nav_label(path))}</a>"
         )
 
-    for directory in sorted(grouped):
+    for directory in sorted(grouped, key=numeric_sort_key):
         parts.append('<div class="nav-menu-divider" role="separator"></div>')
         parts.append(
             f'<div class="nav-menu-heading">{html.escape(directory_label(directory))}</div>'
         )
-        for path in sort_by_stem(
-            grouped[directory],
-            SUBDIR_NAV_ORDER.get(directory, []),
-        ):
-            rel_html = path.relative_to(DRAFTS).with_suffix(".html").as_posix()
+        for path in sorted(grouped[directory], key=lambda item: numeric_sort_key(item.stem)):
+            rel_html = html_output_path(path).relative_to(OUTPUT).as_posix()
             slug = page_slug(path)
             parts.append(
                 f'<a href="/documentation/{rel_html}" data-page="{html.escape(slug, quote=True)}">'
@@ -713,7 +758,7 @@ def convert_file(path: Path) -> Path:
     while body_lines and not body_lines[0].strip():
         body_lines.pop(0)
 
-    if path.stem == "quickstart":
+    if output_stem(path) == "quickstart":
         body_lines = inject_quickstart_install_partial(body_lines)
     content_html = convert_blocks(body_lines)
     content_html = inject_callouts(content_html, callouts)
