@@ -35,7 +35,7 @@ Use stdio mode for MCP servers that run locally as a subprocess — for example,
 
 5. Click **Test** to confirm Atryum can reach the server.
 
-    Confirm that the server's <span style="font-variant: small-caps;">connection</span> and  style="font-variant: small-caps;">auth</span> columns shows as <span style="font-variant: small-caps;">`ready`</span> — stdio servers do not use separate credentials, so no further action is needed.
+    Confirm that the server's <span style="font-variant: small-caps;">connection</span> and  style="font-variant: small-caps;">auth</span> columns show as <span style="font-variant: small-caps;">`ready`</span> — stdio servers do not use separate credentials, so no further action is needed.
 
 :::
 stdio servers do not use OAuth. You will not see a **Connect** button for this mode.
