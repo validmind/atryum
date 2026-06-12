@@ -894,7 +894,7 @@ const Invocations: React.FC = () => {
                       align="start"
                       wrap="nowrap"
                       gap={2}>
-                      <VStack align="start" gap={4}>
+                      <VStack align="start" gap={4} flex={1} minW={0}>
                         <VStack align="start" gap={1}>
                           <Heading size="md" fontFamily="mono">
                             {detail.server_name || "none"} ·{" "}
@@ -1032,6 +1032,7 @@ const Invocations: React.FC = () => {
                       </VStack>
                       <CloseButton
                         size="sm"
+                        flexShrink={0}
                         onClick={handleCloseDetail}
                         aria-label="Close details"
                         title="Close details"

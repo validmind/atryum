@@ -10,6 +10,7 @@ import {
   Box,
   Button,
   Checkbox,
+  CloseButton,
   Flex,
   FormControl,
   FormLabel,
@@ -162,6 +163,12 @@ const Servers: React.FC = () => {
     setEnvText('{}');
     setUseDefaultScopes(true);
     setStatusMsg({ text: 'Fill in the fields below to create a new server.', isError: false });
+  };
+
+  const closeDetail = () => {
+    setSelectedName(null);
+    setIsCreating(false);
+    setStatusMsg(null);
   };
 
   useEffect(() => {
@@ -381,13 +388,22 @@ const Servers: React.FC = () => {
             </Box>
           }
           right={
+            !selectedName && !isCreating ? null : (
             <Box overflow="auto" p={6} h="full">
-              {!selectedName && !isCreating ? (
-                <Flex h="full" align="center" justify="center">
-                  <Text color="text.subtle">Select a server or click New Server</Text>
-                </Flex>
-              ) : (
                 <VStack align="stretch" gap={5} maxW="560px">
+                  <Flex justify="space-between" align="center" gap={2}>
+                    <Text fontWeight="semibold" fontSize="sm" color="text.subtle" noOfLines={1} flex={1} minW={0}>
+                      {isCreating ? 'New Server' : selectedName}
+                    </Text>
+                    <CloseButton
+                      size="sm"
+                      flexShrink={0}
+                      onClick={closeDetail}
+                      aria-label="Close server detail"
+                      title="Close"
+                    />
+                  </Flex>
+
                   {statusMsg && (
                     <Alert status={statusMsg.isError ? 'error' : 'success'} borderRadius="md" py={2}>
                       <AlertIcon />
@@ -734,8 +750,8 @@ const Servers: React.FC = () => {
                     </Button>
                   </HStack>
                 </VStack>
-              )}
             </Box>
+            )
           }
         />
       </Box>
