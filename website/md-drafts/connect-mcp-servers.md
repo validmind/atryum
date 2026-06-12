@@ -1,0 +1,103 @@
+# Connect MCP servers
+
+Register upstream MCP servers under **Servers** so your coding agent can reach them through Atryum's MCP proxy at `/mcp/<server_name>`. Atryum evaluates tool calls against your rules, then forwards approved calls to the upstream server.
+
+Atryum supports two server modes:
+
+- **stdio** — Run a local MCP server as a subprocess (for example, the demo `calc` server from [Quickstart](quickstart.md)).
+- **HTTP** — Connect to a remote MCP server over the network. Atryum can authenticate on your behalf with a static bearer token or OAuth. Your coding agent never receives upstream credentials.
+
+After you register a server, point your coding agent at Atryum's proxy. For agent setup, refer to [Connect other coding agents](connect-agents.md#connect-other-coding-agents).
+
+## Add local MCP servers (stdio)
+
+Use stdio mode for MCP servers that run locally as a subprocess — for example, packages installed with `npx` or a Python module.
+
+1. In Atryum, click **Servers** in the left sidebar.
+
+2. Click **New Server**.
+
+3. Provide the server details:
+
+    - **Name** — A short label for the server, used in MCP proxy URLs (`/mcp/<name>`) and rule scoping.
+    - **Mode** — Select `stdio`.
+    - **Command** — The executable that starts the MCP server, such as `npx` or `python`.
+    - **Args (JSON array)** — Arguments passed to the command. For example: `["-y", "@coo-quack/calc-mcp@latest"]`.
+    - **Env (JSON object)** — Environment variables for the subprocess. Use `{}` when none are required.
+
+4. Make sure that **Enabled** is checked, then click **Create Server**.
+
+5. Click **Test** to confirm Atryum can reach the server. Confirm that the server's <span style="font-variant: small-caps;">connection</span> column shows as <span style="font-variant: small-caps;">`ready`</span>.
+
+:::
+stdio servers do not use OAuth. You will not see a **Connect** button for this mode.
+:::
+
+## Add HTTP MCP servers with a bearer token
+
+Use HTTP mode with a **Bearer Token** when the upstream server accepts a static pre-shared token instead of OAuth.
+
+1. In Atryum, click **Servers** in the left sidebar.
+
+2. Click **New Server** (or select an existing HTTP server).
+
+3. Provide the server details:
+
+    - **Name** — A short label for the server, used in MCP proxy URLs (`/mcp/<name>`) and rule scoping.
+    - **Mode** — Select `HTTP`.
+    - **Base URL** — The upstream MCP server URL.
+    - **Timeout (seconds)** — Optional. Maximum time Atryum waits for upstream responses. Defaults to `30`.
+    - **Bearer Token** — The upstream API token. Atryum stores this and sends it on your behalf.
+
+4. Make sure that **Enabled** is checked, then click **Create Server** (or **Save** when editing an existing server).
+
+5. Click **Test** to confirm Atryum can reach the server with the token.
+
+6. Point your coding agent at Atryum's MCP proxy for this server: `http://<atryum-host-and-port>/mcp/<server_name>`. For agent setup, refer to [Connect other coding agents](connect-agents.md#connect-other-coding-agents).
+
+## Add OAuth-protected MCP servers
+
+Use HTTP mode when the upstream MCP server requires OAuth. Atryum holds the upstream token and forwards credentialed calls — your coding agent connects only to Atryum's MCP proxy.
+
+1. In Atryum, click **Servers** in the left sidebar.
+
+2. Click **New Server**.
+
+3. Provide the server details:
+
+    - **Name** — A short label for the server, used in MCP proxy URLs (`/mcp/<name>`) and rule scoping.
+    - **Mode** — Select `HTTP`.
+    - **Base URL** — The upstream MCP server URL.
+    - **Timeout (seconds)** — Optional. Maximum time Atryum waits for upstream responses. Defaults to `30`.
+
+4. Make sure that **Enabled** is checked, then click **Create Server**.
+
+5. When the server requires OAuth, Atryum detects the authorization server and shows **Connect** (or **Reconnect** if credentials have expired). Click **Connect** and complete the browser authorization flow.
+
+6. After authorization succeeds, confirm that the server's <span style="font-variant: small-caps;">connection</span> and <span style="font-variant: small-caps;">auth</span> columns both show as <span style="font-variant: small-caps;">`ready`</span>.
+
+7. Point your coding agent at Atryum's MCP proxy for this server: `http://<atryum-host-and-port>/mcp/<server_name>`. For agent setup, refer to [Connect other coding agents](connect-agents.md#connect-other-coding-agents).
+
+### Manual OAuth registration
+
+Use manual registration when the upstream server does not support Dynamic Client Registration — for example, Slack or GitHub OAuth apps where you register a client out of band.
+
+1. In Atryum, click **Servers** in the left sidebar and select the server you want to configure.
+
+2. Expand **Manual OAuth configuration (advanced)**.
+
+3. Enter the OAuth client details from your provider:
+
+    - **Client ID**
+    - **Client Secret** — Leave blank when editing an existing server to keep the stored value.
+    - **Authorize URL** — Optional. Atryum auto-discovers this from the server URL when left blank.
+    - **Token URL** — Optional. Atryum auto-discovers this from the server URL when left blank.
+    - **Scopes** — Optional. Leave **Use default scopes** checked to use whatever scopes the OAuth app declared with the provider.
+
+4. Click **Save**, then click **Connect** (or **Reconnect**) to complete authorization.
+
+When a server needs re-authentication, the auth status shows that action is required and the **Reconnect** button appears in the server detail panel.
+
+:::
+Leave **Bearer Token** blank when using the OAuth **Connect** flow. Atryum hides the bearer field once OAuth credentials are in place.
+:::

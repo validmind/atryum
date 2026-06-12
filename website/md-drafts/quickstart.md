@@ -111,6 +111,15 @@ Connect your coding agents to Atryum, allowing Atryum to review tool invocations
 To learn more about connecting agents with Atryum, refer to **[Connect agents](connect-agents.md)**.
 :::
 
+### With MCP servers
+
+Register upstream Model Context Protocol (MCP) servers so Atryum can proxy tool calls to them. Atryum evaluates each call against your rules, holds upstream credentials on your behalf, and forwards approved calls to the server.
+
+Connect MCP servers to add other upstream tools — such as local subprocess servers, remote HTTP servers with a static bearer token, or OAuth-protected services.
+
+:::
+To learn more about registering MCP servers in Atryum, refer to **[Connect MCP servers](connect-mcp-servers.md)**.
+:::
 
 ### With local LLM providers
 
