@@ -44,3 +44,21 @@ mcp_targets:
     prompt: |
       Use the calc_via_atryum MCP server's math tool to evaluate 17 + 23.
       Reply with only the numeric result, nothing else.
+
+  - id: streaming-mock
+    display_name: Mock streaming MCP (HTTP SSE)
+    description: >
+      Local mock Streamable HTTP server that emits multi-frame SSE responses.
+      Used by integrations/scripts/streaming_mcp_tests.sh — not for LLM harnesses.
+    upstream:
+      name: streaming-mock
+      mode: http
+      base_url: "__MOCK_STREAMING_MCP_URL__"
+      timeout_seconds: 30
+      enabled: true
+    verify:
+      tool: stream_echo
+      arguments:
+        value: 42
+      expect_substrings: ["STREAM_FINAL:42"]
+    prompt: ""

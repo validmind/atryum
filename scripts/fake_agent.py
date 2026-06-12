@@ -117,13 +117,13 @@ def _env_or_random_identity() -> tuple[str, str]:
 # ─── tiny HTTP helper (stdlib only, no requests dep) ────────────────────────
 
 
-def _request(
+def _request_raw(
     method: str,
     url: str,
     body: Any | None = None,
     headers: dict[str, str] | None = None,
     timeout: float = 30.0,
-) -> tuple[int, dict[str, Any] | str]:
+) -> tuple[int, str, str]:
     data = None
     hdrs = dict(headers or {})
     if body is not None:
@@ -133,14 +133,74 @@ def _request(
     try:
         with urlrequest.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")
-            status = resp.status
+            return resp.status, resp.headers.get("Content-Type", ""), raw
     except urlerror.HTTPError as e:
         raw = e.read().decode("utf-8", errors="replace")
-        status = e.code
+        return e.code, e.headers.get("Content-Type", ""), raw
+
+
+def _request(
+    method: str,
+    url: str,
+    body: Any | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: float = 30.0,
+) -> tuple[int, dict[str, Any] | str]:
+    status, _content_type, raw = _request_raw(method, url, body, headers, timeout)
     try:
         return status, json.loads(raw) if raw else {}
     except json.JSONDecodeError:
         return status, raw
+
+
+def _parse_sse_data_events(raw: str) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    data_lines: list[str] = []
+
+    def flush() -> None:
+        nonlocal data_lines
+        if not data_lines:
+            return
+        payload = "\n".join(data_lines)
+        data_lines = []
+        try:
+            parsed = json.loads(payload)
+        except json.JSONDecodeError:
+            parsed = {"_raw": payload}
+        if isinstance(parsed, dict):
+            events.append(parsed)
+
+    for line in raw.splitlines():
+        if line == "":
+            flush()
+            continue
+        if line.startswith(":"):
+            continue
+        if line.startswith("data:"):
+            data_lines.append(line[5:].lstrip())
+    flush()
+    return events
+
+
+def _jsonrpc_ids_equal(left: Any, right: int) -> bool:
+    if left == right:
+        return True
+    if isinstance(left, str) and left.isdigit():
+        return int(left) == right
+    return False
+
+
+def _terminal_jsonrpc_response(
+    events: list[dict[str, Any]], req_id: int
+) -> dict[str, Any] | None:
+    for event in reversed(events):
+        if "id" not in event:
+            continue
+        if not _jsonrpc_ids_equal(event.get("id"), req_id):
+            continue
+        if "result" in event or "error" in event:
+            return event
+    return None
 
 
 def _print_json(label: str, payload: Any) -> None:
@@ -385,20 +445,63 @@ def mcp_call(
     req_id: int,
     protocol_version: str = "2025-06-18",
     extra_headers: dict[str, str] | None = None,
+    *,
+    stream: bool = False,
 ) -> dict[str, Any]:
+    payload, _frames = mcp_call_with_frames(
+        base,
+        server,
+        method,
+        params,
+        req_id,
+        protocol_version=protocol_version,
+        extra_headers=extra_headers,
+        stream=stream,
+    )
+    return payload
+
+
+def mcp_call_with_frames(
+    base: str,
+    server: str | None,
+    method: str,
+    params: dict[str, Any] | None,
+    req_id: int,
+    protocol_version: str = "2025-06-18",
+    extra_headers: dict[str, str] | None = None,
+    *,
+    stream: bool = False,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     path = "/mcp/" + (server or "")
     body: dict[str, Any] = {"jsonrpc": "2.0", "id": req_id, "method": method}
     if params is not None:
         body["params"] = params
     headers = {"MCP-Protocol-Version": protocol_version}
+    if stream:
+        headers["Accept"] = "application/json, text/event-stream"
     if extra_headers:
         headers.update(extra_headers)
-    status, payload = _request("POST", base + path, body, headers=headers)
+    status, content_type, raw = _request_raw("POST", base + path, body, headers=headers)
     if status >= 300:
-        raise SystemExit(f"mcp {method} failed ({status}): {payload}")
+        raise SystemExit(f"mcp {method} failed ({status}): {raw}")
+
+    frames: list[dict[str, Any]] = []
+    if "text/event-stream" in content_type.lower():
+        frames = _parse_sse_data_events(raw)
+        terminal = _terminal_jsonrpc_response(frames, req_id)
+        if terminal is None:
+            raise SystemExit(
+                f"mcp {method} SSE stream missing terminal JSON-RPC response for id={req_id}: {raw!r}"
+            )
+        return terminal, frames
+
+    try:
+        payload = json.loads(raw) if raw else {}
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"mcp {method} returned non-json: {raw!r}") from e
     if not isinstance(payload, dict):
-        raise SystemExit(f"mcp {method} returned non-json: {payload!r}")
-    return payload
+        raise SystemExit(f"mcp {method} returned non-object json: {payload!r}")
+    return payload, frames
 
 
 def run_mcp(
@@ -410,6 +513,12 @@ def run_mcp(
     bearer: str | None,
     client_name: str,
     client_version: str,
+    *,
+    stream: bool = False,
+    rpc_method: str | None = None,
+    rpc_params: dict[str, Any] | None = None,
+    min_frames: int = 0,
+    expect_substring: str | None = None,
 ) -> None:
     headers: dict[str, str] = {}
     if bearer:
@@ -443,22 +552,46 @@ def run_mcp(
     )
 
     # 3. tools/list (optional)
-    if list_tools or tool is None:
+    if list_tools or (tool is None and rpc_method is None):
         tools = mcp_call(base, server, "tools/list", {}, req_id=3, extra_headers=headers)
         _print_json("tools/list", tools)
-        if tool is None:
+        if tool is None and rpc_method is None:
             return
 
-    # 4. tools/call
-    call = mcp_call(
+    # 4. tools/call or custom forwarded RPC
+    if rpc_method:
+        label = rpc_method
+        params = rpc_params or {}
+    else:
+        label = "tools/call"
+        params = {"name": tool, "arguments": arguments or {}}
+        rpc_method = "tools/call"
+
+    call, frames = mcp_call_with_frames(
         base,
         server,
-        "tools/call",
-        {"name": tool, "arguments": arguments or {}},
+        rpc_method,
+        params,
         req_id=4,
         extra_headers=headers,
+        stream=stream,
     )
-    _print_json("tools/call", call)
+    _print_json(label, call)
+    if stream and frames:
+        print(f"── sse frames ({len(frames)}) " + "─" * 40)
+        print(json.dumps(frames, indent=2))
+
+    if min_frames and len(frames) < min_frames:
+        raise SystemExit(
+            f"expected at least {min_frames} SSE data frame(s), got {len(frames)}"
+        )
+
+    if expect_substring:
+        blob = json.dumps(call)
+        if expect_substring not in blob:
+            raise SystemExit(
+                f"expected substring {expect_substring!r} in terminal response, got: {blob}"
+            )
 
 
 # ─── argparse ───────────────────────────────────────────────────────────────
@@ -548,6 +681,32 @@ def main(argv: list[str] | None = None) -> int:
         default=default_version,
         help=f"clientInfo.version sent in initialize (default this run: {default_version})",
     )
+    pm.add_argument(
+        "--stream",
+        action="store_true",
+        help="send Accept: text/event-stream and parse multi-frame SSE responses",
+    )
+    pm.add_argument(
+        "--method",
+        default=None,
+        help="call an arbitrary JSON-RPC method after initialize (e.g. ping for forward tests)",
+    )
+    pm.add_argument(
+        "--params",
+        default="{}",
+        help="JSON object params when using --method",
+    )
+    pm.add_argument(
+        "--min-frames",
+        type=int,
+        default=0,
+        help="require at least N SSE data frames when --stream is set",
+    )
+    pm.add_argument(
+        "--expect-substring",
+        default=None,
+        help="fail unless the terminal response JSON contains this substring",
+    )
 
     args = p.parse_args(argv)
 
@@ -581,6 +740,11 @@ def main(argv: list[str] | None = None) -> int:
             bearer=args.bearer,
             client_name=args.client_name,
             client_version=args.client_version,
+            stream=args.stream,
+            rpc_method=args.method,
+            rpc_params=_parse_json_arg(args.params, "params") if args.method else None,
+            min_frames=args.min_frames,
+            expect_substring=args.expect_substring,
         )
     else:
         p.error(f"unknown mode {args.mode!r}")

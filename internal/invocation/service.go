@@ -1118,6 +1118,18 @@ func (s *Service) ListAllTools(ctx context.Context) ([]mcp.Tool, error) {
 	return all, nil
 }
 
+// ResolveContext returns the upstream configuration for generic MCP proxying.
+func (s *Service) ResolveContext(ctx context.Context, name string) (mcp.Upstream, error) {
+	return s.resolver.ResolveContext(ctx, name)
+}
+
+// ForwardEnvelope proxies a JSON-RPC envelope to an upstream MCP server.
+func (s *Service) ForwardEnvelope(ctx context.Context, upstream mcp.Upstream, envelope mcp.Envelope, protocolVersion string) (mcp.ForwardResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.defaultTimeout)
+	defer cancel()
+	return s.client.ForwardEnvelope(ctx, upstream, envelope, protocolVersion)
+}
+
 func (s *Service) Get(ctx context.Context, id string) (InvocationResponse, error) {
 	inv, err := s.invocations.Get(ctx, id)
 	if err != nil {

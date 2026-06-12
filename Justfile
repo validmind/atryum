@@ -163,3 +163,8 @@ integration-test harness="fake-agent" auth="no-auth" target="calculator":
 # Run the full integration matrix (skips unavailable harnesses and placeholder auth)
 integration-test-matrix *args:
 	integrations/scripts/agent_harness_integration_tests.sh matrix --only-passing {{args}}
+
+# Multi-frame SSE MCP streaming tests (mock upstream + fake_agent streaming client)
+integration-streaming-test:
+	chmod +x integrations/scripts/streaming_mcp_tests.sh
+	integrations/scripts/streaming_mcp_tests.sh
