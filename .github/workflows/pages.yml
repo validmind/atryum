@@ -35,7 +35,7 @@ jobs:
         run: make -C website docs
 
       - name: Verify generated documentation is committed
-        run: git diff --exit-code website/documentation website/partials/docs-nav.html
+        run: git diff --exit-code -- website/documentation website/partials/docs-nav.html
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
