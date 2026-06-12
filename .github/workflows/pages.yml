@@ -32,7 +32,7 @@ jobs:
         uses: actions/configure-pages@v5
 
       - name: Build documentation
-        run: python3 website/scripts/md_to_html.py
+        run: make -C website docs
 
       - name: Verify generated documentation is committed
         run: git diff --exit-code website/documentation website/partials/docs-nav.html
