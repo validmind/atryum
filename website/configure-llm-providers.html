@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Configure LLM providers · Atryum</title>
+<link rel="icon" type="image/svg+xml" href="assets/atryum-logo-favicon.svg" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="assets/style.css" />
+<script src="assets/includes.js" defer></script>
+</head>
+<body data-page="configure-llm-providers">
+  <div data-include="partials/header.html"></div>
+
+  <main>
+    <div class="docs-layout">
+      <aside class="docs-toc" aria-label="On this page">
+        <div class="docs-toc-inner">
+          <p class="docs-toc-label">On this page</p>
+          <nav class="docs-toc-nav" aria-label="Table of contents">
+          <ul>
+          <li><a href="#when-should-i-use-local-llms">When should I use local LLMs?</a></li>
+          <li><a href="#add-local-llm-providers">Add local LLM providers</a></li>
+          <li><a href="#set-up-local-llm-ai-evaluation-rules">Set up local LLM AI evaluation rules</a></li>
+          <li><a href="#edit-or-remove-local-llm-providers">Edit or remove local LLM providers</a></li>
+          <li class="docs-toc-h3"><a href="#edit-local-llm-providers">Edit local LLM providers</a></li>
+          <li class="docs-toc-h3"><a href="#remove-local-llm-providers">Remove local LLM providers</a></li>
+          </ul>
+          </nav>
+        </div>
+      </aside>
+
+      <div class="docs-main">
+        <div class="docs-shell">
+          <div class="docs-kicker">Documentation</div>
+          <h1 class="docs-title">Configure LLM providers</h1>
+          <p class="docs-intro">In addition to powering AI evaluation rules (<a href="rules.html">Rules</a>) and invocation summarization (<a href="invocations.html">Invocations</a>), configuring local large language model (LLM) providers also allows you to use credentials and endpoints controlled by your team to evaluate tool calls against each agent's <em>constitution</em>:</p>
+
+          <article class="docs-content">
+        <ul><li>A constitution is a plain-language policy that describes what an agent can do, what it cannot do, and which actions require human approval.</li><li>Constitutions can be as terse or expressive as you would like. It's good to call out specifics when you can but be sure to include general statements to give the LLM something to hold on to when seeing an unanticipated tool call.</li><li>Use our provided <a href="https://github.com/validmind/atryum/tree/main/.agents/skills/populate-constitution"><code>populate-constitution</code></a> skill to help you author effective constitutions.</li></ul>
+
+        <h2 id="when-should-i-use-local-llms">When should I use local LLMs?</h2>
+
+        <p>Use local LLMs when you want to:</p>
+
+        <ul><li>Run AI evaluations with a local or self-hosted model instead of a ValidMind model.</li><li>Bring your own API keys for <a href="https://platform.openai.com">OpenAI</a>, <a href="https://www.anthropic.com">Anthropic</a>, or any OpenAI-compatible endpoint (<a href="https://ollama.com">Ollama</a>, <a href="https://lmstudio.ai">LM Studio</a>, <a href="https://azure.microsoft.com/products/ai-services/openai-service">Azure OpenAI</a>, and similar).</li><li>Keep evaluation and summarization on your network in on-prem or air-gapped setups.</li><li>Register multiple models and pick the right one per rule or feature.</li></ul>
+
+        <table class="docs-table"><thead><tr><th></th><th>ValidMind model</th><th>Local LLM</th></tr></thead><tbody><tr><td>Requires ValidMind connection</td><td>Yes</td><td>No</td></tr><tr><td>Model list source</td><td>Provided by ValidMind</td><td>Provided by your team</td></tr><tr><td>Required API credentials</td><td>Your ValidMind API key and secret, configured in <code>atryum.toml</code> when you connect Atryum to ValidMind</td><td>Provider key or endpoint configured per local LLM</td></tr><tr><td>Designed for</td><td>Teams using ValidMind out-of-the-box setup</td><td>Standalone, on-prem, or bring-your-own-key setups</td></tr></tbody></table>
+
+        <h2 id="add-local-llm-providers">Add local LLM providers</h2>
+
+        <ol><li>In Atryum, click <strong>Settings</strong> in the left sidebar.</li><li>Under Local LLM Configurations, click <strong>Add LLM</strong>.</li><li>Provide the details for your LLM:<ul><li><strong>Name</strong></li><li><strong>Provider</strong> — Choose one of: <code>OpenAI</code>, <code>Anthropic</code>, <code>OpenAI-compatible</code> (for Ollama, LM Studio, Azure OpenAI, and other endpoints that expose an OpenAI-style API)</li><li><strong>Model</strong> — The model identifier your provider expects, such as <code>gpt-4o</code>, <code>claude-3-5-sonnet-latest</code>, or <code>llama3</code>.</li><li><strong>API Key</strong> — Your provider API key that will be stored encrypted.</li><li>(OpenAI-compatible only) <strong>Base URL</strong> — The root URL of the endpoint, such as <code>http://localhost:11434</code> for Ollama.</li></ul></li><li>Make sure that <strong>Enabled</strong> is checked, then click <strong>Add LLM</strong>.</li><li>Confirm that your LLM appears as expected in the table with its <span style="font-variant: small-caps;">name</span>, <span style="font-variant: small-caps;">provider</span>, <span style="font-variant: small-caps;">model</span>, and <span style="font-variant: small-caps;">status</span>.</li></ol>
+
+        <h2 id="set-up-local-llm-ai-evaluation-rules">Set up local LLM AI evaluation rules</h2>
+
+        <p>After you add at least one enabled local LLM, you can set up a rule for an AI evaluation action:</p>
+
+        <ol><li>In Atryum, click <strong>Rules</strong> in the left sidebar.</li><li>Click <strong>New Rule</strong>.</li><li>Under <strong>Action</strong>, select <code>AI Evaluation</code>.</li><li>Select a model from <code>Local LLMs</code> under <strong>Evaluation Model</strong>.</li><li>Under <strong>Agents</strong>, select the agents you want this rule to apply to. Leave this empty to match all agents.</li><li>Under <strong>Servers / Sources</strong>, select the servers or sources the rule should apply to. Leave this empty to match all servers.</li><li>Under <strong>Tools</strong>, select the tools the rule should apply to. Leave this empty to match all tools.</li><li>(Optional) Enter a <strong>Description</strong> so you can remember why the rule exists.</li><li>Make sure that <strong>Enabled</strong> is checked, then click <strong>Create Rule</strong>.</li><li>When a matching tool call arrives, Atryum sends the call and the agent's constitution to your local LLM. The model returns a verdict for the invocation — approve, deny, escalate to a human, or defer to the next rule.</li><li>If the agent has no constitution configured, Atryum denies the invocation.</li></ol>
+
+        <h2 id="edit-or-remove-local-llm-providers">Edit or remove local LLM providers</h2>
+
+        <h3 id="edit-local-llm-providers">Edit local LLM providers</h3>
+
+        <ol><li>In Atryum, click <strong>Settings</strong> in the left sidebar.</li><li>Under <strong>Local LLM Configurations</strong>, click the provider you want to edit.</li><li>Make your updates to the provider details:<ul><li><strong>Name</strong></li><li><strong>Provider</strong> — Choose one of: <code>OpenAI</code>, <code>Anthropic</code>, <code>OpenAI-compatible</code></li><li><strong>Model</strong> — The model identifier your provider expects.</li><li><strong>API Key</strong> — Leave blank when editing an existing configuration to keep the current key.</li><li>(OpenAI-compatible only) <strong>Base URL</strong> — The root URL of the endpoint.</li></ul></li><li>To turn providers on or off:<ul><li>Check <strong>Enabled</strong> to turn the provider on.</li><li>Uncheck <strong>Enabled</strong> to turn the provider off. Disabled LLMs remain listed but are not offered when creating rules or choosing a summary model.</li></ul></li><li>Click <strong>Save Changes</strong> to apply your edits.</li></ol>
+
+        <h3 id="remove-local-llm-providers">Remove local LLM providers</h3>
+
+        <aside class="docs-callout"><p>Removing a local LLM provider configuration is permanent and cannot be undone.</p></aside>
+
+        <ol><li>In Atryum, click <strong>Settings</strong> in the left sidebar.</li><li>Under Local LLM Configurations, click <strong>Delete</strong> on the row for the provider you want to remove.</li></ol>
+          </article>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <div data-include="partials/footer.html"></div>
+</body>
+</html>

@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Invocations · Atryum</title>
+<link rel="icon" type="image/svg+xml" href="assets/atryum-logo-favicon.svg" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="assets/style.css" />
+<script src="assets/includes.js" defer></script>
+</head>
+<body data-page="invocations">
+  <div data-include="partials/header.html"></div>
+
+  <main>
+    <div class="docs-layout">
+      <aside class="docs-toc" aria-label="On this page">
+        <div class="docs-toc-inner">
+          <p class="docs-toc-label">On this page</p>
+          <nav class="docs-toc-nav" aria-label="Table of contents">
+          <ul>
+          <li><a href="#what-are-invocations">What are invocations?</a></li>
+          <li><a href="#view-or-filter-invocations">View or filter invocations</a></li>
+          <li class="docs-toc-h3"><a href="#view-invocation-details">View invocation details</a></li>
+          <li class="docs-toc-h3"><a href="#filter-invocation-list">Filter invocation list</a></li>
+          <li><a href="#approve-or-deny-invocations">Approve or deny invocations</a></li>
+          <li class="docs-toc-h3"><a href="#approve-invocations">Approve invocations</a></li>
+          <li class="docs-toc-h3"><a href="#deny-invocations">Deny invocations</a></li>
+          <li><a href="#use-invocation-summarization">Use invocation summarization</a></li>
+          <li class="docs-toc-h3"><a href="#set-invocation-summary-model">Set invocation summary model</a></li>
+          <li class="docs-toc-h3"><a href="#generate-invocation-summaries">Generate invocation summaries</a></li>
+          </ul>
+          </nav>
+        </div>
+      </aside>
+
+      <div class="docs-main">
+        <div class="docs-shell">
+          <div class="docs-kicker">Documentation</div>
+          <h1 class="docs-title">Invocations</h1>
+          <p class="docs-intro">Invocations are durable audit records for every tool call that passes through Atryum.</p>
+
+          <article class="docs-content">
+        <h2 id="what-are-invocations">What are invocations?</h2>
+
+        <p>The <strong>Invocations</strong> page is where you review those calls, approve or deny requests that need human input, and turn one-off decisions into reusable rules (<a href="rules.html">Rules</a>). Invocations are displayed in a table:</p>
+
+        <ul><li><strong><span style="font-variant: small-caps;">agent</span></strong> — The client that made the tool call.</li><li><strong><span style="font-variant: small-caps;">id</span></strong> — The unique invocation identifier. Hover to view the full ID.</li><li><strong><span style="font-variant: small-caps;">server</span></strong> — The server or agent source the tool call targeted.</li><li><strong><span style="font-variant: small-caps;">tool</span></strong> — The tool name the agent requested to run.</li><li><strong><span style="font-variant: small-caps;">agent record</span></strong> — The agent record linked to this invocation — a local record manually registered or a record synced from ValidMind. Populated when the call's agent identity matches an <strong>Agent IDs</strong> entry on that record; empty otherwise. (<a href="connect-agents.html#tag-invocations-to-agent-records">Connect agents</a>, <a href="connect-validmind.html">Connect ValidMind</a>)</li><li><strong><span style="font-variant: small-caps;">status</span></strong> — The current state of the invocation: <code>Pending Approval</code>, <code>Approved</code>, <code>Denied</code>, <code>Executing</code>, <code>Succeeded</code>, <code>Failed</code>, <code>Expired</code>, <code>Cancelled</code>, or <code>Received</code>.</li><li><strong><span style="font-variant: small-caps;">decided by</span></strong> — Who or what made the approval decision: a <span style="font-variant: small-caps;">human</span>, a matching <span style="font-variant: small-caps;">rule</span>, or <span style="font-variant: small-caps;">ai evaluation</span>.</li><li><strong><span style="font-variant: small-caps;">submitted</span></strong> — When the agent submitted the tool call.</li></ul>
+
+        <h2 id="view-or-filter-invocations">View or filter invocations</h2>
+
+        <h3 id="view-invocation-details">View invocation details</h3>
+
+        <ol><li>In Atryum, click <strong>Invocations</strong> in the left sidebar.</li><li>To view an invocation's details, click on it.</li></ol>
+
+        <p>The detail panel shows:</p>
+
+        <ul><li>Server and tool name, submission time, and full invocation ID.</li><li>Current status badge and who or what made the decision. AI-evaluated invocations may also show a confidence score.</li><li>The rule ID that handled the invocation, when a rule matched.</li><li>Agent type and version (for example, <code>opencode 1.14.31</code>).</li><li>A plain-language summary of the call when invocation summarization is configured. (<a href="#use-invocation-summarization">Use invocation summarization</a>)</li><li>Tool input as a key/value arguments table — Click <strong>Show raw JSON</strong> for the full payload. File-edit tools may show a diff instead.</li><li>If an invocation is <code>Pending Approval</code>, options to approve or deny the call. (<a href="#approve-or-deny-invocations">Approve or deny invocations</a>)</li><li>Option to create a rule from this invocation's logic. (<a href="rules.html#create-rules-from-existing-invocations">Rules</a>)</li><li>Tool output as JSON result when the call succeeds, or error details as JSON result when the call fails or is denied.</li><li>Chronological event log. Expand a row to view event payload details.</li></ul>
+
+        <h3 id="filter-invocation-list">Filter invocation list</h3>
+
+        <ol><li>In Atryum, click <strong>Invocations</strong> in the left sidebar.</li><li>To narrow down the list of invocations, click <strong>Filter</strong>.</li><li>Select your filters:<ul><li><strong>Server</strong> — Server or agent sources the tool call targeted.</li><li><strong>Tool</strong> — Tool names the agent requested to run.</li><li><strong>Agent</strong> — Clients that made the tool call.</li><li><strong>Status</strong> — State of the invocation: <code>Pending Approval</code>, <code>Approved</code>, <code>Denied</code>, <code>Executing</code>, <code>Succeeded</code>, <code>Failed</code>, <code>Expired</code>, <code>Cancelled</code>, or <code>Received</code>.</li></ul></li><li>Click <strong>Apply Filter</strong> to apply your selections.</li></ol>
+
+        <h2 id="approve-or-deny-invocations">Approve or deny invocations</h2>
+
+        <aside class="docs-callout"><p>Human approvals have a default timeout of 30 seconds. To adjust the timeout, update your local Atryum config file (<code>atryum.toml</code>), then restart Atryum. For example:</p>
+
+        <pre><code class="language-toml">[defaults]
+request_timeout_seconds = 120</code></pre></aside>
+
+        <h3 id="approve-invocations">Approve invocations</h3>
+
+        <ol><li>In Atryum, click <strong>Invocations</strong> in the left sidebar.</li><li>Click on the invocation you want to approve:<ul><li>On the invocation detail panel, select <strong>Approve</strong> under Approval Required to approve that single invocation.</li><li>To approve all invocations for calls matching similar criteria going forward:<p>a. Click <strong>&#9660; Customize rule scope</strong> to edit the criteria the rule should match against. (<a href="rules.html#create-rules-from-existing-invocations">Rules</a>)</p>
+
+        <p>b. Click <strong>&#8744;</strong> next to Approve and select <strong>Always approve</strong>.</p></li></ul></li></ol>
+
+        <h3 id="deny-invocations">Deny invocations</h3>
+
+        <ol><li>In Atryum, click <strong>Invocations</strong> in the left sidebar.</li><li>Click on the invocation you want to deny:<ul><li>On the invocation detail panel, select <strong>Deny</strong> under Approval Required to deny that single invocation.</li><li>To deny all invocations for calls matching similar criteria going forward:<p>a. Click <strong>&#9660; Customize rule scope</strong> to edit the criteria the rule should match against. (<a href="rules.html#create-rules-from-existing-invocations">Rules</a>)</p>
+
+        <p>b. Click <strong>&#8744;</strong> next to Deny and select <strong>Always deny</strong>.</p></li></ul></li><li>(Optional) Enter a reason for denial — this reason is returned to the agent so you can steer what it does next.</li></ol>
+
+        <h2 id="use-invocation-summarization">Use invocation summarization</h2>
+
+        <p>Generate plain-language summaries for tool invocations so reviewers can triage calls quickly without parsing raw tool arguments and results. Summaries describe what was requested, what action was taken, and the outcome, and are stored on the invocation record so you can return to them later without calling the model again.</p>
+
+        <p>To use invocation summarization, you need at least one model source:</p>
+
+        <ul><li>A <strong>ValidMind</strong> connection with at least one model configuration available in your organization (<a href="connect-validmind.html">Connect ValidMind</a>)</li><li>Or, at least one enabled <strong>Local LLM Configuration</strong> (<a href="configure-llm-providers.html">Configure LLM providers</a>)</li></ul>
+
+        <h3 id="set-invocation-summary-model">Set invocation summary model</h3>
+
+        <ol><li>In Atryum, click <strong>Settings</strong> in the left sidebar.</li><li>Under Invocation Summary Model, <strong>Select a model ...</strong> from the drop-down menu.</li><li>Click <strong>Save</strong> to use that model.</li></ol>
+
+        <h3 id="generate-invocation-summaries">Generate invocation summaries</h3>
+
+        <ol><li>In Atryum, click <strong>Invocations</strong> in the left sidebar.</li><li>Click the invocation you want to summarize.</li><li>Under <span style="font-variant: small-caps;">summary</span>, click <strong>Summarize</strong> to generate a summary, or <strong>Re-summarize</strong> to replace an existing one.</li></ol>
+          </article>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <div data-include="partials/footer.html"></div>
+</body>
+</html>

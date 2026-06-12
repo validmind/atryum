@@ -3,455 +3,111 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Atryum Quickstart</title>
+<title>Quickstart · Atryum</title>
 <link rel="icon" type="image/svg+xml" href="assets/atryum-logo-favicon.svg" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="assets/style.css" />
 <script src="assets/includes.js" defer></script>
-<style>
-  :root {
-    --color-white: #FFFFFF;
-    --brand-300: #ed4899;
-    --brand-400: #de267e;
-    --brand-500: #c80d65;
-    --bs-25:  #f4fbfc;
-    --bs-50:  #d8f7fa;
-    --bs-300: #62c2ce;
-    --bs-700: #105c66;
-    --bs-800: #083e44;
-    --bs-900: #052b30;
-    --bs-950: #041c21;
-    --neutral-25:  #fcfdfd;
-    --neutral-50:  #f7f9f9;
-    --neutral-100: #f2f6f6;
-    --neutral-200: #e0e7e7;
-    --neutral-300: #c6d0d0;
-    --neutral-400: #a4afaf;
-    --neutral-500: #7e8888;
-    --neutral-600: #596162;
-    --neutral-700: #3b4141;
-    --neutral-800: #262a2a;
-
-    --text-primary: var(--neutral-800);
-    --text-subtle: var(--neutral-500);
-    --border-base: var(--neutral-200);
-
-    --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-
-    --radius-md: 0.375rem;
-    --radius-lg: 0.5rem;
-  }
-
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-
-  html, body {
-    background: var(--color-white);
-    color: var(--text-primary);
-    font-family: var(--font-body);
-    font-size: 16px;
-    line-height: 1.5;
-    -webkit-font-smoothing: antialiased;
-    text-rendering: optimizeLegibility;
-  }
-
-  body {
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-  }
-
-  a { color: inherit; text-decoration: none; }
-
-  ::selection { background: var(--brand-300); color: #fff; }
-
-  header {
-    position: sticky;
-    top: 0;
-    z-index: 10;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0 32px;
-    height: 64px;
-    background: rgba(255, 255, 255, 0.85);
-    backdrop-filter: saturate(180%) blur(12px);
-    border-bottom: 1px solid var(--border-base);
-  }
-
-  .brand {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-
-  .brand img { height: 24px; width: auto; display: block; }
-
-  nav {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .nav-link {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    padding: 8px 12px;
-    border-radius: var(--radius-md);
-    font-size: 14px;
-    font-weight: 500;
-    color: var(--neutral-600);
-    transition: background 150ms ease, color 150ms ease;
-  }
-
-  .nav-link:hover,
-  .nav-link[aria-current="page"] {
-    background: var(--bs-50);
-    color: var(--bs-800);
-  }
-
-  .nav-link svg { width: 17px; height: 17px; }
-
-  .nav-dropdown {
-    position: relative;
-  }
-
-  .nav-dropdown summary {
-    cursor: pointer;
-    list-style: none;
-  }
-
-  .nav-dropdown summary::-webkit-details-marker { display: none; }
-
-  .nav-dropdown summary::after {
-    content: "";
-    width: 6px;
-    height: 6px;
-    border-right: 1.5px solid currentColor;
-    border-bottom: 1.5px solid currentColor;
-    transform: translateY(-1px) rotate(45deg);
-  }
-
-  .nav-dropdown[open] summary::after {
-    transform: translateY(2px) rotate(225deg);
-  }
-
-  .nav-menu {
-    position: absolute;
-    top: calc(100% + 8px);
-    left: 0;
-    min-width: 180px;
-    padding: 6px;
-    border: 1px solid var(--border-base);
-    border-radius: var(--radius-lg);
-    background: rgba(255, 255, 255, 0.96);
-    box-shadow: 0 10px 28px rgba(5, 28, 32, 0.12);
-  }
-
-  .nav-menu a {
-    display: block;
-    padding: 8px 10px;
-    border-radius: var(--radius-md);
-    font-size: 14px;
-    font-weight: 500;
-    color: var(--neutral-600);
-  }
-
-  .nav-menu a:hover,
-  .nav-menu a[aria-current="page"] {
-    background: var(--bs-50);
-    color: var(--bs-800);
-  }
-
-  .nav-cta {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    padding: 8px 14px;
-    border-radius: var(--radius-md);
-    font-size: 14px;
-    font-weight: 600;
-    color: #fff;
-    background: var(--bs-800);
-    border: 1px solid var(--bs-800);
-    transition: background 150ms ease;
-  }
-
-  .nav-cta:hover { background: var(--bs-900); }
-
-  main {
-    flex: 1;
-    padding: 72px 24px 96px;
-    position: relative;
-  }
-
-  main::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background: radial-gradient(120% 80% at 50% -10%, var(--bs-25) 0%, rgba(255,255,255,0) 60%);
-    pointer-events: none;
-  }
-
-  .docs-shell {
-    position: relative;
-    max-width: 860px;
-    margin: 0 auto;
-  }
-
-  .docs-kicker {
-    display: inline-block;
-    margin-bottom: 14px;
-    padding: 6px 10px;
-    border-radius: 999px;
-    background: var(--bs-50);
-    color: var(--bs-800);
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-
-  .docs-title {
-    font-size: clamp(2rem, 5vw, 3rem);
-    font-weight: 600;
-    letter-spacing: -0.035em;
-    line-height: 1.08;
-    color: var(--bs-800);
-  }
-
-  .docs-intro {
-    margin-top: 16px;
-    max-width: 680px;
-    font-size: 17px;
-    color: var(--text-subtle);
-    text-wrap: pretty;
-  }
-
-  .docs-content {
-    margin-top: 40px;
-    padding: 32px;
-    border: 1px solid var(--border-base);
-    border-radius: 20px;
-    background: rgba(255, 255, 255, 0.9);
-    box-shadow: 0 1px 2px rgba(5, 28, 32, 0.04);
-  }
-
-  .docs-content h1,
-  .docs-content h2 {
-    color: var(--bs-800);
-    letter-spacing: -0.02em;
-  }
-
-  .docs-content h1 {
-    font-size: 2rem;
-    margin-bottom: 20px;
-  }
-
-  .docs-content h1:not(:first-child) {
-    margin-top: 48px;
-    padding-top: 8px;
-    border-top: 1px solid var(--neutral-100);
-  }
-
-  .docs-content h2 {
-    font-size: 1.35rem;
-    margin-top: 26px;
-    margin-bottom: 12px;
-  }
-
-  .docs-content p,
-  .docs-content ul {
-    margin-bottom: 16px;
-  }
-
-  .docs-content p,
-  .docs-content li {
-    color: var(--neutral-700);
-  }
-
-  .docs-content ul {
-    padding-left: 22px;
-  }
-
-  .docs-content li + li {
-    margin-top: 8px;
-  }
-
-  .docs-content code {
-    font-family: var(--font-mono);
-    font-size: 0.92em;
-  }
-
-  .docs-content p code,
-  .docs-content li code {
-    padding: 0.12rem 0.35rem;
-    border-radius: 0.35rem;
-    background: var(--neutral-100);
-    color: var(--bs-900);
-  }
-
-  .docs-content pre {
-    margin: 18px 0 24px;
-    overflow-x: auto;
-    padding: 16px 18px;
-    border: 1px solid var(--bs-900);
-    border-radius: var(--radius-lg);
-    background: var(--bs-950);
-    color: #eaf6f7;
-    box-shadow: 0 1px 2px rgba(5, 28, 32, 0.06);
-  }
-
-  .docs-content pre code {
-    color: inherit;
-    white-space: pre;
-  }
-
-  .docs-image {
-    display: block;
-    width: 100%;
-    margin: 20px 0 24px;
-    border: 1px solid var(--border-base);
-    border-radius: 16px;
-    box-shadow: 0 1px 2px rgba(5, 28, 32, 0.06);
-  }
-
-  footer {
-    border-top: 1px solid var(--border-base);
-    padding: 28px 32px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    flex-wrap: wrap;
-  }
-
-  .foot-left {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    font-size: 13px;
-    color: var(--text-subtle);
-  }
-
-  .foot-left .vm {
-    color: var(--bs-800);
-    font-weight: 600;
-  }
-
-  .dot {
-    display: inline-block;
-    width: 3px;
-    height: 3px;
-    border-radius: 50%;
-    background: var(--neutral-300);
-    flex: 0 0 auto;
-  }
-
-  .foot-links {
-    display: flex;
-    align-items: center;
-    gap: 22px;
-    font-size: 13px;
-  }
-
-  .foot-links a {
-    color: var(--neutral-600);
-    font-weight: 500;
-    transition: color 150ms ease;
-  }
-
-  .foot-links a:hover { color: var(--brand-400); }
-
-  @media (max-width: 700px) {
-    header { padding: 0 18px; }
-    main { padding: 48px 18px 72px; }
-    .docs-content { padding: 24px 20px; }
-    footer { flex-direction: column; align-items: flex-start; }
-  }
-</style>
 </head>
-<body>
+<body data-page="quickstart">
   <div data-include="partials/header.html"></div>
 
   <main>
-    <div class="docs-shell">
-      <div class="docs-kicker">Documentation</div>
-      <h1 class="docs-title">Atryum quickstart</h1>
-      <p class="docs-intro">Set up Atryum, then connect coding agents and ValidMind to Atryum to route tool use through human approval and policy rules.</p>
+    <div class="docs-layout">
+      <aside class="docs-toc" aria-label="On this page">
+        <div class="docs-toc-inner">
+          <p class="docs-toc-label">On this page</p>
+          <nav class="docs-toc-nav" aria-label="Table of contents">
+          <ul>
+          <li><a href="#install-initialize-atryum">Install &amp; initialize Atryum</a></li>
+          <li class="docs-toc-h3"><a href="#download-atryum">Download Atryum</a></li>
+          <li class="docs-toc-h3"><a href="#set-up-atryum-test-server">Set up Atryum test server</a></li>
+          <li class="docs-toc-h3"><a href="#set-up-calculation-server-rule">Set up calculation server rule</a></li>
+          <li><a href="#integrate-atryum">Integrate Atryum</a></li>
+          <li class="docs-toc-h3"><a href="#with-validmind">With ValidMind</a></li>
+          <li class="docs-toc-h3"><a href="#with-coding-agents">With coding agents</a></li>
+          <li class="docs-toc-h3"><a href="#with-mcp-servers">With MCP servers</a></li>
+          <li class="docs-toc-h3"><a href="#with-local-llm-providers">With local LLM providers</a></li>
+          </ul>
+          </nav>
+        </div>
+      </aside>
 
-      <article class="docs-content">
-        <h1>Set up Atryum</h1>
+      <div class="docs-main">
+        <div class="docs-shell">
+          <div class="docs-kicker">Documentation</div>
+          <h1 class="docs-title">Quickstart</h1>
+          <p class="docs-intro">Install and initialize Atryum, then integrate Atryum with ValidMind and your other agentic tools.</p>
 
-        <p>Download atryum</p>
+          <article class="docs-content">
+        <h2 id="install-initialize-atryum">Install &amp; initialize Atryum</h2>
+
+        <p>Download Atryum and register a server in Atryum for testing.</p>
+
+        <h3 id="download-atryum">Download Atryum</h3>
+
         <p><strong>Linux</strong></p>
-        <pre><code class="language-bash">curl -L https://github.com/validmind/atryum/releases/download/0.0.2/atryum-linux -o atryum && chmod +x atryum</code></pre>
+
+        <pre><code class="language-bash">curl -L https://github.com/validmind/atryum/releases/download/0.0.2/atryum-linux -o atryum &amp;&amp; chmod +x atryum</code></pre>
+
         <p><strong>macOS</strong></p>
-        <pre><code class="language-bash">curl -L https://github.com/validmind/atryum/releases/download/0.0.2/atryum-mac -o atryum && chmod +x atryum</code></pre>
 
-        <p>Generate minimalist config</p>
-        <pre><code class="language-bash">./atryum setup demo
-./atryum run --init-servers</code></pre>
+        <pre><code class="language-bash">curl -L https://github.com/validmind/atryum/releases/download/0.0.2/atryum-mac -o atryum &amp;&amp; chmod +x atryum</code></pre>
 
-        <p>Navigate to <code>localhost:8080</code>.</p>
-        <p>Go to servers.</p>
-        <p>Verify the calc server seems ready to go.</p>
-        <p>That server is available at <code>localhost:8080/mcp/calc</code>.</p>
+        <h3 id="set-up-atryum-test-server">Set up Atryum test server</h3>
 
-        <p>Go to your favorite agent's settings and add a standard server with the address <code>localhost:8080/mcp/calc</code>.</p>
+        <ol><li>Generate a minimal testing configuration with a simple calculator Model Context Protocol (MCP) server that does not require any external credentials:<pre><code class="language-bash">./atryum setup demo</code></pre></li><li>Start the Atryum service and register the test calculator server in Atryum's local database:<pre><code class="language-bash">./atryum run --init-servers</code></pre></li><li>In your browser, navigate to <a href="http://localhost:8080"><code>localhost:8080</code></a> to open the Atryum local web user interface.<p>Here, you can view servers, manage tool invocation approvals, configure rules, and more.</p></li><li>Within Atryum, click <strong>Servers</strong> in the left sidebar. Confirm that your test calculator server was successfully registered:<ul><li>Verify that the server's <span style="font-variant: small-caps;">connection</span> and <span style="font-variant: small-caps;">auth</span> both display as <span style="font-variant: small-caps;"><code>ready</code></span>.</li><li>Verify that Atryum exposed the server at <a href="http://localhost:8080/mcp/calc"><code>localhost:8080/mcp/calc</code></a>.</li></ul></li><li>Connect your preferred coding agent to Atryum:<ul><li>Open your agent's MCP settings and add a standard MCP server with the calc server address: <code>http://localhost:8080/mcp/calc</code>.</li><li>The agent will think it is talking to a calculator MCP server, but its tool invocations now pass through Atryum first.</li></ul></li><li>Trigger a test tool call from your agent. For example:<pre><code class="language-text">Use the calculator tools and show me 2*2</code></pre></li><li>Within Atryum, click <strong>Invocations</strong> in the left sidebar to review tool calls. Confirm that the calculator invocation request is <code>Pending Approval</code> — human approval is required by default.<ul><li>Under Approval Required, select <strong>Approve</strong> to let the tool call run.</li><li>Verify that the invocation's <span style="font-variant: small-caps;">status</span> is <code>Succeeded</code> and that the approval was <span style="font-variant: small-caps;">decided by</span> a <span style="font-variant: small-caps;">human</span>.</li></ul></li></ol>
 
-        <p>Setup is now done you can try it.</p>
+        <aside class="docs-callout"><p>To learn more about working with invocations, refer to <strong><a href="invocations.html">Invocations</a></strong>.</p></aside>
 
-        <p>Trigger the calculator:</p>
-        <pre><code>Use the calculator tools and show me 2*2</code></pre>
+        <h3 id="set-up-calculation-server-rule">Set up calculation server rule</h3>
 
-        <p>In the atryum UI you will see the invocation. It should be pending human approval.</p>
-        <p>You can run more tools and approve them.</p>
-        <p>You can add rules either directly in the invocations UI or in the rules settings.</p>
-        <p>Rules are applied from top to bottom. You can set results to be auto-approved, hard denied, or routed for human approval.</p>
+        <p>Rules are if/then policies that tell Atryum how to handle tool invocations. For example — if the server is <code>calc</code>, then approve the call automatically.</p>
 
-        <p>One cool trick: as a human you can deny the tool with a message, allowing you to steer the agent.</p>
+        <p>Let's add a rule to control future matching tool calls:</p>
 
-        <p>Quickstart complete.</p>
+        <ol><li>In Atryum, click <strong>Rules</strong> in the left sidebar.</li><li>Click <strong>New Rule</strong>.</li><li>Under <strong>Action</strong>, select <code>Auto Approve</code>.</li><li>Under <strong>Servers / Sources</strong>, select <code>calc</code> to apply the rule only to calls to the test calculator server.</li><li>Make sure that <strong>Enabled</strong> is checked, then click <strong>Create Rule</strong>.</li><li>Try a calculator prompt from your agent again. Atryum should apply the new rule instead of treating the tool call like a brand-new manual decision:<ul><li>Within Atryum, click <strong>Invocations</strong> in the left sidebar and confirm that your new call <code>Succeeded</code>.</li><li>Verify that the approval was <span style="font-variant: small-caps;">decided by</span> a <span style="font-variant: small-caps;">rule</span>.</li></ul></li></ol>
 
-        <h1>Integrate Atryum</h1>
+        <aside class="docs-callout"><p>To learn more about setting up rules to manage invocations, refer to <strong><a href="rules.html">Rules</a></strong>.</p></aside>
 
-        <h2>Coding Agents</h2>
+        <h2 id="integrate-atryum">Integrate Atryum</h2>
 
-        <p>Coding agents can be connected to atryum at the harness level. Hooks and extensions are available for Claude Code, Cursor, Amp, Pi, and Codex.</p>
+        <p>After setting up your test calculator server, connect Atryum with ValidMind and the rest of your tools to streamline your agentic oversight in one platform.</p>
 
-        <p>Run</p>
-        <pre><code>./atryum hooks</code></pre>
+        <h3 id="with-validmind">With ValidMind</h3>
 
-        <h2>ValidMind</h2>
+        <p>Sync your ValidMind organization's agent records to Atryum to map tool invocations to agent records, use agent-scoped rules, and power invocation summarization.</p>
 
-        <p>To connect your atryum to ValidMind run:</p>
-        <pre><code>./atryum setup validmind
-ValidMind Base URL: (you probably want dev)
-ValidMind API key: abcd1234
-ValidMind API secret: arstarst
-updated ValidMind credentials in $HOME/.config/atryum/atryum.toml</code></pre>
+        <p>Connecting agent records from ValidMind also allows you to optionally use Atryum to evaluate tool invocations against each agent's <em>constitution</em>, a plain-language policy that describes what an agent can do, what it cannot do, and which actions require human approval.</p>
 
-        <p>Once setup, restart and return to the UI:</p>
-        <p><code>localhost:8080/settings</code></p>
+        <aside class="docs-callout"><p>To learn more about connecting ValidMind with Atryum, refer to <strong><a href="connect-validmind.html">Connect ValidMind</a></strong>.</p></aside>
 
-        <p>Fill out the form. It is helpful to have the following setup in ValidMind:</p>
-        <ul>
-          <li>A primary record type specifically for ai-agents.</li>
-          <li>A long text field on that record for agent charters.</li>
-        </ul>
+        <h3 id="with-coding-agents">With coding agents</h3>
 
-        <p>The charter is where you define "allowed to do X", "deny the agent trying to do Y", and "pass requests to do Z for human approval".</p>
-        <img class="docs-image" src="assets/charter.png" alt="ValidMind charter configuration example" />
+        <p>Connect your coding agents to Atryum, allowing Atryum to review tool invocations before your agents run them. Hooks and extensions are available for <a href="https://www.anthropic.com/claude-code">Claude Code</a>, <a href="https://cursor.com">Cursor</a>, <a href="https://ampcode.com">Amp</a>, <a href="https://pi.dev">Pi</a>, and <a href="https://openai.com/codex">Codex</a>.</p>
 
-        <p>Since this is a quick demo, set the default agent in the settings page. We'll connect with agent identity later.</p>
+        <aside class="docs-callout"><p>To learn more about connecting agents with Atryum, refer to <strong><a href="connect-agents.html">Connect agents</a></strong>.</p></aside>
 
-        <p>Finally you need a rule, relatively high in priority, mapping that default Agent Record to AI Evaluation.</p>
+        <h3 id="with-mcp-servers">With MCP servers</h3>
 
-        <p>With all that setup, you're ready to rock and roll. Ask the agent to do work, then use the charter in ValidMind to restrict its scope.</p>
-      </article>
+        <p>Register upstream Model Context Protocol (MCP) servers so Atryum can proxy tool calls to them. Atryum evaluates each call against your rules, holds upstream credentials on your behalf, and forwards approved calls to the server.</p>
+
+        <p>Connect MCP servers to add other upstream tools — such as local subprocess servers, remote HTTP servers with a static bearer token, or OAuth-protected services.</p>
+
+        <aside class="docs-callout"><p>To learn more about registering MCP servers in Atryum, refer to <strong><a href="connect-mcp-servers.html">Connect MCP servers</a></strong>.</p></aside>
+
+        <h3 id="with-local-llm-providers">With local LLM providers</h3>
+
+        <p>Set up local large language model (LLM) providers in Atryum to power AI evaluation rules and invocation summarization with models and credentials your team controls. Configuring LLM providers also allows you to use credentials and endpoints controlled by your team to evaluate tool calls against each agent's <em>constitution</em>, a plain-language policy that describes what an agent can do, what it cannot do, and which actions require human approval.</p>
+
+        <p>Local LLMs are useful for bring-your-own-key setups, on-prem or air-gapped deployments, and teams that want to register multiple models and pick the right one per rule or feature.</p>
+
+        <aside class="docs-callout"><p>To learn more about configuring local LLM providers in Atryum, refer to <strong><a href="configure-llm-providers.html">Configure LLM providers</a></strong>.</p></aside>
+          </article>
+        </div>
+      </div>
     </div>
   </main>
 

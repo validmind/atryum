@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Connect MCP servers · Atryum</title>
+<link rel="icon" type="image/svg+xml" href="assets/atryum-logo-favicon.svg" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="assets/style.css" />
+<script src="assets/includes.js" defer></script>
+</head>
+<body data-page="connect-mcp-servers">
+  <div data-include="partials/header.html"></div>
+
+  <main>
+    <div class="docs-layout">
+      <aside class="docs-toc" aria-label="On this page">
+        <div class="docs-toc-inner">
+          <p class="docs-toc-label">On this page</p>
+          <nav class="docs-toc-nav" aria-label="Table of contents">
+          <ul>
+          <li><a href="#add-local-mcp-servers-stdio">Add local MCP servers (stdio)</a></li>
+          <li><a href="#add-http-mcp-servers-with-bearer-tokens">Add HTTP MCP servers with bearer tokens</a></li>
+          <li><a href="#add-oauth-protected-mcp-servers">Add OAuth-protected MCP servers</a></li>
+          <li class="docs-toc-h3"><a href="#use-manual-oauth-registration">Use manual OAuth registration</a></li>
+          <li><a href="#edit-or-remove-mcp-servers">Edit or remove MCP servers</a></li>
+          <li class="docs-toc-h3"><a href="#edit-mcp-servers">Edit MCP servers</a></li>
+          <li class="docs-toc-h3"><a href="#remove-mcp-servers">Remove MCP servers</a></li>
+          </ul>
+          </nav>
+        </div>
+      </aside>
+
+      <div class="docs-main">
+        <div class="docs-shell">
+          <div class="docs-kicker">Documentation</div>
+          <h1 class="docs-title">Connect MCP servers</h1>
+          <p class="docs-intro">Register upstream MCP servers in Atryum, allowing your coding agents to reach external tools through Atryum's MCP proxy.</p>
+
+          <article class="docs-content">
+        <p>Register upstream Model Context Protocol (MCP) servers so tool invocations pass through Atryum before they reach the upstream server. Atryum evaluates each call against your rules, holds upstream credentials on your behalf, and forwards approved calls to the remote server.</p>
+
+        <p>Atryum supports two server modes:</p>
+
+        <ul><li><strong>stdio</strong> — Run a local MCP server as a subprocess (for example, the demo <code>calc</code> server from the <a href="quickstart.html">Quickstart</a>).</li><li><strong>HTTP</strong> — Connect to a remote MCP server over the network. Atryum can authenticate on your behalf with a static bearer token or OAuth. Your coding agent never receives upstream credentials.</li></ul>
+
+        <p>After you register a server, point your coding agent at Atryum's proxy.</p>
+
+        <aside class="docs-callout"><p>For agent setup, refer to <a href="connect-agents.html#connect-other-coding-agents">Connect agents</a>.</p></aside>
+
+        <h2 id="add-local-mcp-servers-stdio">Add local MCP servers (stdio)</h2>
+
+        <p>Use stdio mode for MCP servers that run locally as a subprocess — for example, packages installed with <code>npx</code> or a Python module.</p>
+
+        <ol><li>In Atryum, click <strong>Servers</strong> in the left sidebar.</li><li>Click <strong>New Server</strong>.</li><li>Provide the server details:<ul><li><strong>Name</strong> — A short label for the server, used in MCP proxy URLs (<code>/mcp/&lt;name&gt;</code>) and rule scoping</li><li><strong>Mode</strong> — Select <code>stdio</code>.</li><li><strong>Command</strong> — The executable that starts the MCP server, such as <code>npx</code> or <code>python</code></li><li><strong>Args (JSON array)</strong> — Arguments passed to the command. For example: <code>["-y", "@coo-quack/calc-mcp@latest"]</code></li><li><strong>Env (JSON object)</strong> — Environment variables for the subprocess. Use <code>{}</code> when none are required.</li></ul></li><li>Make sure that <strong>Enabled</strong> is checked, then click <strong>Create Server</strong>.</li><li>Click <strong>Test</strong> to confirm Atryum can reach the server.<p>Confirm that the server's <span style="font-variant: small-caps;">connection</span> and <span style="font-variant: small-caps;">auth</span> columns show as <span style="font-variant: small-caps;"><code>ready</code></span> — stdio servers do not use separate credentials, so no further action is needed.</p></li></ol>
+
+        <aside class="docs-callout"><p>stdio servers do not use OAuth. You will not see a <strong>Connect</strong> button for this mode.</p></aside>
+
+        <h2 id="add-http-mcp-servers-with-bearer-tokens">Add HTTP MCP servers with bearer tokens</h2>
+
+        <p>Use HTTP mode with a <strong>Bearer Token</strong> when the upstream server accepts a static pre-shared token instead of OAuth.</p>
+
+        <ol><li>In Atryum, click <strong>Servers</strong> in the left sidebar.</li><li>Click <strong>New Server</strong> (or select an existing HTTP server).</li><li>Provide the server details:<ul><li><strong>Name</strong> — A short label for the server, used in MCP proxy URLs (<code>/mcp/&lt;name&gt;</code>) and rule scoping.</li><li><strong>Mode</strong> — Select <code>HTTP</code>.</li><li><strong>Base URL</strong> — The upstream MCP server URL.</li><li>(Optional) <strong>Timeout (seconds)</strong> — Maximum time Atryum waits for upstream responses. Defaults to <code>30</code>.</li><li><strong>Bearer Token</strong> — The upstream API token. Atryum stores this and sends it on your behalf.</li></ul></li><li>Make sure that <strong>Enabled</strong> is checked, then click <strong>Create Server</strong> (or <strong>Save</strong> when editing an existing server).</li><li>Click <strong>Test</strong> to confirm Atryum can reach the server with the token.</li><li>Point your coding agent at Atryum's MCP proxy for this server: <code>http://&lt;atryum-host-and-port&gt;/mcp/&lt;server_name&gt;</code>.</li></ol>
+
+        <aside class="docs-callout"><p>For agent setup, refer to <a href="connect-agents.html#connect-other-coding-agents">Connect agents</a>.</p></aside>
+
+        <h2 id="add-oauth-protected-mcp-servers">Add OAuth-protected MCP servers</h2>
+
+        <p>Use HTTP mode when the upstream MCP server requires OAuth. Atryum holds the upstream token and forwards credentialed calls — your coding agent connects only to Atryum's MCP proxy.</p>
+
+        <ol><li>In Atryum, click <strong>Servers</strong> in the left sidebar.</li><li>Click <strong>New Server</strong>.</li><li>Provide the server details:<ul><li><strong>Name</strong> — A short label for the server, used in MCP proxy URLs (<code>/mcp/&lt;name&gt;</code>) and rule scoping.</li><li><strong>Mode</strong> — Select <code>HTTP</code>.</li><li><strong>Base URL</strong> — The upstream MCP server URL.</li><li>(Optional) <strong>Timeout (seconds)</strong> — Maximum time Atryum waits for upstream responses. Defaults to <code>30</code>.</li><li><strong>Bearer Token</strong> — Leave blank. OAuth servers authenticate through <strong>Connect</strong>, not a static token. (<a href="#add-http-mcp-servers-with-bearer-tokens">Add HTTP MCP servers with bearer tokens</a>)</li></ul></li><li>Make sure that <strong>Enabled</strong> is checked, then click <strong>Create Server</strong>.</li><li>After you click <strong>Create Server</strong>, Atryum detects the authorization server and shows <strong>Connect</strong> (or <strong>Reconnect</strong> if credentials have expired). <strong>Connect</strong> is not available on server creation — it appears only after the server is saved.<p>Click <strong>Connect</strong> and complete the browser authorization flow.</p></li><li>After authorization succeeds, confirm that the server's <span style="font-variant: small-caps;">connection</span> and <span style="font-variant: small-caps;">auth</span> columns both show as <span style="font-variant: small-caps;"><code>ready</code></span>.<p>A successful <strong>Connect</strong> sets both — you do not need to click <strong>Test</strong> separately.</p></li><li>Point your coding agent at Atryum's MCP proxy for this server: <code>http://&lt;atryum-host-and-port&gt;/mcp/&lt;server_name&gt;</code>.</li></ol>
+
+        <aside class="docs-callout"><p>For agent setup, refer to <a href="connect-agents.html#connect-other-coding-agents">Connect agents</a>.</p></aside>
+
+        <h3 id="use-manual-oauth-registration">Use manual OAuth registration</h3>
+
+        <p>Use manual registration when the upstream server does not support Dynamic Client Registration — for example, <a href="https://slack.com">Slack</a> or <a href="https://github.com">GitHub</a> OAuth apps where you register a client out of band. This applies to OAuth-protected HTTP servers only — not bearer token setup.</p>
+
+        <ol><li>Expand <strong>Manual OAuth configuration (advanced)</strong>.</li><li>Enter the OAuth client details from your provider:<ul><li><strong>Client ID</strong></li><li><strong>Client Secret</strong> — Leave blank when editing an existing server to keep the stored value.</li><li>(Optional) <strong>Authorize URL</strong> — Atryum auto-discovers this from the server URL when left blank.</li><li>(Optional) <strong>Token URL</strong> — Atryum auto-discovers this from the server URL when left blank.</li><li>Set your scopes:<ul><li>Leave <strong>Use default scopes</strong> checked to use whatever scopes the OAuth app declared with the provider.</li><li>Uncheck <strong>Use default scopes</strong> to define custom scopes, then enter them in <strong>Scopes (requested)</strong>.</li></ul></li></ul></li><li>Make sure that <strong>Enabled</strong> is checked.</li><li>Click <strong>Create Server</strong> (or <strong>Save</strong> when editing an existing server), then click <strong>Connect</strong> (or <strong>Reconnect</strong>) to complete authorization.</li></ol>
+
+        <p>When a server needs re-authentication, the auth status shows that action is required and the <strong>Reconnect</strong> button appears in the server detail panel.</p>
+
+        <aside class="docs-callout"><p>Leave <strong>Bearer Token</strong> blank when using the OAuth <strong>Connect</strong> flow. Atryum hides the bearer field once OAuth credentials are in place.</p></aside>
+
+        <h2 id="edit-or-remove-mcp-servers">Edit or remove MCP servers</h2>
+
+        <h3 id="edit-mcp-servers">Edit MCP servers</h3>
+
+        <ol><li>In Atryum, click <strong>Servers</strong> in the left sidebar.</li><li>Click the server you want to edit.</li><li>Update the fields as desired:<ul><li><strong>Name</strong> is read-only after creation — Atryum does not support renaming servers. To use a new proxy path (<code>/mcp/&lt;name&gt;</code>), create a new server and update your agent's MCP configuration. (<a href="connect-agents.html#connect-via-mcp-proxy">Connect agents</a>)</li><li>For stdio servers:<ul><li><strong>Command</strong></li><li><strong>Args (JSON array)</strong></li><li><strong>Env (JSON object)</strong></li></ul></li><li>For HTTP servers:<ul><li><strong>Base URL</strong></li><li>(Optional) <strong>Timeout (seconds)</strong></li><li><strong>Bearer Token</strong> — Enter a new value only when rotating credentials. Saving with an empty field clears the stored token. Hidden for OAuth-managed servers.</li><li><strong>Manual OAuth configuration (advanced)</strong> — Update OAuth client fields when needed. Leave <strong>Client Secret</strong> blank to keep the stored value. (<a href="#use-manual-oauth-registration">Use manual OAuth registration</a>)</li></ul></li></ul></li><li>To turn the server on or off:<ul><li>Check <strong>Enabled</strong> to turn the server on.</li><li>Uncheck <strong>Enabled</strong> to turn the server off.</li></ul>
+
+        <p>Disabled servers remain in the list but are not reachable through the MCP proxy. Check <strong>Show disabled</strong> above the table to include them.</p></li><li>Click <strong>Save</strong> to apply your edits.</li><li>Click <strong>Test</strong> to confirm Atryum can still reach the server.<p>For OAuth HTTP servers, click <strong>Reconnect</strong> when credentials have expired or the <span style="font-variant: small-caps;">auth</span> column shows that action is required.</p></li><li>When <strong>Base URL</strong>, credentials, or the server name (via a new registration) change, update your agent's MCP proxy URL to match. (<a href="connect-agents.html#connect-via-mcp-proxy">Connect agents</a>)</li></ol>
+
+        <h3 id="remove-mcp-servers">Remove MCP servers</h3>
+
+        <aside class="docs-callout"><p>Deleting a server is permanent and cannot be undone.</p></aside>
+
+        <ol><li>In Atryum, click <strong>Servers</strong> in the left sidebar.</li><li>Click the server you want to remove.</li><li>Click <strong>Delete</strong>, then select <strong>OK</strong> to confirm deletion.</li><li>Remove or update the MCP proxy entry in your agent's configuration so it no longer points at the deleted server. (<a href="connect-agents.html#disconnect-or-remove-agents">Connect agents</a>)</li></ol>
+
+        <p>To stop routing calls without deleting the configuration, disable the server instead. (<a href="#edit-mcp-servers">Edit MCP servers</a>)</p>
+          </article>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <div data-include="partials/footer.html"></div>
+</body>
+</html>
