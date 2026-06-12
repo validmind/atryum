@@ -512,6 +512,128 @@ func TestMCPPingPassThrough(t *testing.T) {
 	}
 }
 
+func TestMCPPingCollapsesUpstreamSSEWhenDownstreamDoesNotAcceptEventStream(t *testing.T) {
+	sseBody := []byte("event: message\n" +
+		"data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{\"progress\":0.5}}\n\n" +
+		"event: message\n" +
+		"data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n\n")
+	svc := &stubService{
+		upstream: mcp.Upstream{Name: "demo", Mode: mcp.UpstreamModeHTTP},
+		forward:  mcp.ForwardResult{StatusCode: http.StatusOK, Body: sseBody, ContentType: "text/event-stream", ProtocolVersion: "2025-11-25"},
+	}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}`))
+	req.Header.Set("Accept", "application/json")
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Fatalf("expected application/json, got %q", ct)
+	}
+	if strings.Contains(w.Body.String(), "event: message") {
+		t.Fatalf("expected collapsed JSON body, got %q", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"ok":true`) {
+		t.Fatalf("expected forwarded JSON-RPC response, got %s", w.Body.String())
+	}
+}
+
+func TestMCPPingPreservesUpstreamSSEWhenDownstreamAcceptsEventStream(t *testing.T) {
+	sseBody := []byte("event: message\n" +
+		"data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n\n")
+	svc := &stubService{
+		upstream: mcp.Upstream{Name: "demo", Mode: mcp.UpstreamModeHTTP},
+		forward:  mcp.ForwardResult{StatusCode: http.StatusOK, Body: sseBody, ContentType: "text/event-stream", ProtocolVersion: "2025-11-25"},
+	}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}`))
+	req.Header.Set("Accept", "text/event-stream")
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
+		t.Fatalf("expected text/event-stream, got %q", ct)
+	}
+	if !strings.Contains(w.Body.String(), "event: message") {
+		t.Fatalf("expected raw SSE body, got %q", w.Body.String())
+	}
+}
+
+func TestMCPPingCollapsesUpstreamSSEWhenEventStreamHasZeroQuality(t *testing.T) {
+	sseBody := []byte("event: message\n" +
+		"data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n\n")
+	svc := &stubService{
+		upstream: mcp.Upstream{Name: "demo", Mode: mcp.UpstreamModeHTTP},
+		forward:  mcp.ForwardResult{StatusCode: http.StatusOK, Body: sseBody, ContentType: "text/event-stream", ProtocolVersion: "2025-11-25"},
+	}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}`))
+	req.Header.Set("Accept", "application/json, text/event-stream;q=0")
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "event: message") {
+		t.Fatalf("expected collapsed JSON body, got %q", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"ok":true`) {
+		t.Fatalf("expected forwarded JSON-RPC response, got %s", w.Body.String())
+	}
+}
+
+func TestMCPPingSSEDecodeErrorPreservesUpstreamStatus(t *testing.T) {
+	svc := &stubService{
+		upstream: mcp.Upstream{Name: "demo", Mode: mcp.UpstreamModeHTTP},
+		forward:  mcp.ForwardResult{StatusCode: http.StatusBadGateway, Body: []byte(": keepalive\n\n"), ContentType: "text/event-stream", ProtocolVersion: "2025-11-25"},
+	}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}`))
+	req.Header.Set("Accept", "application/json")
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "no JSON-RPC response in SSE stream") {
+		t.Fatalf("expected decode error body, got %s", w.Body.String())
+	}
+}
+
+func TestMCPForwardedNotificationReturnsAcceptedWithoutSSEBody(t *testing.T) {
+	sseBody := []byte("event: message\n" +
+		"data: {\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{\"unrelated\":true}}\n\n")
+	svc := &stubService{
+		upstream: mcp.Upstream{Name: "demo", Mode: mcp.UpstreamModeHTTP},
+		forward:  mcp.ForwardResult{StatusCode: http.StatusOK, Body: sseBody, ContentType: "text/event-stream", ProtocolVersion: "2025-11-25"},
+	}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/custom","params":{"x":1}}`))
+	req.Header.Set("Accept", "application/json")
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", w.Code)
+	}
+	if body := strings.TrimSpace(w.Body.String()); body != "" {
+		t.Fatalf("expected empty notification response body, got %q", body)
+	}
+}
+
 func TestMCPUnknownNotificationPassThroughFallbackAccepted(t *testing.T) {
 	svc := &stubService{fwdErr: context.Canceled}
 	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)

@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -532,8 +533,8 @@ func (c *Client) invokeHTTP(ctx context.Context, upstream Upstream, tool string,
 	if err != nil {
 		return InvokeResult{}, err
 	}
-	var rpcResp rpcResponse
-	if err := json.Unmarshal(result.Body, &rpcResp); err != nil {
+	rpcResp, err := decodeRPCResponse(result, json.RawMessage([]byte("1")))
+	if err != nil {
 		return InvokeResult{}, err
 	}
 	if len(rpcResp.Error) > 0 && string(rpcResp.Error) != "null" {
@@ -545,8 +546,8 @@ func (c *Client) invokeHTTP(ctx context.Context, upstream Upstream, tool string,
 			if err != nil {
 				return InvokeResult{}, err
 			}
-			rpcResp = rpcResponse{}
-			if err := json.Unmarshal(result.Body, &rpcResp); err != nil {
+			rpcResp, err = decodeRPCResponse(result, json.RawMessage([]byte("1")))
+			if err != nil {
 				return InvokeResult{}, err
 			}
 		}
@@ -575,8 +576,8 @@ func (c *Client) listToolsHTTP(ctx context.Context, upstream Upstream) ([]Tool, 
 	if err != nil {
 		return nil, err
 	}
-	var rpcResp rpcResponse
-	if err := json.Unmarshal(result.Body, &rpcResp); err != nil {
+	rpcResp, err := decodeRPCResponse(result, json.RawMessage([]byte("1")))
+	if err != nil {
 		return nil, err
 	}
 	if len(rpcResp.Error) > 0 && string(rpcResp.Error) != "null" {
@@ -588,8 +589,8 @@ func (c *Client) listToolsHTTP(ctx context.Context, upstream Upstream) ([]Tool, 
 			if err != nil {
 				return nil, err
 			}
-			rpcResp = rpcResponse{}
-			if err := json.Unmarshal(result.Body, &rpcResp); err != nil {
+			rpcResp, err = decodeRPCResponse(result, json.RawMessage([]byte("1")))
+			if err != nil {
 				return nil, err
 			}
 		}
@@ -663,13 +664,6 @@ func (c *Client) doHTTPEnvelope(ctx context.Context, upstream Upstream, body []b
 	if sessionExpired {
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		return ForwardResult{StatusCode: resp.StatusCode, Body: bodyBytes, ContentType: contentType, ProtocolVersion: resp.Header.Get("MCP-Protocol-Version"), SessionExpired: true, SessionID: sessionID}, nil
-	}
-	if strings.Contains(contentType, "text/event-stream") {
-		data, sseErr := extractFirstSSEData(resp.Body)
-		if sseErr != nil {
-			return ForwardResult{}, sseErr
-		}
-		return ForwardResult{StatusCode: resp.StatusCode, Body: data, ContentType: "application/json", ProtocolVersion: resp.Header.Get("MCP-Protocol-Version"), SessionID: sessionID}, nil
 	}
 	respBody := new(bytes.Buffer)
 	_, err = respBody.ReadFrom(resp.Body)
@@ -832,11 +826,16 @@ func (c *Client) initializeHTTPSession(ctx context.Context, upstream Upstream, p
 	c.debugf("connection test http response server=%s status=%d content_type=%q protocol=%q body=%s", upstream.Name, result.StatusCode, result.ContentType, result.ProtocolVersion, truncateForLog(result.Body, 600))
 	if result.StatusCode >= http.StatusBadRequest {
 		c.clearSession(upstream.Name)
-		return false, fmt.Errorf("upstream initialize using MCP %s failed: http %d: %s", protocolVersion, result.StatusCode, extractErrorDetail(result.Body))
+		return false, fmt.Errorf("upstream initialize using MCP %s failed: http %d: %s", protocolVersion, result.StatusCode, extractForwardResultErrorDetail(result, json.RawMessage([]byte("1"))))
 	}
-	if len(bytes.TrimSpace(result.Body)) > 0 {
+	resultBody, err := DecodeJSONRPCPayload(result, json.RawMessage([]byte("1")))
+	if err != nil {
+		c.clearSession(upstream.Name)
+		return false, fmt.Errorf("upstream initialize using MCP %s returned invalid JSON-RPC: %w", protocolVersion, err)
+	}
+	if len(bytes.TrimSpace(resultBody)) > 0 {
 		var rpcResp rpcResponse
-		if err := json.Unmarshal(result.Body, &rpcResp); err != nil {
+		if err := json.Unmarshal(resultBody, &rpcResp); err != nil {
 			c.clearSession(upstream.Name)
 			return false, fmt.Errorf("upstream initialize using MCP %s returned invalid JSON-RPC: %w", protocolVersion, err)
 		}
@@ -856,6 +855,36 @@ func (c *Client) initializeHTTPSession(ctx context.Context, upstream Upstream, p
 		}
 	}
 	return hadSession, nil
+}
+
+func decodeRPCResponse(result ForwardResult, expectedID json.RawMessage) (rpcResponse, error) {
+	body, err := DecodeJSONRPCPayload(result, expectedID)
+	if err != nil {
+		return rpcResponse{}, err
+	}
+	var rpcResp rpcResponse
+	if err := json.Unmarshal(body, &rpcResp); err != nil {
+		return rpcResponse{}, err
+	}
+	return rpcResp, nil
+}
+
+// DecodeJSONRPCPayload returns the JSON-RPC response payload from a raw
+// upstream transport result. Plain JSON bodies are already one payload; SSE
+// bodies are scanned for the response event matching expectedID, skipping
+// notifications and joining multi-line data fields according to the SSE spec.
+func DecodeJSONRPCPayload(result ForwardResult, expectedID json.RawMessage) ([]byte, error) {
+	if strings.Contains(strings.ToLower(result.ContentType), "text/event-stream") {
+		return extractSSEJSONRPCResponse(bytes.NewReader(result.Body), expectedID)
+	}
+	return result.Body, nil
+}
+
+func extractForwardResultErrorDetail(result ForwardResult, expectedID json.RawMessage) string {
+	if body, err := DecodeJSONRPCPayload(result, expectedID); err == nil && len(bytes.TrimSpace(body)) > 0 {
+		return extractErrorDetail(body)
+	}
+	return extractErrorDetail(result.Body)
 }
 
 func (c *Client) invokeStdio(ctx context.Context, upstream Upstream, tool string, input map[string]any) (InvokeResult, error) {
@@ -1177,19 +1206,129 @@ func (c *Client) testStdio(ctx context.Context, upstream Upstream) ConnectionTes
 	return ConnectionTestResult{Ok: true, Message: "stdio initialize ok", ConnectionStatus: ConnectionStatusReady, AuthStatus: AuthStatusReady, ReauthNeeded: false, LastCheckOK: true}
 }
 
-func extractFirstSSEData(r io.Reader) ([]byte, error) {
+func extractSSEJSONRPCResponse(r io.Reader, expectedID json.RawMessage) ([]byte, error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 1024*1024), 4*1024*1024)
+	var dataLines []string
+	flush := func() ([]byte, bool) {
+		if len(dataLines) == 0 {
+			return nil, false
+		}
+		payload := []byte(strings.Join(dataLines, "\n"))
+		dataLines = nil
+		match := classifyJSONRPCResponsePayload(payload, expectedID)
+		if match == jsonRPCResponseIDMatch || match == jsonRPCResponseNullIDError {
+			return payload, true
+		}
+		return nil, false
+	}
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.HasPrefix(line, "data:") {
-			return []byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), nil
+		if line == "" {
+			if payload, ok := flush(); ok {
+				return payload, nil
+			}
+			continue
+		}
+		if strings.HasPrefix(line, ":") {
+			continue
+		}
+		field, value, ok := strings.Cut(line, ":")
+		if !ok {
+			field = line
+			value = ""
+		} else if strings.HasPrefix(value, " ") {
+			value = strings.TrimPrefix(value, " ")
+		}
+		if field == "data" {
+			dataLines = append(dataLines, value)
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
-	return nil, fmt.Errorf("no data in SSE stream")
+	if payload, ok := flush(); ok {
+		return payload, nil
+	}
+	return nil, fmt.Errorf("no JSON-RPC response in SSE stream")
+}
+
+type jsonRPCResponseMatch int
+
+const (
+	jsonRPCResponseNoMatch jsonRPCResponseMatch = iota
+	jsonRPCResponseIDMatch
+	jsonRPCResponseNullIDError
+)
+
+func classifyJSONRPCResponsePayload(payload []byte, expectedID json.RawMessage) jsonRPCResponseMatch {
+	var message map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &message); err != nil {
+		return jsonRPCResponseNoMatch
+	}
+	id, hasID := message["id"]
+	if !hasID {
+		return jsonRPCResponseNoMatch
+	}
+	_, hasResult := message["result"]
+	_, hasError := message["error"]
+	if !hasResult && !hasError {
+		return jsonRPCResponseNoMatch
+	}
+	if hasError && jsonRawIsNull(id) {
+		return jsonRPCResponseNullIDError
+	}
+	if len(bytes.TrimSpace(expectedID)) == 0 {
+		return jsonRPCResponseNoMatch
+	}
+	if jsonRPCIDsMatch(id, expectedID) {
+		return jsonRPCResponseIDMatch
+	}
+	return jsonRPCResponseNoMatch
+}
+
+func jsonRPCIDsMatch(a, b json.RawMessage) bool {
+	if jsonRawEqual(a, b) {
+		return true
+	}
+	av, aok := jsonIDComparable(a)
+	bv, bok := jsonIDComparable(b)
+	return aok && bok && av == bv
+}
+
+func jsonRawIsNull(raw json.RawMessage) bool {
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err != nil {
+		return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+	}
+	return bytes.Equal(compact.Bytes(), []byte("null"))
+}
+
+func jsonIDComparable(raw json.RawMessage) (string, bool) {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", false
+	}
+	switch v := value.(type) {
+	case string:
+		return v, true
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64), true
+	default:
+		return "", false
+	}
+}
+
+func jsonRawEqual(a, b json.RawMessage) bool {
+	var compactA bytes.Buffer
+	if err := json.Compact(&compactA, a); err != nil {
+		return bytes.Equal(bytes.TrimSpace(a), bytes.TrimSpace(b))
+	}
+	var compactB bytes.Buffer
+	if err := json.Compact(&compactB, b); err != nil {
+		return bytes.Equal(bytes.TrimSpace(a), bytes.TrimSpace(b))
+	}
+	return bytes.Equal(compactA.Bytes(), compactB.Bytes())
 }
 
 func extractErrorDetail(body []byte) string {

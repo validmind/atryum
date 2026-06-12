@@ -132,6 +132,254 @@ func TestListToolsRetriesInitializeWithCompatibleProtocol(t *testing.T) {
 	}
 }
 
+func TestListToolsDecodesSSEResponseAfterMissingSessionReinitialize(t *testing.T) {
+	var toolsListCount int
+	var sessions []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req Envelope
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		switch req.Method {
+		case "initialize":
+			sessionID := "sid-1"
+			if len(sessions) > 0 {
+				sessionID = "sid-2"
+			}
+			sessions = append(sessions, sessionID)
+			w.Header().Set("Mcp-Session-Id", sessionID)
+			writeTestRPC(w, req.ID, map[string]any{"protocolVersion": r.Header.Get("MCP-Protocol-Version"), "capabilities": map[string]any{}}, nil)
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			toolsListCount++
+			if toolsListCount == 1 {
+				writeTestRPC(w, req.ID, nil, map[string]any{"code": -32000, "message": "No session ID provided for non-initialization request"})
+				return
+			}
+			if got := r.Header.Get("Mcp-Session-Id"); got != "sid-2" {
+				t.Fatalf("retry tools/list used session %q, want sid-2", got)
+			}
+			writeTestRPCSSE(w, req.ID, map[string]any{"tools": []map[string]any{{"name": "stories.search"}}}, nil)
+		default:
+			t.Fatalf("unexpected method %q", req.Method)
+		}
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient()
+	client.httpClient = server.Client()
+	tools, err := client.ListTools(context.Background(), Upstream{Name: "shortcut", Mode: UpstreamModeHTTP, BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("ListTools returned error: %v", err)
+	}
+	if len(tools) != 1 || tools[0].Name != "stories.search" {
+		t.Fatalf("unexpected tools: %#v", tools)
+	}
+	if toolsListCount != 2 {
+		t.Fatalf("tools/list count = %d, want 2", toolsListCount)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("initialize sessions = %#v, want two sessions", sessions)
+	}
+}
+
+func TestInitializeDecodesSSEResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req Envelope
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		switch req.Method {
+		case "initialize":
+			w.Header().Set("Mcp-Session-Id", "sid-sse")
+			writeTestRPCSSE(w, req.ID, map[string]any{"protocolVersion": r.Header.Get("MCP-Protocol-Version"), "capabilities": map[string]any{}}, nil)
+		case "notifications/initialized":
+			if got := r.Header.Get("Mcp-Session-Id"); got != "sid-sse" {
+				t.Fatalf("initialized notification missing session id: %q", got)
+			}
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			if got := r.Header.Get("Mcp-Session-Id"); got != "sid-sse" {
+				t.Fatalf("tools/list missing session id: %q", got)
+			}
+			writeTestRPC(w, req.ID, map[string]any{"tools": []map[string]any{{"name": "stories.search"}}}, nil)
+		default:
+			t.Fatalf("unexpected method %q", req.Method)
+		}
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient()
+	client.httpClient = server.Client()
+	tools, err := client.ListTools(context.Background(), Upstream{Name: "shortcut", Mode: UpstreamModeHTTP, BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("ListTools returned error: %v", err)
+	}
+	if len(tools) != 1 || tools[0].Name != "stories.search" {
+		t.Fatalf("unexpected tools: %#v", tools)
+	}
+}
+
+func TestInitializeSSEHTTPErrorReportsRPCMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req Envelope
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.Method != "initialize" {
+			t.Fatalf("unexpected method %q", req.Method)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusUnauthorized)
+		writeTestRPCSSE(w, req.ID, nil, map[string]any{"code": -32000, "message": "unauthorized"})
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient()
+	client.httpClient = server.Client()
+	result := client.TestConnection(context.Background(), Upstream{Name: "shortcut", Mode: UpstreamModeHTTP, BaseURL: server.URL, Enabled: true})
+	if result.Ok {
+		t.Fatalf("expected failed connection test")
+	}
+	if !strings.Contains(result.Message, "unauthorized") {
+		t.Fatalf("expected clean upstream error message, got %q", result.Message)
+	}
+	if strings.Contains(result.Message, "data:") {
+		t.Fatalf("expected SSE framing to be hidden, got %q", result.Message)
+	}
+}
+
+func TestInitializeSSEHTTPErrorReportsNullIDRPCMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req Envelope
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.Method != "initialize" {
+			t.Fatalf("unexpected method %q", req.Method)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusBadRequest)
+		writeTestRPCSSE(w, json.RawMessage("null"), nil, map[string]any{"code": -32700, "message": "parse error"})
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient()
+	client.httpClient = server.Client()
+	result := client.TestConnection(context.Background(), Upstream{Name: "shortcut", Mode: UpstreamModeHTTP, BaseURL: server.URL, Enabled: true})
+	if result.Ok {
+		t.Fatalf("expected failed connection test")
+	}
+	if !strings.Contains(result.Message, "parse error") {
+		t.Fatalf("expected clean upstream error message, got %q", result.Message)
+	}
+	if strings.Contains(result.Message, "data:") {
+		t.Fatalf("expected SSE framing to be hidden, got %q", result.Message)
+	}
+}
+
+func TestListToolsAcceptsStringIDInSSEResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req Envelope
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		switch req.Method {
+		case "initialize":
+			w.Header().Set("Mcp-Session-Id", "sid-string-id")
+			writeTestRPC(w, req.ID, map[string]any{"protocolVersion": r.Header.Get("MCP-Protocol-Version"), "capabilities": map[string]any{}}, nil)
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			writeTestRPCSSE(w, json.RawMessage(`"1"`), map[string]any{"tools": []map[string]any{{"name": "stories.string_id"}}}, nil)
+		default:
+			t.Fatalf("unexpected method %q", req.Method)
+		}
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient()
+	client.httpClient = server.Client()
+	tools, err := client.ListTools(context.Background(), Upstream{Name: "shortcut", Mode: UpstreamModeHTTP, BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("ListTools returned error: %v", err)
+	}
+	if len(tools) != 1 || tools[0].Name != "stories.string_id" {
+		t.Fatalf("unexpected tools: %#v", tools)
+	}
+}
+
+func TestInvokeSkipsSSENotificationBeforeResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req Envelope
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		switch req.Method {
+		case "initialize":
+			w.Header().Set("Mcp-Session-Id", "sid-notify")
+			writeTestRPC(w, req.ID, map[string]any{"protocolVersion": r.Header.Get("MCP-Protocol-Version"), "capabilities": map[string]any{}}, nil)
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/call":
+			writeTestSSEEvents(w,
+				[]string{`{"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":0.5}}`},
+				[]string{`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"actual result"}]}}`},
+			)
+		default:
+			t.Fatalf("unexpected method %q", req.Method)
+		}
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient()
+	client.httpClient = server.Client()
+	result, err := client.Invoke(context.Background(), Upstream{Name: "shortcut", Mode: UpstreamModeHTTP, BaseURL: server.URL}, "stories.get", map[string]any{}, nil)
+	if err != nil {
+		t.Fatalf("Invoke returned error: %v", err)
+	}
+	if !strings.Contains(string(result.Body), "actual result") {
+		t.Fatalf("expected final response body, got %s", string(result.Body))
+	}
+}
+
+func TestListToolsDecodesMultilineSSEData(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req Envelope
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		switch req.Method {
+		case "initialize":
+			w.Header().Set("Mcp-Session-Id", "sid-multiline")
+			writeTestRPC(w, req.ID, map[string]any{"protocolVersion": r.Header.Get("MCP-Protocol-Version"), "capabilities": map[string]any{}}, nil)
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			writeTestSSEEvents(w, []string{
+				`{"jsonrpc":"2.0",`,
+				`"id":1,`,
+				`"result":{"tools":[{"name":"stories.multiline"}]}}`,
+			})
+		default:
+			t.Fatalf("unexpected method %q", req.Method)
+		}
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient()
+	client.httpClient = server.Client()
+	tools, err := client.ListTools(context.Background(), Upstream{Name: "shortcut", Mode: UpstreamModeHTTP, BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("ListTools returned error: %v", err)
+	}
+	if len(tools) != 1 || tools[0].Name != "stories.multiline" {
+		t.Fatalf("unexpected tools: %#v", tools)
+	}
+}
+
 func TestMissingSessionRPCErrorDetection(t *testing.T) {
 	if !isMissingSessionRPCError(json.RawMessage(`{"code":-32000,"message":"No session ID provided for non-initialization request"}`)) {
 		t.Fatal("expected missing session error to be detected")
@@ -415,5 +663,30 @@ func writeTestRPC(w http.ResponseWriter, id json.RawMessage, result any, rpcErr 
 	}
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		panic(err)
+	}
+}
+
+func writeTestRPCSSE(w http.ResponseWriter, id json.RawMessage, result any, rpcErr any) {
+	resp := map[string]any{"jsonrpc": "2.0", "id": id}
+	if rpcErr != nil {
+		resp["error"] = rpcErr
+	} else {
+		resp["result"] = result
+	}
+	payload, err := json.Marshal(resp)
+	if err != nil {
+		panic(err)
+	}
+	writeTestSSEEvents(w, []string{string(payload)})
+}
+
+func writeTestSSEEvents(w http.ResponseWriter, events ...[]string) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	for _, lines := range events {
+		_, _ = w.Write([]byte("event: message\n"))
+		for _, line := range lines {
+			_, _ = w.Write([]byte("data: " + line + "\n"))
+		}
+		_, _ = w.Write([]byte("\n"))
 	}
 }
