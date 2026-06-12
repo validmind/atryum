@@ -34,9 +34,12 @@ type Config struct {
 // ManagedAgentsConfig configures one outbound connection to Anthropic's Claude
 // Managed Agents "events and streaming" API. When APIKey is empty the entry is
 // skipped. Name distinguishes entries when more than one is configured and is
-// used by the session-registration API to target a specific account.
+// used by the session-registration API to target a specific account. Workspace
+// is required whenever APIKey is set; it identifies the Anthropic workspace this
+// account belongs to.
 type ManagedAgentsConfig struct {
 	Name                    string `toml:"name"`
+	Workspace               string `toml:"workspace"`
 	BaseURL                 string `toml:"base_url"`
 	APIKey                  string `toml:"api_key"`
 	PollIntervalMillis      int    `toml:"poll_interval_millis"`
@@ -58,12 +61,16 @@ func (c *Config) applyManagedAgentsEnv() {
 	if envKey == "" {
 		return
 	}
+	envWorkspace := os.Getenv("ATRYUM_MANAGED_AGENTS_WORKSPACE")
 	switch len(c.ManagedAgents) {
 	case 0:
-		c.ManagedAgents = []ManagedAgentsConfig{{APIKey: envKey}}
+		c.ManagedAgents = []ManagedAgentsConfig{{APIKey: envKey, Workspace: envWorkspace}}
 	case 1:
 		if c.ManagedAgents[0].APIKey == "" {
 			c.ManagedAgents[0].APIKey = envKey
+		}
+		if c.ManagedAgents[0].Workspace == "" {
+			c.ManagedAgents[0].Workspace = envWorkspace
 		}
 	}
 }
@@ -95,11 +102,12 @@ type PolicyConfig struct {
 }
 
 type ServerConfig struct {
-	ListenAddr    string `toml:"listen_addr"`
-	PublicBaseURL string `toml:"public_base_url"`
-	DatabasePath  string `toml:"database_path"`
-	DatabaseURL   string `toml:"database_url"`
-	LogLevel      string `toml:"log_level"`
+	ListenAddr     string `toml:"listen_addr"`
+	PublicBaseURL  string `toml:"public_base_url"`
+	AtryumInstance string `toml:"atryum_instance"`
+	DatabasePath   string `toml:"database_path"`
+	DatabaseURL    string `toml:"database_url"`
+	LogLevel       string `toml:"log_level"`
 }
 
 type DefaultsConfig struct {

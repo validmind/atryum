@@ -92,6 +92,18 @@ func (c *fakeClient) ListEventsSince(ctx context.Context, sessionID, after strin
 	defer c.mu.Unlock()
 	return append([]RawEvent(nil), c.history...), nil
 }
+func (c *fakeClient) ListAgents(ctx context.Context) ([]AgentInfo, error) {
+	return nil, nil
+}
+func (c *fakeClient) GetAgent(ctx context.Context, agentID string) (AgentInfo, error) {
+	return AgentInfo{ID: agentID, Version: 1}, nil
+}
+func (c *fakeClient) UpdateAgentMetadata(ctx context.Context, agentID string, version int, metadata map[string]*string) (AgentInfo, error) {
+	return AgentInfo{ID: agentID, Version: version + 1}, nil
+}
+func (c *fakeClient) ListSessions(ctx context.Context, filter SessionListFilter) ([]SessionInfo, error) {
+	return nil, nil
+}
 func (c *fakeClient) StreamEvents(ctx context.Context, sessionID string) (EventStream, error) {
 	return nil, context.Canceled
 }
@@ -109,6 +121,16 @@ func (c *fakeClient) sentEvents() []sentEvent { c.mu.Lock(); defer c.mu.Unlock()
 type eofStreamClient struct{}
 
 func (c eofStreamClient) ListEventsSince(ctx context.Context, sessionID, after string) ([]RawEvent, error) {
+	return nil, nil
+}
+func (c eofStreamClient) ListAgents(ctx context.Context) ([]AgentInfo, error) { return nil, nil }
+func (c eofStreamClient) GetAgent(ctx context.Context, agentID string) (AgentInfo, error) {
+	return AgentInfo{ID: agentID, Version: 1}, nil
+}
+func (c eofStreamClient) UpdateAgentMetadata(ctx context.Context, agentID string, version int, metadata map[string]*string) (AgentInfo, error) {
+	return AgentInfo{ID: agentID, Version: version + 1}, nil
+}
+func (c eofStreamClient) ListSessions(ctx context.Context, filter SessionListFilter) ([]SessionInfo, error) {
 	return nil, nil
 }
 func (c eofStreamClient) StreamEvents(ctx context.Context, sessionID string) (EventStream, error) {

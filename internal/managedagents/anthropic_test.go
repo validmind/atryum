@@ -35,6 +35,86 @@ func TestListEventsSinceFiltersByCursor(t *testing.T) {
 	}
 }
 
+func TestListEventsSincePaginates(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("limit"); got != "100" {
+			t.Errorf("limit = %q", got)
+		}
+		switch r.URL.Query().Get("page") {
+		case "":
+			fmt.Fprint(w, `{"data":[{"id":"e1","type":"agent.message"}],"next_page":"p2"}`)
+		case "p2":
+			fmt.Fprint(w, `{"data":[{"id":"e2","type":"session.status_idle"}]}`)
+		default:
+			t.Fatalf("unexpected page %q", r.URL.Query().Get("page"))
+		}
+	}))
+	defer srv.Close()
+
+	c := NewAnthropicHTTPClient(Config{BaseURL: srv.URL, APIKey: "k"})
+	events, err := c.ListEventsSince(context.Background(), "sess_1", "")
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 2 || events[0].ID != "e1" || events[1].ID != "e2" {
+		t.Fatalf("unexpected events: %+v", events)
+	}
+}
+
+func TestListAgentsParsesModelObject(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/agents" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if got := r.Header.Get("anthropic-beta"); got != managedAgentsBeta {
+			t.Errorf("missing beta header, got %q", got)
+		}
+		fmt.Fprint(w, `{"data":[{"id":"agent_1","name":"Coding","description":"writes code","model":{"id":"claude-sonnet-4-6","speed":"standard"},"version":3,"created_at":"2026-06-01T00:00:00Z","updated_at":"2026-06-02T00:00:00Z"}]}`)
+	}))
+	defer srv.Close()
+
+	c := NewAnthropicHTTPClient(Config{BaseURL: srv.URL, APIKey: "k"})
+	agents, err := c.ListAgents(context.Background())
+	if err != nil {
+		t.Fatalf("list agents: %v", err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("expected 1 agent, got %d", len(agents))
+	}
+	if agents[0].ID != "agent_1" || agents[0].Model != "claude-sonnet-4-6" || agents[0].Version != 3 {
+		t.Fatalf("unexpected agent: %+v", agents[0])
+	}
+}
+
+func TestListAgentsPaginates(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/agents" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("limit"); got != "100" {
+			t.Errorf("limit = %q", got)
+		}
+		switch r.URL.Query().Get("page") {
+		case "":
+			fmt.Fprint(w, `{"data":[{"id":"agent_1","name":"One"}],"next_page":"p2"}`)
+		case "p2":
+			fmt.Fprint(w, `{"data":[{"id":"agent_2","name":"Two"}]}`)
+		default:
+			t.Fatalf("unexpected page %q", r.URL.Query().Get("page"))
+		}
+	}))
+	defer srv.Close()
+
+	c := NewAnthropicHTTPClient(Config{BaseURL: srv.URL, APIKey: "k"})
+	agents, err := c.ListAgents(context.Background())
+	if err != nil {
+		t.Fatalf("list agents: %v", err)
+	}
+	if len(agents) != 2 || agents[0].ID != "agent_1" || agents[1].ID != "agent_2" {
+		t.Fatalf("unexpected agents: %+v", agents)
+	}
+}
+
 func TestStreamEventsParsesSSE(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

@@ -112,6 +112,7 @@ func runServer(args []string) error {
 	oauthRepo := store.NewOAuthRepoWithDialect(db, dialect)
 	rulesRepo := store.NewRulesRepoWithDialect(db, dialect)
 	agentsRepo := store.NewAgentsRepoWithDialect(db, dialect)
+	managedAgentBindingRepo := store.NewManagedAgentBindingRepoWithDialect(db, dialect)
 	agentSyncSettingsRepo := store.NewAgentSyncSettingsRepoWithDialect(db, dialect)
 	llmConfigsRepo := store.NewLLMConfigsRepoWithDialect(db, dialect)
 
@@ -186,7 +187,7 @@ func runServer(args []string) error {
 	// invocation package interfaces without creating import cycles.
 	var invAgents invocation.AgentLookup
 	if agentsRepo != nil {
-		invAgents = &agentsLookupAdapter{repo: agentsRepo}
+		invAgents = &agentsLookupAdapter{repo: agentsRepo, managedBindings: managedAgentBindingRepo}
 	}
 
 	// Build the evaluator: always create a local evaluator backed by llmConfigsRepo.
@@ -219,6 +220,7 @@ func runServer(args []string) error {
 		syncAgentsFn = syncAgents
 	}
 	handler := api.NewHandler(service, serverAdmin, policyRegistry, rulesRepo, agentsRepo, agentSyncSettingsRepo, llmConfigsRepo, syncAgentsFn, backendClient, localEvaluator)
+	handler.SetManagedAgentBindings(managedAgentBindingRepo)
 
 	authValidator, err := auth.NewValidator(cfg.Auth, nil)
 	if err != nil {
@@ -252,8 +254,12 @@ func runServer(args []string) error {
 		if ma.APIKey == "" {
 			continue
 		}
+		if ma.Workspace == "" {
+			return fmt.Errorf("managed_agents workspace is required for account %q", emptyDefault(ma.Name, managedagents.DefaultAccountName))
+		}
 		acctCfg := managedagents.Config{
 			Name:             ma.Name,
+			Workspace:        ma.Workspace,
 			BaseURL:          ma.BaseURL,
 			APIKey:           ma.APIKey,
 			PollInterval:     time.Duration(ma.PollIntervalMillis) * time.Millisecond,
@@ -277,6 +283,12 @@ func runServer(args []string) error {
 		if err != nil {
 			return fmt.Errorf("configure managed agents bridge: %w", err)
 		}
+		instanceName := cfg.Server.AtryumInstance
+		if instanceName == "" {
+			instanceName = cfg.Server.PublicBaseURL
+		}
+		managedSvc.SetInstanceName(instanceName)
+		managedSvc.SetBindings(&managedBindingStoreAdapter{repo: managedAgentBindingRepo})
 		if err := managedSvc.Start(context.Background()); err != nil {
 			return fmt.Errorf("start managed agents bridge: %w", err)
 		}
@@ -365,6 +377,27 @@ func managedSessionToReg(row store.ManagedAgentSession) managedagents.SessionReg
 		CreatedAt:   row.CreatedAt,
 		UpdatedAt:   row.UpdatedAt,
 	}
+}
+
+type managedBindingStoreAdapter struct {
+	repo *store.ManagedAgentBindingRepo
+}
+
+func (a *managedBindingStoreAdapter) List(ctx context.Context) ([]managedagents.AgentBinding, error) {
+	rows, err := a.repo.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]managedagents.AgentBinding, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, managedagents.AgentBinding{
+			AgentCUID:       row.AgentCUID,
+			Account:         row.Account,
+			ClaudeAgentID:   row.ClaudeAgentID,
+			ClaudeAgentName: row.ClaudeAgentName,
+		})
+	}
+	return out, nil
 }
 
 // managedAuditAdapter bridges the invocation/event repos →
@@ -460,11 +493,23 @@ func defaultUserDatabasePath() (string, error) {
 
 // agentsLookupAdapter bridges store.AgentsRepo → invocation.AgentLookup.
 type agentsLookupAdapter struct {
-	repo *store.AgentsRepo
+	repo            *store.AgentsRepo
+	managedBindings *store.ManagedAgentBindingRepo
 }
 
 func (a *agentsLookupAdapter) GetByAgentID(ctx context.Context, agentID string) (invocation.AgentRecord, error) {
 	rec, err := a.repo.GetByAgentID(ctx, agentID)
+	if err == nil {
+		return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Charter: rec.Charter}, nil
+	}
+	if a.managedBindings == nil {
+		return invocation.AgentRecord{}, err
+	}
+	binding, bindErr := a.managedBindings.GetByClaudeAgentID(ctx, "", agentID)
+	if bindErr != nil {
+		return invocation.AgentRecord{}, err
+	}
+	rec, err = a.repo.Get(ctx, binding.AgentCUID)
 	if err != nil {
 		return invocation.AgentRecord{}, err
 	}
@@ -566,6 +611,13 @@ func (s *summaryAdapter) SummarizeInvocation(ctx context.Context, req invocation
 func truthyEnv(name string) bool {
 	value := os.Getenv(name)
 	return value == "1" || value == "true" || value == "TRUE" || value == "yes" || value == "YES"
+}
+
+func emptyDefault(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 
 // credentialAdapter bridges store.OAuthRepo into the narrow

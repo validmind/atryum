@@ -46,7 +46,7 @@ func TestResolveDBTarget_SelectsSQLiteForSQLiteFileAndBarePaths(t *testing.T) {
 }
 
 func TestMigrationRegistryPreservesExistingVersionsAndNames(t *testing.T) {
-	if len(migrations) != 22 {
+	if len(migrations) != 23 {
 		t.Fatalf("migration count = %d", len(migrations))
 	}
 	want := []struct {
@@ -75,6 +75,7 @@ func TestMigrationRegistryPreservesExistingVersionsAndNames(t *testing.T) {
 		{20, "020_managed_agent_sessions"},
 		{21, "021_rename_constitution_to_charter"},
 		{22, "022_drop_agent_id_pattern"},
+		{23, "023_managed_agent_bindings"},
 	}
 	for i, w := range want {
 		if migrations[i].Version != w.version || migrations[i].Name != w.name {
@@ -85,10 +86,10 @@ func TestMigrationRegistryPreservesExistingVersionsAndNames(t *testing.T) {
 
 func TestGetPendingMigrationsUsesRegistryOrder(t *testing.T) {
 	pending := getPendingMigrations(map[int]bool{1: true})
-	if len(pending) != 21 {
+	if len(pending) != 22 {
 		t.Fatalf("pending count = %d", len(pending))
 	}
-	wantVersions := []int{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22}
+	wantVersions := []int{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23}
 	for i, want := range wantVersions {
 		if pending[i].Version != want {
 			t.Fatalf("pending[%d].Version = %d, want %d", i, pending[i].Version, want)
