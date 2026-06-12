@@ -24,6 +24,15 @@ PAGE_SLUGS = {
 
 CALLOUT_PLACEHOLDER = "__CALLOUT_{index}__"
 INSTALL_COMMANDS_PLACEHOLDER = "__INSTALL_COMMANDS__"
+QUICKSTART_INSTALL_HEADING = "download atryum"
+
+COPY_ICON_SVG = (
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    '<rect x="9" y="9" width="13" height="13" rx="2"/>'
+    '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>'
+    "</svg>"
+)
 
 
 def slugify(text: str) -> str:
@@ -74,13 +83,17 @@ def inline_format(text: str) -> str:
     return restore_html_entities(restore_html_spans(text))
 
 
-def replace_download_section(lines: list[str]) -> list[str]:
+def inject_quickstart_install_partial(lines: list[str]) -> list[str]:
+    """Replace quickstart download commands with the shared install partial."""
     result: list[str] = []
     index = 0
 
     while index < len(lines):
         line = lines[index]
-        if line.startswith("### ") and line.lstrip("# ").strip().lower() == "download atryum":
+        if (
+            line.startswith("### ")
+            and line.lstrip("# ").strip().lower() == QUICKSTART_INSTALL_HEADING
+        ):
             result.append(line)
             index += 1
             while index < len(lines):
@@ -241,6 +254,33 @@ def convert_list(lines: list[str], index: int) -> tuple[str, int]:
     return "".join(parts), index
 
 
+def body_has_leading_gap(body_lines: list[str]) -> bool:
+    return bool(body_lines) and not body_lines[0].strip()
+
+
+def first_body_block_kind(body_lines: list[str]) -> str | None:
+    index = 0
+    while index < len(body_lines) and not body_lines[index].strip():
+        index += 1
+    if index >= len(body_lines):
+        return None
+
+    line = body_lines[index]
+    if line.strip().startswith("```"):
+        return "code"
+    if is_list_item_line(line):
+        return "list"
+    return "prose"
+
+
+def list_item_continuation_separator(body_lines: list[str]) -> str:
+    if not body_has_leading_gap(body_lines):
+        return ""
+    if first_body_block_kind(body_lines) == "prose":
+        return "<br>"
+    return ""
+
+
 def convert_list_items(
     lines: list[str],
     index: int,
@@ -258,11 +298,37 @@ def convert_list_items(
         item_html = inline_format(content)
         if body_lines:
             nested_html = convert_blocks(dedent_block_lines(body_lines, base_indent))
-            parts.append(f"<li>{item_html}{nested_html}</li>")
+            separator = list_item_continuation_separator(body_lines)
+            parts.append(f"<li>{item_html}{separator}{nested_html}</li>")
         else:
             parts.append(f"<li>{item_html}</li>")
 
     return index
+
+
+def escape_attr(text: str) -> str:
+    return html.escape(text, quote=True).replace("\r", "").replace("\n", "&#10;")
+
+
+def render_copyable_codeblock(code_text: str, language: str) -> str:
+    lang_class = f' class="language-{html.escape(language, quote=True)}"'
+    escaped_code = html.escape(code_text)
+
+    if not code_text.strip():
+        return f"<pre><code{lang_class}></code></pre>"
+
+    copy_button = (
+        '<button class="copy-btn code-block-copy-btn" type="button" '
+        f'data-command="{escape_attr(code_text)}" '
+        'aria-label="Copy code block">'
+        f"{COPY_ICON_SVG}<span>Copy</span></button>"
+    )
+    return (
+        '<div class="code-block">'
+        f"<pre><code{lang_class}>{escaped_code}</code></pre>"
+        f"{copy_button}"
+        "</div>"
+    )
 
 
 def convert_codeblock(lines: list[str], index: int) -> tuple[str, int]:
@@ -275,9 +341,8 @@ def convert_codeblock(lines: list[str], index: int) -> tuple[str, int]:
         index += 1
     if index < len(lines):
         index += 1
-    code = html.escape("\n".join(code_lines).rstrip("\n"))
-    lang_class = f' class="language-{html.escape(language, quote=True)}"'
-    return f"<pre><code{lang_class}>{code}</code></pre>", index
+    code_text = "\n".join(code_lines).rstrip("\n")
+    return render_copyable_codeblock(code_text, language), index
 
 
 def convert_heading(line: str, level: int, ids: dict[str, int]) -> str:
@@ -462,7 +527,8 @@ def convert_file(path: Path) -> None:
     while body_lines and not body_lines[0].strip():
         body_lines.pop(0)
 
-    body_lines = replace_download_section(body_lines)
+    if path.stem == "quickstart":
+        body_lines = inject_quickstart_install_partial(body_lines)
     content_html = convert_blocks(body_lines)
     content_html = inject_callouts(content_html, callouts)
     toc_html = extract_toc(content_html)

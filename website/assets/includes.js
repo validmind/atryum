@@ -87,6 +87,38 @@
     });
   }
 
+  var copyIconSvg =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+
+  function initCodeBlockCopyButtons() {
+    document.querySelectorAll('pre > code').forEach(function (code) {
+      var pre = code.parentElement;
+      if (!pre || pre.dataset.copyWrap === 'true' || pre.closest('.cmd') || pre.closest('.code-block')) {
+        return;
+      }
+
+      var text = code.textContent;
+      if (!text || !text.trim()) {
+        return;
+      }
+
+      pre.dataset.copyWrap = 'true';
+
+      var wrapper = document.createElement('div');
+      wrapper.className = 'code-block';
+      pre.parentNode.insertBefore(wrapper, pre);
+      wrapper.appendChild(pre);
+
+      var btn = document.createElement('button');
+      btn.className = 'copy-btn code-block-copy-btn';
+      btn.type = 'button';
+      btn.dataset.command = text;
+      btn.setAttribute('aria-label', 'Copy code block');
+      btn.innerHTML = copyIconSvg + '<span>Copy</span>';
+      wrapper.appendChild(btn);
+    });
+  }
+
   function initCopyButtons() {
     document.querySelectorAll('.copy-btn').forEach(function (btn) {
       if (btn.dataset.copyInit === 'true') {
@@ -141,6 +173,7 @@
   loadAllIncludes().then(function () {
     setActiveNav();
     initToc();
+    initCodeBlockCopyButtons();
     initCopyButtons();
   });
 })();

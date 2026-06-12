@@ -67,18 +67,18 @@
 
         <aside class="docs-callout"><p>Human approvals have a default timeout of 30 seconds. To adjust the timeout, update your local Atryum config file (<code>atryum.toml</code>), then restart Atryum. For example:</p>
 
-        <pre><code class="language-toml">[defaults]
-request_timeout_seconds = 120</code></pre></aside>
+        <div class="code-block"><pre><code class="language-toml">[defaults]
+request_timeout_seconds = 120</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="[defaults]&#10;request_timeout_seconds = 120" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div></aside>
 
         <h3 id="approve-invocations">Approve invocations</h3>
 
-        <ol><li>In Atryum, click <strong>Invocations</strong> in the left sidebar.</li><li>Click on the invocation you want to approve:<ul><li>On the invocation detail panel, select <strong>Approve</strong> under Approval Required to approve that single invocation.</li><li>To approve all invocations for calls matching similar criteria going forward:<p>a. Click <strong>&#9660; Customize rule scope</strong> to edit the criteria the rule should match against. (<a href="rules.html#create-rules-from-existing-invocations">Rules</a>)</p>
+        <ol><li>In Atryum, click <strong>Invocations</strong> in the left sidebar.</li><li>Click on the invocation you want to approve:<ul><li>On the invocation detail panel, select <strong>Approve</strong> under Approval Required to approve that single invocation.</li><li>To approve all invocations for calls matching similar criteria going forward:<br><p>a. Click <strong>&#9660; Customize rule scope</strong> to edit the criteria the rule should match against. (<a href="rules.html#create-rules-from-existing-invocations">Rules</a>)</p>
 
         <p>b. Click <strong>&#8744;</strong> next to Approve and select <strong>Always approve</strong>.</p></li></ul></li></ol>
 
         <h3 id="deny-invocations">Deny invocations</h3>
 
-        <ol><li>In Atryum, click <strong>Invocations</strong> in the left sidebar.</li><li>Click on the invocation you want to deny:<ul><li>On the invocation detail panel, select <strong>Deny</strong> under Approval Required to deny that single invocation.</li><li>To deny all invocations for calls matching similar criteria going forward:<p>a. Click <strong>&#9660; Customize rule scope</strong> to edit the criteria the rule should match against. (<a href="rules.html#create-rules-from-existing-invocations">Rules</a>)</p>
+        <ol><li>In Atryum, click <strong>Invocations</strong> in the left sidebar.</li><li>Click on the invocation you want to deny:<ul><li>On the invocation detail panel, select <strong>Deny</strong> under Approval Required to deny that single invocation.</li><li>To deny all invocations for calls matching similar criteria going forward:<br><p>a. Click <strong>&#9660; Customize rule scope</strong> to edit the criteria the rule should match against. (<a href="rules.html#create-rules-from-existing-invocations">Rules</a>)</p>
 
         <p>b. Click <strong>&#8744;</strong> next to Deny and select <strong>Always deny</strong>.</p></li></ul></li><li>(Optional) Enter a reason for denial — this reason is returned to the agent so you can steer what it does next.</li></ol>
 

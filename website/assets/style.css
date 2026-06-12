@@ -382,6 +382,15 @@ main::before {
   color: var(--bs-900);
 }
 
+.docs-content .install {
+  max-width: none;
+}
+
+.docs-content .code-block {
+  position: relative;
+  margin: 18px 0 24px;
+}
+
 .docs-content pre {
   margin: 18px 0 24px;
   overflow-x: auto;
@@ -393,11 +402,53 @@ main::before {
   box-shadow: 0 1px 2px rgba(5, 28, 32, 0.06);
 }
 
+.docs-content .code-block pre {
+  margin: 0;
+  padding-right: 96px;
+}
+
 .docs-content pre code {
   color: inherit;
   white-space: pre;
   background: transparent;
   padding: 0;
+}
+
+.docs-content .code-block-copy-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 84px;
+  padding: 8px 12px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  color: #d8f7fa;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.docs-content .code-block-copy-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.docs-content .code-block-copy-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+.docs-content .code-block-copy-btn.copied {
+  color: #fff;
+  background: var(--brand-500);
+  border-color: var(--brand-500);
 }
 
 .docs-callout {
@@ -414,8 +465,17 @@ main::before {
   margin-bottom: 0;
 }
 
+.docs-callout .code-block {
+  margin-top: 12px;
+  margin-bottom: 0;
+}
+
 .docs-callout pre {
   margin-top: 12px;
+}
+
+.docs-callout .code-block pre {
+  margin-top: 0;
 }
 
 .docs-table {

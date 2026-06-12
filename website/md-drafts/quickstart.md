@@ -45,7 +45,12 @@ curl -L https://github.com/validmind/atryum/releases/download/0.0.2/atryum-mac -
 
 5. Connect your preferred coding agent to Atryum:
 
-    - Open your agent's MCP settings and add a standard MCP server with the calc server address: `http://localhost:8080/mcp/calc`.
+    - Open your agent's MCP settings and add a standard MCP server with the calc server address:
+
+    ```
+    http://localhost:8080/mcp/calc
+    ```
+
     - The agent will think it is talking to a calculator MCP server, but its tool invocations now pass through Atryum first.
 
 6. Trigger a test tool call from your agent. For example:
