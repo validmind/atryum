@@ -82,8 +82,6 @@ Use these variables for hook and extension integrations. MCP proxy clients do no
 
 5. Make sure Atryum is running and reachable at `ATRYUM_URL`, then start your agent from the same terminal session.
 
-    Pending tool calls appear under **Invocations** in the Atryum platform left sidebar.
-
 ### Connect via MCP proxy
 
 Use this path when your agent speaks MCP and you want tool calls routed through Atryum to an upstream server registered under **Servers**:
@@ -106,7 +104,7 @@ Use this path when your agent speaks MCP and you want tool calls routed through 
 
 5. Start your agent. To tag invocations to an agent record in no-auth mode, append `?agent_id=<your_id>` to the MCP proxy URL — for example, `http://localhost:8080/mcp/calc?agent_id=amp-local`. See [Agent identity and authentication](#agent-identity-and-authentication).
 
-### Tag invocations to agent records
+## Tag invocations to agent records
 
 To apply agent-scoped rules, attach invocations to an agent record, or supply a constitution for local AI evaluation:
 
@@ -130,7 +128,9 @@ To apply agent-scoped rules, attach invocations to an agent record, or supply a 
 
 3. If you selected an existing agent instead, add a stable string to its **Agent IDs** field — type the ID and press **Enter** to add it, such as `amp-local` or `pi-alice`, then click **Save**.
 
-4. In the same terminal session where you will start your agent, export that string as `ATRYUM_AGENT_ID`:
+4. Tell your agent which **Agent IDs** string to send:
+
+    a. **Hook and extension agents** — In the same terminal session where you will start your agent, export that string as `ATRYUM_AGENT_ID`:
 
     ```bash
     export ATRYUM_URL=http://localhost:8080
@@ -141,6 +141,11 @@ To apply agent-scoped rules, attach invocations to an agent record, or supply a 
     - Export both variables in the **same shell session** you use to launch your agent. If you export them in one terminal and start the agent from another, the agent will not see the values.
     - `ATRYUM_URL` tells the integration where Atryum is running. It defaults to `http://localhost:8080` when unset; change the host or port if Atryum runs elsewhere. Refer to [Set environment variables](#set-environment-variables) for the full list of supported variables.
     - In auth mode, put the token's JWT `sub` claim or OAuth `client_id` in **Agent IDs** instead of a self-declared string. ([Agent identity and authentication](#agent-identity-and-authentication))
+
+    b. **MCP proxy agents** — Append the same string to your MCP proxy URL as `?agent_id=<your_id>` (for example, `http://localhost:8080/mcp/calc?agent_id=amp-local`).
+
+    - Use the exact string you added in **Agent IDs** — matching is case-sensitive, so `amp-local` and `Amp-Local` are different IDs.
+    - In auth mode, put the token's JWT `sub` claim or OAuth `client_id` in **Agent IDs** instead of a self-declared string, and send a bearer token rather than a query-parameter agent ID. ([Agent identity and authentication](#agent-identity-and-authentication))
 
 5. Start your agent, then send a tool invocation again.
 

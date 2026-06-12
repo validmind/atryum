@@ -35,7 +35,7 @@ Use stdio mode for MCP servers that run locally as a subprocess — for example,
 stdio servers do not use OAuth. You will not see a **Connect** button for this mode.
 :::
 
-## Add HTTP MCP servers with a bearer token
+## Add HTTP MCP servers with bearer tokens
 
 Use HTTP mode with a **Bearer Token** when the upstream server accepts a static pre-shared token instead of OAuth.
 
