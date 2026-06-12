@@ -2,7 +2,7 @@
 
 Register upstream MCP servers in Atryum, allowing your coding agents to reach external tools through Atryum's MCP proxy.
 
-Register upstream Model Context Protocol (MCP) servers under **Servers** so tool invocations pass through Atryum before they reach the upstream server. Atryum evaluates each call against your rules, holds upstream credentials on your behalf, and forwards approved calls to the remote server.
+Register upstream Model Context Protocol (MCP) servers so tool invocations pass through Atryum before they reach the upstream server. Atryum evaluates each call against your rules, holds upstream credentials on your behalf, and forwards approved calls to the remote server.
 
 Atryum supports two server modes:
 

@@ -4,7 +4,6 @@ Connect your coding agents to Atryum, allowing Atryum to review tool invocations
 
 Connect your coding agents to Atryum so tool invocations pass through Atryum before they run. Atryum evaluates each call against your rules ([Rules](rules.md)), routes calls that need review to human approval, and records every outcome in the invocation audit log ([Invocations](invocations.md)).
 
-
 ## Connect Cursor and Claude code
 
 The hooks command currently supports direct setup for [Cursor](https://cursor.com) and [Claude Code](https://www.anthropic.com/claude-code). To retrieve the available setup options for each supported coding agent:
@@ -29,7 +28,9 @@ The hooks command currently supports direct setup for [Cursor](https://cursor.co
 
 Use this path for agents that connect through Atryum's Model Context Protocol (MCP) proxy instead of the hook installers above. Your agent sends tool calls to Atryum — Atryum evaluates each call against your rules and forwards approved calls to the upstream MCP server registered.
 
+:::
 [Amp](https://ampcode.com), [Pi](https://pi.dev), [Codex](https://openai.com/codex), and other harness integrations use this path. [Claude Code](https://www.anthropic.com/claude-code) can use hooks ([Connect Cursor and Claude code](#connect-cursor-and-claude-code)) or the MCP proxy — refer to the [Claude Code example](https://github.com/validmind/atryum/tree/main/examples/claude-code-hook) for the full MCP setup.
+:::
 
 ### Point your agent at the MCP proxy
 
@@ -93,7 +94,9 @@ To apply agent-scoped rules or link invocations to a synced ValidMind record:
 
 5. Start your agent, then send a tool invocation again. Atryum should attach the call to that agent record instead of leaving the agent column empty.
 
+:::
 For how Atryum uses agent identity in no-auth and auth mode, refer to [Agent identity and authentication](#agent-identity-and-authentication).
+:::
 
 ### Setup examples
 
@@ -151,7 +154,7 @@ In auth mode, agents and harnesses must authenticate to Atryum with an OAuth bea
 
 3. Configure your agent or harness to obtain an OAuth access token from the same authorization server and present it as a bearer token when connecting to Atryum.
 
-For local development, a Keycloak container is included in the repository's Docker Compose setup:
+For local development, a [Keycloak](https://www.keycloak.org/) container is included in the repository's [Docker Compose](https://docs.docker.com/compose/) setup:
 
 ```bash
 docker compose --profile dev up -d keycloak
@@ -162,5 +165,5 @@ Keycloak runs at [`localhost:8089`](http://localhost:8089). On first startup, th
 For deployments outside local development, use your organization's identity provider (IdP) instead of the bundled Keycloak instance.
 
 :::
-Most MCP proxy integrations in the [`examples`](https://github.com/validmind/atryum/tree/main/examples) directory currently support no-auth mode only. When auth mode is enabled, configure your harness to send a bearer token rather than a query-parameter agent ID.
+Most MCP proxy integrations in the [`examples` directory](https://github.com/validmind/atryum/tree/main/examples) currently support no-auth mode only. When auth mode is enabled, configure your harness to send a bearer token rather than a query-parameter agent ID.
 :::
