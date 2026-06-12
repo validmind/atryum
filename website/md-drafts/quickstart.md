@@ -57,7 +57,7 @@ curl -L https://github.com/validmind/atryum/releases/download/0.0.2/atryum-mac -
 7. Within Atryum, click **Invocations** in the left sidebar to review tool calls. Confirm that the calculator invocation request is `Pending Approval` — human approval is required by default.
 
     - Under Approval Required, select **Approve** to let the tool call run.
-    - Verify that the invocation's <span style="font-variant: small-caps;">auth</span> is `Succeeded` and that the approval was <span style="font-variant: small-caps;">decided by</span> a <span style="font-variant: small-caps;">human</span>.
+    - Verify that the invocation's <span style="font-variant: small-caps;">status</span> is `Succeeded` and that the approval was <span style="font-variant: small-caps;">decided by</span> a <span style="font-variant: small-caps;">human</span>.
 
 :::
 To learn more about working with invocations, refer to **[Invocations](invocations.md)**.
@@ -81,7 +81,7 @@ Let's add a rule to control future matching tool calls:
 
 6. Try a calculator prompt from your agent again. Atryum should apply the new rule instead of treating the tool call like a brand-new manual decision:
 
-    -  Within Atryum, click **Invocations** in the left sidebar and confirm that your new call `Succeeded`.
+    - Within Atryum, click **Invocations** in the left sidebar and confirm that your new call `Succeeded`.
     - Verify that the approval was <span style="font-variant: small-caps;">decided by</span> a <span style="font-variant: small-caps;">rule</span>.
 
 :::
@@ -123,7 +123,7 @@ To learn more about registering MCP servers in Atryum, refer to **[Connect MCP s
 
 ### With local LLM providers
 
-Set up local large language model (LLM) providers in Atryum to power AI evaluation rules and invocation summarization with models and credentials your team controls. Configuring local large language model (LLM) providers also allow you to use credentials and endpoints controlled by your team  to evaluate tool calls against each agent's *constitution*, a plain-language policy that describes what an agent can do, what it cannot do, and which actions require human approval.
+Set up local large language model (LLM) providers in Atryum to power AI evaluation rules and invocation summarization with models and credentials your team controls. Configuring LLM providers also allows you to use credentials and endpoints controlled by your team to evaluate tool calls against each agent's *constitution*, a plain-language policy that describes what an agent can do, what it cannot do, and which actions require human approval.
 
 Local LLMs are useful for bring-your-own-key setups, on-prem or air-gapped deployments, and teams that want to register multiple models and pick the right one per rule or feature.
 

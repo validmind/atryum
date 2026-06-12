@@ -4,7 +4,7 @@ Invocations are durable audit records for every tool call that passes through At
 
 ## What are invocations?
 
-The **Invocations** page is where you review those calls, approve or deny requests that need human input, and turn one-off decisions into reusable rules Invocations are displayed in a table:
+The **Invocations** page is where you review those calls, approve or deny requests that need human input, and turn one-off decisions into reusable rules. Invocations are displayed in a table:
 
 - **<span style="font-variant: small-caps;">agent</span>** — The client that made the tool call.
 - **<span style="font-variant: small-caps;">id</span>** — The unique invocation identifier. Hover to view the full ID.
@@ -29,9 +29,9 @@ The detail panel shows:
 - Current status badge and who or what made the decision. AI-evaluated invocations may also show a confidence score.
 - The rule ID that handled the invocation, when a rule matched.
 - Agent type and version (for example, `opencode 1.14.31`).
-- A plain-language summary of the call — Requires invocation summarization to be set up. ([Use summarization invocation](#use-invocation-summarization))
+- A plain-language summary of the call — Requires invocation summarization to be set up. ([Use invocation summarization](#use-invocation-summarization))
 - Tool input as a key/value arguments table — Click **Show raw JSON** for the full payload. File-edit tools may show a diff instead.
-- If a invocation is `Pending Approval`, options to approve or deny the call. ([Approve or deny invocations](#approve-or-deny-invocations))
+- If an invocation is `Pending Approval`, options to approve or deny the call. ([Approve or deny invocations](#approve-or-deny-invocations))
 - Option to create a rule from this invocation's logic. ([Rules](rules.md#create-rules-from-existing-invocations))
 - Tool output as JSON result when the call succeeds, or error details as JSON result when the call fails or is denied.
 - Chronological event log. Expand a row to view event payload details.
@@ -104,7 +104,7 @@ To use invocation summarization, you need at least one model source:
 
 2. Under Invocation Summary Model, **Select a model ...** from the drop-down menu.
 
-4. Click **Save** to use that model.
+3. Click **Save** to use that model.
 
 ### Generate invocation summaries
 

@@ -1,6 +1,6 @@
 # Configure LLM providers
 
-In addition to powering AI evaluation rules ([Rules](rules.md)) and invocation summarization ([Invocations](invocations.md)), configuring local large language model (LLM) providers also allow you to use credentials and endpoints controlled by your team  to evaluate tool calls against each agent's *constitution*:
+In addition to powering AI evaluation rules ([Rules](rules.md)) and invocation summarization ([Invocations](invocations.md)), configuring local large language model (LLM) providers also allows you to use credentials and endpoints controlled by your team to evaluate tool calls against each agent's *constitution*:
 
 - A constitution is a plain-language policy that describes what an agent can do, what it cannot do, and which actions require human approval.
 - Constitutions can be as terse or expressive as you would like. It's good to call out specifics when you can but be sure to include general statements to give the LLM something to hold on to when seeing an unanticipated tool call.
@@ -31,10 +31,10 @@ Use local LLMs when you want to:
 3. Provide the details for your LLM:
 
     - **Name**
-    - **Provider** — Choose one of:  `OpenAI`, `Anthropic`, `OpenAI-compatible` (For Ollama, LM Studio, Azure OpenAI, and other endpoints that expose an OpenAI-style API)
+    - **Provider** — Choose one of: `OpenAI`, `Anthropic`, `OpenAI-compatible` (for Ollama, LM Studio, Azure OpenAI, and other endpoints that expose an OpenAI-style API)
     - **Model** — The model identifier your provider expects, such as `gpt-4o`, `claude-3-5-sonnet-latest`, or `llama3`.
     - **API Key** — Your provider API key that will be stored encrypted.
-    - (OpenAI-compatible only) **Base URL**  — The root URL of the endpoint, such as `http://localhost:11434` for Ollama.
+    - (OpenAI-compatible only) **Base URL** — The root URL of the endpoint, such as `http://localhost:11434` for Ollama.
 
 4. Make sure that **Enabled** is checked, then click **Add LLM**.
 
@@ -76,7 +76,7 @@ After you add at least one enabled local LLM, you can set up a rule for an `AI E
 3. Make your updates to the provider details:
 
     - **Name**
-    - **Provider** — Choose one of:  `OpenAI`, `Anthropic`, `OpenAI-compatible`
+    - **Provider** — Choose one of: `OpenAI`, `Anthropic`, `OpenAI-compatible`
     - **Model** — The model identifier your provider expects.
     - **API Key** — Leave blank when editing an existing configuration to keep the current key.
     - (OpenAI-compatible only) **Base URL**  — The root URL of the endpoint.

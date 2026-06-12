@@ -28,7 +28,7 @@ Before connecting Atryum to ValidMind:
 
 2. Follow the prompts and enter your:
 
-    - **ValidMind Base URL** — The URL for ValidMind organization you want Atryum to connect to. For example: `https://app.prod.validmind.ai/`
+    - **ValidMind Base URL** — The URL for the ValidMind organization you want Atryum to connect to. For example: `https://app.prod.validmind.ai/`
     - **ValidMind API key**  — Your organization API Key.
     - **ValidMind API secret** — Your organization Secret Key.
 
@@ -75,7 +75,7 @@ Create a rule in Atryum to route matching tool invocations to a record that eval
 
 8. (Optional) Enter a **Description** so you can remember why the rule exists.
 
-9. Make sure that **Enabled** is checked, then click **Create**.
+9. Make sure that **Enabled** is checked, then click **Create Rule**.
 
 - When a matching tool call arrives, Atryum sends the call and the agent's constitution to the ValidMind evaluation model. The model returns a verdict for the invocation — approve, deny, escalate to a human, or defer to the next rule.
 - If Atryum cannot resolve the agent or its constitution, Atryum denies the invocation.

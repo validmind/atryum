@@ -35,7 +35,7 @@ Use stdio mode for MCP servers that run locally as a subprocess — for example,
 
 5. Click **Test** to confirm Atryum can reach the server.
 
-    Confirm that the server's <span style="font-variant: small-caps;">connection</span> and  style="font-variant: small-caps;">auth</span> columns show as <span style="font-variant: small-caps;">`ready`</span> — stdio servers do not use separate credentials, so no further action is needed.
+    Confirm that the server's <span style="font-variant: small-caps;">connection</span> and <span style="font-variant: small-caps;">auth</span> columns show as <span style="font-variant: small-caps;">`ready`</span> — stdio servers do not use separate credentials, so no further action is needed.
 
 :::
 stdio servers do not use OAuth. You will not see a **Connect** button for this mode.
@@ -114,7 +114,7 @@ Use manual registration when the upstream server does not support Dynamic Client
     - (Optional) **Token URL** — Atryum auto-discovers this from the server URL when left blank.
     - Set your scopes:
         - Leave **Use default scopes** checked to use whatever scopes the OAuth app declared with the provider.
-        - Uncheck **Use default scopes** to define custom scopes, then enter in the **Scopes (requested)**.
+        - Uncheck **Use default scopes** to define custom scopes, then enter them in **Scopes (requested)**.
 
 3. Make sure that **Enabled** is checked.
 
@@ -180,4 +180,4 @@ Deleting a server is permanent and cannot be undone.
 
 4. Remove or update the MCP proxy entry in your agent's configuration so it no longer points at the deleted server. ([Connect agents](connect-agents.md#disconnect-or-remove-agents))
 
-To stop routing calls without deleting the configuration, disable them instead. ([Edit MCP servers](#edit-mcp-servers))
+To stop routing calls without deleting the configuration, disable the server instead. ([Edit MCP servers](#edit-mcp-servers))

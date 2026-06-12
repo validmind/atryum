@@ -8,16 +8,16 @@ Rules are if/then policies that tell Atryum how to handle tool invocations. Rule
 
 Rules support four types of actions:
 
-1. **Auto Approve** — Allows matching tool calls run without stopping for manual approval.
+1. **Auto Approve** — Allows matching tool calls to run without stopping for manual approval.
 2. **Auto Deny** — Blocks matching tool calls automatically.
 3. **Human Approval** — Pauses matching tool calls until a human approves or denies them.
-4. **AI Evaluation** — Sends matching tool calls to a record for review against an agent's constitution — requires Atryum to be synced to ValidMind. ([Connect ValidMind](connect_validmind.md))
+4. **AI Evaluation** — Sends matching tool calls for review against an agent's constitution — requires Atryum to be synced to ValidMind or a configured local large language model (LLM). ([Connect ValidMind](connect-validmind.md), [Configure LLM providers](configure-llm-providers.md))
 
 ## Rules best practices
 
 ### Rule ordering
 
-Rules are generally applied from top to bottom — the first matching rule wins, with the except of AI Evaluation Actions. In the case of AI Evaluations, when the agent's constitution does not apply to the tool call, the evaluation model can defer to the next matching rule instead of deciding.
+Rules are generally applied from top to bottom — the first matching rule wins, with the exception of AI Evaluation actions. In the case of AI evaluations, when the agent's constitution does not apply to the tool call, the evaluation model can defer to the next matching rule instead of deciding.
 
 As such, we recommend you curate four tiers of rules:
 
@@ -52,7 +52,7 @@ These are not listed automatically on the Rules page — enter the exact tool na
 
 4. Select the **Agents**, **Servers / Sources**, and **Tools** that the rule should apply to.
 
-    (AI Evaluation Action only) Select the **Evaluation Model** — The large language model (LLM) that reviews matching tool calls against the agent's constitution and decides whether to approve, deny, escalate to a human, or defer to the next rule. ([LLM configurations](llm-configurations.md))
+    (AI Evaluation Action only) Select the **Evaluation Model** — The large language model (LLM) that reviews matching tool calls against the agent's constitution and decides whether to approve, deny, escalate to a human, or defer to the next rule. ([Configure LLM providers](configure-llm-providers.md))
 
 5. (Optional) Add a **Description** so you can remember why the rule exists.
 
@@ -87,7 +87,7 @@ These are not listed automatically on the Rules page — enter the exact tool na
 
     - The **Action** type
     - The **Agents**, **Servers / Sources**, and **Tools** that the rule should apply to
-    - (AI Evaluation Action only) The **Evaluation Model** that reviews matching tool calls against the agent's constitution and decides whether to approve, deny, escalate to a human, or defer to the next rule. ([Connect ValidMind](connect-validmind.md), [Configure LLM provideres](configure-llm-providers.md))
+    - (AI Evaluation Action only) The **Evaluation Model** that reviews matching tool calls against the agent's constitution and decides whether to approve, deny, escalate to a human, or defer to the next rule. ([Connect ValidMind](connect-validmind.md), [Configure LLM providers](configure-llm-providers.md))
     - (Optional) The rule **Description**
 
 3. To turn rules on or off:
@@ -108,7 +108,7 @@ These are not listed automatically on the Rules page — enter the exact tool na
     - **&#8743;** to move the rule up.
     - **&#8744;** to move the rule down.
 
-Changes to rule ordering is saved automatically.
+Changes to rule ordering are saved automatically.
 
 ## Delete rules
 
@@ -116,8 +116,11 @@ Changes to rule ordering is saved automatically.
 Deleting a rule is permanent and cannot be undone.
 :::
 
+1. In Atryum, click **Rules** in the left sidebar.
 
+2. Click the rule you want to delete.
 
+3. Click **Delete**, then select **OK** to confirm deletion.
 
 
 
