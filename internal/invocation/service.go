@@ -1075,49 +1075,6 @@ func (s *Service) ListTools(ctx context.Context, server string) ([]mcp.Tool, err
 	return tools, nil
 }
 
-// ResolveToolServer finds which upstream server provides the named tool.
-// Used in aggregate mode (no server in URL) to route tools/call correctly.
-func (s *Service) ResolveToolServer(ctx context.Context, toolName string) (string, error) {
-	upstreams, err := s.resolver.ListAll(ctx)
-	if err != nil {
-		return "", err
-	}
-	for _, upstream := range upstreams {
-		tctx, cancel := context.WithTimeout(ctx, s.defaultTimeout)
-		tools, err := s.client.ListTools(tctx, upstream)
-		cancel()
-		if err != nil {
-			continue
-		}
-		for _, t := range tools {
-			if t.Name == toolName {
-				return upstream.Name, nil
-			}
-		}
-	}
-	return "", fmt.Errorf("no server found for tool %q", toolName)
-}
-
-// ListAllTools aggregates tools from every enabled upstream. Used when the MCP
-// client connects to the root /mcp endpoint without specifying a server name.
-func (s *Service) ListAllTools(ctx context.Context) ([]mcp.Tool, error) {
-	upstreams, err := s.resolver.ListAll(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var all []mcp.Tool
-	for _, upstream := range upstreams {
-		tctx, cancel := context.WithTimeout(ctx, s.defaultTimeout)
-		tools, err := s.client.ListTools(tctx, upstream)
-		cancel()
-		if err != nil {
-			continue // skip unreachable servers rather than failing the whole list
-		}
-		all = append(all, tools...)
-	}
-	return all, nil
-}
-
 func (s *Service) Get(ctx context.Context, id string) (InvocationResponse, error) {
 	inv, err := s.invocations.Get(ctx, id)
 	if err != nil {

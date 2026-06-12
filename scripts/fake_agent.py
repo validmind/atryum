@@ -40,9 +40,6 @@ Examples
   # Pretend to be a specific harness:
   python fake_agent.py mcp --client-name cursor --client-version 0.45.7 --list-tools
 
-  # Aggregate /mcp/ endpoint (every server's tools merged):
-  python fake_agent.py mcp '' --list-tools
-
 Config (env or flags):
   ATRYUM_URL        base url, default http://localhost:8080
   ATRYUM_MCP_SERVER default MCP server name, default "calc-mcp"
@@ -415,7 +412,7 @@ def run_mcp(
     if bearer:
         headers["Authorization"] = f"Bearer {bearer}"
 
-    print(f"mcp: server={server or '(aggregate)'} client={client_name}/{client_version}")
+    print(f"mcp: server={server} client={client_name}/{client_version}")
 
     # 1. initialize
     init = mcp_call(
@@ -519,10 +516,7 @@ def main(argv: list[str] | None = None) -> int:
         "server",
         nargs="?",
         default=DEFAULT_MCP_SERVER,
-        help=(
-            "MCP server name to talk to "
-            f"(default {DEFAULT_MCP_SERVER!r}; pass empty string '' for aggregate /mcp/)"
-        ),
+        help=f"MCP server name to talk to (default {DEFAULT_MCP_SERVER!r})",
     )
     pm.add_argument("--tool", default=None, help="tool name for tools/call")
     pm.add_argument(
@@ -570,11 +564,11 @@ def main(argv: list[str] | None = None) -> int:
             poll_ms=args.poll_ms,
         )
     elif args.mode == "mcp":
-        # Empty string explicitly opts into the aggregate /mcp/ route.
-        server = args.server if args.server != "" else None
+        if args.server == "":
+            raise SystemExit("mcp server name is required; use /mcp/{server}")
         run_mcp(
             base=args.base,
-            server=server,
+            server=args.server,
             tool=args.tool,
             arguments=_parse_json_arg(args.arguments, "arguments"),
             list_tools=args.list_tools,
