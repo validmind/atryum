@@ -2694,6 +2694,15 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
+		if req.AgentIDs != nil && len(req.AgentIDs) > 0 {
+			if conflictID, ownerName, err := h.agentsRepo.CheckAgentIDConflict(r.Context(), id, req.AgentIDs); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to check agent ID conflicts")
+				return
+			} else if conflictID != "" {
+				writeError(w, http.StatusConflict, fmt.Sprintf("agent ID %q is already claimed by agent %q", conflictID, ownerName))
+				return
+			}
+		}
 		if err := h.agentsRepo.UpdateEnabled(r.Context(), id, req.Enabled); err != nil {
 			status := http.StatusInternalServerError
 			if err == sql.ErrNoRows {
@@ -2703,15 +2712,6 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if req.AgentIDs != nil {
-			if len(req.AgentIDs) > 0 {
-				if conflictID, ownerName, err := h.agentsRepo.CheckAgentIDConflict(r.Context(), id, req.AgentIDs); err != nil {
-					writeError(w, http.StatusInternalServerError, "failed to check agent ID conflicts")
-					return
-				} else if conflictID != "" {
-					writeError(w, http.StatusConflict, fmt.Sprintf("agent ID %q is already claimed by agent %q", conflictID, ownerName))
-					return
-				}
-			}
 			idsJSON, err := json.Marshal(req.AgentIDs)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "failed to encode agent_ids")
