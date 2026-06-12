@@ -2,12 +2,12 @@
 
 Connect your coding agents to Atryum, allowing Atryum to review tool invocations before your agents run them.
 
-Connect your coding agents to Atryum so tool invocations pass through Atryum before they run. Atryum evaluates each call against your rules, routes calls that need review to human approval, and records every outcome in the invocation audit log.
+Connect your coding agents to Atryum so tool invocations pass through Atryum before they run. Atryum evaluates each call against your rules ([Rules](rules.md)), routes calls that need review to human approval, and records every outcome in the invocation audit log ([Invocations](invocations.md)).
 
 
 ## Connect Cursor and Claude code
 
-The hooks command currently supports direct setup for Cursor and Claude Code. To retrieve the available setup options for each supported coding agent:
+The hooks command currently supports direct setup for [Cursor](https://cursor.com) and [Claude Code](https://www.anthropic.com/claude-code). To retrieve the available setup options for each supported coding agent:
 
 ```bash
 ./atryum hooks --help
@@ -27,52 +27,71 @@ The hooks command currently supports direct setup for Cursor and Claude Code. To
 
 ## Connect other coding agents
 
-Use this path for agents that connect through Atryum's Model Context Protocol (MCP) proxy instead of the hook installers above. Your agent sends tool calls to Atryum; Atryum evaluates each call against your rules and forwards approved calls to the upstream MCP server registered under **Servers**.
+Use this path for agents that connect through Atryum's Model Context Protocol (MCP) proxy instead of the hook installers above. Your agent sends tool calls to Atryum — Atryum evaluates each call against your rules and forwards approved calls to the upstream MCP server registered.
 
-Amp, Pi, Codex, and other harness integrations use this path. Claude Code can use hooks ([Connect Cursor and Claude code](#connect-cursor-and-claude-code)) or the MCP proxy — see the [Claude Code example](https://github.com/validmind/atryum/tree/main/examples/claude-code-hook) for the MCP setup.
+[Amp](https://ampcode.com), [Pi](https://pi.dev), [Codex](https://openai.com/codex), and other harness integrations use this path. [Claude Code](https://www.anthropic.com/claude-code) can use hooks ([Connect Cursor and Claude code](#connect-cursor-and-claude-code)) or the MCP proxy — refer to the [Claude Code example](https://github.com/validmind/atryum/tree/main/examples/claude-code-hook) for the full MCP setup.
 
 ### Point your agent at the MCP proxy
 
-Add a standard MCP connection entry wherever your agent expects it and point it at:
+1. Register the upstream server in Atryum before connecting your agent ([Connect MCP servers](connect-mcp-servers.md)). Skip this if your server is already registered — for example, the demo `calc` server from the [Quickstart](quickstart.md).
 
-```text
-http://<atryum-host-and-port>/mcp/<server_name>
-```
+2. In your agent's MCP settings, add a standard MCP connection entry and point it at:
 
-- Replace `<atryum-host-and-port>` with your Atryum base URL. The default local address is `localhost:8080`.
-- Replace `<server_name>` with the name you gave the MCP server under **Servers** in the Atryum UI.
+    ```text
+    http://<atryum-host-and-port>/mcp/<server_name>
+    ```
 
-Register the upstream server in Atryum before connecting your agent ([Connect MCP servers](connect-mcp-servers.md)). Skip this if your server is already registered — for example, the demo `calc` server from [Quickstart](quickstart.md).
+3. Replace `<atryum-host-and-port>` with your Atryum base URL. The default local address is `localhost:8080`.
+
+4. Replace `<server_name>` with the name you gave the MCP server under **Servers** in the Atryum platform user interface — for example, `calc` for the demo calculator server.
 
 ### Set environment variables
 
-Before starting your agent, export these environment variables in the same shell session:
+1. Open the terminal session you will use to start your agent.
 
-- **ATRYUM_URL** — Base URL of your Atryum server. Defaults to `http://localhost:8080`. Change this when Atryum runs on another host or port.
-- **ATRYUM_AGENT_ID** — Self-declared agent identifier that Atryum matches against Agent Record **Agent IDs**. Leave this unset if you do not need invocations tagged to a specific agent record.
+2. Export **ATRYUM_URL** — the base URL of your Atryum server:
 
-For example:
+    ```bash
+    export ATRYUM_URL=http://localhost:8080
+    ```
 
-```bash
-export ATRYUM_URL=http://localhost:8080
-export ATRYUM_AGENT_ID=amp-local
-```
+    Change the host or port when Atryum runs elsewhere. When unset, integrations default to `http://localhost:8080`.
 
-Optionally, set these variables to label the harness in Atryum:
+3. (Optional) Export **ATRYUM_AGENT_ID** — a self-declared agent identifier that Atryum matches against Agent Record **Agent IDs**. Leave this unset if you do not need invocations tagged to a specific agent record:
 
-- **ATRYUM_CLIENT_NAME** — Harness name shown in the Atryum agent column. Defaults to each integration's source label when unset.
-- **ATRYUM_CLIENT_VERSION** — Harness version shown in Atryum. Some integrations also read their native version variables, such as `AMP_VERSION` or `PI_VERSION`.
+    ```bash
+    export ATRYUM_AGENT_ID=amp-local
+    ```
 
-Make sure Atryum is running and reachable at **ATRYUM_URL** before you start your agent. Pending tool calls appear under **Invocations** in the Atryum UI.
+4. (Optional) Export these variables to label the harness in Atryum:
 
-### Tag invocations to an agent record
+    - **ATRYUM_CLIENT_NAME** — Harness name shown in the Atryum agent column. Defaults to each integration's source label when unset.
+    - **ATRYUM_CLIENT_VERSION** — Harness version shown in Atryum. Some integrations also read their native version variables, such as `AMP_VERSION` or `PI_VERSION`.
+
+5. Make sure Atryum is running and reachable at **ATRYUM_URL**, then start your agent from the same terminal session. Pending tool calls appear under **Invocations** in the Atryum platform user interface.
+
+### Tag invocations to agent records
 
 To apply agent-scoped rules or link invocations to a synced ValidMind record:
 
-1. In Atryum, open an Agent Record or create one.
-2. Add a stable string to its **Agent IDs** field, such as `amp-local` or `pi-alice`.
-3. Export the same string as **ATRYUM_AGENT_ID** before starting your agent.
-4. Try a tool invocation again. Atryum should attach the call to that Agent Record instead of leaving the agent column empty.
+1. In Atryum, click **Agents** in the left sidebar.
+
+2. Click on the agent you want to apply agent-scoped rules or link invocations to.
+
+3. Add a stable string to its **Agent IDs** field — type the ID and press **Enter** to add it, such as `amp-local` or `pi-alice`, then click **Save**.
+
+4. In the same terminal session where you will start your agent, export that string as **ATRYUM_AGENT_ID**:
+
+    ```bash
+    export ATRYUM_URL=http://localhost:8080
+    export ATRYUM_AGENT_ID=amp-local
+    ```
+
+    - Use the exact string you added in **Agent IDs** — matching is case-sensitive, so `amp-local` and `Amp-Local` are different IDs.
+    - Export both variables in the **same shell session** you use to launch your agent. If you export them in one terminal and start the agent from another, the harness will not see the values.
+    - **ATRYUM_URL** tells the integration where Atryum is running. It defaults to `http://localhost:8080` when unset; change the host or port if Atryum runs elsewhere. Refer to [Set environment variables](#set-environment-variables) for the full list of supported variables.
+
+5. Start your agent, then send a tool invocation again. Atryum should attach the call to that agent record instead of leaving the agent column empty.
 
 For how Atryum uses agent identity in no-auth and auth mode, refer to [Agent identity and authentication](#agent-identity-and-authentication).
 
@@ -138,7 +157,7 @@ For local development, a Keycloak container is included in the repository's Dock
 docker compose --profile dev up -d keycloak
 ```
 
-Keycloak runs at [`localhost:8089`](http://localhost:8089). On first startup, the `keycloak-init` service provisions the `atryum` realm, client scope, and Dynamic Client Registration policies. See [`keycloak/setup-realm.sh`](https://github.com/validmind/atryum/blob/main/keycloak/setup-realm.sh) for the equivalent manual setup steps.
+Keycloak runs at [`localhost:8089`](http://localhost:8089). On first startup, the `keycloak-init` service provisions the `atryum` realm, client scope, and Dynamic Client Registration policies. Refer to [`keycloak/setup-realm.sh`](https://github.com/validmind/atryum/blob/main/keycloak/setup-realm.sh) for the equivalent manual setup steps.
 
 For deployments outside local development, use your organization's identity provider (IdP) instead of the bundled Keycloak instance.
 
