@@ -95,12 +95,8 @@ Generate plain-language summaries for tool invocations so reviewers can triage c
 
 To use invocation summarization, you need at least one model source:
 
-- A **ValidMind** connection with at least one model configuration available in your organization
-- Or, at least one enabled **Local LLM Configuration**
-
-:::
-To connect ValidMind or local LLM configurations, refer to **[Integrations](integrations.md)**.
-:::
+- A **ValidMind** connection with at least one model configuration available in your organization ([Connect ValidMind](connect-validmind.md))
+- Or, at least one enabled **Local LLM Configuration** ([Configure LLM providers](configure-llm-providers.md))
 
 ### Set invocation summary model
 

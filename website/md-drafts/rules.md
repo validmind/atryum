@@ -87,7 +87,7 @@ These are not listed automatically on the Rules page — enter the exact tool na
 
     - The **Action** type
     - The **Agents**, **Servers / Sources**, and **Tools** that the rule should apply to
-    - (AI Evaluation Action only) The **Evaluation Model** that reviews matching tool calls against the agent's constitution and decides whether to approve, deny, escalate to a human, or defer to the next rule. ([Integrations](integrations.md))
+    - (AI Evaluation Action only) The **Evaluation Model** that reviews matching tool calls against the agent's constitution and decides whether to approve, deny, escalate to a human, or defer to the next rule. ([Connect ValidMind](connect-validmind.md), [Configure LLM provideres](configure-llm-providers.md))
     - (Optional) The rule **Description**
 
 3. To turn rules on or off:

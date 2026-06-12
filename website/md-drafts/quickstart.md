@@ -1,6 +1,6 @@
 # Quickstart
 
-Install and initialize Atryum, then integrate Atryum with your coding agents and ValidMind.
+Install and initialize Atryum, then integrate Atryum with ValidMind and your other agentic tools.
 
 ## Install & initialize Atryum
 
@@ -90,20 +90,39 @@ To learn more about setting up rules to manage invocations, refer to **[Rules](r
 
 ## Integrate Atryum
 
-After setting up your test calculator server, connect Atryum with your coding agents and ValidMind to streamline your agent oversight in one platform.
-
-:::
-To learn more about connecting ValidMind or agents with Atryum, refer to **[Integrations](integrations.md)**.
-:::
+After setting up your test calculator server, connect Atryum with ValidMind and the rest of your tools to streamline your agentic oversight in one platform.
 
 ### With ValidMind
 
-Sync your ValidMind organization's agent records to Atryum to map tool invocations to agent records and use agent-scoped rules.
+Sync your ValidMind organization's agent records to Atryum to map tool invocations to agent records, use agent-scoped rules, and power invocation summarization.
 
-Connecting agent records from ValidMind also allows you to optionally use Atryum to evaluate tool invocations against each agent’s *constitution*. A constitution is a plain-language policy that describes what an agent can do, what it cannot do, and which actions require human approval.
+Connecting agent records from ValidMind also allows you to optionally use Atryum to evaluate tool invocations against each agent’s *constitution*, a plain-language policy that describes what an agent can do, what it cannot do, and which actions require human approval.
+
+:::
+To learn more about connecting ValidMind with Atryum, refer to **[Connect ValidMind](connect-validmind.md)**.
+:::
+
 
 ### With coding agents
 
 Connect your coding agents to Atryum, allowing Atryum to review tool invocations before your agents run them. Hooks and extensions are available for [Claude Code](https://www.anthropic.com/claude-code), [Cursor](https://cursor.com), [Amp](https://ampcode.com), [Pi](https://pi.dev), and [Codex](https://openai.com/codex).
+
+:::
+To learn more about connecting agents with Atryum, refer to **[Connect agents](connect-agents.md)**.
+:::
+
+
+### With local LLM providers
+
+Set up local large language model (LLM) providers in Atryum to power AI evaluation rules and invocation summarization with models and credentials your team controls. Configuring local large language model (LLM) providers also allow you to use credentials and endpoints controlled by your team  to evaluate tool calls against each agent's *constitution*, a plain-language policy that describes what an agent can do, what it cannot do, and which actions require human approval.
+
+Local LLMs are useful for bring-your-own-key setups, on-prem or air-gapped deployments, and teams that want to register multiple models and pick the right one per rule or feature.
+
+:::
+To learn more about configuring local LLM providers in Atryum, refer to **[Configure LLM providers](configure-llm-providers.md)**.
+:::
+
+
+
 
 
