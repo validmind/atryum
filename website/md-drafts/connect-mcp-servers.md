@@ -9,7 +9,7 @@ Atryum supports two server modes:
 - **stdio** — Run a local MCP server as a subprocess (for example, the demo `calc` server from [Quickstart](quickstart.md)).
 - **HTTP** — Connect to a remote MCP server over the network. Atryum can authenticate on your behalf with a static bearer token or OAuth. Your coding agent never receives upstream credentials.
 
-After you register a server, point your coding agent at Atryum's proxy. For agent setup, refer to [Connect other coding agents](connect-agents.md#connect-other-coding-agents).
+After you register a server, point your coding agent at Atryum's proxy. For agent setup, refer to [Connect agents](connect-agents.md#connect-other-coding-agents).
 
 ## Add local MCP servers (stdio)
 

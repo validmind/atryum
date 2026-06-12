@@ -4,7 +4,7 @@ Connect your coding agents to Atryum, allowing Atryum to review tool invocations
 
 Connect your coding agents to Atryum so tool invocations pass through Atryum before they run. Atryum evaluates each call against your rules ([Rules](rules.md)), routes calls that need review to human approval, and records every outcome in the invocation audit log ([Invocations](invocations.md)).
 
-## Connect Cursor and Claude code
+## Connect Cursor and Claude Code
 
 The hooks command currently supports direct setup for [Cursor](https://cursor.com) and [Claude Code](https://www.anthropic.com/claude-code). To retrieve the available setup options for each supported coding agent:
 
@@ -18,23 +18,48 @@ The hooks command currently supports direct setup for [Cursor](https://cursor.co
 ./atryum hooks install cursor
 ```
 
-### Install Atryum hooks for Claude code
+Restart Cursor after changing hooks.
+
+### Install Atryum hooks for Claude Code
 
 ```bash
 ./atryum hooks install claude-code
 ```
 
+Restart Claude Code after changing hooks.
+
 ## Connect other coding agents
 
-Use this path for agents that connect through Atryum's Model Context Protocol (MCP) proxy instead of the hook installers above. Your agent sends tool calls to Atryum — Atryum evaluates each call against your rules and forwards approved calls to the upstream MCP server registered.
+Other coding agents connect to Atryum in one of two ways:
 
-:::
-[Amp](https://ampcode.com), [Pi](https://pi.dev), [Codex](https://openai.com/codex), and other harness integrations use this path. [Claude Code](https://www.anthropic.com/claude-code) can use hooks ([Connect Cursor and Claude code](#connect-cursor-and-claude-code)) or the MCP proxy — refer to the [Claude Code example](https://github.com/validmind/atryum/tree/main/examples/claude-code-hook) for the full MCP setup.
-:::
+- **Hook or extension** — The agent sends native tool calls to Atryum over the external invocation API. Atryum evaluates each call against your rules; the agent still runs the tool. Used by [Amp](https://ampcode.com), [Pi](https://pi.dev), and the [Claude Code hook example](https://github.com/validmind/atryum/tree/main/examples/claude-code-hook).
+- **MCP proxy** — The agent connects to Atryum's MCP proxy at `/mcp/<server_name>`. Atryum evaluates each call, then forwards approved calls to the upstream MCP server you registered. Used by [Codex](https://openai.com/codex) for MCP tool calls today.
 
-### Point your agent at the MCP proxy
+Hook and extension integrations do not use the MCP proxy URL steps below. MCP proxy integrations do not need `./atryum hooks install`.
 
-1. Register the upstream server in Atryum before connecting your agent ([Connect MCP servers](connect-mcp-servers.md)). Skip this if your server is already registered — for example, the demo `calc` server from the [Quickstart](quickstart.md).
+### Hook and extension agents
+
+Use this path for agents that gate native tools (shell, file edits, in-process tools) through Atryum before execution:
+
+1. Make sure Atryum is running and reachable ([Quickstart](quickstart.md)).
+
+2. Set `ATRYUM_URL` (and optionally `ATRYUM_AGENT_ID`) in the same terminal session where you start the agent. ([Set environment variables](#set-environment-variables))
+
+3. Follow the setup steps in the example for your agent:
+
+    - [Amp plugin](https://github.com/validmind/atryum/tree/main/examples/amp-plugin) — requires `PLUGINS=all` when starting Amp
+    - [Pi extension](https://github.com/validmind/atryum/tree/main/examples/pi-extension)
+    - [Claude Code hooks](https://github.com/validmind/atryum/tree/main/examples/claude-code-hook) — or use [Connect Cursor and Claude Code](#connect-cursor-and-claude-code) to install hooks automatically
+
+4. Start your agent from that terminal session. Pending tool calls appear under **Invocations** in the Atryum platform left sidebar.
+
+### Connect via MCP proxy
+
+Use this path when your agent speaks MCP and you want tool calls routed through Atryum to an upstream server registered under **Servers**:
+
+1. Register the upstream server in Atryum before connecting your agent. ([Connect MCP servers](connect-mcp-servers.md))
+
+    Skip this if your server is already registered.
 
 2. In your agent's MCP settings, add a standard MCP connection entry and point it at:
 
@@ -42,15 +67,19 @@ Use this path for agents that connect through Atryum's Model Context Protocol (M
     http://<atryum-host-and-port>/mcp/<server_name>
     ```
 
-3. Replace `<atryum-host-and-port>` with your Atryum base URL. The default local address is `localhost:8080`.
+3. Replace `<atryum-host-and-port>` with your Atryum base URL.
 
-4. Replace `<server_name>` with the name you gave the MCP server under **Servers** in the Atryum platform user interface — for example, `calc` for the demo calculator server.
+    The default local address is `localhost:8080`.
+
+4. Replace `<server_name>` with the name you gave the MCP server under **Servers** in the Atryum platform left sidebar.
+
+5. Set `ATRYUM_URL` (and optionally `ATRYUM_AGENT_ID`) in the same terminal session where you start your agent ([Set environment variables](#set-environment-variables)), then start your agent.
 
 ### Set environment variables
 
 1. Open the terminal session you will use to start your agent.
 
-2. Export **ATRYUM_URL** — the base URL of your Atryum server:
+2. Export `ATRYUM_URL` — the base URL of your Atryum server:
 
     ```bash
     export ATRYUM_URL=http://localhost:8080
@@ -58,30 +87,34 @@ Use this path for agents that connect through Atryum's Model Context Protocol (M
 
     Change the host or port when Atryum runs elsewhere. When unset, integrations default to `http://localhost:8080`.
 
-3. (Optional) Export **ATRYUM_AGENT_ID** — a self-declared agent identifier that Atryum matches against Agent Record **Agent IDs**. Leave this unset if you do not need invocations tagged to a specific agent record:
+3. (Optional) Export `ATRYUM_AGENT_ID` — a self-declared agent identifier that Atryum matches against Agent Record **Agent IDs**.
+
+    Leave this unset if you do not need invocations tagged to a specific agent record:
 
     ```bash
     export ATRYUM_AGENT_ID=amp-local
     ```
 
-4. (Optional) Export these variables to label the harness in Atryum:
+4. (Optional) Export these variables to label the agent in Atryum:
 
-    - **ATRYUM_CLIENT_NAME** — Harness name shown in the Atryum agent column. Defaults to each integration's source label when unset.
-    - **ATRYUM_CLIENT_VERSION** — Harness version shown in Atryum. Some integrations also read their native version variables, such as `AMP_VERSION` or `PI_VERSION`.
+    - **ATRYUM_CLIENT_NAME** — Harness name shown in the **Agent** column on **Invocations**. Defaults to each integration's source label when unset
+    - **ATRYUM_CLIENT_VERSION** — Harness version shown in Atryum. Some integrations also read their native version variables, such as `AMP_VERSION` or `PI_VERSION`
 
-5. Make sure Atryum is running and reachable at **ATRYUM_URL**, then start your agent from the same terminal session. Pending tool calls appear under **Invocations** in the Atryum platform user interface.
+5. Make sure Atryum is running and reachable at `ATRYUM_URL`, then start your agent from the same terminal session.
+
+    Pending tool calls appear under **Invocations** in the Atryum platform left sidebar
 
 ### Tag invocations to agent records
 
-To apply agent-scoped rules or link invocations to a synced ValidMind record:
+To apply agent-scoped rules, attach invocations to an agent record, or supply a constitution for local AI evaluation:
 
 1. In Atryum, click **Agents** in the left sidebar.
 
-2. Click on the agent you want to apply agent-scoped rules or link invocations to.
+2. Click **New Agent** to create a local agent record, or click an existing agent — including records synced from ValidMind with. ([Connect ValidMind](connect-validmind.md))
 
 3. Add a stable string to its **Agent IDs** field — type the ID and press **Enter** to add it, such as `amp-local` or `pi-alice`, then click **Save**.
 
-4. In the same terminal session where you will start your agent, export that string as **ATRYUM_AGENT_ID**:
+4. In the same terminal session where you will start your agent, export that string as `ATRYUM_AGENT_ID`:
 
     ```bash
     export ATRYUM_URL=http://localhost:8080
@@ -89,10 +122,13 @@ To apply agent-scoped rules or link invocations to a synced ValidMind record:
     ```
 
     - Use the exact string you added in **Agent IDs** — matching is case-sensitive, so `amp-local` and `Amp-Local` are different IDs.
-    - Export both variables in the **same shell session** you use to launch your agent. If you export them in one terminal and start the agent from another, the harness will not see the values.
-    - **ATRYUM_URL** tells the integration where Atryum is running. It defaults to `http://localhost:8080` when unset; change the host or port if Atryum runs elsewhere. Refer to [Set environment variables](#set-environment-variables) for the full list of supported variables.
+    - Export both variables in the **same shell session** you use to launch your agent. If you export them in one terminal and start the agent from another, the agent will not see the values.
+    - `ATRYUM_URL` tells the integration where Atryum is running. It defaults to `http://localhost:8080` when unset; change the host or port if Atryum runs elsewhere. Refer to [Set environment variables](#set-environment-variables) for the full list of supported variables.
+    - In auth mode, put the token's JWT `sub` claim or OAuth `client_id` in **Agent IDs** instead of a self-declared string. ([Agent identity and authentication](#agent-identity-and-authentication))
 
-5. Start your agent, then send a tool invocation again. Atryum should attach the call to that agent record instead of leaving the agent column empty.
+5. Start your agent, then send a tool invocation again.
+
+    Atryum should attach the call to that agent record in the <span style="font-variant: small-caps;">agent record</span> column on **Invocations** instead of leaving it empty.
 
 :::
 For how Atryum uses agent identity in no-auth and auth mode, refer to [Agent identity and authentication](#agent-identity-and-authentication).
@@ -100,13 +136,18 @@ For how Atryum uses agent identity in no-auth and auth mode, refer to [Agent ide
 
 ### Setup examples
 
-Refer to the repository examples for harness-specific configuration:
+Refer to the repository examples for agent-specific configuration:
+
+**Hook and extension integrations**
 
 - [Amp](https://github.com/validmind/atryum/tree/main/examples/amp-plugin)
 - [Pi](https://github.com/validmind/atryum/tree/main/examples/pi-extension)
+- [Claude Code (hooks)](https://github.com/validmind/atryum/tree/main/examples/claude-code-hook)
+
+**MCP proxy integrations**
+
 - [Codex](https://github.com/validmind/atryum/tree/main/examples/codex-mcp)
-- [Claude Code (MCP proxy)](https://github.com/validmind/atryum/tree/main/examples/claude-code-hook)
-- [Other harnesses](https://github.com/validmind/atryum/tree/main/examples)
+- [Other agents](https://github.com/validmind/atryum/tree/main/examples)
 
 ## Agent identity and authentication
 
@@ -119,20 +160,20 @@ Use no-auth mode for local development and quick setup. Use auth mode when you n
 
 ### No-auth mode
 
-In no-auth mode, agents and harnesses identify themselves with a self-declared agent ID. Atryum treats this as best-effort identity — useful for tagging invocations and applying agent-scoped rules, but not cryptographically verified.
+In no-auth mode, agents and agents identify themselves with a self-declared agent ID. Atryum treats this as best-effort identity — useful for tagging invocations and applying agent-scoped rules, but not cryptographically verified.
 
 - **MCP proxy clients** — Append `?agent_id=<your_id>` to the MCP proxy URL. For example: `http://localhost:8080/mcp/calc?agent_id=my-cool-id`
-- **Harness clients** — Send the agent ID through the integration API or set **ATRYUM_AGENT_ID** before starting your agent. For MCP proxy setup, environment variables, and Agent Record mapping, refer to [Connect other coding agents](#connect-other-coding-agents).
+- **Harness clients** — Send the agent ID through the integration API or set `ATRYUM_AGENT_ID` before starting your agent. For MCP proxy setup, environment variables, and Agent Record mapping, refer to [Connect other coding agents](#connect-other-coding-agents).
 
-Refer to the setup examples in the [`examples` directory](https://github.com/validmind/atryum/tree/main/examples) for harness-specific configuration.
+Refer to the setup examples in the [`examples` directory](https://github.com/validmind/atryum/tree/main/examples) for agent-specific configuration.
 
 :::
-Self-declared agent IDs are ignored as soon as inbound auth is configured. Do not rely on `?agent_id=` or **ATRYUM_AGENT_ID** when auth mode is enabled.
+Self-declared agent IDs are ignored as soon as inbound auth is configured. Do not rely on `?agent_id=` or `ATRYUM_AGENT_ID` when auth mode is enabled.
 :::
 
 ### Auth mode
 
-In auth mode, agents and harnesses must authenticate to Atryum with an OAuth bearer token. Atryum validates the token against one or more authorization servers configured in `atryum.toml`, then uses the token's **agent ID claim** — by default `client_id`, falling back to `azp`, then `sub` — as the authenticated agent ID when evaluating rules and recording invocations.
+In auth mode, agents and agents must authenticate to Atryum with an OAuth bearer token. Atryum validates the token against one or more authorization servers configured in `atryum.toml`, then uses the token's **agent ID claim** — by default `client_id`, falling back to `azp`, then `sub` — as the authenticated agent ID when evaluating rules and recording invocations.
 
 1. Add one or more `[[auth]]` blocks to your `atryum.toml` configuration file:
 
@@ -152,7 +193,7 @@ In auth mode, agents and harnesses must authenticate to Atryum with an OAuth bea
 
 2. Restart Atryum so it loads the updated configuration.
 
-3. Configure your agent or harness to obtain an OAuth access token from the same authorization server and present it as a bearer token when connecting to Atryum.
+3. Configure your agent to obtain an OAuth access token from the same authorization server and present it as a bearer token when connecting to Atryum.
 
 For local development, a [Keycloak](https://www.keycloak.org/) container is included in the repository's [Docker Compose](https://docs.docker.com/compose/) setup:
 
@@ -165,5 +206,5 @@ Keycloak runs at [`localhost:8089`](http://localhost:8089). On first startup, th
 For deployments outside local development, use your organization's identity provider (IdP) instead of the bundled Keycloak instance.
 
 :::
-Most MCP proxy integrations in the [`examples` directory](https://github.com/validmind/atryum/tree/main/examples) currently support no-auth mode only. When auth mode is enabled, configure your harness to send a bearer token rather than a query-parameter agent ID.
+Most hook and extension integrations in the [`examples` directory](https://github.com/validmind/atryum/tree/main/examples) currently support no-auth mode only. When auth mode is enabled, configure your agent to send a bearer token rather than a query-parameter agent ID.
 :::
