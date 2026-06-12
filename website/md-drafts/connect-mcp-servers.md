@@ -11,7 +11,7 @@ Atryum supports two server modes:
 
 After you register a server, point your coding agent at Atryum's proxy.
 
-::::
+:::
 For agent setup, refer to [Connect agents](connect-agents.md#connect-other-coding-agents).
 :::
 
@@ -85,7 +85,9 @@ Use HTTP mode when the upstream MCP server requires OAuth. Atryum holds the upst
 
 4. Make sure that **Enabled** is checked, then click **Create Server**.
 
-5. When the server requires OAuth, Atryum detects the authorization server and shows **Connect** (or **Reconnect** if credentials have expired). Click **Connect** and complete the browser authorization flow.
+5. After you click **Create Server**, Atryum detects the authorization server and shows **Connect** (or **Reconnect** if credentials have expired). **Connect** is not available on server creation — it appears only after the server is saved.
+
+    Click **Connect** and complete the browser authorization flow.
 
 6. After authorization succeeds, confirm that the server's <span style="font-variant: small-caps;">connection</span> and <span style="font-variant: small-caps;">auth</span> columns both show as <span style="font-variant: small-caps;">`ready`</span>.
 
@@ -98,7 +100,7 @@ For agent setup, refer to [Connect agents](connect-agents.md#connect-other-codin
 
 ### Use manual OAuth registration
 
-Use manual registration when the upstream server does not support Dynamic Client Registration — for example, [Slack](https://slack.com) or [GitHub](https://github.com) OAuth apps where you register a client out of band.
+Use manual registration when the upstream server does not support Dynamic Client Registration — for example, [Slack](https://slack.com) or [GitHub](https://github.com) OAuth apps where you register a client out of band. This applies to OAuth-protected HTTP servers only — not bearer token setup.
 
 1. Expand **Manual OAuth configuration (advanced)**.
 
@@ -114,7 +116,7 @@ Use manual registration when the upstream server does not support Dynamic Client
 
 3. Make sure that **Enabled** is checked.
 
-4. Click **Save**, then click **Connect** (or **Reconnect**) to complete authorization.
+4. Click **Create Server** (or **Save** when editing an existing server), then click **Connect** (or **Reconnect**) to complete authorization.
 
 When a server needs re-authentication, the auth status shows that action is required and the **Reconnect** button appears in the server detail panel.
 
@@ -152,7 +154,7 @@ Leave **Bearer Token** blank when using the OAuth **Connect** flow. Atryum hides
     - Check **Enabled** to turn the server on.
     - Uncheck **Enabled** to turn the server off.
 
-    Disabled servers remain in the list. Check **Show disabled** above the table to include them.
+    Disabled servers remain in the list but are not reachable through the MCP proxy. Check **Show disabled** above the table to include them.
 
 5. Click **Save** to apply your edits.
 
