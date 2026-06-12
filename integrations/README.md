@@ -11,7 +11,8 @@ via `POST /api/v1/admin/rules` (no `[policy]` provider).
 
 ```bash
 # From repo root
-just integration-test
+just integration-test                              # defaults: fake-agent / no-auth / calculator
+just integration-test codex no-auth calculator     # positional arguments
 just integration-test-matrix
 
 # Or directly
@@ -39,7 +40,7 @@ Harness LLM billing credentials (never committed):
 | Claude Code | `ANTHROPIC_API_KEY` | API billing |
 | Amp | `AMP_API_KEY` | Or existing `amp login` session |
 | Grok | `XAI_API_KEY` | |
-| Cursor | `CURSOR_API_KEY` | |
+| Cursor | `CURSOR_API_KEY` | Optional if `cursor-agent status` shows a subscription login |
 
 Harness→**Atryum** auth is configured separately (`no-auth`, `oauth-client-credentials`, `oauth-dcr`, …).
 
