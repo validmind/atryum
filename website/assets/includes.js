@@ -166,10 +166,20 @@
     });
   }
 
+  function resolveIncludeSrc(src, baseUrl) {
+    if (/^(https?:)?\/\//.test(src) || src.startsWith('data:')) {
+      return src;
+    }
+
+    return new URL(src, new URL(baseUrl, window.location.href)).href;
+  }
+
   function loadInclude(target) {
     var src = target.dataset.include;
+    var baseUrl = target.dataset.includeBase || window.location.href;
+    var resolved = resolveIncludeSrc(src, baseUrl);
 
-    return fetch(src)
+    return fetch(resolved)
       .then(function (response) {
         if (!response.ok) {
           throw new Error('Unable to load include: ' + src);
@@ -178,7 +188,12 @@
         return response.text();
       })
       .then(function (html) {
-        target.outerHTML = html;
+        var template = document.createElement('template');
+        template.innerHTML = html.trim();
+        template.content.querySelectorAll('[data-include]').forEach(function (nested) {
+          nested.dataset.includeBase = resolved;
+        });
+        target.outerHTML = template.innerHTML;
       });
   }
 
