@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "website/**"
+      - "Makefile"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -28,8 +29,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Configure Pages
         uses: actions/configure-pages@v5
+
+      - name: Build documentation
+        run: make docs
+
+      - name: Verify generated documentation is committed
+        run: git diff --exit-code -- website/documentation website/partials/docs-nav.html
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

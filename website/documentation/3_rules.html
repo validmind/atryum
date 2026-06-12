@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Rules · Atryum</title>
+<link rel="icon" type="image/svg+xml" href="../assets/atryum-logo-favicon.svg" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="../assets/style.css" />
+<script src="../assets/includes.js" defer></script>
+</head>
+<body data-page="3_rules">
+  <div data-include="../partials/header.html"></div>
+
+  <main>
+    <div class="docs-layout">
+      <aside class="docs-toc" aria-label="On this page">
+        <div class="docs-toc-inner">
+          <p class="docs-toc-label">On this page</p>
+          <nav class="docs-toc-nav" aria-label="Table of contents">
+          <ul>
+          <li><a href="#what-are-rules">What are rules?</a></li>
+          <li><a href="#rules-best-practices">Rules best practices</a></li>
+          <li class="docs-toc-h3"><a href="#rule-ordering">Rule ordering</a></li>
+          <li class="docs-toc-h3"><a href="#rule-matching">Rule matching</a></li>
+          <li class="docs-toc-h3"><a href="#harness-level-tools">Harness-level tools</a></li>
+          <li><a href="#create-rules">Create rules</a></li>
+          <li class="docs-toc-h3"><a href="#create-rules-from-existing-invocations">Create rules from existing invocations</a></li>
+          <li><a href="#edit-or-reorder-rules">Edit or reorder rules</a></li>
+          <li class="docs-toc-h3"><a href="#edit-rules">Edit rules</a></li>
+          <li class="docs-toc-h3"><a href="#reorder-rules">Reorder rules</a></li>
+          <li><a href="#delete-rules">Delete rules</a></li>
+          </ul>
+          </nav>
+        </div>
+      </aside>
+
+      <div class="docs-main">
+        <div class="docs-shell">
+          <div class="docs-kicker">Documentation</div>
+          <h1 class="docs-title">Rules</h1>
+          <p class="docs-intro">Configure rules that control how Atryum handles future tool calls.</p>
+
+          <article class="docs-content">
+        <h2 id="what-are-rules">What are rules?</h2>
+
+        <p>Rules are if/then policies that tell Atryum how to handle tool invocations. Rules let you reuse manual decisions for future tool calls that match the same conditions.</p>
+
+        <p>Rules support four types of actions:</p>
+
+        <ol><li><strong>Auto Approve</strong> — Allows matching tool calls to run without stopping for manual approval.</li><li><strong>Auto Deny</strong> — Blocks matching tool calls automatically.</li><li><strong>Human Approval</strong> — Pauses matching tool calls until a human approves or denies them.</li><li><strong>AI Evaluation</strong> — Sends matching tool calls for review against an agent's charter — requires Atryum to be synced to ValidMind or a configured local large language model (LLM). (<a href="1_integrations/1_connect-validmind.html">Connect ValidMind</a>, <a href="1_integrations/4_configure-llm-providers.html">Configure LLM providers</a>)</li></ol>
+
+        <h2 id="rules-best-practices">Rules best practices</h2>
+
+        <h3 id="rule-ordering">Rule ordering</h3>
+
+        <p>Rules are generally applied from top to bottom — the first matching rule wins, with the exception of AI Evaluation actions. In the case of AI evaluations, when the agent's charter does not apply to the tool call, the evaluation model can defer to the next matching rule instead of deciding.</p>
+
+        <p>As such, we recommend you curate four tiers of rules:</p>
+
+        <ol><li>At the top, put rules for tools you never want automatically run. Set their <strong>Action</strong>s to <code>Human Approval</code> or <code>Auto Deny</code>.</li><li>Then, put rules for list/read operations you want to automatically run. Set their <strong>Action</strong>s to <code>Auto Approve</code> — this speeds up agents and saves on tokens.</li><li>Below that, set your rules for <code>AI Evaluation</code> <strong>Action</strong>s.</li><li>Finally, set up an explicit blanket rule with the <strong>Action</strong> set to <code>Auto Deny</code> or <code>Human Approval</code>.</li></ol>
+
+        <h3 id="rule-matching">Rule matching</h3>
+
+        <ul><li>When no rule matches a tool call, Atryum uses the fallback action set in your <code>atryum.toml</code> configuration file under <code>policy.provider</code>. Available values:<ul><li><strong><code>always_approve</code></strong> — Run the tool call without stopping for approval.</li><li><strong><code>manual_approval</code></strong> — Pause the call until a human approves or denies it. Manual approval is the default when unset.</li><li><strong><code>always_deny</code></strong> — Block the tool call automatically.</li></ul></li><li>Each rule can apply to specific agents, Model Context Protocol (MCP) servers, and tools. Leave a field empty or use <code>*</code> to match all agents, servers, or tools in that category.</li></ul>
+
+        <h3 id="harness-level-tools">Harness-level tools</h3>
+
+        <p>Some tools are built into your coding agent's harness (for example, <code>read</code> and <code>write</code> in Cursor or Claude Code) rather than coming from MCP servers registered in Atryum.</p>
+
+        <p>These are not listed automatically on the Rules page — enter the exact tool name manually when creating a rule.</p>
+
+        <h2 id="create-rules">Create rules</h2>
+
+        <ol><li>In Atryum, click <strong>Rules</strong> in the left sidebar.</li><li>Click <strong>New Rule</strong>.</li><li>Select an <strong>Action</strong> type.</li><li>Select the <strong>Agents</strong>, <strong>Servers / Sources</strong>, and <strong>Tools</strong> that the rule should apply to.<br><p>(AI Evaluation Action only) Select the <strong>Evaluation Model</strong> — The large language model (LLM) that reviews matching tool calls against the agent's charter and decides whether to approve, deny, escalate to a human, or defer to the next rule. (<a href="1_integrations/1_connect-validmind.html">Connect ValidMind</a>, <a href="1_integrations/4_configure-llm-providers.html">Configure LLM providers</a>)</p></li><li>(Optional) Add a <strong>Description</strong> so you can remember why the rule exists.</li><li>Make sure that <strong>Enabled</strong> is checked, then click <strong>Create Rule</strong>.</li></ol>
+
+        <h3 id="create-rules-from-existing-invocations">Create rules from existing invocations</h3>
+
+        <ol><li>In Atryum, click <strong>Invocations</strong> in the left sidebar.</li><li>Click on the invocation you want to create a rule from.</li><li>On the invocation detail panel, select <strong>Create Rule From This</strong>.</li><li>Select the:<ul><li><strong>Action</strong> — What Atryum should do when the rule matches: Auto Approve or Auto Deny</li><li><strong>Server patterns</strong> — The MCP server or agent source names this rule applies to in comma-separated format. Leave this empty, or use <code>*</code>, to match all servers.</li><li><strong>Tool patterns</strong> — The tool names this rule applies to in comma-separated format. Leave this empty, or use <code>*</code>, to match all tools on the selected server.</li><li><strong>User pattern</strong> — The authenticated agent ID this rule applies to. Leave this empty, or use <code>*</code>, to match any agent.</li></ul></li><li>(Optional) Enter a <strong>Description</strong> so you can remember why the rule exists.</li><li>Click <strong>Save Rule</strong> to create your rule.</li></ol>
+
+        <h2 id="edit-or-reorder-rules">Edit or reorder rules</h2>
+
+        <h3 id="edit-rules">Edit rules</h3>
+
+        <ol><li>In Atryum, click <strong>Rules</strong> in the left sidebar.</li><li>Click on the rule you want to edit to make your changes to:<ul><li>The <strong>Action</strong> type</li><li>The <strong>Agents</strong>, <strong>Servers / Sources</strong>, and <strong>Tools</strong> that the rule should apply to</li><li>(AI Evaluation Action only) The <strong>Evaluation Model</strong> that reviews matching tool calls against the agent's charter and decides whether to approve, deny, escalate to a human, or defer to the next rule. (<a href="1_integrations/1_connect-validmind.html">Connect ValidMind</a>, <a href="1_integrations/4_configure-llm-providers.html">Configure LLM providers</a>)</li><li>(Optional) The rule <strong>Description</strong></li></ul></li><li>To turn rules on or off:<ul><li>Check <strong>Enabled</strong> to turn the rule on.</li><li>Uncheck <strong>Enabled</strong> to turn the rule off.</li></ul></li><li>Click <strong>Save</strong> to apply your changes.</li></ol>
+
+        <h3 id="reorder-rules">Reorder rules</h3>
+
+        <ol><li>In Atryum, click <strong>Rules</strong> in the left sidebar.</li><li>Hover over the rule you want to reorder.</li><li>Under the <span style="font-variant: small-caps;">order</span> column, click:<ul><li><strong>&#8743;</strong> to move the rule up.</li><li><strong>&#8744;</strong> to move the rule down.</li></ul></li></ol>
+
+        <p>Changes to rule ordering are saved automatically.</p>
+
+        <h2 id="delete-rules">Delete rules</h2>
+
+        <aside class="docs-callout"><p>Deleting a rule is permanent and cannot be undone.</p></aside>
+
+        <ol><li>In Atryum, click <strong>Rules</strong> in the left sidebar.</li><li>Click the rule you want to delete.</li><li>Click <strong>Delete</strong>, then select <strong>OK</strong> to confirm deletion.</li></ol>
+          </article>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <div data-include="../partials/footer.html"></div>
+</body>
+</html>

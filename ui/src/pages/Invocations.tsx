@@ -1570,7 +1570,7 @@ const Invocations: React.FC = () => {
                             isLoading={createRule.isLoading}
                             onClick={handleSaveRule}
                             data-testid="create-rule-modal-save-button">
-                            Save rule
+                            Save Rule
                           </Button>
                         </ModalFooter>
                       </ModalContent>

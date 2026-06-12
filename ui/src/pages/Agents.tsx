@@ -219,7 +219,7 @@ const CreateAgentModal: React.FC<CreateAgentModalProps> = ({ isOpen, onClose }) 
             isLoading={createMutation.isLoading}
             onClick={handleCreate}
           >
-            Create
+            Create Agent
           </Button>
         </ModalFooter>
       </ModalContent>

@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Connect ValidMind · Atryum</title>
+<link rel="icon" type="image/svg+xml" href="../../assets/atryum-logo-favicon.svg" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="../../assets/style.css" />
+<script src="../../assets/includes.js" defer></script>
+</head>
+<body data-page="1_integrations/1_connect-validmind">
+  <div data-include="../../partials/header.html"></div>
+
+  <main>
+    <div class="docs-layout">
+      <aside class="docs-toc" aria-label="On this page">
+        <div class="docs-toc-inner">
+          <p class="docs-toc-label">On this page</p>
+          <nav class="docs-toc-nav" aria-label="Table of contents">
+          <ul>
+          <li><a href="#prerequisites">Prerequisites</a></li>
+          <li><a href="#connect-atryum-to-validmind">Connect Atryum to ValidMind</a></li>
+          <li><a href="#set-up-validmind-ai-evaluation-rules">Set up ValidMind AI evaluation rules</a></li>
+          </ul>
+          </nav>
+        </div>
+      </aside>
+
+      <div class="docs-main">
+        <div class="docs-shell">
+          <div class="docs-kicker">Documentation / integrations</div>
+          <h1 class="docs-title">Connect ValidMind</h1>
+          <p class="docs-intro">Sync your ValidMind organization's agent records to Atryum to map tool invocations to agent records, use agent-scoped rules, and power invocation summarization.</p>
+
+          <article class="docs-content">
+        <p>In addition to mapping tool invocations to agent records, allowing Atryum to use agent-scoped rules (<a href="../3_rules.html">Rules</a>), and powering invocation summarization (<a href="../2_invocations.html">Invocations</a>), the ValidMind integration also allows you to use Atryum to evaluate tool invocations against each agent's <em>charter</em>:</p>
+
+        <ul><li>A charter is a plain-language policy that describes what an agent can do, what it cannot do, and which actions require human approval.</li><li>Charters can be as terse or expressive as you would like. It's good to call out specifics when you can but be sure to include general statements to give the LLM something to hold on to when seeing an unanticipated tool call.</li><li>Use our provided <a href="https://github.com/validmind/atryum/tree/main/.agents/skills/populate-charter"><code>populate-charter</code></a> skill to help you author effective charters.</li></ul>
+
+        <h2 id="prerequisites">Prerequisites</h2>
+
+        <p>Before connecting Atryum to ValidMind:</p>
+
+        <ul class="docs-checklist"><li>Set up a ValidMind record type for AI agents if one does not already exist. (<a href="https://docs.validmind.ai/guide/inventory/manage-inventory-record-types.html">Manage inventory record types</a>)</li><li>Add a custom long text field to that record type for each agent's charter. (<a href="https://docs.validmind.ai/guide/inventory/manage-inventory-fields.html">Manage inventory fields</a>)</li><li>Create at least one record in that record type and fill in its charter field. (<a href="https://docs.validmind.ai/guide/inventory/register-records-in-inventory.html">Register records in the inventory</a>)</li><li>Make sure you have valid ValidMind API and secret keys for the organization you want Atryum to connect to. (<a href="https://docs.validmind.ai/guide/configuration/manage-your-profile.html#access-keys">Manage your profile</a>)</li></ul>
+
+        <h2 id="connect-atryum-to-validmind">Connect Atryum to ValidMind</h2>
+
+        <ol><li>Set up ValidMind for Atryum:<div class="code-block"><pre><code class="language-bash">./atryum setup validmind</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="./atryum setup validmind" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div></li><li>Follow the prompts and enter your:<ul><li><strong>ValidMind Base URL</strong> — The URL for the ValidMind organization you want Atryum to connect to. For example: <code>https://app.prod.validmind.ai/</code></li><li><strong>ValidMind API key</strong>  — Your organization API Key.</li><li><strong>ValidMind API secret</strong> — Your organization Secret Key.</li></ul></li><li>Atryum prints the path to your updated <code>atryum.toml</code> configuration file. Open the file and verify that it has been edited with your submitted values:<ul><li>On macOS, this is typically under <code>~/Library/Application Support/atryum/atryum.toml</code>.</li><li>On Linux, this is typically under <code>~/.config/atryum/atryum.toml</code>.</li></ul></li><li>Restart Atryum so it loads the updated ValidMind credentials:<br><p>a. In the terminal where Atryum is running, press <code>Ctrl+C</code> to stop it. b. Start Atryum again:</p>
+
+        <div class="code-block"><pre><code class="language-bash">    ./atryum run --init-servers</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="    ./atryum run --init-servers" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div></li><li>Within Atryum, click <strong>Settings</strong> in the left sidebar.</li><li>Under Agent Record Sync, select the:<ul><li>ValidMind <strong>Organization</strong> — The ValidMind organization to sync records from.</li><li>Organization <strong>Record Type</strong> — The record type that identifies your agent records.</li><li><strong>Charter Field</strong> — The custom long text field that stores each agent's policy.</li></ul></li><li>Click <strong>Save Settings</strong> to apply your changes.</li></ol>
+
+        <h2 id="set-up-validmind-ai-evaluation-rules">Set up ValidMind AI evaluation rules</h2>
+
+        <p>Create a rule in Atryum to evaluate matching tool invocations against the synced ValidMind agent's charter:</p>
+
+        <ol><li>In Atryum, click <strong>Rules</strong> in the left sidebar.</li><li>Click <strong>New Rule</strong>.</li><li>Under <strong>Action</strong>, select <code>AI Evaluation</code>.</li><li>Under <strong>Evaluation Model</strong>, select the ValidMind model configuration to use for the evaluation.</li><li>Under <strong>Agents</strong>, select the synced ValidMind agent records you want this rule to apply to. Leave this empty to match all agents.</li><li>Under <strong>Servers / Sources</strong>, select the servers or sources the rule should apply to. Leave this empty to match all servers.</li><li>Under <strong>Tools</strong>, select the tools the rule should apply to. Leave this empty to match all tools.</li><li>(Optional) Enter a <strong>Description</strong> so you can remember why the rule exists.</li><li>Make sure that <strong>Enabled</strong> is checked, then click <strong>Create Rule</strong>.</li><li>When a matching tool call arrives, Atryum sends the call and the agent's charter to the ValidMind evaluation model. The model returns a verdict for the invocation — approve, deny, escalate to a human, or defer to the next rule.</li><li>If Atryum cannot resolve the agent or its charter, Atryum denies the invocation.</li></ol>
+          </article>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <div data-include="../../partials/footer.html"></div>
+</body>
+</html>

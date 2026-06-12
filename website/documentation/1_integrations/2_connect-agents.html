@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Connect agents · Atryum</title>
+<link rel="icon" type="image/svg+xml" href="../../assets/atryum-logo-favicon.svg" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="../../assets/style.css" />
+<script src="../../assets/includes.js" defer></script>
+</head>
+<body data-page="1_integrations/2_connect-agents">
+  <div data-include="../../partials/header.html"></div>
+
+  <main>
+    <div class="docs-layout">
+      <aside class="docs-toc" aria-label="On this page">
+        <div class="docs-toc-inner">
+          <p class="docs-toc-label">On this page</p>
+          <nav class="docs-toc-nav" aria-label="Table of contents">
+          <ul>
+          <li><a href="#connect-cursor-and-claude-code">Connect Cursor and Claude Code</a></li>
+          <li class="docs-toc-h3"><a href="#install-atryum-hooks-for-cursor">Install Atryum hooks for Cursor</a></li>
+          <li class="docs-toc-h3"><a href="#install-atryum-hooks-for-claude-code">Install Atryum hooks for Claude Code</a></li>
+          <li><a href="#connect-other-coding-agents">Connect other coding agents</a></li>
+          <li class="docs-toc-h3"><a href="#connect-hook-and-extension-agents">Connect hook and extension agents</a></li>
+          <li class="docs-toc-h3"><a href="#connect-via-mcp-proxy">Connect via MCP proxy</a></li>
+          <li class="docs-toc-h3"><a href="#setup-examples">Setup examples</a></li>
+          <li><a href="#tag-invocations-to-agent-records">Tag invocations to agent records</a></li>
+          <li><a href="#edit-connected-coding-agents">Edit connected coding agents</a></li>
+          <li class="docs-toc-h3"><a href="#edit-cursor-and-claude-code-hooks">Edit Cursor and Claude Code hooks</a></li>
+          <li class="docs-toc-h3"><a href="#edit-hook-and-extension-agents">Edit hook and extension agents</a></li>
+          <li class="docs-toc-h3"><a href="#edit-mcp-proxy-connections">Edit MCP proxy connections</a></li>
+          <li class="docs-toc-h3"><a href="#edit-agent-records">Edit agent records</a></li>
+          <li class="docs-toc-h3"><a href="#disconnect-or-remove-agents">Disconnect or remove agents</a></li>
+          <li><a href="#agent-identity-and-authentication">Agent identity and authentication</a></li>
+          <li class="docs-toc-h3"><a href="#no-auth-mode">No-auth mode</a></li>
+          <li class="docs-toc-h3"><a href="#auth-mode">Auth mode</a></li>
+          </ul>
+          </nav>
+        </div>
+      </aside>
+
+      <div class="docs-main">
+        <div class="docs-shell">
+          <div class="docs-kicker">Documentation / integrations</div>
+          <h1 class="docs-title">Connect agents</h1>
+          <p class="docs-intro">Connect your coding agents to Atryum, allowing Atryum to review tool invocations before your agents run them.</p>
+
+          <article class="docs-content">
+        <p>Connect your coding agents to Atryum so tool invocations pass through Atryum before they run. Atryum evaluates each call against your rules (<a href="../3_rules.html">Rules</a>), routes calls that need review to human approval, and records every outcome in the invocation audit log (<a href="../2_invocations.html">Invocations</a>).</p>
+
+        <h2 id="connect-cursor-and-claude-code">Connect Cursor and Claude Code</h2>
+
+        <p>The hooks command currently supports direct setup for <a href="https://cursor.com">Cursor</a> and <a href="https://www.anthropic.com/claude-code">Claude Code</a>. To retrieve the available setup options for each supported coding agent:</p>
+
+        <div class="code-block"><pre><code class="language-bash">./atryum hooks --help</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="./atryum hooks --help" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
+
+        <h3 id="install-atryum-hooks-for-cursor">Install Atryum hooks for Cursor</h3>
+
+        <div class="code-block"><pre><code class="language-bash">./atryum hooks install cursor</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="./atryum hooks install cursor" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
+
+        <p>Restart Cursor after changing hooks.</p>
+
+        <h3 id="install-atryum-hooks-for-claude-code">Install Atryum hooks for Claude Code</h3>
+
+        <div class="code-block"><pre><code class="language-bash">./atryum hooks install claude-code</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="./atryum hooks install claude-code" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
+
+        <p>Restart Claude Code after changing hooks.</p>
+
+        <h2 id="connect-other-coding-agents">Connect other coding agents</h2>
+
+        <p>Other coding agents connect to Atryum in one of two ways:</p>
+
+        <ul><li><strong>Hook or extension</strong> — The agent sends native tool calls to Atryum over the external invocation API. Atryum evaluates each call against your rules; the agent still runs the tool. Used by <a href="https://ampcode.com">Amp</a>, <a href="https://pi.dev">Pi</a>, and the <a href="https://github.com/validmind/atryum/tree/main/examples/claude-code-hook">Claude Code hook example</a>.</li><li><strong>MCP proxy</strong> — The agent connects to Atryum's MCP proxy at <code>/mcp/&lt;server_name&gt;</code>. Atryum evaluates each call, then forwards approved calls to the upstream MCP server you registered. Used by <a href="https://openai.com/codex">Codex</a> for MCP tool calls today.</li></ul>
+
+        <p>Hook and extension integrations do not use the MCP proxy URL steps below. MCP proxy integrations do not need <code>./atryum hooks install</code>.</p>
+
+        <h3 id="connect-hook-and-extension-agents">Connect hook and extension agents</h3>
+
+        <p>Use this path for agents that gate native tools (shell, file edits, in-process tools) through Atryum before execution:</p>
+
+        <ol><li>Make sure Atryum is running and reachable (<a href="../1_quickstart.html">Quickstart</a>).</li><li>Set <code>ATRYUM_URL</code> (and optionally <code>ATRYUM_AGENT_ID</code>) in the same terminal session where you start the agent. (<a href="#set-environment-variables">Set environment variables</a>)</li><li>Follow the setup steps in the example for your agent:<ul><li><a href="https://github.com/validmind/atryum/tree/main/examples/amp-plugin">Amp plugin</a> — Requires <code>PLUGINS=all</code> when starting Amp</li><li><a href="https://github.com/validmind/atryum/tree/main/examples/pi-extension">Pi extension</a></li><li><a href="https://github.com/validmind/atryum/tree/main/examples/claude-code-hook">Claude Code hooks</a> — Or use <a href="#connect-cursor-and-claude-code">Connect Cursor and Claude Code</a> to install hooks automatically.</li></ul></li><li>Start your agent from that terminal session. Pending tool calls appear under <strong>Invocations</strong> in the Atryum platform left sidebar.</li></ol>
+
+        <h4 id="set-environment-variables">Set environment variables</h4>
+
+        <p>Use these variables for hook and extension integrations. MCP proxy clients do not read <code>ATRYUM_AGENT_ID</code> — tag agent identity with <code>?agent_id=</code> on the proxy URL instead.</p>
+
+        <ol><li>Open the terminal session you will use to start your agent.</li><li>Export <code>ATRYUM_URL</code> — the base URL of your Atryum server:<div class="code-block"><pre><code class="language-bash">export ATRYUM_URL=http://localhost:8080</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="export ATRYUM_URL=http://localhost:8080" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
+
+        <p>Change the host or port when Atryum runs elsewhere. When unset, integrations default to <code>http://localhost:8080</code>.</p></li><li>(Optional) Export <code>ATRYUM_AGENT_ID</code> — a self-declared agent identifier that Atryum matches against Agent Record <strong>Agent IDs</strong>.<br><p>Leave this unset if you do not need invocations tagged to a specific agent record:</p>
+
+        <div class="code-block"><pre><code class="language-bash">export ATRYUM_AGENT_ID=amp-local</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="export ATRYUM_AGENT_ID=amp-local" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div></li><li>(Optional) Export these variables to label the agent in Atryum:<ul><li><code>ATRYUM_CLIENT_NAME</code> — Harness name shown in the <strong>Agent</strong> column on <strong>Invocations</strong>. Defaults to each integration's source label when unset.</li><li><code>ATRYUM_CLIENT_VERSION</code> — Harness version shown in Atryum. Some integrations also read their native version variables, such as <code>AMP_VERSION</code> or <code>PI_VERSION</code>.</li></ul></li><li>Make sure Atryum is running and reachable at <code>ATRYUM_URL</code>, then start your agent from the same terminal session.</li></ol>
+
+        <h3 id="connect-via-mcp-proxy">Connect via MCP proxy</h3>
+
+        <p>Use this path when your agent speaks MCP and you want tool calls routed through Atryum to an upstream server registered under <strong>Servers</strong>:</p>
+
+        <ol><li>Register the upstream server in Atryum before connecting your agent. (<a href="3_connect-mcp-servers.html">Connect MCP servers</a>)<br><p>Skip this if your server is already registered.</p></li><li>In your agent's MCP settings, add a standard MCP connection entry and point it at:<div class="code-block"><pre><code class="language-text">http://&lt;atryum-host-and-port&gt;/mcp/&lt;server_name&gt;</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="http://&lt;atryum-host-and-port&gt;/mcp/&lt;server_name&gt;" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div></li><li>Replace <code>&lt;atryum-host-and-port&gt;</code> with your Atryum base URL.<br><p>The default local address is <code>localhost:8080</code>.</p></li><li>Replace <code>&lt;server_name&gt;</code> with the name you gave the MCP server under <strong>Servers</strong> in the Atryum platform left sidebar.</li><li>Start your agent. To tag invocations to an agent record in no-auth mode, append <code>?agent_id=&lt;your_id&gt;</code> to the MCP proxy URL — for example, <code>http://localhost:8080/mcp/calc?agent_id=amp-local</code>. (<a href="#agent-identity-and-authentication">Agent identity and authentication</a>)</li></ol>
+
+        <h3 id="setup-examples">Setup examples</h3>
+
+        <p>Refer to the repository examples for agent-specific configuration:</p>
+
+        <h4 id="hook-and-extension-integrations">Hook and extension integrations</h4>
+
+        <ul><li><a href="https://github.com/validmind/atryum/tree/main/examples/amp-plugin">Amp</a></li><li><a href="https://github.com/validmind/atryum/tree/main/examples/pi-extension">Pi</a></li><li><a href="https://github.com/validmind/atryum/tree/main/examples/claude-code-hook">Claude Code (hooks)</a></li></ul>
+
+        <h4 id="mcp-proxy-integrations">MCP proxy integrations</h4>
+
+        <ul><li><a href="https://github.com/validmind/atryum/tree/main/examples/codex-mcp">Codex</a></li><li><a href="https://github.com/validmind/atryum/tree/main/examples">Other agents</a></li></ul>
+
+        <h2 id="tag-invocations-to-agent-records">Tag invocations to agent records</h2>
+
+        <p>To apply agent-scoped rules, attach invocations to an agent record, or supply a charter for local AI evaluation:</p>
+
+        <ol><li>In Atryum, click <strong>Agents</strong> in the left sidebar.</li><li>Click <strong>New Agent</strong> to create a local agent record, or click an existing agent — including records synced from ValidMind. (<a href="1_connect-validmind.html">Connect ValidMind</a>)<br><p>If creating a new local agent:</p>
+
+        <p>a. Enter the:</p>
+
+        <ul><li><strong>Name</strong></li><li>(Optional) <strong>Description</strong></li><li>(Optional, but recommended) <strong>Charter</strong> — The rules and constraints governing this agent's behavior. Atryum uses this for local LLM-as-judge evaluation rules. (<a href="4_configure-llm-providers.html">Configure LLM providers</a>)</li></ul>
+
+        <p>b. Add a stable string to <strong>Agent IDs</strong> — Type the ID and press <strong>Enter</strong> to add it.</p>
+
+        <p>c. Make sure that <strong>Enabled</strong> is checked.</p>
+
+        <p>d. Click <strong>Save</strong>.</p></li><li>If you selected an existing agent instead, add a stable string to its <strong>Agent IDs</strong> field — type the ID and press <strong>Enter</strong> to add it, such as <code>amp-local</code> or <code>pi-alice</code>, then click <strong>Save</strong>.</li><li>Tell your agent which <strong>Agent IDs</strong> string to send:<br><p>a. <strong>Hook and extension agents</strong> — In the same terminal session where you will start your agent, export that string as <code>ATRYUM_AGENT_ID</code>:</p>
+
+        <div class="code-block"><pre><code class="language-bash">export ATRYUM_URL=http://localhost:8080
+export ATRYUM_AGENT_ID=amp-local</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="export ATRYUM_URL=http://localhost:8080&#10;export ATRYUM_AGENT_ID=amp-local" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
+
+        <ul><li>Use the exact string you added in <strong>Agent IDs</strong> — matching is case-sensitive, so <code>amp-local</code> and <code>Amp-Local</code> are different IDs.</li><li>Export both variables in the <strong>same shell session</strong> you use to launch your agent. If you export them in one terminal and start the agent from another, the agent will not see the values.</li><li><code>ATRYUM_URL</code> tells the integration where Atryum is running. It defaults to <code>http://localhost:8080</code> when unset; change the host or port if Atryum runs elsewhere. Refer to <a href="#set-environment-variables">Set environment variables</a> for the full list of supported variables.</li><li>In auth mode, put the token's JWT <code>sub</code> claim or OAuth <code>client_id</code> in <strong>Agent IDs</strong> instead of a self-declared string. (<a href="#agent-identity-and-authentication">Agent identity and authentication</a>)</li></ul>
+
+        <p>b. <strong>MCP proxy agents</strong> — Append the same string to your MCP proxy URL as <code>?agent_id=&lt;your_id&gt;</code> (for example, <code>http://localhost:8080/mcp/calc?agent_id=amp-local</code>).</p>
+
+        <ul><li>Use the exact string you added in <strong>Agent IDs</strong> — matching is case-sensitive, so <code>amp-local</code> and <code>Amp-Local</code> are different IDs.</li><li>In auth mode, put the token's JWT <code>sub</code> claim or OAuth <code>client_id</code> in <strong>Agent IDs</strong> instead of a self-declared string, and send a bearer token rather than a query-parameter agent ID. (<a href="#agent-identity-and-authentication">Agent identity and authentication</a>)</li></ul></li><li>Start your agent, then send a tool invocation again.<br><p>Atryum should attach the call to that agent record in the <span style="font-variant: small-caps;">agent record</span> column on <strong>Invocations</strong> instead of leaving it empty.</p></li></ol>
+
+        <aside class="docs-callout"><p>For how Atryum uses agent identity in no-auth and auth mode, refer to <a href="#agent-identity-and-authentication">Agent identity and authentication</a>.</p></aside>
+
+        <h2 id="edit-connected-coding-agents">Edit connected coding agents</h2>
+
+        <p>After you connect an agent, update its integration files, environment variables, or MCP settings on the machine where the agent runs. Update agents in the Atryum platform user interface when you need to change agent IDs, charters, or which record invocations map to.</p>
+
+        <h3 id="edit-cursor-and-claude-code-hooks">Edit Cursor and Claude Code hooks</h3>
+
+        <p>To refresh the shared hook script or re-apply hook entries after an Atryum upgrade:</p>
+
+        <div class="code-block"><pre><code class="language-bash">./atryum hooks install cursor</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="./atryum hooks install cursor" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
+
+        <div class="code-block"><pre><code class="language-bash">./atryum hooks install claude-code</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="./atryum hooks install claude-code" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
+
+        <p>Restart Cursor or Claude Code after changing hooks.</p>
+
+        <p>To change <code>ATRYUM_URL</code> or <code>ATRYUM_AGENT_ID</code>, export the new values in the terminal session where you start the agent, then restart the agent. The installed hook reads these at runtime — you do not need to reinstall hooks when only the values change.</p>
+
+        <h3 id="edit-hook-and-extension-agents">Edit hook and extension agents</h3>
+
+        <p>Amp, Pi, and manually configured Claude Code hooks follow the same pattern:</p>
+
+        <ol><li>Update <code>ATRYUM_URL</code>, <code>ATRYUM_AGENT_ID</code>, or optional label variables in the terminal session where you start the agent. (<a href="#set-environment-variables">Set environment variables</a>)</li><li>If you changed plugin or extension source files, copy the updated file from the repository example into your install path — for example <code>~/.config/amp/plugins/atryum.ts</code> or <code>~/.pi/agent/extensions/atryum/index.ts</code>.</li><li>Restart the agent from that terminal session so it picks up the changes.<br><p>Pi can reload extensions without a full restart when the extension is already installed — run <code>/reload</code> in an active Pi session.</p></li></ol>
+
+        <p>To retag invocations to a different agent record, update <strong>Agent IDs</strong> in Atryum and export the matching <code>ATRYUM_AGENT_ID</code> before restarting. (<a href="#tag-invocations-to-agent-records">Tag invocations to agent records</a>)</p>
+
+        <h3 id="edit-mcp-proxy-connections">Edit MCP proxy connections</h3>
+
+        <ol><li>Open your agent's MCP configuration file — for example <code>~/.codex/config.toml</code> for Codex.</li><li>Update the proxy URL when Atryum's host, port, upstream <strong>Servers</strong> name, or <code>?agent_id=</code> value changes:<div class="code-block"><pre><code class="language-text">http://&lt;atryum-host-and-port&gt;/mcp/&lt;server_name&gt;?agent_id=&lt;your_id&gt;</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="http://&lt;atryum-host-and-port&gt;/mcp/&lt;server_name&gt;?agent_id=&lt;your_id&gt;" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div></li><li>Restart your agent so it reconnects with the updated URL.</li></ol>
+
+        <p>When the upstream MCP server itself changes, edit the registration under <strong>Servers</strong> in Atryum. (<a href="3_connect-mcp-servers.html">Connect MCP servers</a>)</p>
+
+        <h3 id="edit-agent-records">Edit agent records</h3>
+
+        <ol><li>In Atryum, click <strong>Agents</strong> in the left sidebar.</li><li>Click the agent you want to edit.</li><li>Update the fields as desired:<ul><li><strong>Name</strong></li><li><strong>Description</strong></li><li><strong>Charter</strong> — Editable for local agent records only. Synced ValidMind records show the charter as read-only — edit the source field in ValidMind instead. (<a href="1_connect-validmind.html">Connect ValidMind</a>)</li><li><strong>Agent IDs</strong> — Type an ID and press <strong>Enter</strong> to add it. Remove individual IDs with the control on each tag.</li></ul></li><li>To turn the record on or off:<ul><li>Check <strong>Enabled</strong> to mark the agent record as active.</li><li>Uncheck <strong>Enabled</strong> to mark it inactive.</li></ul></li><li>Click <strong>Save</strong>.</li></ol>
+
+        <p>When you change <strong>Agent IDs</strong>, update <code>ATRYUM_AGENT_ID</code> or the <code>?agent_id=</code> query parameter on the MCP proxy URL to match, then restart the agent. (<a href="#tag-invocations-to-agent-records">Tag invocations to agent records</a>)</p>
+
+        <h3 id="disconnect-or-remove-agents">Disconnect or remove agents</h3>
+
+        <p><strong>Cursor and Claude Code</strong> — Remove Atryum hook commands:</p>
+
+        <div class="code-block"><pre><code class="language-bash">./atryum hooks uninstall cursor</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="./atryum hooks uninstall cursor" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
+
+        <div class="code-block"><pre><code class="language-bash">./atryum hooks uninstall claude-code</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="./atryum hooks uninstall claude-code" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
+
+        <p>Restart Cursor or Claude Code after uninstalling hooks. The shared hook script remains at <code>~/.atryum/hooks/atryum-hook.mjs</code> until you delete it manually.</p>
+
+        <ul><li><strong>Amp</strong> — Delete <code>atryum.ts</code> from <code>~/.config/amp/plugins/</code> or <code>.amp/plugins/</code> in your project.</li><li><strong>Pi</strong> — Delete <code>index.ts</code> from <code>~/.pi/agent/extensions/atryum/</code> or <code>.pi/extensions/atryum/</code> in your project.</li><li><strong>MCP proxy agents</strong> — Remove or comment out the Atryum MCP server entry in your agent's MCP configuration, then restart the agent.</li><li><strong>Local agent records</strong> — In Atryum, open the agent under <strong>Agents</strong> and click <strong>Delete</strong>. This action is permanent.</li></ul>
+
+        <p>Synced ValidMind agent records cannot be deleted from Atryum — remove them by changing Agent Record Sync settings or deleting the source record in ValidMind. (<a href="1_connect-validmind.html">Connect ValidMind</a>)</p>
+
+        <h2 id="agent-identity-and-authentication">Agent identity and authentication</h2>
+
+        <p>When coding agents connect to Atryum, they present an <em>agent identity</em> that Atryum uses to tag invocations and match rules (<a href="../3_rules.html">Rules</a>) scoped to specific agents. Atryum supports two inbound authentication modes:</p>
+
+        <ol><li><strong>No-auth mode</strong> — The default when no <code>[[auth]]</code> blocks are configured in <code>atryum.toml</code>. Agents self-declare an agent ID.</li><li><strong>Auth mode</strong> — Agents authenticate with OAuth bearer tokens. Atryum derives a verified agent ID from the token and ignores self-declared labels.</li></ol>
+
+        <p>Use no-auth mode for local development and quick setup. Use auth mode when you need verified agent identity for production rule matching and audit.</p>
+
+        <h3 id="no-auth-mode">No-auth mode</h3>
+
+        <p>In no-auth mode, agents identify themselves with a self-declared agent ID. Atryum treats this as best-effort identity — useful for tagging invocations and applying agent-scoped rules, but not cryptographically verified.</p>
+
+        <ul><li><strong>MCP proxy clients</strong> — Append <code>?agent_id=&lt;your_id&gt;</code> to the MCP proxy URL. For example: <code>http://localhost:8080/mcp/calc?agent_id=my-cool-id</code></li><li><strong>Hook and extension agents</strong> — Send the agent ID through the integration API or set <code>ATRYUM_AGENT_ID</code> before starting your agent.</li></ul>
+
+        <p>Refer to the setup examples in the <a href="https://github.com/validmind/atryum/tree/main/examples">GitHub <code>examples</code> directory</a> for agent-specific configuration.</p>
+
+        <aside class="docs-callout"><p>Self-declared agent IDs are ignored as soon as inbound auth is configured. Do not rely on <code>?agent_id=</code> or <code>ATRYUM_AGENT_ID</code> when auth mode is enabled.</p></aside>
+
+        <h3 id="auth-mode">Auth mode</h3>
+
+        <p>In auth mode, agents must authenticate to Atryum with an OAuth bearer token. Atryum validates the token against one or more authorization servers configured in <code>atryum.toml</code>, then uses the token's <strong>agent ID claim</strong> — by default <code>client_id</code>, falling back to <code>azp</code>, then <code>sub</code> — as the authenticated agent ID when evaluating rules and recording invocations.</p>
+
+        <ol><li>Add one or more <code>[[auth]]</code> blocks to your <code>atryum.toml</code> configuration file:<div class="code-block"><pre><code class="language-toml">[[auth]]
+enabled        = true
+issuer         = &quot;https://keycloak.example/realms/atryum&quot;
+audience       = &quot;atryum&quot;
+required_scope = &quot;atryum:mcp&quot;
+agent_id_claim = &quot;client_id&quot;</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="[[auth]]&#10;enabled        = true&#10;issuer         = &quot;https://keycloak.example/realms/atryum&quot;&#10;audience       = &quot;atryum&quot;&#10;required_scope = &quot;atryum:mcp&quot;&#10;agent_id_claim = &quot;client_id&quot;" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
+
+        <ul><li><strong>issuer</strong> — The OIDC issuer URL for your authorization server.</li><li><strong>audience</strong> — The audience Atryum expects on incoming tokens.</li><li><strong>required_scope</strong> — Optional. When set, tokens must include this scope.</li><li><strong>agent_id_claim</strong> — JWT claim Atryum uses as the authenticated agent ID for rule matching.</li></ul></li><li>Restart Atryum so it loads the updated configuration:<div class="code-block"><pre><code class="language-bash">    ./atryum run --init-servers</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="    ./atryum run --init-servers" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div></li><li>Configure your agent to obtain an OAuth access token from the same authorization server and present it as a bearer token when connecting to Atryum.</li></ol>
+
+        <p>For local development, a <a href="https://www.keycloak.org/">Keycloak</a> container is included in the repository's <a href="https://docs.docker.com/compose/">Docker Compose</a> setup:</p>
+
+        <div class="code-block"><pre><code class="language-bash">docker compose --profile dev up -d keycloak</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="docker compose --profile dev up -d keycloak" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
+
+        <p>Keycloak runs at <a href="http://localhost:8089"><code>localhost:8089</code></a>. On first startup, the <code>keycloak-init</code> service provisions the <code>atryum</code> realm, client scope, and Dynamic Client Registration policies. Refer to <a href="https://github.com/validmind/atryum/blob/main/keycloak/setup-realm.sh"><code>keycloak/setup-realm.sh</code></a> for the equivalent manual setup steps.</p>
+
+        <p>For deployments outside local development, use your organization's identity provider (IdP) instead of the bundled Keycloak instance.</p>
+
+        <aside class="docs-callout"><p>Most hook and extension integrations in the <a href="https://github.com/validmind/atryum/tree/main/examples">GitHub <code>examples</code> directory</a> currently support no-auth mode only. When auth mode is enabled, configure your agent to send a bearer token rather than a query-parameter agent ID.</p></aside>
+          </article>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <div data-include="../../partials/footer.html"></div>
+</body>
+</html>

@@ -22,6 +22,8 @@ docker-compose.override.yml
 # build
 atryum
 releases
+__pycache__/
+*.py[cod]
 
 # frontend build
 internal/api/web/assets/
