@@ -141,10 +141,6 @@ Section headings use the folder name with the numeric prefix removed (`1_integra
 
 Use **`NAV_LABEL_OVERRIDES`** in `scripts/md_to_html.py` only when a menu label should differ from the page `#` title (otherwise the H1 is used).
 
-### Quickstart install block
-
-The Quickstart page replaces the `### Download Atryum` section with the shared install partial from `partials/install-commands.html`. Edit install commands there — **not in the generated HTML.**
-
 ## Do NOT edit
 
 These files are generated or shared sitewide — change the source instead:
@@ -159,3 +155,7 @@ These are maintained manually (or usually, agentically...):
 - `index.html` — homepage
 - `partials/header.html`, `footer.html`, `install-commands.html`
 - `assets/style.css`, `assets/includes.js`, `assets/install.css`
+
+### Quickstart install block
+
+The Quickstart page replaces the `### Download Atryum` section with the shared install partial from `partials/install-commands.html`. Edit install commands there — **not in the generated HTML.**
