@@ -47,9 +47,9 @@ Use this path for agents that gate native tools (shell, file edits, in-process t
 
 3. Follow the setup steps in the example for your agent:
 
-    - [Amp plugin](https://github.com/validmind/atryum/tree/main/examples/amp-plugin) — requires `PLUGINS=all` when starting Amp
+    - [Amp plugin](https://github.com/validmind/atryum/tree/main/examples/amp-plugin) — Requires `PLUGINS=all` when starting Amp
     - [Pi extension](https://github.com/validmind/atryum/tree/main/examples/pi-extension)
-    - [Claude Code hooks](https://github.com/validmind/atryum/tree/main/examples/claude-code-hook) — or use [Connect Cursor and Claude Code](#connect-cursor-and-claude-code) to install hooks automatically
+    - [Claude Code hooks](https://github.com/validmind/atryum/tree/main/examples/claude-code-hook) — Or use [Connect Cursor and Claude Code](#connect-cursor-and-claude-code) to install hooks automatically.
 
 4. Start your agent from that terminal session. Pending tool calls appear under **Invocations** in the Atryum platform left sidebar.
 
@@ -102,7 +102,7 @@ Use this path when your agent speaks MCP and you want tool calls routed through 
 
 4. Replace `<server_name>` with the name you gave the MCP server under **Servers** in the Atryum platform left sidebar.
 
-5. Start your agent. To tag invocations to an agent record in no-auth mode, append `?agent_id=<your_id>` to the MCP proxy URL — for example, `http://localhost:8080/mcp/calc?agent_id=amp-local`. See [Agent identity and authentication](#agent-identity-and-authentication).
+5. Start your agent. To tag invocations to an agent record in no-auth mode, append `?agent_id=<your_id>` to the MCP proxy URL — for example, `http://localhost:8080/mcp/calc?agent_id=amp-local`. ([Agent identity and authentication](#agent-identity-and-authentication))
 
 ## Tag invocations to agent records
 
@@ -159,13 +159,13 @@ For how Atryum uses agent identity in no-auth and auth mode, refer to [Agent ide
 
 Refer to the repository examples for agent-specific configuration:
 
-**Hook and extension integrations**
+#### Hook and extension integrations
 
 - [Amp](https://github.com/validmind/atryum/tree/main/examples/amp-plugin)
 - [Pi](https://github.com/validmind/atryum/tree/main/examples/pi-extension)
 - [Claude Code (hooks)](https://github.com/validmind/atryum/tree/main/examples/claude-code-hook)
 
-**MCP proxy integrations**
+#### MCP proxy integrations
 
 - [Codex](https://github.com/validmind/atryum/tree/main/examples/codex-mcp)
 - [Other agents](https://github.com/validmind/atryum/tree/main/examples)
@@ -186,7 +186,7 @@ In no-auth mode, agents identify themselves with a self-declared agent ID. Atryu
 - **MCP proxy clients** — Append `?agent_id=<your_id>` to the MCP proxy URL. For example: `http://localhost:8080/mcp/calc?agent_id=my-cool-id`
 - **Harness clients** — Send the agent ID through the integration API or set `ATRYUM_AGENT_ID` before starting your agent. For MCP proxy setup, environment variables, and Agent Record mapping, refer to [Connect other coding agents](#connect-other-coding-agents).
 
-Refer to the setup examples in the [`examples` directory](https://github.com/validmind/atryum/tree/main/examples) for agent-specific configuration.
+Refer to the setup examples in the [GitHub `examples` directory](https://github.com/validmind/atryum/tree/main/examples) for agent-specific configuration.
 
 :::
 Self-declared agent IDs are ignored as soon as inbound auth is configured. Do not rely on `?agent_id=` or `ATRYUM_AGENT_ID` when auth mode is enabled.
@@ -212,7 +212,11 @@ In auth mode, agents must authenticate to Atryum with an OAuth bearer token. Atr
     - **required_scope** — Optional. When set, tokens must include this scope.
     - **agent_id_claim** — JWT claim Atryum uses as the authenticated agent ID for rule matching.
 
-2. Restart Atryum so it loads the updated configuration.
+2. Restart Atryum so it loads the updated configuration:
+
+        ```bash
+        ./atryum run --init-servers
+        ```
 
 3. Configure your agent to obtain an OAuth access token from the same authorization server and present it as a bearer token when connecting to Atryum.
 
@@ -227,5 +231,5 @@ Keycloak runs at [`localhost:8089`](http://localhost:8089). On first startup, th
 For deployments outside local development, use your organization's identity provider (IdP) instead of the bundled Keycloak instance.
 
 :::
-Most hook and extension integrations in the [`examples` directory](https://github.com/validmind/atryum/tree/main/examples) currently support no-auth mode only. When auth mode is enabled, configure your agent to send a bearer token rather than a query-parameter agent ID.
+Most hook and extension integrations in the [GitHub `examples` directory](https://github.com/validmind/atryum/tree/main/examples) currently support no-auth mode only. When auth mode is enabled, configure your agent to send a bearer token rather than a query-parameter agent ID.
 :::
