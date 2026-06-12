@@ -7,7 +7,7 @@ Generated on each run:
 
 Maintained manually (not generated):
   - website/index.html
-  - website/partials/header.html, footer.html, install-commands.html
+  - website/partials/header.html, footer.html
   - website/assets/*
 """
 
@@ -28,8 +28,6 @@ PARTIALS = ROOT / "partials"
 NAV_LABEL_OVERRIDES: dict[str, str] = {}
 
 CALLOUT_PLACEHOLDER = "__CALLOUT_{index}__"
-INSTALL_COMMANDS_PLACEHOLDER = "__INSTALL_COMMANDS__"
-QUICKSTART_INSTALL_HEADING = "download atryum"
 
 COPY_ICON_SVG = (
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
@@ -214,40 +212,6 @@ def inline_format(text: str) -> str:
         text,
     )
     return restore_html_entities(restore_html_spans(text))
-
-
-def inject_quickstart_install_partial(lines: list[str]) -> list[str]:
-    """Replace quickstart download commands with the shared install partial."""
-    result: list[str] = []
-    index = 0
-
-    while index < len(lines):
-        line = lines[index]
-        if (
-            line.startswith("### ")
-            and line.lstrip("# ").strip().lower() == QUICKSTART_INSTALL_HEADING
-        ):
-            result.append(line)
-            index += 1
-            while index < len(lines):
-                if lines[index].startswith("## ") or lines[index].startswith("### "):
-                    break
-                index += 1
-            result.append(INSTALL_COMMANDS_PLACEHOLDER)
-            continue
-
-        result.append(line)
-        index += 1
-
-    return result
-
-
-def render_install_commands() -> str:
-    return (
-        '<div class="install install--docs">\n'
-        f'          <div data-include="{_partials_prefix}/install-commands.html"></div>\n'
-        "        </div>"
-    )
 
 
 def extract_callouts(source: str) -> tuple[str, list[str]]:
@@ -545,11 +509,6 @@ def convert_blocks(lines: list[str]) -> str:
             index += 1
             continue
 
-        if line.strip() == INSTALL_COMMANDS_PLACEHOLDER:
-            html_parts.append(render_install_commands())
-            index += 1
-            continue
-
         if line.strip().startswith("```"):
             block, index = convert_codeblock(lines, index)
             html_parts.append(block)
@@ -771,8 +730,6 @@ def convert_file(path: Path) -> Path:
     while body_lines and not body_lines[0].strip():
         body_lines.pop(0)
 
-    if output_stem(path) == "quickstart":
-        body_lines = inject_quickstart_install_partial(body_lines)
     content_html = convert_blocks(body_lines)
     content_html = inject_callouts(content_html, callouts)
     toc_html = extract_toc(content_html)

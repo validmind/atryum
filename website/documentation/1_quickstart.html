@@ -48,9 +48,11 @@
 
         <h3 id="download-atryum">Download Atryum</h3>
 
-        <div class="install install--docs">
-          <div data-include="../partials/install-commands.html"></div>
-        </div>
+        <div class="code-block"><pre><code class="language-bash">curl -fsSL https://github.com/validmind/atryum/raw/main/install_atryum.sh | bash</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="curl -fsSL https://github.com/validmind/atryum/raw/main/install_atryum.sh | bash" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
+
+        <p>The install script downloads the latest Atryum release and selects the correct binary for your operating system and CPU architecture. Supported platforms are <a href="https://www.kernel.org/">Linux</a> and <a href="https://www.apple.com/macos/">macOS</a>, each on <code>amd64</code> (<code>x86_64</code>) or <code>arm64</code> (<code>aarch64</code>).</p>
+
+        <p><a href="https://www.microsoft.com/windows/">Microsoft Windows</a> is not supported natively — use <a href="https://learn.microsoft.com/en-us/windows/wsl/">Windows Subsystem for Linux (WSL)</a> as a workaround. Alternatively, clone the <a href="https://github.com/validmind/atryum">repository</a> and run Atryum with <a href="https://www.docker.com/">Docker</a> — refer to the repository <a href="https://github.com/validmind/atryum/blob/main/README.md#running">README</a> for <a href="https://docs.docker.com/compose/">Docker Compose</a> setup.</p>
 
         <h3 id="set-up-atryum-test-server">Set up Atryum test server</h3>
 

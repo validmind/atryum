@@ -8,17 +8,13 @@ Download Atryum and register a server in Atryum for testing.
 
 ### Download Atryum
 
-**Linux**
-
 ```bash
-curl -L https://github.com/validmind/atryum/releases/download/0.0.2/atryum-linux -o atryum && chmod +x atryum
+curl -fsSL https://github.com/validmind/atryum/raw/main/install_atryum.sh | bash
 ```
 
-**macOS**
+The install script downloads the latest Atryum release and selects the correct binary for your operating system and CPU architecture. Supported platforms are [Linux](https://www.kernel.org/) and [macOS](https://www.apple.com/macos/), each on `amd64` (`x86_64`) or `arm64` (`aarch64`).
 
-```bash
-curl -L https://github.com/validmind/atryum/releases/download/0.0.2/atryum-mac -o atryum && chmod +x atryum
-```
+[Microsoft Windows](https://www.microsoft.com/windows/) is not supported natively — use [Windows Subsystem for Linux (WSL)](https://learn.microsoft.com/en-us/windows/wsl/) as a workaround. Alternatively, clone the [repository](https://github.com/validmind/atryum) and run Atryum with [Docker](https://www.docker.com/) — refer to the repository [README](https://github.com/validmind/atryum/blob/main/README.md#running) for [Docker Compose](https://docs.docker.com/compose/) setup.
 
 ### Set up Atryum test server
 
