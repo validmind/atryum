@@ -1,0 +1,112 @@
+.install {
+  width: 100%;
+  max-width: 640px;
+}
+
+.install--docs {
+  margin: 18px 0 24px;
+}
+
+.install--hero {
+  margin-top: 44px;
+}
+
+.install-option + .install-option {
+  margin-top: 16px;
+}
+
+.install-label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--neutral-400);
+  margin-bottom: 12px;
+  text-align: left;
+}
+
+.install-platform {
+  margin-bottom: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--bs-800);
+  text-align: left;
+}
+
+.cmd {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--bs-950);
+  border: 1px solid var(--bs-900);
+  border-radius: var(--radius-lg);
+  padding: 16px 16px 16px 18px;
+  text-align: left;
+  box-shadow: 0 1px 2px rgba(5, 28, 32, 0.06);
+}
+
+.cmd code {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: #eaf6f7;
+  white-space: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.cmd code::-webkit-scrollbar {
+  display: none;
+}
+
+.cmd .prompt {
+  color: var(--bs-300);
+  user-select: none;
+  margin-right: 8px;
+}
+
+.copy-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 84px;
+  padding: 8px 12px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  color: #d8f7fa;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.copy-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.copy-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+.copy-btn.copied {
+  color: #fff;
+  background: var(--brand-500);
+  border-color: var(--brand-500);
+}
+
+@media (max-width: 600px) {
+  .cmd {
+    flex-wrap: wrap;
+  }
+
+  .cmd code {
+    white-space: normal;
+    word-break: break-all;
+  }
+}

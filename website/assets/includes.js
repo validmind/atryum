@@ -87,6 +87,30 @@
     });
   }
 
+  function initCopyButtons() {
+    document.querySelectorAll('.copy-btn').forEach(function (btn) {
+      if (btn.dataset.copyInit === 'true') {
+        return;
+      }
+
+      btn.dataset.copyInit = 'true';
+      var label = btn.querySelector('span');
+      var resetTimer;
+
+      btn.addEventListener('click', function () {
+        navigator.clipboard.writeText(btn.dataset.command).then(function () {
+          btn.classList.add('copied');
+          label.textContent = 'Copied';
+          clearTimeout(resetTimer);
+          resetTimer = setTimeout(function () {
+            btn.classList.remove('copied');
+            label.textContent = 'Copy';
+          }, 1800);
+        });
+      });
+    });
+  }
+
   function loadInclude(target) {
     var src = target.dataset.include;
 
@@ -103,10 +127,20 @@
       });
   }
 
-  Promise.all(
-    Array.prototype.map.call(document.querySelectorAll('[data-include]'), loadInclude)
-  ).then(function () {
+  function loadAllIncludes() {
+    var targets = document.querySelectorAll('[data-include]');
+    if (!targets.length) {
+      return Promise.resolve();
+    }
+
+    return Promise.all(
+      Array.prototype.map.call(targets, loadInclude)
+    ).then(loadAllIncludes);
+  }
+
+  loadAllIncludes().then(function () {
     setActiveNav();
     initToc();
+    initCopyButtons();
   });
 })();

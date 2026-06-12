@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Atryum — Tool approval server for agents</title>
 <link rel="icon" type="image/svg+xml" href="assets/atryum-logo-favicon.svg" />
+<link rel="stylesheet" href="assets/install.css" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -225,76 +226,6 @@
   }
   .subline .accent { color: var(--brand-400); font-weight: 500; }
 
-  /* ───────────────── Install block ───────────────── */
-  .install {
-    margin-top: 44px;
-    width: 100%;
-    max-width: 640px;
-  }
-  .install-option + .install-option {
-    margin-top: 16px;
-  }
-  .install-label {
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--neutral-400);
-    margin-bottom: 12px;
-  }
-  .install-platform {
-    margin-bottom: 10px;
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--bs-800);
-  }
-  .cmd {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    background: var(--bs-950);
-    border: 1px solid var(--bs-900);
-    border-radius: var(--radius-lg);
-    padding: 16px 16px 16px 18px;
-    text-align: left;
-    box-shadow: 0 1px 2px rgba(5, 28, 32, 0.06);
-  }
-  .cmd code {
-    flex: 1;
-    min-width: 0;
-    font-family: var(--font-mono);
-    font-size: 14px;
-    color: #eaf6f7;
-    white-space: nowrap;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-  .cmd code::-webkit-scrollbar { display: none; }
-  .cmd .prompt { color: var(--bs-300); user-select: none; margin-right: 8px; }
-  .cmd .pipe { color: var(--brand-300); }
-
-  .copy-btn {
-    flex-shrink: 0;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    min-width: 84px;
-    padding: 8px 12px;
-    font-family: var(--font-body);
-    font-size: 13px;
-    font-weight: 600;
-    color: #d8f7fa;
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    border-radius: var(--radius-md);
-    cursor: pointer;
-    transition: background 150ms ease, color 150ms ease;
-  }
-  .copy-btn:hover { background: rgba(255, 255, 255, 0.12); }
-  .copy-btn svg { width: 15px; height: 15px; }
-  .copy-btn.copied { color: #fff; background: var(--brand-500); border-color: var(--brand-500); }
-
   .hero-meta {
     margin-top: 22px;
     display: flex;
@@ -346,8 +277,6 @@
 
   @media (max-width: 600px) {
     header { padding: 0 18px; }
-    .cmd { flex-wrap: wrap; }
-    .cmd code { white-space: normal; word-break: break-all; }
     footer { flex-direction: column; align-items: flex-start; }
   }
 </style>
@@ -362,56 +291,14 @@
       <h1 class="tagline">The control plane for agent actions.</h1>
       <p class="subline">Self-hosted and lightweight. Every tool your agents call passes through one place to be approved, denied, and logged.</p>
 
-      <div class="install" id="install">
+      <div class="install install--hero" id="install">
         <div class="install-label">Install</div>
-        <div class="install-option">
-          <div class="install-platform">Linux</div>
-          <div class="cmd">
-            <code><span class="prompt">$</span>curl -L https://github.com/validmind/atryum/releases/download/0.0.2/atryum-linux -o atryum &amp;&amp; chmod +x atryum</code>
-            <button class="copy-btn" data-command="curl -L https://github.com/validmind/atryum/releases/download/0.0.2/atryum-linux-amd64 -o atryum && chmod +x atryum" aria-label="Copy Linux install command">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-              <span>Copy</span>
-            </button>
-          </div>
-        </div>
-        <div class="install-option">
-          <div class="install-platform">macOS</div>
-          <div class="cmd">
-            <code><span class="prompt">$</span>curl -L https://github.com/validmind/atryum/releases/download/0.0.2/atryum-darwin-arm64 -o atryum &amp;&amp; chmod +x atryum</code>
-            <button class="copy-btn" data-command="curl -L https://github.com/validmind/atryum/releases/download/0.0.2/atryum-mac -o atryum && chmod +x atryum" aria-label="Copy macOS install command">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-              <span>Copy</span>
-            </button>
-          </div>
-        </div>
+        <div data-include="partials/install-commands.html"></div>
       </div>
     </div>
   </main>
 
   <div data-include="partials/footer.html"></div>
-
-  <script>
-    (function () {
-      var buttons = document.querySelectorAll('.copy-btn');
-
-      buttons.forEach(function (btn) {
-        var label = btn.querySelector('span');
-        var resetTimer;
-
-        btn.addEventListener('click', function () {
-          navigator.clipboard.writeText(btn.dataset.command).then(function () {
-            btn.classList.add('copied');
-            label.textContent = 'Copied';
-            clearTimeout(resetTimer);
-            resetTimer = setTimeout(function () {
-              btn.classList.remove('copied');
-              label.textContent = 'Copy';
-            }, 1800);
-          });
-        });
-      });
-    })();
-  </script>
 
 </body>
 </html>

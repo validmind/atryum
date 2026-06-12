@@ -23,6 +23,7 @@ PAGE_SLUGS = {
 }
 
 CALLOUT_PLACEHOLDER = "__CALLOUT_{index}__"
+INSTALL_COMMANDS_PLACEHOLDER = "__INSTALL_COMMANDS__"
 
 
 def slugify(text: str) -> str:
@@ -71,6 +72,36 @@ def inline_format(text: str) -> str:
         text,
     )
     return restore_html_entities(restore_html_spans(text))
+
+
+def replace_download_section(lines: list[str]) -> list[str]:
+    result: list[str] = []
+    index = 0
+
+    while index < len(lines):
+        line = lines[index]
+        if line.startswith("### ") and line.lstrip("# ").strip().lower() == "download atryum":
+            result.append(line)
+            index += 1
+            while index < len(lines):
+                if lines[index].startswith("## ") or lines[index].startswith("### "):
+                    break
+                index += 1
+            result.append(INSTALL_COMMANDS_PLACEHOLDER)
+            continue
+
+        result.append(line)
+        index += 1
+
+    return result
+
+
+def render_install_commands() -> str:
+    return (
+        '<div class="install install--docs">\n'
+        '          <div data-include="partials/install-commands.html"></div>\n'
+        "        </div>"
+    )
 
 
 def extract_callouts(source: str) -> tuple[str, list[str]]:
@@ -281,6 +312,11 @@ def convert_blocks(lines: list[str]) -> str:
             index += 1
             continue
 
+        if line.strip() == INSTALL_COMMANDS_PLACEHOLDER:
+            html_parts.append(render_install_commands())
+            index += 1
+            continue
+
         if line.strip().startswith("```"):
             block, index = convert_codeblock(lines, index)
             html_parts.append(block)
@@ -426,6 +462,7 @@ def convert_file(path: Path) -> None:
     while body_lines and not body_lines[0].strip():
         body_lines.pop(0)
 
+    body_lines = replace_download_section(body_lines)
     content_html = convert_blocks(body_lines)
     content_html = inject_callouts(content_html, callouts)
     toc_html = extract_toc(content_html)
