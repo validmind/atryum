@@ -230,12 +230,29 @@ def dedent_block_lines(lines: list[str], base_indent: int) -> list[str]:
 
 def collect_list_item_body(lines: list[str], index: int, base_indent: int) -> tuple[list[str], int]:
     body_lines: list[str] = []
+    in_fence = False
     while index < len(lines):
         line = lines[index]
+        stripped = line.strip()
+
+        if in_fence:
+            body_lines.append(line)
+            if stripped.startswith("```"):
+                in_fence = False
+            index += 1
+            continue
+
         if is_list_item_line(line):
             _, indent = list_item_content(line)
             if indent == base_indent:
                 break
+
+        if stripped.startswith("```"):
+            in_fence = True
+            body_lines.append(line)
+            index += 1
+            continue
+
         if not is_continued_list_block(line, base_indent):
             break
         body_lines.append(line)

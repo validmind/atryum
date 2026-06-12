@@ -45,7 +45,7 @@ Before connecting Atryum to ValidMind:
         ./atryum run --init-servers
         ```
 
-5. In your browser, navigate to [`localhost:8080/ui/settings`](http://localhost:8080/ui/settings).
+5. Within Atryum, click **Settings** in the left sidebar.
 
 6. Under Agent Record Sync, select the:
 

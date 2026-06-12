@@ -23,6 +23,7 @@
           <ul>
           <li><a href="#prerequisites">Prerequisites</a></li>
           <li><a href="#connect-atryum-to-validmind">Connect Atryum to ValidMind</a></li>
+          <li><a href="#set-up-validmind-ai-evaluation-rules">Set up ValidMind AI evaluation rules</a></li>
           </ul>
           </nav>
         </div>
@@ -53,63 +54,15 @@
 
         <h2 id="connect-atryum-to-validmind">Connect Atryum to ValidMind</h2>
 
-        <ol><li>Set up ValidMind for Atryum:<pre><code class="language-bash"></code></pre></li></ol>
+        <ol><li>Set up ValidMind for Atryum:<div class="code-block"><pre><code class="language-bash">./atryum setup validmind</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="./atryum setup validmind" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div></li><li>Follow the prompts and enter your:<ul><li><strong>ValidMind Base URL</strong> — The URL for the ValidMind organization you want Atryum to connect to. For example: <code>https://app.prod.validmind.ai/</code></li><li><strong>ValidMind API key</strong>  — Your organization API Key.</li><li><strong>ValidMind API secret</strong> — Your organization Secret Key.</li></ul></li><li>Atryum prints the path to your updated <code>atryum.toml</code> configuration file. Open the file and verify that it has been edited with your submitted values:<ul><li>On macOS, this is typically under <code>~/Library/Application Support/atryum/atryum.toml</code>.</li><li>On Linux, this is typically under <code>~/.config/atryum/atryum.toml</code>.</li></ul></li><li>Restart Atryum so it loads the updated ValidMind credentials:<br><p>a. In the terminal where Atryum is running, press <code>Ctrl+C</code> to stop it. b. Start Atryum again:</p>
 
-        <p>./atryum setup validmind</p>
+        <div class="code-block"><pre><code class="language-bash">    ./atryum run --init-servers</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="    ./atryum run --init-servers" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div></li><li>Within Atryum, click <strong>Settings</strong> in the left sidebar.</li><li>Under Agent Record Sync, select the:<ul><li>ValidMind <strong>Organization</strong> — The ValidMind organization to sync records from.</li><li>Organization <strong>Record Type</strong> — The record type that identifies your agent records.</li><li><strong>Constitution Field</strong> — The custom long text field that stores each agent's policy.</li></ul></li><li>Click <strong>Save Settings</strong> to apply your changes.</li></ol>
 
-        <div class="code-block"><pre><code class="language-text">
-2. Follow the prompts and enter your:
+        <h2 id="set-up-validmind-ai-evaluation-rules">Set up ValidMind AI evaluation rules</h2>
 
-    - **ValidMind Base URL** — The URL for the ValidMind organization you want Atryum to connect to. For example: `https://app.prod.validmind.ai/`
-    - **ValidMind API key**  — Your organization API Key.
-    - **ValidMind API secret** — Your organization Secret Key.
+        <p>Create a rule in Atryum to evaluate matching tool invocations against the synced ValidMind agent's constitution:</p>
 
-3. Atryum prints the path to your updated `atryum.toml` configuration file. Open the file and verify that it has been edited with your submitted values:
-    - On macOS, this is typically under `~/Library/Application Support/atryum/atryum.toml`.
-    - On Linux, this is typically under `~/.config/atryum/atryum.toml`.
-
-4. Restart Atryum so it loads the updated ValidMind credentials:
-
-    a. In the terminal where Atryum is running, press `Ctrl+C` to stop it.
-    b. Start Atryum again:</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="&#10;2. Follow the prompts and enter your:&#10;&#10;    - **ValidMind Base URL** — The URL for the ValidMind organization you want Atryum to connect to. For example: `https://app.prod.validmind.ai/`&#10;    - **ValidMind API key**  — Your organization API Key.&#10;    - **ValidMind API secret** — Your organization Secret Key.&#10;&#10;3. Atryum prints the path to your updated `atryum.toml` configuration file. Open the file and verify that it has been edited with your submitted values:&#10;    - On macOS, this is typically under `~/Library/Application Support/atryum/atryum.toml`.&#10;    - On Linux, this is typically under `~/.config/atryum/atryum.toml`.&#10;&#10;4. Restart Atryum so it loads the updated ValidMind credentials:&#10;&#10;    a. In the terminal where Atryum is running, press `Ctrl+C` to stop it.&#10;    b. Start Atryum again:" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
-
-        <p>./atryum run --init-servers</p>
-
-        <div class="code-block"><pre><code class="language-text">
-5. In your browser, navigate to [`localhost:8080/ui/settings`](http://localhost:8080/ui/settings).
-
-6. Under Agent Record Sync, select the:
-
-    - ValidMind **Organization** — The ValidMind organization to sync records from.
-    - Organization **Record Type** — The record type that identifies your agent records.
-    - **Constitution Field** — The custom long text field that stores each agent&#x27;s policy.
-
-7. Click **Save Settings** to apply your changes.
-
-## Set up ValidMind AI evaluation rules
-
-Create a rule in Atryum to evaluate matching tool invocations against the synced ValidMind agent&#x27;s constitution:
-
-1. In Atryum, click **Rules** in the left sidebar.
-
-2. Click **New Rule**.
-
-3. Under **Action**, select `AI Evaluation`.
-
-4. Under **Evaluation Model**, select the ValidMind model configuration to use for the evaluation.
-
-5. Under **Agents**, select the synced ValidMind agent records you want this rule to apply to. Leave this empty to match all agents.
-
-6. Under **Servers / Sources**, select the servers or sources the rule should apply to. Leave this empty to match all servers.
-
-7. Under **Tools**, select the tools the rule should apply to. Leave this empty to match all tools.
-
-8. (Optional) Enter a **Description** so you can remember why the rule exists.
-
-9. Make sure that **Enabled** is checked, then click **Create Rule**.
-
-- When a matching tool call arrives, Atryum sends the call and the agent&#x27;s constitution to the ValidMind evaluation model. The model returns a verdict for the invocation — approve, deny, escalate to a human, or defer to the next rule.
-- If Atryum cannot resolve the agent or its constitution, Atryum denies the invocation.</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="&#10;5. In your browser, navigate to [`localhost:8080/ui/settings`](http://localhost:8080/ui/settings).&#10;&#10;6. Under Agent Record Sync, select the:&#10;&#10;    - ValidMind **Organization** — The ValidMind organization to sync records from.&#10;    - Organization **Record Type** — The record type that identifies your agent records.&#10;    - **Constitution Field** — The custom long text field that stores each agent&#x27;s policy.&#10;&#10;7. Click **Save Settings** to apply your changes.&#10;&#10;## Set up ValidMind AI evaluation rules&#10;&#10;Create a rule in Atryum to evaluate matching tool invocations against the synced ValidMind agent&#x27;s constitution:&#10;&#10;1. In Atryum, click **Rules** in the left sidebar.&#10;&#10;2. Click **New Rule**.&#10;&#10;3. Under **Action**, select `AI Evaluation`.&#10;&#10;4. Under **Evaluation Model**, select the ValidMind model configuration to use for the evaluation.&#10;&#10;5. Under **Agents**, select the synced ValidMind agent records you want this rule to apply to. Leave this empty to match all agents.&#10;&#10;6. Under **Servers / Sources**, select the servers or sources the rule should apply to. Leave this empty to match all servers.&#10;&#10;7. Under **Tools**, select the tools the rule should apply to. Leave this empty to match all tools.&#10;&#10;8. (Optional) Enter a **Description** so you can remember why the rule exists.&#10;&#10;9. Make sure that **Enabled** is checked, then click **Create Rule**.&#10;&#10;- When a matching tool call arrives, Atryum sends the call and the agent&#x27;s constitution to the ValidMind evaluation model. The model returns a verdict for the invocation — approve, deny, escalate to a human, or defer to the next rule.&#10;- If Atryum cannot resolve the agent or its constitution, Atryum denies the invocation." aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
+        <ol><li>In Atryum, click <strong>Rules</strong> in the left sidebar.</li><li>Click <strong>New Rule</strong>.</li><li>Under <strong>Action</strong>, select <code>AI Evaluation</code>.</li><li>Under <strong>Evaluation Model</strong>, select the ValidMind model configuration to use for the evaluation.</li><li>Under <strong>Agents</strong>, select the synced ValidMind agent records you want this rule to apply to. Leave this empty to match all agents.</li><li>Under <strong>Servers / Sources</strong>, select the servers or sources the rule should apply to. Leave this empty to match all servers.</li><li>Under <strong>Tools</strong>, select the tools the rule should apply to. Leave this empty to match all tools.</li><li>(Optional) Enter a <strong>Description</strong> so you can remember why the rule exists.</li><li>Make sure that <strong>Enabled</strong> is checked, then click <strong>Create Rule</strong>.</li><li>When a matching tool call arrives, Atryum sends the call and the agent's constitution to the ValidMind evaluation model. The model returns a verdict for the invocation — approve, deny, escalate to a human, or defer to the next rule.</li><li>If Atryum cannot resolve the agent or its constitution, Atryum denies the invocation.</li></ol>
           </article>
         </div>
       </div>
