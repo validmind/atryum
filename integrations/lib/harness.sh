@@ -54,6 +54,10 @@ harness_available() {
     if [[ "$harness_id" == "amp" ]] && amp threads list --json >/dev/null 2>&1; then
       return 0
     fi
+    # cursor-agent may use subscription login without CURSOR_API_KEY.
+    if [[ "$harness_id" == "cursor" ]] && cursor-agent status >/dev/null 2>&1; then
+      return 0
+    fi
     warn "skip $harness_id: env $key_env is unset"
     return 1
   fi
@@ -105,8 +109,8 @@ EOF
           export CLAUDE_CONFIG_DIR="$HARNESS_CONFIG_DIR/claude"
           ;;
         cursor)
-          mkdir -p "$HARNESS_CONFIG_DIR/cursor"
-          cat >"$HARNESS_CONFIG_DIR/cursor/hooks.json" <<EOF
+          mkdir -p "$RUN_DIR/.cursor"
+          cat >"$RUN_DIR/.cursor/hooks.json" <<EOF
 {
   "hooks": {
     "preToolUse": [{
@@ -120,7 +124,7 @@ EOF
   }
 }
 EOF
-          export CURSOR_HOOKS_FILE="$HARNESS_CONFIG_DIR/cursor/hooks.json"
+          export CURSOR_RUN_DIR="$RUN_DIR"
           ;;
       esac
       ;;
@@ -144,9 +148,40 @@ EOF
   esac
 }
 
+render_mcp_config() {
+  local template="$1" mcp_url="$2" mcp_alias="$3" dest="$4"
+  printf '%s\n' "$template" \
+    | sed -e "s|\$ATRYUM_MCP_URL|${mcp_url}|g" \
+          -e "s|\$ATRYUM_MCP_ALIAS|${mcp_alias}|g" \
+    >"$dest"
+  if [[ -n "${MCP_REMOTE_HEADERS:-}" ]]; then
+    printf '\n[mcp_servers.%s.env]\nMCP_REMOTE_HEADERS = "%s"\n' \
+      "$mcp_alias" "$MCP_REMOTE_HEADERS" >>"$dest"
+  fi
+}
+
+render_mcp_json_config() {
+  local mcp_alias="$1" mcp_url="$2" dest="$3"
+  local py="${INTEGRATIONS_PYTHON:-python3}"
+  MCP_REMOTE_HEADERS="${MCP_REMOTE_HEADERS:-}" "$py" - "$mcp_alias" "$mcp_url" "$dest" <<'PY'
+import json, os, sys
+alias, url, dest = sys.argv[1], sys.argv[2], sys.argv[3]
+headers = os.environ.get("MCP_REMOTE_HEADERS", "")
+entry = {
+    "command": "npx",
+    "args": ["-y", "mcp-remote", url],
+}
+if headers:
+    entry["env"] = {"MCP_REMOTE_HEADERS": headers}
+with open(dest, "w", encoding="utf-8") as f:
+    json.dump({"mcpServers": {alias: entry}}, f, indent=2)
+    f.write("\n")
+PY
+}
+
 configure_harness_mcp() {
   local harness_id="$1" auth_id="$2" target_id="$3"
-  local template path transport server_name mcp_url dest py="${INTEGRATIONS_PYTHON:-python3}"
+  local template path transport server_name mcp_alias mcp_url dest py="${INTEGRATIONS_PYTHON:-python3}"
   template="$("$py" "$INTEGRATIONS_ROOT/lib/registry.py" \
     "$INTEGRATIONS_ROOT/config/harnesses.yaml" harnesses "$harness_id" mcp_config_template)"
   path="$("$py" "$INTEGRATIONS_ROOT/lib/registry.py" \
@@ -155,18 +190,19 @@ configure_harness_mcp() {
     "$INTEGRATIONS_ROOT/config/harnesses.yaml" harnesses "$harness_id" mcp_transport)"
 
   server_name="$(render_upstream_block "$target_id" | awk -F'"' '/^name =/{print $2; exit}')"
+  mcp_alias="${server_name}_via_atryum"
 
   if [[ "$transport" == "direct-jsonrpc" ]]; then
     export ATRYUM_MCP_SERVER="$server_name"
     return 0
   fi
 
-  export CODEX_TEST_HOME="${CODEX_TEST_HOME:-$HARNESS_CONFIG_DIR/codex-home}"
-  export GROK_TEST_HOME="${GROK_TEST_HOME:-$HARNESS_CONFIG_DIR/grok-home}"
-  export AMP_SETTINGS_FILE="${AMP_SETTINGS_FILE:-$HARNESS_CONFIG_DIR/amp/settings.json}"
-
   mcp_remote_headers_env "$auth_id" || true
   mcp_url="$(build_mcp_url "$auth_id" "$harness_id" "$server_name")"
+
+  export CODEX_TEST_HOME="$HARNESS_CONFIG_DIR/codex-home"
+  export GROK_TEST_HOME="$HARNESS_CONFIG_DIR/grok-home"
+  export AMP_SETTINGS_FILE="$HARNESS_CONFIG_DIR/amp/settings.json"
 
   case "$transport" in
     amp-settings-json)
@@ -176,7 +212,7 @@ configure_harness_mcp() {
       if [[ -n "${MCP_REMOTE_HEADERS:-}" ]]; then
         amp_env+=(--env "MCP_REMOTE_HEADERS=${MCP_REMOTE_HEADERS}")
       fi
-      if ! AMP_SETTINGS_FILE="$AMP_SETTINGS_FILE" amp mcp add calculator_via_atryum \
+      if ! AMP_SETTINGS_FILE="$AMP_SETTINGS_FILE" amp mcp add "$mcp_alias" \
         "${amp_env[@]}" \
         -- npx -y mcp-remote "$mcp_url"; then
         warn "amp mcp add failed for $AMP_SETTINGS_FILE"
@@ -205,16 +241,30 @@ configure_harness_mcp() {
       if [[ -n "${MCP_REMOTE_HEADERS:-}" ]]; then
         grok_env+=(--env "MCP_REMOTE_HEADERS=${MCP_REMOTE_HEADERS}")
       fi
-      HOME="$GROK_TEST_HOME" grok mcp add calculator_via_atryum \
+      HOME="$GROK_TEST_HOME" grok mcp add "$mcp_alias" \
         "${grok_env[@]}" \
         --command npx \
         --args -y mcp-remote "$mcp_url" >/dev/null 2>&1 || {
         warn "grok mcp add failed; writing config.toml fallback"
         dest="$GROK_TEST_HOME/.grok/config.toml"
         mkdir -p "$(dirname "$dest")"
-        printf '%s\n' "$template" | sed "s|\$ATRYUM_MCP_URL|${mcp_url}|g" >"$dest"
+        render_mcp_config "$template" "$mcp_url" "$mcp_alias" "$dest"
       }
       return 0
+      ;;
+    mcp-remote-stdio)
+      if [[ -z "$path" || "$path" == "null" ]]; then
+        return 0
+      fi
+      if [[ "$harness_id" == "cursor" ]]; then
+        mkdir -p "$RUN_DIR/.cursor"
+        dest="$RUN_DIR/.cursor/mcp.json"
+        export CURSOR_RUN_DIR="$RUN_DIR"
+      else
+        dest="$HARNESS_CONFIG_DIR/$(basename "$path")"
+        mkdir -p "$(dirname "$dest")"
+      fi
+      render_mcp_json_config "$mcp_alias" "$mcp_url" "$dest"
       ;;
     *)
       if [[ -z "$template" || "$template" == "null" || -z "$path" || "$path" == "null" ]]; then
@@ -225,8 +275,8 @@ configure_harness_mcp() {
       ;;
   esac
 
-  if [[ -n "${dest:-}" && -n "$template" && "$template" != "null" ]]; then
-    printf '%s\n' "$template" | sed "s|\$ATRYUM_MCP_URL|${mcp_url}|g" >"$dest"
+  if [[ -n "${dest:-}" && -n "$template" && "$template" != "null" && "$transport" != "mcp-remote-stdio" ]]; then
+    render_mcp_config "$template" "$mcp_url" "$mcp_alias" "$dest"
   fi
 
   case "$harness_id" in
@@ -235,6 +285,7 @@ configure_harness_mcp() {
       ;;
     cursor)
       export CURSOR_MCP_CONFIG="$dest"
+      export CURSOR_RUN_DIR="$RUN_DIR"
       ;;
     *)
       export HARNESS_MCP_CONFIG="$dest"
@@ -259,10 +310,10 @@ print("|".join(item["verify"]["expect_substrings"]))
 PY
 )"
 
-  export CODEX_TEST_HOME="${CODEX_TEST_HOME:-$HARNESS_CONFIG_DIR/codex-home}"
-  export GROK_TEST_HOME="${GROK_TEST_HOME:-$HARNESS_CONFIG_DIR/grok-home}"
-  export AMP_SETTINGS_FILE="${AMP_SETTINGS_FILE:-$HARNESS_CONFIG_DIR/amp/settings.json}"
-  export CLAUDE_MCP_CONFIG="${CLAUDE_MCP_CONFIG:-}"
+  export CODEX_TEST_HOME="$HARNESS_CONFIG_DIR/codex-home"
+  export GROK_TEST_HOME="$HARNESS_CONFIG_DIR/grok-home"
+  export AMP_SETTINGS_FILE="$HARNESS_CONFIG_DIR/amp/settings.json"
+  unset CLAUDE_MCP_CONFIG CLAUDE_CONFIG_DIR CURSOR_MCP_CONFIG CURSOR_RUN_DIR || true
 
   install_hook "$harness_id"
   configure_harness_mcp "$harness_id" "$auth_id" "$target_id"
@@ -315,6 +366,7 @@ PY
     invoke="${invoke//\$GROK_TEST_HOME/$GROK_TEST_HOME}"
     invoke="${invoke//\$CLAUDE_MCP_CONFIG/${CLAUDE_MCP_CONFIG:-}}"
     invoke="${invoke//\$AMP_SETTINGS_FILE/${AMP_SETTINGS_FILE:-}}"
+    invoke="${invoke//\$CURSOR_RUN_DIR/${CURSOR_RUN_DIR:-}}"
     local harness_timeout="${HARNESS_TIMEOUT_SECONDS:-180}"
     log "Command: $invoke (timeout=${harness_timeout}s)"
     # shellcheck disable=SC2086

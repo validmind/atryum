@@ -26,7 +26,7 @@ harnesses:
     mcp_transport: codex-config-toml
     mcp_config_path: "$CODEX_TEST_HOME/.codex/config.toml"
     mcp_config_template: |
-      [mcp_servers.calculator_via_atryum]
+      [mcp_servers.$ATRYUM_MCP_ALIAS]
       command = "npx"
       args = ["-y", "mcp-remote", "$ATRYUM_MCP_URL"]
     skip_reason: ""
@@ -35,7 +35,7 @@ harnesses:
   - id: claude-code
     display_name: Claude Code
     cli: claude
-    invoke: 'claude -p "$PROMPT" --output-format text --dangerously-skip-permissions --mcp-config "$CLAUDE_MCP_CONFIG"'
+    invoke: 'claude -p "$PROMPT" --output-format text --dangerously-skip-permissions --strict-mcp-config --mcp-config "$CLAUDE_MCP_CONFIG"'
     api_key_env: ANTHROPIC_API_KEY
     api_key_env_optional: true
     hook:
@@ -49,7 +49,7 @@ harnesses:
     mcp_config_template: |
       {
         "mcpServers": {
-          "calculator_via_atryum": {
+          "$ATRYUM_MCP_ALIAS": {
             "command": "npx",
             "args": ["-y", "mcp-remote", "$ATRYUM_MCP_URL"]
           }
@@ -60,9 +60,10 @@ harnesses:
 
   - id: cursor
     display_name: Cursor Agent CLI
-    cli: cursor
-    invoke: 'cursor agent -p "$PROMPT" --force'
+    cli: cursor-agent
+    invoke: 'cd "$CURSOR_RUN_DIR" && cursor-agent -p "$PROMPT" --force --approve-mcps'
     api_key_env: CURSOR_API_KEY
+    api_key_env_optional: true
     hook:
       type: command
       source: cursor
@@ -74,7 +75,7 @@ harnesses:
     mcp_config_template: |
       {
         "mcpServers": {
-          "calculator_via_atryum": {
+          "$ATRYUM_MCP_ALIAS": {
             "command": "npx",
             "args": ["-y", "mcp-remote", "$ATRYUM_MCP_URL"]
           }
@@ -109,7 +110,7 @@ harnesses:
     mcp_transport: grok-config-toml
     mcp_config_path: "$GROK_TEST_HOME/.grok/config.toml"
     mcp_config_template: |
-      [mcp_servers.calculator_via_atryum]
+      [mcp_servers.$ATRYUM_MCP_ALIAS]
       command = "npx"
       args = ["-y", "mcp-remote", "$ATRYUM_MCP_URL"]
     skip_reason: ""
@@ -126,7 +127,7 @@ harnesses:
     mcp_config_template: |
       {
         "mcpServers": {
-          "calculator_via_atryum": {
+          "$ATRYUM_MCP_ALIAS": {
             "command": "npx",
             "args": ["-y", "mcp-remote", "$ATRYUM_MCP_URL"]
           }
