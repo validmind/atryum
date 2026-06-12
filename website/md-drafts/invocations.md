@@ -98,13 +98,6 @@ To use invocation summarization, you need at least one model source:
 - A **ValidMind** connection with at least one model configuration available in your organization
 - Or, at least one enabled **Local LLM Configuration**
 
-| | ValidMind model | Local LLM |
-| --- | --- | --- |
-| Requires ValidMind connection | Yes | No |
-| Model list source | Provided by ValidMind | Provided by your team |
-| Required API credentials | Your ValidMind API key and secret, configured in `atryum.toml` when you connect Atryum to ValidMind | Provider key or endpoint configured per local LLM |
-| Designed for | Teams using ValidMind out-of-the-box setup  | Standalone, on-prem, or bring-your-own-key setups |
-
 :::
 To connect ValidMind or local LLM configurations, refer to **[Integrations](integrations.md)**.
 :::

@@ -42,7 +42,7 @@ Some tools are built into your coding agent's harness (for example, `read` and `
 
 These are not listed automatically on the Rules page — enter the exact tool name manually when creating a rule.
 
-## Create new rules
+## Create rules
 
 1. In Atryum, click **Rules** in the left sidebar.
 
@@ -87,7 +87,7 @@ These are not listed automatically on the Rules page — enter the exact tool na
 
     - The **Action** type
     - The **Agents**, **Servers / Sources**, and **Tools** that the rule should apply to
-    - (AI Evaluation Action only) The **Evaluation Model** that reviews matching tool calls against the agent's constitution and decides whether to approve, deny, escalate to a human, or defer to the next rule. ([LLM configurations](llm-configurations.md))
+    - (AI Evaluation Action only) The **Evaluation Model** that reviews matching tool calls against the agent's constitution and decides whether to approve, deny, escalate to a human, or defer to the next rule. ([Integrations](integrations.md))
     - (Optional) The rule **Description**
 
 3. To turn rules on or off:
@@ -109,6 +109,12 @@ These are not listed automatically on the Rules page — enter the exact tool na
     - **&#8744;** to move the rule down.
 
 Changes to rule ordering is saved automatically.
+
+## Delete rules
+
+:::
+Deleting a rule is permanent and cannot be undone.
+:::
 
 
 
