@@ -746,12 +746,25 @@ def convert_file(path: Path) -> Path:
     source, callouts = extract_callouts(source)
     lines = source.splitlines()
 
-    title_line = next(i for i, line in enumerate(lines) if line.startswith("# "))
+    try:
+        title_line = next(i for i, line in enumerate(lines) if line.startswith("# "))
+    except StopIteration as exc:
+        rel = path.relative_to(DRAFTS)
+        raise ValueError(
+            f"{rel}: each page must start with an H1 title (`# Page title`) "
+            "followed by a one-line intro paragraph"
+        ) from exc
     title = lines[title_line].lstrip("# ").strip()
 
     subtitle_index = title_line + 1
     while subtitle_index < len(lines) and not lines[subtitle_index].strip():
         subtitle_index += 1
+    if subtitle_index >= len(lines) or lines[subtitle_index].startswith("#"):
+        rel = path.relative_to(DRAFTS)
+        raise ValueError(
+            f"{rel}: add a one-line intro paragraph after the H1 title "
+            "(blank line, then plain text before the first `##` section)"
+        )
     subtitle = lines[subtitle_index].strip()
 
     body_lines = lines[:title_line] + lines[subtitle_index + 1 :]
