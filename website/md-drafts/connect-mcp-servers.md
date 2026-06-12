@@ -80,7 +80,8 @@ Use HTTP mode when the upstream MCP server requires OAuth. Atryum holds the upst
     - **Name** — A short label for the server, used in MCP proxy URLs (`/mcp/<name>`) and rule scoping.
     - **Mode** — Select `HTTP`.
     - **Base URL** — The upstream MCP server URL.
-    - **Timeout (seconds)** — Optional. Maximum time Atryum waits for upstream responses. Defaults to `30`.
+    - (Optional) **Timeout (seconds)** — Maximum time Atryum waits for upstream responses. Defaults to `30`.
+    - **Bearer Token** — Leave blank. OAuth servers authenticate through **Connect**, not a static token. ([Add HTTP MCP servers with bearer tokens](#add-http-mcp-servers-with-bearer-tokens))
 
 4. Make sure that **Enabled** is checked, then click **Create Server**.
 
@@ -95,7 +96,7 @@ For agent setup, refer to [Connect agents](connect-agents.md#connect-other-codin
 :::
 
 
-### Manual OAuth registration
+### Use manual OAuth registration
 
 Use manual registration when the upstream server does not support Dynamic Client Registration — for example, [Slack](https://slack.com) or [GitHub](https://github.com) OAuth apps where you register a client out of band.
 
@@ -107,9 +108,13 @@ Use manual registration when the upstream server does not support Dynamic Client
     - **Client Secret** — Leave blank when editing an existing server to keep the stored value.
     - (Optional) **Authorize URL** — Atryum auto-discovers this from the server URL when left blank.
     - (Optional) **Token URL** — Atryum auto-discovers this from the server URL when left blank.
-    - (Optional) **Scopes** — Leave **Use default scopes** checked to use whatever scopes the OAuth app declared with the provider.
+    - Set your scopes:
+        - Leave **Use default scopes** checked to use whatever scopes the OAuth app declared with the provider.
+        - Uncheck **Use default scopes** to define custom scopes, then enter in the **Scopes (requested)**.
 
-3. Click **Save**, then click **Connect** (or **Reconnect**) to complete authorization.
+3. Make sure that **Enabled** is checked.
+
+4. Click **Save**, then click **Connect** (or **Reconnect**) to complete authorization.
 
 When a server needs re-authentication, the auth status shows that action is required and the **Reconnect** button appears in the server detail panel.
 
@@ -118,3 +123,57 @@ Leave **Bearer Token** blank when using the OAuth **Connect** flow. Atryum hides
 :::
 
 ## Edit or remove MCP servers
+
+### Edit MCP servers
+
+1. In Atryum, click **Servers** in the left sidebar.
+
+2. Click the server you want to edit.
+
+3. Update the fields as desired:
+
+    - **Name** is read-only after creation — Atryum does not support renaming servers. To use a new proxy path (`/mcp/<name>`), create a new server and update your agent's MCP configuration. ([Connect agents](connect-agents.md#connect-via-mcp-proxy))
+
+    - For stdio servers:
+
+        - **Command**
+        - **Args (JSON array)**
+        - **Env (JSON object)**
+
+    - For HTTP servers:
+
+        - **Base URL**
+        - (Optional) **Timeout (seconds)**
+        - **Bearer Token** — Enter a new value only when rotating credentials. Saving with an empty field clears the stored token. Hidden for OAuth-managed servers.
+        - **Manual OAuth configuration (advanced)** — Update OAuth client fields when needed. Leave **Client Secret** blank to keep the stored value. ([Use manual OAuth registration](#use-manual-oauth-registration))
+
+4. To turn the server on or off:
+
+    - Check **Enabled** to turn the server on.
+    - Uncheck **Enabled** to turn the server off.
+
+    Disabled servers remain in the list. Check **Show disabled** above the table to include them.
+
+5. Click **Save** to apply your edits.
+
+6. Click **Test** to confirm Atryum can still reach the server.
+
+    For OAuth HTTP servers, click **Reconnect** when credentials have expired or the <span style="font-variant: small-caps;">auth</span> column shows that action is required.
+
+7. When **Base URL**, credentials, or the server name (via a new registration) change, update your agent's MCP proxy URL to match. ([Connect agents](connect-agents.md#connect-via-mcp-proxy))
+
+### Remove MCP servers
+
+:::
+Deleting a server is permanent and cannot be undone.
+:::
+
+1. In Atryum, click **Servers** in the left sidebar.
+
+2. Click the server you want to remove.
+
+3. Click **Delete**, then select **OK** to confirm deletion.
+
+4. Remove or update the MCP proxy entry in your agent's configuration so it no longer points at the deleted server. ([Connect agents](connect-agents.md#disconnect-or-remove-agents))
+
+To stop routing calls without deleting the configuration, disable them instead. ([Edit MCP servers](#edit-mcp-servers))
