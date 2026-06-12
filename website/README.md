@@ -9,7 +9,7 @@ website/
 ├── index.html              # Homepage (manual)
 ├── md-drafts/              # Documentation source (edit these)
 ├── documentation/          # Generated HTML (do NOT edit)
-├── partials/               # Shared HTML fragments
+├── partials/               # Shared HTML fragments (docs-nav.html is generated)
 ├── assets/                 # CSS, JS, images
 └── scripts/md_to_html.py   # Markdown → HTML converter
 ```
@@ -28,7 +28,7 @@ website/
 
 ### Page structure
 
-Each page starts with a title and subtitle:
+Each page starts with a title and a required one-line intro:
 
 ```markdown
 # Page title
@@ -38,7 +38,7 @@ One-line intro shown under the title on the page.
 ## First section
 ```
 
-The `#` heading becomes the page title and the first paragraph becomes the intro. Everything after that is body content.
+The `#` heading becomes the page title. The first non-empty line after it becomes the intro (`docs-intro`). The build fails if that line is missing. Everything after the intro line is body content.
 
 ### File placement
 
@@ -51,7 +51,7 @@ Numeric prefixes control nav order. Folder prefixes are removed from section hea
 
 ### Cross-links
 
-Link to other docs with relative `.md` paths. Use the numbered source filenames; the build resolves them to the correct HTML paths:
+Link to other docs with relative `.md` paths. Use the numbered source filenames — the build resolves them to the correct HTML paths:
 
 ```markdown
 See [Rules](3_rules.md) and [Connect agents](1_integrations/2_connect-agents.md).
@@ -121,11 +121,13 @@ From the repo root:
 make preview-docs
 ```
 
-Or equivalently:
+To serve without the Makefile target, run `make docs` first, then:
 
 ```bash
 python3 -m http.server 8000 --directory website
 ```
+
+(`make preview-docs` runs `make docs` automatically before starting the server.)
 
 - Open [http://localhost:8000/](http://localhost:8000/) for the homepage.
 - Partials such as `docs-nav.html` are loaded with JavaScript — a normal refresh picks up nav changes after `make docs`. Hard-refresh if you changed `includes.js` or CSS.
@@ -138,7 +140,7 @@ The Documentation dropdown is generated from the draft tree:
 2. **Subdirectories next** — sorted by folder numeric prefix (`1_integrations/`, …).
 3. **Pages within each section** — sorted by their numeric prefix.
 
-Section headings use the folder name with the numeric prefix removed (`1_integrations/` → **integrations**). Nav links and generated HTML paths keep the numbered source filenames.
+Section headings use the folder name with the numeric prefix removed (`1_integrations/` → **integrations**). Nav link URLs and generated HTML paths keep the numbered source filenames — nav link text comes from each page's `#` H1.
 
 Use **`NAV_LABEL_OVERRIDES`** in `scripts/md_to_html.py` only when a menu label should differ from the page `#` title (otherwise the H1 is used).
 
