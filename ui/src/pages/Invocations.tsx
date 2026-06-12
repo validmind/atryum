@@ -230,9 +230,9 @@ const Invocations: React.FC = () => {
   const [detailClosed, setDetailClosed] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
   const [showArgsJson, setShowArgsJson] = useState(false);
-  const [clearedInvocationIds, setClearedInvocationIds] = useState<
-    Set<string>
-  >(() => new Set());
+  const [clearedInvocationIds, setClearedInvocationIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [denyMode, setDenyMode] = useState<"once" | "always">("once");
   const [showCustomizeScope, setShowCustomizeScope] = useState(false);
   const [ruleForm, setRuleForm] = useState({
@@ -828,7 +828,9 @@ const Invocations: React.FC = () => {
                                     bg={`${statusColor}.500`}
                                     mr={1.5}
                                   />
-                                  {STATUS_LABEL[inv.status] ?? inv.status}
+                                  <Box as="span" mb="1px">
+                                    {STATUS_LABEL[inv.status] ?? inv.status}
+                                  </Box>
                                 </Tag>
                               );
                             })()}
@@ -928,7 +930,10 @@ const Invocations: React.FC = () => {
                                     bg={`${statusColor}.500`}
                                     mr={1.5}
                                   />
-                                  {STATUS_LABEL[detail.status] ?? detail.status}
+                                  <Box as="span" mb="1px">
+                                    {STATUS_LABEL[detail.status] ??
+                                      detail.status}
+                                  </Box>
                                 </Tag>
                               );
                             })()}
