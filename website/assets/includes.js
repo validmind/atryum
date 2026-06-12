@@ -174,6 +174,40 @@
     return new URL(src, new URL(baseUrl, window.location.href)).href;
   }
 
+  function expandIncludes(html, baseUrl) {
+    var template = document.createElement('template');
+    template.innerHTML = html.trim();
+    var nestedTargets = template.content.querySelectorAll('[data-include]');
+
+    if (!nestedTargets.length) {
+      return Promise.resolve(template.innerHTML);
+    }
+
+    return Promise.all(
+      Array.prototype.map.call(nestedTargets, function (nested) {
+        var nestedSrc = nested.getAttribute('data-include');
+        var nestedResolved = resolveIncludeSrc(nestedSrc, baseUrl);
+
+        return fetch(nestedResolved)
+          .then(function (response) {
+            if (!response.ok) {
+              throw new Error('Unable to load include: ' + nestedSrc);
+            }
+
+            return response.text();
+          })
+          .then(function (nestedHtml) {
+            return expandIncludes(nestedHtml, nestedResolved);
+          })
+          .then(function (expandedHtml) {
+            nested.outerHTML = expandedHtml;
+          });
+      })
+    ).then(function () {
+      return template.innerHTML;
+    });
+  }
+
   function loadInclude(target) {
     var src = target.dataset.include;
     var baseUrl = target.dataset.includeBase || window.location.href;
@@ -188,12 +222,10 @@
         return response.text();
       })
       .then(function (html) {
-        var template = document.createElement('template');
-        template.innerHTML = html.trim();
-        template.content.querySelectorAll('[data-include]').forEach(function (nested) {
-          nested.dataset.includeBase = resolved;
-        });
-        target.outerHTML = template.innerHTML;
+        return expandIncludes(html, resolved);
+      })
+      .then(function (html) {
+        target.outerHTML = html;
       });
   }
 
