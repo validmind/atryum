@@ -3323,22 +3323,27 @@ func (h *Handler) writeRPCResult(w http.ResponseWriter, id json.RawMessage, resu
 
 func (h *Handler) forwardProxyEnvelope(ctx context.Context, server string, envelope mcp.Envelope, protocolVersion string) (mcp.ForwardResult, bool) {
 	if h.forwarder == nil {
+		h.debugf("forward proxy skipped server=%s method=%s reason=no_forwarder", server, envelope.Method)
 		return mcp.ForwardResult{}, false
 	}
 	resolver, ok := h.svc.(interface {
 		ResolveContext(context.Context, string) (mcp.Upstream, error)
 	})
 	if !ok {
+		h.debugf("forward proxy skipped server=%s method=%s reason=no_resolver", server, envelope.Method)
 		return mcp.ForwardResult{}, false
 	}
 	upstream, err := resolver.ResolveContext(ctx, server)
 	if err != nil {
+		h.debugf("forward proxy resolve failed server=%s method=%s err=%v", server, envelope.Method, err)
 		return mcp.ForwardResult{}, false
 	}
 	result, err := h.forwarder.ForwardEnvelope(ctx, upstream, envelope, protocolVersion)
 	if err != nil {
+		h.debugf("forward proxy upstream failed server=%s method=%s protocol=%s err=%v", server, envelope.Method, protocolVersion, err)
 		return mcp.ForwardResult{}, false
 	}
+	h.debugf("forward proxy upstream response server=%s method=%s status=%d content_type=%q protocol=%q session_expired=%t", server, envelope.Method, result.StatusCode, result.ContentType, result.ProtocolVersion, result.SessionExpired)
 	return result, true
 }
 
