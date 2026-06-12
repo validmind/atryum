@@ -89,7 +89,7 @@ Use HTTP mode when the upstream MCP server requires OAuth. Atryum holds the upst
 
     Click **Connect** and complete the browser authorization flow.
 
-6. After authorization succeeds, confirm that the server's <span style="font-variant: small-caps;">connection</span> and <span style="font-variant: small-caps;">auth</span> columns both show as <span style="font-variant: small-caps;">`ready`</span>. 
+6. After authorization succeeds, confirm that the server's <span style="font-variant: small-caps;">connection</span> and <span style="font-variant: small-caps;">auth</span> columns both show as <span style="font-variant: small-caps;">`ready`</span>.
 
     A successful **Connect** sets both — you do not need to click **Test** separately.
 

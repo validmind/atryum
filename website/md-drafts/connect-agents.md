@@ -135,7 +135,7 @@ To apply agent-scoped rules, attach invocations to an agent record, or supply a 
     - (Optional) **Description**
     - (Optional, but recommended) **Constitution** — The rules and constraints governing this agent's behavior. Atryum uses this for local LLM-as-judge evaluation rules. ([Configure LLM providers](configure-llm-providers.md))
 
-    b. Add a stable string to **Agent IDs** — Type the ID and press **Enter** to add it
+    b. Add a stable string to **Agent IDs** — Type the ID and press **Enter** to add it.
 
     c. Make sure that **Enabled** is checked.
 
@@ -275,7 +275,7 @@ Use no-auth mode for local development and quick setup. Use auth mode when you n
 In no-auth mode, agents identify themselves with a self-declared agent ID. Atryum treats this as best-effort identity — useful for tagging invocations and applying agent-scoped rules, but not cryptographically verified.
 
 - **MCP proxy clients** — Append `?agent_id=<your_id>` to the MCP proxy URL. For example: `http://localhost:8080/mcp/calc?agent_id=my-cool-id`
-- **Harness clients** — Send the agent ID through the integration API or set `ATRYUM_AGENT_ID` before starting your agent. For MCP proxy setup, environment variables, and Agent Record mapping, refer to [Connect other coding agents](#connect-other-coding-agents).
+- **Harness clients** — Send the agent ID through the integration API or set `ATRYUM_AGENT_ID` before starting your agent.
 
 Refer to the setup examples in the [GitHub `examples` directory](https://github.com/validmind/atryum/tree/main/examples) for agent-specific configuration.
 

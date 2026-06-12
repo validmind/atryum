@@ -45,7 +45,7 @@ curl -L https://github.com/validmind/atryum/releases/download/0.0.2/atryum-mac -
 
 5. Connect your preferred coding agent to Atryum:
 
-    - Open your agent's MCP settings and add a standard MCP server with the calc server address: `localhost:8080/mcp/calc`.
+    - Open your agent's MCP settings and add a standard MCP server with the calc server address: `http://localhost:8080/mcp/calc`.
     - The agent will think it is talking to a calculator MCP server, but its tool invocations now pass through Atryum first.
 
 6. Trigger a test tool call from your agent. For example:
@@ -75,7 +75,7 @@ Let's add a rule to control future matching tool calls:
 
 3. Under **Action**, select `Auto Approve`.
 
-4. Under **Servers/Sources**, select `calc` to apply the rule only to calls to the test calculator server.
+4. Under **Servers / Sources**, select `calc` to apply the rule only to calls to the test calculator server.
 
 5. Make sure that **Enabled** is checked, then click **Create Rule**.
 

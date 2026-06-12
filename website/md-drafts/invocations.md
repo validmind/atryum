@@ -4,7 +4,7 @@ Invocations are durable audit records for every tool call that passes through At
 
 ## What are invocations?
 
-The **Invocations** page is where you review those calls, approve or deny requests that need human input, and turn one-off decisions into reusable rules. Invocations are displayed in a table:
+The **Invocations** page is where you review those calls, approve or deny requests that need human input, and turn one-off decisions into reusable rules ([Rules](rules.md)). Invocations are displayed in a table:
 
 - **<span style="font-variant: small-caps;">agent</span>** — The client that made the tool call.
 - **<span style="font-variant: small-caps;">id</span>** — The unique invocation identifier. Hover to view the full ID.
@@ -29,7 +29,7 @@ The detail panel shows:
 - Current status badge and who or what made the decision. AI-evaluated invocations may also show a confidence score.
 - The rule ID that handled the invocation, when a rule matched.
 - Agent type and version (for example, `opencode 1.14.31`).
-- A plain-language summary of the call — Requires invocation summarization to be set up. ([Use invocation summarization](#use-invocation-summarization))
+- A plain-language summary of the call when invocation summarization is configured. ([Use invocation summarization](#use-invocation-summarization))
 - Tool input as a key/value arguments table — Click **Show raw JSON** for the full payload. File-edit tools may show a diff instead.
 - If an invocation is `Pending Approval`, options to approve or deny the call. ([Approve or deny invocations](#approve-or-deny-invocations))
 - Option to create a rule from this invocation's logic. ([Rules](rules.md#create-rules-from-existing-invocations))
@@ -67,7 +67,7 @@ request_timeout_seconds = 120
 
 2. Click on the invocation you want to approve:
 
-    - On the invocations detail panel, select **Approve** under Approval Required to approve that single invocation.
+    - On the invocation detail panel, select **Approve** under Approval Required to approve that single invocation.
     - To approve all invocations for calls matching similar criteria going forward:
 
         a. Click **&#9660; Customize rule scope** to edit the criteria the rule should match against. ([Rules](rules.md#create-rules-from-existing-invocations))
@@ -80,7 +80,7 @@ request_timeout_seconds = 120
 
 2. Click on the invocation you want to deny:
 
-    - On the invocations detail panel, select **Deny** under Approval Required to deny that single invocation.
+    - On the invocation detail panel, select **Deny** under Approval Required to deny that single invocation.
     - To deny all invocations for calls matching similar criteria going forward:
 
         a. Click **&#9660; Customize rule scope** to edit the criteria the rule should match against. ([Rules](rules.md#create-rules-from-existing-invocations))
@@ -112,7 +112,7 @@ To use invocation summarization, you need at least one model source:
 
 2. Click the invocation you want to summarize.
 
-3. Under <span style="font-variant: small-caps;">summary</span> click **Summarize** to generate a summary, or **Re-summarize** to replace an existing one.
+3. Under <span style="font-variant: small-caps;">summary</span>, click **Summarize** to generate a summary, or **Re-summarize** to replace an existing one.
 
 
 

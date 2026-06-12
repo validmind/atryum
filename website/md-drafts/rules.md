@@ -52,7 +52,7 @@ These are not listed automatically on the Rules page — enter the exact tool na
 
 4. Select the **Agents**, **Servers / Sources**, and **Tools** that the rule should apply to.
 
-    (AI Evaluation Action only) Select the **Evaluation Model** — The large language model (LLM) that reviews matching tool calls against the agent's constitution and decides whether to approve, deny, escalate to a human, or defer to the next rule. ([Configure LLM providers](configure-llm-providers.md))
+    (AI Evaluation Action only) Select the **Evaluation Model** — The large language model (LLM) that reviews matching tool calls against the agent's constitution and decides whether to approve, deny, escalate to a human, or defer to the next rule. ([Connect ValidMind](connect-validmind.md), [Configure LLM providers](configure-llm-providers.md))
 
 5. (Optional) Add a **Description** so you can remember why the rule exists.
 
@@ -64,7 +64,7 @@ These are not listed automatically on the Rules page — enter the exact tool na
 
 2. Click on the invocation you want to create a rule from.
 
-3. On the invocations detail panel, select **Create Rule From This**.
+3. On the invocation detail panel, select **Create Rule From This**.
 
 4. Select the:
 

@@ -54,7 +54,7 @@ After you add at least one enabled local LLM, you can set up a rule for an `AI E
 
 5. Under **Agents**, select the agents you want this rule to apply to. Leave this empty to match all agents.
 
-6. Under **Servers/Sources**, select the servers or sources the rule should apply to. Leave this empty to match all servers.
+6. Under **Servers / Sources**, select the servers or sources the rule should apply to. Leave this empty to match all servers.
 
 7. Under **Tools**, select the tools the rule should apply to. Leave this empty to match all tools.
 
@@ -79,7 +79,7 @@ After you add at least one enabled local LLM, you can set up a rule for an `AI E
     - **Provider** — Choose one of: `OpenAI`, `Anthropic`, `OpenAI-compatible`
     - **Model** — The model identifier your provider expects.
     - **API Key** — Leave blank when editing an existing configuration to keep the current key.
-    - (OpenAI-compatible only) **Base URL**  — The root URL of the endpoint.
+    - (OpenAI-compatible only) **Base URL** — The root URL of the endpoint.
 
 4. To turn providers on or off:
 

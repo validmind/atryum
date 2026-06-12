@@ -57,7 +57,7 @@ Before connecting Atryum to ValidMind:
 
 ## Set up ValidMind AI evaluation rules
 
-Create a rule in Atryum to route matching tool invocations to a record that evaluates the call against the ValidMind agent's constitution:
+Create a rule in Atryum to evaluate matching tool invocations against the synced ValidMind agent's constitution:
 
 1. In Atryum, click **Rules** in the left sidebar.
 
@@ -69,7 +69,7 @@ Create a rule in Atryum to route matching tool invocations to a record that eval
 
 5. Under **Agents**, select the synced ValidMind agent records you want this rule to apply to. Leave this empty to match all agents.
 
-6. Under **Servers/Sources**, select the servers or sources the rule should apply to. Leave this empty to match all servers.
+6. Under **Servers / Sources**, select the servers or sources the rule should apply to. Leave this empty to match all servers.
 
 7. Under **Tools**, select the tools the rule should apply to. Leave this empty to match all tools.
 
