@@ -67,7 +67,7 @@ def path_prefixes(depth: int) -> tuple[str, str]:
 
 
 def directory_label(name: str) -> str:
-    return name.replace("-", " ").title()
+    return name.replace("-", " ")
 
 
 def page_slug(path: Path) -> str:
