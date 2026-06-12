@@ -312,6 +312,21 @@ func (s *stubAgentsRepo) UpdateAgentIDs(context.Context, string, string) error {
 func (s *stubAgentsRepo) UpdateMeta(context.Context, string, string, string, string) error {
 	return nil
 }
+func (s *stubAgentsRepo) CheckAgentIDConflict(_ context.Context, excludeID string, agentIDs []string) (string, string, error) {
+	for _, id := range agentIDs {
+		for _, r := range s.records {
+			if r.ID == excludeID {
+				continue
+			}
+			for _, rid := range parseAgentIDs(r.AgentIDs) {
+				if rid == id {
+					return id, r.VMName, nil
+				}
+			}
+		}
+	}
+	return "", "", nil
+}
 func (s *stubAgentsRepo) Create(_ context.Context, _ store.AgentRecord) error { return nil }
 func (s *stubAgentsRepo) Delete(context.Context, string) error                { return nil }
 func (s *stubAgentsRepo) DeleteSynced(context.Context) error                  { return nil }

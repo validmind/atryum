@@ -267,6 +267,11 @@ const Invocations: React.FC = () => {
     const map = new Map<string, { cuid: string; name: string }>();
     for (const agent of agentsData?.items ?? []) {
       for (const id of agent.agent_ids) {
+        if (map.has(id)) {
+          console.warn(
+            `[Atryum] Duplicate agent_id "${id}" found on agent "${agent.name}" — already claimed by "${map.get(id)!.name}". This is a misconfiguration; only one agent should own each agent_id.`,
+          );
+        }
         map.set(id, { cuid: agent.cuid, name: agent.name });
       }
     }
