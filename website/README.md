@@ -113,9 +113,19 @@ Commit both the Markdown sources and the generated files. CI runs `make docs` on
 
 ### Preview website locally
 
+From this directory (`website/`):
+
+```bash
+make preview
+```
+
+Or equivalently:
+
 ```bash
 python3 -m http.server 8000
 ```
+
+Do not run the server from the repo root — there is no `index.html` there, so you'll get a directory listing instead of the site.
 
 - Open [http://localhost:8000/](http://localhost:8000/) for the homepage and [http://localhost:8000/documentation/quickstart.html](http://localhost:8000/documentation/quickstart.html) for docs.
 - Hard-refresh after CSS or JS changes.
