@@ -37,7 +37,7 @@ Other coding agents connect to Atryum in one of two ways:
 
 Hook and extension integrations do not use the MCP proxy URL steps below. MCP proxy integrations do not need `./atryum hooks install`.
 
-### Hook and extension agents
+### Connect hook and extension agents
 
 Use this path for agents that gate native tools (shell, file edits, in-process tools) through Atryum before execution:
 
@@ -53,29 +53,7 @@ Use this path for agents that gate native tools (shell, file edits, in-process t
 
 4. Start your agent from that terminal session. Pending tool calls appear under **Invocations** in the Atryum platform left sidebar.
 
-### Connect via MCP proxy
-
-Use this path when your agent speaks MCP and you want tool calls routed through Atryum to an upstream server registered under **Servers**:
-
-1. Register the upstream server in Atryum before connecting your agent. ([Connect MCP servers](connect-mcp-servers.md))
-
-    Skip this if your server is already registered.
-
-2. In your agent's MCP settings, add a standard MCP connection entry and point it at:
-
-    ```text
-    http://<atryum-host-and-port>/mcp/<server_name>
-    ```
-
-3. Replace `<atryum-host-and-port>` with your Atryum base URL.
-
-    The default local address is `localhost:8080`.
-
-4. Replace `<server_name>` with the name you gave the MCP server under **Servers** in the Atryum platform left sidebar.
-
-5. Start your agent. To tag invocations to an agent record in no-auth mode, append `?agent_id=<your_id>` to the MCP proxy URL — for example, `http://localhost:8080/mcp/calc?agent_id=amp-local`. See [Agent identity and authentication](#agent-identity-and-authentication).
-
-### Set environment variables
+#### Set environment variables
 
 Use these variables for hook and extension integrations. MCP proxy clients do not read `ATRYUM_AGENT_ID` — tag agent identity with `?agent_id=` on the proxy URL instead.
 
@@ -105,6 +83,28 @@ Use these variables for hook and extension integrations. MCP proxy clients do no
 5. Make sure Atryum is running and reachable at `ATRYUM_URL`, then start your agent from the same terminal session.
 
     Pending tool calls appear under **Invocations** in the Atryum platform left sidebar.
+
+### Connect via MCP proxy
+
+Use this path when your agent speaks MCP and you want tool calls routed through Atryum to an upstream server registered under **Servers**:
+
+1. Register the upstream server in Atryum before connecting your agent. ([Connect MCP servers](connect-mcp-servers.md))
+
+    Skip this if your server is already registered.
+
+2. In your agent's MCP settings, add a standard MCP connection entry and point it at:
+
+    ```text
+    http://<atryum-host-and-port>/mcp/<server_name>
+    ```
+
+3. Replace `<atryum-host-and-port>` with your Atryum base URL.
+
+    The default local address is `localhost:8080`.
+
+4. Replace `<server_name>` with the name you gave the MCP server under **Servers** in the Atryum platform left sidebar.
+
+5. Start your agent. To tag invocations to an agent record in no-auth mode, append `?agent_id=<your_id>` to the MCP proxy URL — for example, `http://localhost:8080/mcp/calc?agent_id=amp-local`. See [Agent identity and authentication](#agent-identity-and-authentication).
 
 ### Tag invocations to agent records
 
