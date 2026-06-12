@@ -121,13 +121,7 @@ From the repo root:
 make preview-docs
 ```
 
-To serve without the Makefile target, run `make docs` first, then:
-
-```bash
-python3 -m http.server 8000 --directory website
-```
-
-(`make preview-docs` runs `make docs` automatically before starting the server.)
+`make preview-docs` runs `make docs` automatically before starting the server.
 
 - Open [http://localhost:8000/](http://localhost:8000/) for the homepage.
 - Partials such as `docs-nav.html` are loaded with JavaScript — a normal refresh picks up nav changes after `make docs`. Hard-refresh if you changed `includes.js` or CSS.
