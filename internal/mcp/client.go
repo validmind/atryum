@@ -539,20 +539,25 @@ func (c *Client) invokeHTTP(ctx context.Context, upstream Upstream, tool string,
 	}
 	if len(rpcResp.Error) > 0 && string(rpcResp.Error) != "null" {
 		if isMissingSessionRPCError(rpcResp.Error) {
+			c.debugf("upstream http tools.call missing session server=%s session=%q status=%d error=%s", upstream.Name, result.SessionID, result.StatusCode, truncateForLog(rpcResp.Error, 600))
 			if retryErr := c.reinitializeRequiredHTTPSession(ctx, upstream, result.SessionID); retryErr != nil {
+				c.debugf("upstream http tools.call session retry init failed server=%s session=%q err=%v", upstream.Name, result.SessionID, retryErr)
 				return InvokeResult{}, retryErr
 			}
 			result, err = c.doHTTPEnvelopeWithSessionRetry(ctx, upstream, body, DefaultMCPProtocolVersion)
 			if err != nil {
+				c.debugf("upstream http tools.call session retry transport failed server=%s err=%v", upstream.Name, err)
 				return InvokeResult{}, err
 			}
 			rpcResp, err = decodeRPCResponse(result, json.RawMessage([]byte("1")))
 			if err != nil {
+				c.debugf("upstream http tools.call session retry decode failed server=%s status=%d err=%v", upstream.Name, result.StatusCode, err)
 				return InvokeResult{}, err
 			}
 		}
 	}
 	if len(rpcResp.Error) > 0 && string(rpcResp.Error) != "null" {
+		c.debugf("upstream http tools.call rpc error server=%s status=%d error=%s", upstream.Name, result.StatusCode, truncateForLog(rpcResp.Error, 600))
 		return InvokeResult{StatusCode: result.StatusCode, Body: rpcResp.Error, Failed: true}, nil
 	}
 	bodyBytes := rpcResp.Result
@@ -755,14 +760,18 @@ func (c *Client) reinitializeRequiredHTTPSession(ctx context.Context, upstream U
 
 	currentSessionID := c.getSession(upstream.Name)
 	if failedSessionID != "" && currentSessionID != "" && currentSessionID != failedSessionID {
+		c.debugf("upstream session reinit skipped server=%s failed_session=%q current_session=%q reason=session_already_replaced", upstream.Name, failedSessionID, currentSessionID)
 		return nil
 	}
 	if failedSessionID == "" && currentSessionID != "" {
+		c.debugf("upstream session reinit skipped server=%s current_session=%q reason=session_already_exists", upstream.Name, currentSessionID)
 		return nil
 	}
 	if failedSessionID != "" {
+		c.debugf("upstream session reinit clearing server=%s session=%q", upstream.Name, failedSessionID)
 		c.clearSessionIfCurrent(upstream.Name, failedSessionID)
 	} else {
+		c.debugf("upstream session reinit clearing server=%s session=(none)", upstream.Name)
 		c.clearSession(upstream.Name)
 	}
 	return c.initializeHTTPSessionCandidates(ctx, upstream, true)
@@ -782,18 +791,23 @@ func (c *Client) ensureHTTPSessionMode(ctx context.Context, upstream Upstream, r
 func (c *Client) initializeHTTPSessionCandidates(ctx context.Context, upstream Upstream, requireSession bool) error {
 	var lastErr error
 	for _, protocolVersion := range httpProtocolCandidates() {
+		c.debugf("upstream session initialize attempt server=%s protocol=%s require_session=%t", upstream.Name, protocolVersion, requireSession)
 		hadSession, err := c.initializeHTTPSession(ctx, upstream, protocolVersion)
 		if err != nil {
 			lastErr = err
+			c.debugf("upstream session initialize failed server=%s protocol=%s err=%v", upstream.Name, protocolVersion, err)
 			if isProtocolNegotiationError(err) {
+				c.debugf("upstream session initialize trying fallback server=%s rejected_protocol=%s", upstream.Name, protocolVersion)
 				continue
 			}
 			return err
 		}
 		if !requireSession || hadSession {
+			c.debugf("upstream session initialize accepted server=%s protocol=%s had_session=%t", upstream.Name, protocolVersion, hadSession)
 			return nil
 		}
 		lastErr = fmt.Errorf("upstream initialize using MCP %s did not return Mcp-Session-Id", protocolVersion)
+		c.debugf("upstream session initialize rejected server=%s protocol=%s reason=missing_session_id", upstream.Name, protocolVersion)
 	}
 	if lastErr != nil {
 		return lastErr
