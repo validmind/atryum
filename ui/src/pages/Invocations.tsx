@@ -104,15 +104,6 @@ const STATUS_OPTIONS = STATUSES.map((status) => ({
   value: status,
 }));
 
-const truncateMiddle = (
-  value: string,
-  startChars = 8,
-  endChars = 6,
-): string => {
-  if (value.length <= startChars + endChars + 1) return value;
-  return `${value.slice(0, startChars)}…${value.slice(-endChars)}`;
-};
-
 const wildcardToRegExp = (pattern: string): RegExp => {
   const escapedPattern = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`^${escapedPattern.replace(/\*/g, ".*")}$`);
@@ -672,7 +663,6 @@ const Invocations: React.FC = () => {
                       zIndex={1}>
                       <Tr>
                         <Th>Agent</Th>
-                        <Th>ID</Th>
                         <Th>Server</Th>
                         <Th>Tool</Th>
                         <Th>Agent Record</Th>
@@ -755,21 +745,6 @@ const Invocations: React.FC = () => {
                                 </Tooltip>
                               );
                             })()}
-                          </Td>
-                          <Td>
-                            <Tooltip
-                              hasArrow
-                              label={inv.invocation_id}
-                              placement="top-start"
-                              openDelay={300}>
-                              <Text
-                                fontSize="xs"
-                                fontFamily="mono"
-                                color="text.subtle"
-                                whiteSpace="nowrap">
-                                {truncateMiddle(inv.invocation_id)}
-                              </Text>
-                            </Tooltip>
                           </Td>
                           <Td>
                             <Text fontSize="xs" color="text.subtle">
