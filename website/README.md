@@ -125,7 +125,7 @@ Or equivalently:
 python3 -m http.server 8000 --directory website
 ```
 
-- Open [http://localhost:8000/](http://localhost:8000/) for the homepage and [http://localhost:8000/documentation/quickstart.html](http://localhost:8000/documentation/quickstart.html) for docs.
+- Open [http://localhost:8000/](http://localhost:8000/) for the homepage.
 - Hard-refresh after CSS or JS changes.
 
 ### Navigation logic
