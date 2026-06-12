@@ -166,12 +166,24 @@
     });
   }
 
+  function isAbsoluteUrl(url) {
+    return /^[a-z][a-z0-9+.-]*:/i.test(url) || url.indexOf('//') === 0;
+  }
+
+  function toAbsoluteUrl(url) {
+    if (isAbsoluteUrl(url)) {
+      return url;
+    }
+
+    return new URL(url, document.baseURI).href;
+  }
+
   function resolveIncludeSrc(src, baseUrl) {
     if (/^(https?:)?\/\//.test(src) || src.startsWith('data:')) {
       return src;
     }
 
-    return new URL(src, new URL(baseUrl, window.location.href)).href;
+    return new URL(src, toAbsoluteUrl(baseUrl)).href;
   }
 
   function expandIncludes(html, baseUrl) {
@@ -194,10 +206,11 @@
               throw new Error('Unable to load include: ' + nestedSrc);
             }
 
-            return response.text();
-          })
-          .then(function (nestedHtml) {
-            return expandIncludes(nestedHtml, nestedResolved);
+            var fetchedFrom = response.url || nestedResolved;
+
+            return response.text().then(function (nestedHtml) {
+              return expandIncludes(nestedHtml, fetchedFrom);
+            });
           })
           .then(function (expandedHtml) {
             nested.outerHTML = expandedHtml;
@@ -210,7 +223,7 @@
 
   function loadInclude(target) {
     var src = target.dataset.include;
-    var baseUrl = target.dataset.includeBase || window.location.href;
+    var baseUrl = target.dataset.includeBase || document.baseURI;
     var resolved = resolveIncludeSrc(src, baseUrl);
 
     return fetch(resolved)
@@ -219,10 +232,11 @@
           throw new Error('Unable to load include: ' + src);
         }
 
-        return response.text();
-      })
-      .then(function (html) {
-        return expandIncludes(html, resolved);
+        var fetchedFrom = response.url || resolved;
+
+        return response.text().then(function (html) {
+          return expandIncludes(html, fetchedFrom);
+        });
       })
       .then(function (html) {
         target.outerHTML = html;
