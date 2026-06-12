@@ -110,9 +110,23 @@ To apply agent-scoped rules, attach invocations to an agent record, or supply a 
 
 1. In Atryum, click **Agents** in the left sidebar.
 
-2. Click **New Agent** to create a local agent record, or click an existing agent — including records synced from ValidMind with. ([Connect ValidMind](connect-validmind.md))
+2. Click **New Agent** to create a local agent record, or click an existing agent — including records synced from ValidMind. ([Connect ValidMind](connect-validmind.md))
 
-3. Add a stable string to its **Agent IDs** field — type the ID and press **Enter** to add it, such as `amp-local` or `pi-alice`, then click **Save**.
+    If creating a new local agent:
+    
+    a. Enter the:
+
+    - **Name**
+    - (Optional) **Description**
+    - (Optional, but recommended) **Constitution** — Rhe rules and constraints governing this agent's behavior. Atryum uses this for local LLM-as-judge evaluation rules. ([Configure LLM providers](configure-llm-providers.md))
+
+    b. Add a stable string to **Agent IDs** — Type the ID and press **Enter** to add it
+
+    c. Make sure that **Enabled** is checked.
+
+    d. Click **Save**.
+
+3. If you selected an existing agent instead, add a stable string to its **Agent IDs** field — type the ID and press **Enter** to add it, such as `amp-local` or `pi-alice`, then click **Save**.
 
 4. In the same terminal session where you will start your agent, export that string as `ATRYUM_AGENT_ID`:
 
