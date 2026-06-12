@@ -45,12 +45,6 @@ func (s *stubService) Invoke(ctx context.Context, req invocation.CreateInvocatio
 func (s *stubService) ListTools(context.Context, string) ([]mcp.Tool, error) {
 	return s.tools, s.listErr
 }
-func (s *stubService) ListAllTools(context.Context) ([]mcp.Tool, error) {
-	return s.tools, s.listErr
-}
-func (s *stubService) ResolveToolServer(_ context.Context, _ string) (string, error) {
-	return s.upstream.Name, nil
-}
 func (s *stubService) Get(_ context.Context, _ string) (invocation.InvocationResponse, error) {
 	return s.invoke, s.getErr
 }
@@ -709,6 +703,34 @@ func TestMCPDeleteReturn405(t *testing.T) {
 	h.Routes().ServeHTTP(w, req)
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("DELETE expected 405, got %d", w.Code)
+	}
+}
+
+func TestMCPRootRequiresServer(t *testing.T) {
+	h := NewHandler(&stubService{tools: []mcp.Tool{{Name: "demo_tool"}}}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{name: "bare path", method: http.MethodPost, path: "/mcp", body: `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`},
+		{name: "trailing slash", method: http.MethodPost, path: "/mcp/", body: `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`},
+		{name: "root sse", method: http.MethodGet, path: "/mcp/"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
+			w := httptest.NewRecorder()
+			h.Routes().ServeHTTP(w, req)
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("%s %s expected 404, got %d body=%s", tt.method, tt.path, w.Code, w.Body.String())
+			}
+			if strings.Contains(w.Body.String(), "demo_tool") {
+				t.Fatalf("root MCP endpoint should not list tools, got %s", w.Body.String())
+			}
+		})
 	}
 }
 

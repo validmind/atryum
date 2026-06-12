@@ -38,8 +38,6 @@ var webFS embed.FS
 type service interface {
 	Invoke(ctx context.Context, req invocation.CreateInvocationRequest) (invocation.InvocationResponse, error)
 	ListTools(ctx context.Context, server string) ([]mcp.Tool, error)
-	ListAllTools(ctx context.Context) ([]mcp.Tool, error)
-	ResolveToolServer(ctx context.Context, toolName string) (string, error)
 	Get(ctx context.Context, id string) (invocation.InvocationResponse, error)
 	List(ctx context.Context, filter invocation.InvocationListFilter) (invocation.InvocationListResponse, error)
 	ListAgentIDs(ctx context.Context) ([]string, error)
@@ -522,6 +520,7 @@ func (h *Handler) Routes() http.Handler {
 	}
 	mcpHandler := auth.MiddlewareWithOptions(h.authValidator, "/.well-known/oauth-protected-resource", auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})(http.HandlerFunc(h.invokeUpstream))
 	mcpHandler = h.noAuthAgentIDHint(mcpHandler)
+	mux.HandleFunc("/mcp", h.mcpRootNotFound)
 	mux.Handle("/mcp/", mcpHandler)
 	mux.HandleFunc("/api/v1/invocations", h.invocations)
 	mux.HandleFunc("/api/v1/admin/invocations", h.adminInvocations)
@@ -614,6 +613,10 @@ func (h *Handler) root(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/ui/", http.StatusFound)
 }
 
+func (h *Handler) mcpRootNotFound(w http.ResponseWriter, _ *http.Request) {
+	writeError(w, http.StatusNotFound, "MCP server name is required; use /mcp/{server}")
+}
+
 func (h *Handler) uiIndex(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/ui" {
 		writeError(w, http.StatusNotFound, "not found")
@@ -643,6 +646,10 @@ func (h *Handler) spaFileServer() http.Handler {
 func (h *Handler) invokeUpstream(w http.ResponseWriter, r *http.Request) {
 	server := strings.TrimPrefix(r.URL.Path, "/mcp/")
 	server = strings.Trim(server, "/")
+	if server == "" {
+		writeError(w, http.StatusNotFound, "MCP server name is required; use /mcp/{server}")
+		return
+	}
 
 	// GET: open an SSE keepalive stream (Streamable HTTP transport and legacy SSE clients both try GET)
 	if r.Method == http.MethodGet {
@@ -658,12 +665,7 @@ func (h *Handler) invokeUpstream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if isJSONRPCRequest(r) {
-		// server may be "" — handleMCPProxy handles the aggregate (no-server) case
 		h.handleMCPProxy(w, r, server)
-		return
-	}
-	if server == "" {
-		writeError(w, http.StatusNotFound, "server not found")
 		return
 	}
 	h.handleInvocation(w, r, server)
@@ -916,13 +918,7 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 	case "notifications/initialized":
 		w.WriteHeader(http.StatusAccepted)
 	case "tools/list":
-		var tools []mcp.Tool
-		var err error
-		if server == "" {
-			tools, err = h.svc.ListAllTools(r.Context())
-		} else {
-			tools, err = h.svc.ListTools(r.Context(), server)
-		}
+		tools, err := h.svc.ListTools(r.Context(), server)
 		if err != nil {
 			h.writeRPCError(w, req.ID, -32000, err.Error())
 			return
@@ -950,16 +946,7 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			h.writeRPCResult(w, req.ID, result)
 			return
 		}
-		callServer := server
-		if callServer == "" {
-			resolved, err := h.svc.ResolveToolServer(r.Context(), params.Name)
-			if err != nil {
-				h.writeRPCError(w, req.ID, -32000, err.Error())
-				return
-			}
-			callServer = resolved
-		}
-		toolReq := invocation.CreateInvocationRequest{Server: callServer, Tool: params.Name, Input: params.Arguments}
+		toolReq := invocation.CreateInvocationRequest{Server: server, Tool: params.Name, Input: params.Arguments}
 		if requestID != "" {
 			toolReq.RequestID = stringPtr(requestID)
 		}
@@ -980,7 +967,7 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		if len(resp.Error) > 0 {
 			result := normalizeToolCallResult(resp.Error, true)
 			if resp.Status == invocation.StatusDenied {
-				result = h.appendRulesContextToToolResult(r.Context(), result, callServer, params.Name)
+				result = h.appendRulesContextToToolResult(r.Context(), result, server, params.Name)
 			}
 			h.writeRPCResult(w, req.ID, result)
 			return
@@ -1221,9 +1208,7 @@ type atryumToolPolicy struct {
 
 // annotateToolsWithPolicy decorates each tool with its effective approval
 // disposition for the current agent so the model sees the policy at the moment
-// it picks a tool. Annotation requires both rulesRepo and a concrete server;
-// in aggregate mode (server == "") we cannot reliably attribute tools to a
-// server, so we return the tools unchanged.
+// it picks a tool. Annotation requires both rulesRepo and a concrete server.
 func (h *Handler) annotateToolsWithPolicy(ctx context.Context, server string, tools []mcp.Tool) []any {
 	out := make([]any, len(tools))
 	if h.rulesRepo == nil || strings.TrimSpace(server) == "" {
