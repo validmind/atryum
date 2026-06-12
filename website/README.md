@@ -1,6 +1,6 @@
 # Atryum documentation
 
-Static site for [atryum.ai](https://atryum.ai) — a marketing homepage plus documentation built from Markdown.
+Static site for [atryum.org](https://atryum.org) — a marketing homepage plus documentation built from Markdown.
 
 ## Directory layout
 
@@ -11,6 +11,7 @@ website/
 ├── documentation/          # Generated HTML (do NOT edit)
 ├── partials/               # Shared HTML fragments (docs-nav.html is generated)
 ├── assets/                 # CSS, JS, images
+├── CNAME                   # Custom domain for GitHub Pages (manual)
 └── scripts/md_to_html.py   # Markdown → HTML converter
 ```
 
@@ -24,7 +25,7 @@ website/
 
 2. Run `make docs` from the repo root.
 
-3. Commit the `.md` source and the generated HTML.
+3. Commit the `.md` source and the generated output (`documentation/**/*.html` and `partials/docs-nav.html`), as well as any other manually edited files.
 
 ### Page structure
 
@@ -38,16 +39,15 @@ One-line intro shown under the title on the page.
 ## First section
 ```
 
-The `#` heading becomes the page title. The first non-empty line after it becomes the intro (`docs-intro`). The build fails if that line is missing. Everything after the intro line is body content.
+- The `#` heading becomes the page title. The first non-empty line after it becomes the intro (`docs-intro`). The build fails if that line is missing. Everything after the intro line is body content.
+- Pages in subdirectories also show a kicker above the title — for example `Documentation / integrations` for files under `1_integrations/`.
 
-### File placement
+#### Example file placement
 
 | Location | Result |
 | --- | --- |
 | `md-drafts/1_quickstart.md` | `documentation/1_quickstart.html` |
 | `md-drafts/1_integrations/2_connect-agents.md` | `documentation/1_integrations/2_connect-agents.html` |
-
-Numeric prefixes control nav order. Folder prefixes are removed from section headings only (`1_integrations/` → **integrations**). Generated HTML paths keep the numbered source names.
 
 ### Cross-links
 
@@ -57,7 +57,8 @@ Link to other docs with relative `.md` paths. Use the numbered source filenames 
 See [Rules](3_rules.md) and [Connect agents](1_integrations/2_connect-agents.md).
 ```
 
-External links use full URLs as usual.
+- Unprefixed slugs such as `rules.md` also resolve when the target is unique, but prefer numbered source filenames for consistency with the repo.
+- External links use full URLs as usual.
 
 ### Callouts
 
@@ -80,6 +81,8 @@ Fenced blocks get copy buttons automatically:
 ````
 
 ### Checklists
+
+Completed steps only (`- [x]`). Unchecked boxes (`- [ ]`) render as ordinary list items.
 
 ```markdown
 - [x] First completed step
@@ -108,10 +111,10 @@ make docs
 
 This regenerates:
 
-- `documentation/**/*.html` — Mirrors the structure of `md-drafts/`
+- `documentation/**/*.html` — Mirrors the structure of `md-drafts/` (and removes stale HTML for deleted drafts)
 - `partials/docs-nav.html` — Documentation dropdown links in the header
 
-Commit both the Markdown sources and the generated files. CI runs `make docs` on deploy and fails if the output is out of date.
+Commit both the Markdown sources and the generated files. Pushes to `main` that touch `website/**`, `Makefile`, or `.github/workflows/pages.yml` run `make docs` in CI and fail if `documentation/` or `partials/docs-nav.html` are out of date.
 
 ### Preview website locally
 
@@ -134,9 +137,9 @@ The Documentation dropdown is generated from the draft tree:
 2. **Subdirectories next** — sorted by folder numeric prefix (`1_integrations/`, …).
 3. **Pages within each section** — sorted by their numeric prefix.
 
-Section headings use the folder name with the numeric prefix removed (`1_integrations/` → **integrations**). Nav link URLs and generated HTML paths keep the numbered source filenames — nav link text comes from each page's `#` H1.
-
-Use **`NAV_LABEL_OVERRIDES`** in `scripts/md_to_html.py` only when a menu label should differ from the page `#` title (otherwise the H1 is used).
+- Section headings use the folder name with the numeric prefix removed (`1_integrations/` → **integrations**).
+- Doc pages also get an auto-generated **On this page** table-of-contents sidebar from `##` and `###` headings in the body.
+- Use **`NAV_LABEL_OVERRIDES`** in `scripts/md_to_html.py` only when a dropdown label should differ from the page `#` title. Keys are prefix-stripped stems — for example `quickstart` for `1_quickstart.md`, or `connect-agents` for `2_connect-agents.md`.
 
 ## Do NOT edit
 
@@ -151,5 +154,6 @@ These are maintained manually (or usually, agentically...):
 
 - `index.html` — homepage (including install command)
 - `partials/header.html`, `footer.html`
-- `assets/style.css`, `assets/includes.js`, `assets/install.css`
+- `assets/style.css`, `assets/includes.js`, `assets/install.css`, `assets/atryum-logo.svg`, `assets/atryum-logo-favicon.svg`
+- `CNAME` — GitHub Pages custom domain (`atryum.org`)
 - `install_atryum.sh` (repo root) — install script referenced by the homepage and Quickstart
