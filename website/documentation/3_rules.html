@@ -50,13 +50,13 @@
 
         <p>Rules support four types of actions:</p>
 
-        <ol><li><strong>Auto Approve</strong> — Allows matching tool calls to run without stopping for manual approval.</li><li><strong>Auto Deny</strong> — Blocks matching tool calls automatically.</li><li><strong>Human Approval</strong> — Pauses matching tool calls until a human approves or denies them.</li><li><strong>AI Evaluation</strong> — Sends matching tool calls for review against an agent's constitution — requires Atryum to be synced to ValidMind or a configured local large language model (LLM). (<a href="1_integrations/1_connect-validmind.html">Connect ValidMind</a>, <a href="1_integrations/4_configure-llm-providers.html">Configure LLM providers</a>)</li></ol>
+        <ol><li><strong>Auto Approve</strong> — Allows matching tool calls to run without stopping for manual approval.</li><li><strong>Auto Deny</strong> — Blocks matching tool calls automatically.</li><li><strong>Human Approval</strong> — Pauses matching tool calls until a human approves or denies them.</li><li><strong>AI Evaluation</strong> — Sends matching tool calls for review against an agent's charter — requires Atryum to be synced to ValidMind or a configured local large language model (LLM). (<a href="1_integrations/1_connect-validmind.html">Connect ValidMind</a>, <a href="1_integrations/4_configure-llm-providers.html">Configure LLM providers</a>)</li></ol>
 
         <h2 id="rules-best-practices">Rules best practices</h2>
 
         <h3 id="rule-ordering">Rule ordering</h3>
 
-        <p>Rules are generally applied from top to bottom — the first matching rule wins, with the exception of AI Evaluation actions. In the case of AI evaluations, when the agent's constitution does not apply to the tool call, the evaluation model can defer to the next matching rule instead of deciding.</p>
+        <p>Rules are generally applied from top to bottom — the first matching rule wins, with the exception of AI Evaluation actions. In the case of AI evaluations, when the agent's charter does not apply to the tool call, the evaluation model can defer to the next matching rule instead of deciding.</p>
 
         <p>As such, we recommend you curate four tiers of rules:</p>
 
@@ -74,7 +74,7 @@
 
         <h2 id="create-rules">Create rules</h2>
 
-        <ol><li>In Atryum, click <strong>Rules</strong> in the left sidebar.</li><li>Click <strong>New Rule</strong>.</li><li>Select an <strong>Action</strong> type.</li><li>Select the <strong>Agents</strong>, <strong>Servers / Sources</strong>, and <strong>Tools</strong> that the rule should apply to.<br><p>(AI Evaluation Action only) Select the <strong>Evaluation Model</strong> — The large language model (LLM) that reviews matching tool calls against the agent's constitution and decides whether to approve, deny, escalate to a human, or defer to the next rule. (<a href="1_integrations/1_connect-validmind.html">Connect ValidMind</a>, <a href="1_integrations/4_configure-llm-providers.html">Configure LLM providers</a>)</p></li><li>(Optional) Add a <strong>Description</strong> so you can remember why the rule exists.</li><li>Make sure that <strong>Enabled</strong> is checked, then click <strong>Create Rule</strong>.</li></ol>
+        <ol><li>In Atryum, click <strong>Rules</strong> in the left sidebar.</li><li>Click <strong>New Rule</strong>.</li><li>Select an <strong>Action</strong> type.</li><li>Select the <strong>Agents</strong>, <strong>Servers / Sources</strong>, and <strong>Tools</strong> that the rule should apply to.<br><p>(AI Evaluation Action only) Select the <strong>Evaluation Model</strong> — The large language model (LLM) that reviews matching tool calls against the agent's charter and decides whether to approve, deny, escalate to a human, or defer to the next rule. (<a href="1_integrations/1_connect-validmind.html">Connect ValidMind</a>, <a href="1_integrations/4_configure-llm-providers.html">Configure LLM providers</a>)</p></li><li>(Optional) Add a <strong>Description</strong> so you can remember why the rule exists.</li><li>Make sure that <strong>Enabled</strong> is checked, then click <strong>Create Rule</strong>.</li></ol>
 
         <h3 id="create-rules-from-existing-invocations">Create rules from existing invocations</h3>
 
@@ -84,7 +84,7 @@
 
         <h3 id="edit-rules">Edit rules</h3>
 
-        <ol><li>In Atryum, click <strong>Rules</strong> in the left sidebar.</li><li>Click on the rule you want to edit to make your changes to:<ul><li>The <strong>Action</strong> type</li><li>The <strong>Agents</strong>, <strong>Servers / Sources</strong>, and <strong>Tools</strong> that the rule should apply to</li><li>(AI Evaluation Action only) The <strong>Evaluation Model</strong> that reviews matching tool calls against the agent's constitution and decides whether to approve, deny, escalate to a human, or defer to the next rule. (<a href="1_integrations/1_connect-validmind.html">Connect ValidMind</a>, <a href="1_integrations/4_configure-llm-providers.html">Configure LLM providers</a>)</li><li>(Optional) The rule <strong>Description</strong></li></ul></li><li>To turn rules on or off:<ul><li>Check <strong>Enabled</strong> to turn the rule on.</li><li>Uncheck <strong>Enabled</strong> to turn the rule off.</li></ul></li><li>Click <strong>Save</strong> to apply your changes.</li></ol>
+        <ol><li>In Atryum, click <strong>Rules</strong> in the left sidebar.</li><li>Click on the rule you want to edit to make your changes to:<ul><li>The <strong>Action</strong> type</li><li>The <strong>Agents</strong>, <strong>Servers / Sources</strong>, and <strong>Tools</strong> that the rule should apply to</li><li>(AI Evaluation Action only) The <strong>Evaluation Model</strong> that reviews matching tool calls against the agent's charter and decides whether to approve, deny, escalate to a human, or defer to the next rule. (<a href="1_integrations/1_connect-validmind.html">Connect ValidMind</a>, <a href="1_integrations/4_configure-llm-providers.html">Configure LLM providers</a>)</li><li>(Optional) The rule <strong>Description</strong></li></ul></li><li>To turn rules on or off:<ul><li>Check <strong>Enabled</strong> to turn the rule on.</li><li>Uncheck <strong>Enabled</strong> to turn the rule off.</li></ul></li><li>Click <strong>Save</strong> to apply your changes.</li></ol>
 
         <h3 id="reorder-rules">Reorder rules</h3>
 

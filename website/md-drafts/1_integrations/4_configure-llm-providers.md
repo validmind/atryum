@@ -2,11 +2,11 @@
 
 Configure local LLM providers to power AI evaluation rules and invocation summarization.
 
-In addition to powering AI evaluation rules ([Rules](../3_rules.md)) and invocation summarization ([Invocations](../2_invocations.md)), configuring local large language model (LLM) providers also allows you to use credentials and endpoints controlled by your team to evaluate tool calls against each agent's *constitution*:
+In addition to powering AI evaluation rules ([Rules](../3_rules.md)) and invocation summarization ([Invocations](../2_invocations.md)), configuring local large language model (LLM) providers also allows you to use credentials and endpoints controlled by your team to evaluate tool calls against each agent's *charter*:
 
-- A constitution is a plain-language policy that describes what an agent can do, what it cannot do, and which actions require human approval.
-- Constitutions can be as terse or expressive as you would like. It's good to call out specifics when you can but be sure to include general statements to give the LLM something to hold on to when seeing an unanticipated tool call.
-- Use our provided [`populate-constitution`](https://github.com/validmind/atryum/tree/main/.agents/skills/populate-constitution) skill to help you author effective constitutions.
+- A charter is a plain-language policy that describes what an agent can do, what it cannot do, and which actions require human approval.
+- Charters can be as terse or expressive as you would like. It's good to call out specifics when you can but be sure to include general statements to give the LLM something to hold on to when seeing an unanticipated tool call.
+- Use our provided [`populate-charter`](https://github.com/validmind/atryum/tree/main/.agents/skills/populate-charter) skill to help you author effective charters.
 
 ## When should I use local LLMs?
 
@@ -64,8 +64,8 @@ After you add at least one enabled local LLM, you can set up a rule for an AI ev
 
 9. Make sure that **Enabled** is checked, then click **Create Rule**.
 
-- When a matching tool call arrives, Atryum sends the call and the agent's constitution to your local LLM. The model returns a verdict for the invocation — approve, deny, escalate to a human, or defer to the next rule.
-- If the agent has no constitution configured, Atryum denies the invocation.
+- When a matching tool call arrives, Atryum sends the call and the agent's charter to your local LLM. The model returns a verdict for the invocation — approve, deny, escalate to a human, or defer to the next rule.
+- If the agent has no charter configured, Atryum denies the invocation.
 
 ## Edit or remove local LLM providers
 

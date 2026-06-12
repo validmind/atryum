@@ -101,7 +101,7 @@ After setting up your test calculator server, connect Atryum with ValidMind and 
 
 Sync your ValidMind organization's agent records to Atryum to map tool invocations to agent records, use agent-scoped rules, and power invocation summarization.
 
-Connecting agent records from ValidMind also allows you to use Atryum to evaluate tool invocations against each agent's *constitution*, a plain-language policy that describes what an agent can do, what it cannot do, and which actions require human approval.
+Connecting agent records from ValidMind also allows you to use Atryum to evaluate tool invocations against each agent's *charter*, a plain-language policy that describes what an agent can do, what it cannot do, and which actions require human approval.
 
 :::
 To learn more about connecting ValidMind with Atryum, refer to **[Connect ValidMind](1_integrations/1_connect-validmind.md)**.
@@ -128,7 +128,7 @@ To learn more about registering MCP servers in Atryum, refer to **[Connect MCP s
 
 ### With local LLM providers
 
-Set up local large language model (LLM) providers in Atryum to power AI evaluation rules and invocation summarization with models and credentials your team controls. Configuring LLM providers also allows you to use credentials and endpoints controlled by your team to evaluate tool calls against each agent's *constitution*, a plain-language policy that describes what an agent can do, what it cannot do, and which actions require human approval.
+Set up local large language model (LLM) providers in Atryum to power AI evaluation rules and invocation summarization with models and credentials your team controls. Configuring LLM providers also allows you to use credentials and endpoints controlled by your team to evaluate tool calls against each agent's *charter*, a plain-language policy that describes what an agent can do, what it cannot do, and which actions require human approval.
 
 Local LLMs are useful for bring-your-own-key setups, on-prem or air-gapped deployments, and teams that want to register multiple models and pick the right one per rule or feature.
 

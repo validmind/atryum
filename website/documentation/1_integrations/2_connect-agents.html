@@ -114,13 +114,13 @@
 
         <h2 id="tag-invocations-to-agent-records">Tag invocations to agent records</h2>
 
-        <p>To apply agent-scoped rules, attach invocations to an agent record, or supply a constitution for local AI evaluation:</p>
+        <p>To apply agent-scoped rules, attach invocations to an agent record, or supply a charter for local AI evaluation:</p>
 
         <ol><li>In Atryum, click <strong>Agents</strong> in the left sidebar.</li><li>Click <strong>New Agent</strong> to create a local agent record, or click an existing agent — including records synced from ValidMind. (<a href="1_connect-validmind.html">Connect ValidMind</a>)<br><p>If creating a new local agent:</p>
 
         <p>a. Enter the:</p>
 
-        <ul><li><strong>Name</strong></li><li>(Optional) <strong>Description</strong></li><li>(Optional, but recommended) <strong>Constitution</strong> — The rules and constraints governing this agent's behavior. Atryum uses this for local LLM-as-judge evaluation rules. (<a href="4_configure-llm-providers.html">Configure LLM providers</a>)</li></ul>
+        <ul><li><strong>Name</strong></li><li>(Optional) <strong>Description</strong></li><li>(Optional, but recommended) <strong>Charter</strong> — The rules and constraints governing this agent's behavior. Atryum uses this for local LLM-as-judge evaluation rules. (<a href="4_configure-llm-providers.html">Configure LLM providers</a>)</li></ul>
 
         <p>b. Add a stable string to <strong>Agent IDs</strong> — Type the ID and press <strong>Enter</strong> to add it.</p>
 
@@ -141,7 +141,7 @@ export ATRYUM_AGENT_ID=amp-local</code></pre><button class="copy-btn code-block-
 
         <h2 id="edit-connected-coding-agents">Edit connected coding agents</h2>
 
-        <p>After you connect an agent, update its integration files, environment variables, or MCP settings on the machine where the agent runs. Update agents in the Atryum platform user interface when you need to change agent IDs, constitutions, or which record invocations map to.</p>
+        <p>After you connect an agent, update its integration files, environment variables, or MCP settings on the machine where the agent runs. Update agents in the Atryum platform user interface when you need to change agent IDs, charters, or which record invocations map to.</p>
 
         <h3 id="edit-cursor-and-claude-code-hooks">Edit Cursor and Claude Code hooks</h3>
 
@@ -171,7 +171,7 @@ export ATRYUM_AGENT_ID=amp-local</code></pre><button class="copy-btn code-block-
 
         <h3 id="edit-agent-records">Edit agent records</h3>
 
-        <ol><li>In Atryum, click <strong>Agents</strong> in the left sidebar.</li><li>Click the agent you want to edit.</li><li>Update the fields as desired:<ul><li><strong>Name</strong></li><li><strong>Description</strong></li><li><strong>Constitution</strong> — Editable for local agent records only. Synced ValidMind records show the constitution as read-only — edit the source field in ValidMind instead. (<a href="1_connect-validmind.html">Connect ValidMind</a>)</li><li><strong>Agent IDs</strong> — Type an ID and press <strong>Enter</strong> to add it. Remove individual IDs with the control on each tag.</li></ul></li><li>To turn the record on or off:<ul><li>Check <strong>Enabled</strong> to mark the agent record as active.</li><li>Uncheck <strong>Enabled</strong> to mark it inactive.</li></ul></li><li>Click <strong>Save</strong>.</li></ol>
+        <ol><li>In Atryum, click <strong>Agents</strong> in the left sidebar.</li><li>Click the agent you want to edit.</li><li>Update the fields as desired:<ul><li><strong>Name</strong></li><li><strong>Description</strong></li><li><strong>Charter</strong> — Editable for local agent records only. Synced ValidMind records show the charter as read-only — edit the source field in ValidMind instead. (<a href="1_connect-validmind.html">Connect ValidMind</a>)</li><li><strong>Agent IDs</strong> — Type an ID and press <strong>Enter</strong> to add it. Remove individual IDs with the control on each tag.</li></ul></li><li>To turn the record on or off:<ul><li>Check <strong>Enabled</strong> to mark the agent record as active.</li><li>Uncheck <strong>Enabled</strong> to mark it inactive.</li></ul></li><li>Click <strong>Save</strong>.</li></ol>
 
         <p>When you change <strong>Agent IDs</strong>, update <code>ATRYUM_AGENT_ID</code> or the <code>?agent_id=</code> query parameter on the MCP proxy URL to match, then restart the agent. (<a href="#tag-invocations-to-agent-records">Tag invocations to agent records</a>)</p>
 

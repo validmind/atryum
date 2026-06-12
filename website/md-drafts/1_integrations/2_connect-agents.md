@@ -121,7 +121,7 @@ Refer to the repository examples for agent-specific configuration:
 
 ## Tag invocations to agent records
 
-To apply agent-scoped rules, attach invocations to an agent record, or supply a constitution for local AI evaluation:
+To apply agent-scoped rules, attach invocations to an agent record, or supply a charter for local AI evaluation:
 
 1. In Atryum, click **Agents** in the left sidebar.
 
@@ -133,7 +133,7 @@ To apply agent-scoped rules, attach invocations to an agent record, or supply a 
 
     - **Name**
     - (Optional) **Description**
-    - (Optional, but recommended) **Constitution** — The rules and constraints governing this agent's behavior. Atryum uses this for local LLM-as-judge evaluation rules. ([Configure LLM providers](4_configure-llm-providers.md))
+    - (Optional, but recommended) **Charter** — The rules and constraints governing this agent's behavior. Atryum uses this for local LLM-as-judge evaluation rules. ([Configure LLM providers](4_configure-llm-providers.md))
 
     b. Add a stable string to **Agent IDs** — Type the ID and press **Enter** to add it.
 
@@ -172,7 +172,7 @@ For how Atryum uses agent identity in no-auth and auth mode, refer to [Agent ide
 
 ## Edit connected coding agents
 
-After you connect an agent, update its integration files, environment variables, or MCP settings on the machine where the agent runs. Update agents in the Atryum platform user interface when you need to change agent IDs, constitutions, or which record invocations map to.
+After you connect an agent, update its integration files, environment variables, or MCP settings on the machine where the agent runs. Update agents in the Atryum platform user interface when you need to change agent IDs, charters, or which record invocations map to.
 
 ### Edit Cursor and Claude Code hooks
 
@@ -228,7 +228,7 @@ When the upstream MCP server itself changes, edit the registration under **Serve
 
     - **Name**
     - **Description**
-    - **Constitution** — Editable for local agent records only. Synced ValidMind records show the constitution as read-only — edit the source field in ValidMind instead. ([Connect ValidMind](1_connect-validmind.md))
+    - **Charter** — Editable for local agent records only. Synced ValidMind records show the charter as read-only — edit the source field in ValidMind instead. ([Connect ValidMind](1_connect-validmind.md))
     - **Agent IDs** — Type an ID and press **Enter** to add it. Remove individual IDs with the control on each tag.
 
 4. To turn the record on or off:
