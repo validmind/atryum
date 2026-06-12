@@ -4,15 +4,15 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Connect ValidMind · Atryum</title>
-<link rel="icon" type="image/svg+xml" href="assets/atryum-logo-favicon.svg" />
+<link rel="icon" type="image/svg+xml" href="../../assets/atryum-logo-favicon.svg" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="assets/style.css" />
-<script src="assets/includes.js" defer></script>
+<link rel="stylesheet" href="../../assets/style.css" />
+<script src="../../assets/includes.js" defer></script>
 </head>
-<body data-page="connect-validmind">
-  <div data-include="partials/header.html"></div>
+<body data-page="integrations/connect-validmind">
+  <div data-include="../../partials/header.html"></div>
 
   <main>
     <div class="docs-layout">
@@ -31,12 +31,12 @@
 
       <div class="docs-main">
         <div class="docs-shell">
-          <div class="docs-kicker">Documentation</div>
+          <div class="docs-kicker">Documentation / Integrations</div>
           <h1 class="docs-title">Connect ValidMind</h1>
           <p class="docs-intro">Sync your ValidMind organization's agent records to Atryum to map tool invocations to agent records, use agent-scoped rules, and power invocation summarization.</p>
 
           <article class="docs-content">
-        <p>In addition to mapping tool invocations to agent records, allowing Atryum to use agent-scoped rules (<a href="rules.html">Rules</a>), and powering invocation summarization (<a href="invocations.html">Invocations</a>), the ValidMind integration also allows you to use Atryum to evaluate tool invocations against each agent's <em>constitution</em>:</p>
+        <p>In addition to mapping tool invocations to agent records, allowing Atryum to use agent-scoped rules (<a href="../rules.html">Rules</a>), and powering invocation summarization (<a href="../invocations.html">Invocations</a>), the ValidMind integration also allows you to use Atryum to evaluate tool invocations against each agent's <em>constitution</em>:</p>
 
         <ul><li>A constitution is a plain-language policy that describes what an agent can do, what it cannot do, and which actions require human approval.</li><li>Constitutions can be as terse or expressive as you would like. It's good to call out specifics when you can but be sure to include general statements to give the LLM something to hold on to when seeing an unanticipated tool call.</li><li>Use our provided <a href="https://github.com/validmind/atryum/tree/main/.agents/skills/populate-constitution"><code>populate-constitution</code></a> skill to help you author effective constitutions.</li></ul>
 
@@ -63,6 +63,6 @@
     </div>
   </main>
 
-  <div data-include="partials/footer.html"></div>
+  <div data-include="../../partials/footer.html"></div>
 </body>
 </html>

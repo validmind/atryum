@@ -4,15 +4,15 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Invocations · Atryum</title>
-<link rel="icon" type="image/svg+xml" href="assets/atryum-logo-favicon.svg" />
+<link rel="icon" type="image/svg+xml" href="../assets/atryum-logo-favicon.svg" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="assets/style.css" />
-<script src="assets/includes.js" defer></script>
+<link rel="stylesheet" href="../assets/style.css" />
+<script src="../assets/includes.js" defer></script>
 </head>
 <body data-page="invocations">
-  <div data-include="partials/header.html"></div>
+  <div data-include="../partials/header.html"></div>
 
   <main>
     <div class="docs-layout">
@@ -47,7 +47,7 @@
 
         <p>The <strong>Invocations</strong> page is where you review those calls, approve or deny requests that need human input, and turn one-off decisions into reusable rules (<a href="rules.html">Rules</a>). Invocations are displayed in a table:</p>
 
-        <ul><li><strong><span style="font-variant: small-caps;">agent</span></strong> — The client that made the tool call.</li><li><strong><span style="font-variant: small-caps;">id</span></strong> — The unique invocation identifier. Hover to view the full ID.</li><li><strong><span style="font-variant: small-caps;">server</span></strong> — The server or agent source the tool call targeted.</li><li><strong><span style="font-variant: small-caps;">tool</span></strong> — The tool name the agent requested to run.</li><li><strong><span style="font-variant: small-caps;">agent record</span></strong> — The agent record linked to this invocation — a local record manually registered or a record synced from ValidMind. Populated when the call's agent identity matches an <strong>Agent IDs</strong> entry on that record; empty otherwise. (<a href="connect-agents.html#tag-invocations-to-agent-records">Connect agents</a>, <a href="connect-validmind.html">Connect ValidMind</a>)</li><li><strong><span style="font-variant: small-caps;">status</span></strong> — The current state of the invocation: <code>Pending Approval</code>, <code>Approved</code>, <code>Denied</code>, <code>Executing</code>, <code>Succeeded</code>, <code>Failed</code>, <code>Expired</code>, <code>Cancelled</code>, or <code>Received</code>.</li><li><strong><span style="font-variant: small-caps;">decided by</span></strong> — Who or what made the approval decision: a <span style="font-variant: small-caps;">human</span>, a matching <span style="font-variant: small-caps;">rule</span>, or <span style="font-variant: small-caps;">ai evaluation</span>.</li><li><strong><span style="font-variant: small-caps;">submitted</span></strong> — When the agent submitted the tool call.</li></ul>
+        <ul><li><strong><span style="font-variant: small-caps;">agent</span></strong> — The client that made the tool call.</li><li><strong><span style="font-variant: small-caps;">id</span></strong> — The unique invocation identifier. Hover to view the full ID.</li><li><strong><span style="font-variant: small-caps;">server</span></strong> — The server or agent source the tool call targeted.</li><li><strong><span style="font-variant: small-caps;">tool</span></strong> — The tool name the agent requested to run.</li><li><strong><span style="font-variant: small-caps;">agent record</span></strong> — The agent record linked to this invocation — a local record manually registered or a record synced from ValidMind. Populated when the call's agent identity matches an <strong>Agent IDs</strong> entry on that record; empty otherwise. (<a href="integrations/connect-agents.html#tag-invocations-to-agent-records">Connect agents</a>, <a href="integrations/connect-validmind.html">Connect ValidMind</a>)</li><li><strong><span style="font-variant: small-caps;">status</span></strong> — The current state of the invocation: <code>Pending Approval</code>, <code>Approved</code>, <code>Denied</code>, <code>Executing</code>, <code>Succeeded</code>, <code>Failed</code>, <code>Expired</code>, <code>Cancelled</code>, or <code>Received</code>.</li><li><strong><span style="font-variant: small-caps;">decided by</span></strong> — Who or what made the approval decision: a <span style="font-variant: small-caps;">human</span>, a matching <span style="font-variant: small-caps;">rule</span>, or <span style="font-variant: small-caps;">ai evaluation</span>.</li><li><strong><span style="font-variant: small-caps;">submitted</span></strong> — When the agent submitted the tool call.</li></ul>
 
         <h2 id="view-or-filter-invocations">View or filter invocations</h2>
 
@@ -88,7 +88,7 @@ request_timeout_seconds = 120</code></pre><button class="copy-btn code-block-cop
 
         <p>To use invocation summarization, you need at least one model source:</p>
 
-        <ul><li>A <strong>ValidMind</strong> connection with at least one model configuration available in your organization (<a href="connect-validmind.html">Connect ValidMind</a>)</li><li>Or, at least one enabled <strong>Local LLM Configuration</strong> (<a href="configure-llm-providers.html">Configure LLM providers</a>)</li></ul>
+        <ul><li>A <strong>ValidMind</strong> connection with at least one model configuration available in your organization (<a href="integrations/connect-validmind.html">Connect ValidMind</a>)</li><li>Or, at least one enabled <strong>Local LLM Configuration</strong> (<a href="integrations/configure-llm-providers.html">Configure LLM providers</a>)</li></ul>
 
         <h3 id="set-invocation-summary-model">Set invocation summary model</h3>
 
@@ -103,6 +103,6 @@ request_timeout_seconds = 120</code></pre><button class="copy-btn code-block-cop
     </div>
   </main>
 
-  <div data-include="partials/footer.html"></div>
+  <div data-include="../partials/footer.html"></div>
 </body>
 </html>

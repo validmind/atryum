@@ -154,6 +154,21 @@ nav {
   white-space: nowrap;
 }
 
+.nav-menu-divider {
+  height: 1px;
+  margin: 6px 10px;
+  background: var(--border-base);
+}
+
+.nav-menu-heading {
+  padding: 6px 10px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--neutral-500);
+}
+
 .nav-menu a:hover,
 .nav-menu a[aria-current="page"] {
   background: var(--bs-50);

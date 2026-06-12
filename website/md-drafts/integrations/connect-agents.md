@@ -2,7 +2,7 @@
 
 Connect your coding agents to Atryum, allowing Atryum to review tool invocations before your agents run them.
 
-Connect your coding agents to Atryum so tool invocations pass through Atryum before they run. Atryum evaluates each call against your rules ([Rules](rules.md)), routes calls that need review to human approval, and records every outcome in the invocation audit log ([Invocations](invocations.md)).
+Connect your coding agents to Atryum so tool invocations pass through Atryum before they run. Atryum evaluates each call against your rules ([Rules](../rules.md)), routes calls that need review to human approval, and records every outcome in the invocation audit log ([Invocations](../invocations.md)).
 
 ## Connect Cursor and Claude Code
 
@@ -41,7 +41,7 @@ Hook and extension integrations do not use the MCP proxy URL steps below. MCP pr
 
 Use this path for agents that gate native tools (shell, file edits, in-process tools) through Atryum before execution:
 
-1. Make sure Atryum is running and reachable ([Quickstart](quickstart.md)).
+1. Make sure Atryum is running and reachable ([Quickstart](../quickstart.md)).
 
 2. Set `ATRYUM_URL` (and optionally `ATRYUM_AGENT_ID`) in the same terminal session where you start the agent. ([Set environment variables](#set-environment-variables))
 
@@ -263,7 +263,7 @@ Synced ValidMind agent records cannot be deleted from Atryum — remove them by 
 
 ## Agent identity and authentication
 
-When coding agents connect to Atryum, they present an *agent identity* that Atryum uses to tag invocations and match rules ([Rules](rules.md)) scoped to specific agents. Atryum supports two inbound authentication modes:
+When coding agents connect to Atryum, they present an *agent identity* that Atryum uses to tag invocations and match rules ([Rules](../rules.md)) scoped to specific agents. Atryum supports two inbound authentication modes:
 
 1. **No-auth mode** — The default when no `[[auth]]` blocks are configured in `atryum.toml`. Agents self-declare an agent ID.
 2. **Auth mode** — Agents authenticate with OAuth bearer tokens. Atryum derives a verified agent ID from the token and ignores self-declared labels.

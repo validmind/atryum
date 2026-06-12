@@ -1,26 +1,36 @@
 #!/usr/bin/env python3
-"""Convert website/md-drafts/*.md to website/*.html."""
+"""Convert website/md-drafts/**/*.md to website/documentation/**/*.html."""
 
 from __future__ import annotations
 
 import html
+import os
 import re
 import unicodedata
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DRAFTS = ROOT / "md-drafts"
-OUTPUT = ROOT
+OUTPUT = ROOT / "documentation"
+PARTIALS = ROOT / "partials"
 
-PAGE_SLUGS = {
-    "quickstart": "quickstart",
-    "invocations": "invocations",
-    "rules": "rules",
-    "connect-mcp-servers": "connect-mcp-servers",
-    "connect-validmind": "connect-validmind",
-    "connect-agents": "connect-agents",
-    "configure-llm-providers": "configure-llm-providers",
+NAV_LABELS = {
+    "quickstart": "Quickstart",
+    "invocations": "Invocations",
+    "rules": "Rules",
+    "connect-mcp-servers": "Connect MCP servers",
+    "connect-validmind": "Connect ValidMind",
+    "connect-agents": "Connect agents",
+    "configure-llm-providers": "Configure LLM providers",
 }
+
+ROOT_NAV_ORDER = ["quickstart", "invocations", "rules"]
+INTEGRATIONS_NAV_ORDER = [
+    "connect-mcp-servers",
+    "connect-validmind",
+    "connect-agents",
+    "configure-llm-providers",
+]
 
 CALLOUT_PLACEHOLDER = "__CALLOUT_{index}__"
 INSTALL_COMMANDS_PLACEHOLDER = "__INSTALL_COMMANDS__"
@@ -34,6 +44,8 @@ COPY_ICON_SVG = (
     "</svg>"
 )
 
+_partials_prefix = "../partials"
+
 
 def slugify(text: str) -> str:
     text = re.sub(r"<[^>]+>", "", text)
@@ -45,14 +57,67 @@ def slugify(text: str) -> str:
     return re.sub(r"-+", "-", text).strip("-")
 
 
-def replace_md_links(text: str) -> str:
+def path_depth(path: Path) -> int:
+    return len(path.relative_to(DRAFTS).parts) - 1
+
+
+def path_prefixes(depth: int) -> tuple[str, str]:
+    upward = "../" * (depth + 1)
+    return f"{upward}assets", f"{upward}partials"
+
+
+def directory_label(name: str) -> str:
+    return name.replace("-", " ").title()
+
+
+def page_slug(path: Path) -> str:
+    rel = path.relative_to(DRAFTS).with_suffix("")
+    return rel.as_posix()
+
+
+def nav_label(path: Path) -> str:
+    return NAV_LABELS.get(path.stem, path.stem.replace("-", " ").title())
+
+
+def html_output_path(path: Path) -> Path:
+    return OUTPUT / path.relative_to(DRAFTS).with_suffix(".html")
+
+
+def resolve_md_target(source_md: Path, link: str) -> Path:
+    direct = (source_md.parent / link).resolve()
+    if direct.exists():
+        return direct
+
+    matches = sorted(DRAFTS.rglob(Path(link).name))
+    if matches:
+        return matches[0]
+
+    return direct
+
+
+def md_href(source_md: Path, url: str) -> str:
+    if url.startswith(("#", "http://", "https://", "mailto:")):
+        return url
+
+    anchor = ""
+    if "#" in url:
+        url, anchor_part = url.split("#", 1)
+        anchor = f"#{anchor_part}"
+
+    if not url.endswith(".md"):
+        return url + anchor
+
+    target_md = resolve_md_target(source_md, url)
+    target_html = target_md.relative_to(DRAFTS).with_suffix(".html")
+    source_html_parent = source_md.relative_to(DRAFTS).with_suffix(".html").parent
+    href = Path(os.path.relpath(target_html, source_html_parent)).as_posix()
+    return href + anchor
+
+
+def replace_md_links(text: str, source_md: Path) -> str:
     def repl(match: re.Match[str]) -> str:
         label, url = match.group(1), match.group(2)
-        if url.startswith("#"):
-            return match.group(0)
-        if ".md" in url:
-            url = url.replace(".md", ".html")
-        return f"[{label}]({url})"
+        return f"[{label}]({md_href(source_md, url)})"
 
     return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", repl, text)
 
@@ -112,7 +177,7 @@ def inject_quickstart_install_partial(lines: list[str]) -> list[str]:
 def render_install_commands() -> str:
     return (
         '<div class="install install--docs">\n'
-        '          <div data-include="partials/install-commands.html"></div>\n'
+        f'          <div data-include="{_partials_prefix}/install-commands.html"></div>\n'
         "        </div>"
     )
 
@@ -497,6 +562,9 @@ def page_template(
     content_html: str,
     toc_html: str,
     page_slug: str,
+    kicker: str,
+    assets_prefix: str,
+    partials_prefix: str,
 ) -> str:
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -504,15 +572,15 @@ def page_template(
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>{html.escape(title)} · Atryum</title>
-<link rel="icon" type="image/svg+xml" href="assets/atryum-logo-favicon.svg" />
+<link rel="icon" type="image/svg+xml" href="{assets_prefix}/atryum-logo-favicon.svg" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="assets/style.css" />
-<script src="assets/includes.js" defer></script>
+<link rel="stylesheet" href="{assets_prefix}/style.css" />
+<script src="{assets_prefix}/includes.js" defer></script>
 </head>
 <body data-page="{html.escape(page_slug)}">
-  <div data-include="partials/header.html"></div>
+  <div data-include="{partials_prefix}/header.html"></div>
 
   <main>
     <div class="docs-layout">
@@ -525,7 +593,7 @@ def page_template(
 
       <div class="docs-main">
         <div class="docs-shell">
-          <div class="docs-kicker">Documentation</div>
+          <div class="docs-kicker">{html.escape(kicker)}</div>
           <h1 class="docs-title">{html.escape(title)}</h1>
           <p class="docs-intro">{inline_format(subtitle)}</p>
 
@@ -537,15 +605,76 @@ def page_template(
     </div>
   </main>
 
-  <div data-include="partials/footer.html"></div>
+  <div data-include="{partials_prefix}/footer.html"></div>
 </body>
 </html>
 """
 
 
-def convert_file(path: Path) -> None:
+def sort_by_stem(paths: list[Path], order: list[str]) -> list[Path]:
+    rank = {stem: index for index, stem in enumerate(order)}
+    return sorted(paths, key=lambda path: (rank.get(path.stem, len(order)), path.stem))
+
+
+def render_docs_nav(pages: list[Path]) -> str:
+    root_pages = sort_by_stem(
+        [p for p in pages if len(p.relative_to(DRAFTS).parts) == 1],
+        ROOT_NAV_ORDER,
+    )
+    grouped: dict[str, list[Path]] = {}
+    for path in pages:
+        rel = path.relative_to(DRAFTS)
+        if len(rel.parts) > 1:
+            grouped.setdefault(rel.parts[0], []).append(path)
+
+    parts: list[str] = []
+    for path in root_pages:
+        rel_html = path.relative_to(DRAFTS).with_suffix(".html").as_posix()
+        slug = page_slug(path)
+        parts.append(
+            f'<a href="/documentation/{rel_html}" data-page="{html.escape(slug, quote=True)}">'
+            f"{html.escape(nav_label(path))}</a>"
+        )
+
+    for directory in sorted(grouped):
+        parts.append('<div class="nav-menu-divider" role="separator"></div>')
+        parts.append(
+            f'<div class="nav-menu-heading">{html.escape(directory_label(directory))}</div>'
+        )
+        for path in sort_by_stem(grouped[directory], INTEGRATIONS_NAV_ORDER):
+            rel_html = path.relative_to(DRAFTS).with_suffix(".html").as_posix()
+            slug = page_slug(path)
+            parts.append(
+                f'<a href="/documentation/{rel_html}" data-page="{html.escape(slug, quote=True)}">'
+                f"{html.escape(nav_label(path))}</a>"
+            )
+
+    return "\n        ".join(parts)
+
+
+def write_docs_nav(pages: list[Path]) -> None:
+    nav_path = PARTIALS / "docs-nav.html"
+    nav_path.write_text(render_docs_nav(pages) + "\n", encoding="utf-8")
+    print(f"Wrote {nav_path.relative_to(ROOT.parent)}")
+
+
+def remove_stale_html(generated: set[Path]) -> None:
+    if not OUTPUT.exists():
+        return
+    for path in OUTPUT.rglob("*.html"):
+        if path not in generated:
+            path.unlink()
+            print(f"Removed stale {path.relative_to(ROOT.parent)}")
+
+
+def convert_file(path: Path) -> Path:
+    global _partials_prefix
+
+    assets_prefix, partials_prefix = path_prefixes(path_depth(path))
+    _partials_prefix = partials_prefix
+
     source = path.read_text(encoding="utf-8")
-    source = replace_md_links(source)
+    source = replace_md_links(source, path)
     source, callouts = extract_callouts(source)
     lines = source.splitlines()
 
@@ -566,25 +695,37 @@ def convert_file(path: Path) -> None:
     content_html = convert_blocks(body_lines)
     content_html = inject_callouts(content_html, callouts)
     toc_html = extract_toc(content_html)
-    page_slug = PAGE_SLUGS.get(path.stem, path.stem)
 
-    output_path = OUTPUT / f"{path.stem}.html"
+    rel = path.relative_to(DRAFTS)
+    kicker = "Documentation"
+    if len(rel.parts) > 1:
+        kicker = f"Documentation / {directory_label(rel.parts[0])}"
+
+    output_path = html_output_path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
         page_template(
             title=title,
             subtitle=subtitle,
             content_html=content_html,
             toc_html=toc_html,
-            page_slug=page_slug,
+            page_slug=page_slug(path),
+            kicker=kicker,
+            assets_prefix=assets_prefix,
+            partials_prefix=partials_prefix,
         ),
         encoding="utf-8",
     )
     print(f"Wrote {output_path.relative_to(ROOT.parent)}")
+    return output_path
 
 
 def main() -> None:
-    for path in sorted(DRAFTS.glob("*.md")):
-        convert_file(path)
+    OUTPUT.mkdir(parents=True, exist_ok=True)
+    pages = sorted(DRAFTS.rglob("*.md"))
+    generated = {convert_file(path) for path in pages}
+    write_docs_nav(pages)
+    remove_stale_html(generated)
 
 
 if __name__ == "__main__":

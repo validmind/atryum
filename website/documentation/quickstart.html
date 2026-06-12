@@ -4,15 +4,15 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Quickstart · Atryum</title>
-<link rel="icon" type="image/svg+xml" href="assets/atryum-logo-favicon.svg" />
+<link rel="icon" type="image/svg+xml" href="../assets/atryum-logo-favicon.svg" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="assets/style.css" />
-<script src="assets/includes.js" defer></script>
+<link rel="stylesheet" href="../assets/style.css" />
+<script src="../assets/includes.js" defer></script>
 </head>
 <body data-page="quickstart">
-  <div data-include="partials/header.html"></div>
+  <div data-include="../partials/header.html"></div>
 
   <main>
     <div class="docs-layout">
@@ -49,7 +49,7 @@
         <h3 id="download-atryum">Download Atryum</h3>
 
         <div class="install install--docs">
-          <div data-include="partials/install-commands.html"></div>
+          <div data-include="../partials/install-commands.html"></div>
         </div>
 
         <h3 id="set-up-atryum-test-server">Set up Atryum test server</h3>
@@ -78,13 +78,13 @@
 
         <p>Connecting agent records from ValidMind also allows you to use Atryum to evaluate tool invocations against each agent's <em>constitution</em>, a plain-language policy that describes what an agent can do, what it cannot do, and which actions require human approval.</p>
 
-        <aside class="docs-callout"><p>To learn more about connecting ValidMind with Atryum, refer to <strong><a href="connect-validmind.html">Connect ValidMind</a></strong>.</p></aside>
+        <aside class="docs-callout"><p>To learn more about connecting ValidMind with Atryum, refer to <strong><a href="integrations/connect-validmind.html">Connect ValidMind</a></strong>.</p></aside>
 
         <h3 id="with-coding-agents">With coding agents</h3>
 
         <p>Connect your coding agents to Atryum, allowing Atryum to review tool invocations before your agents run them. Hooks and extensions are available for <a href="https://www.anthropic.com/claude-code">Claude Code</a>, <a href="https://cursor.com">Cursor</a>, <a href="https://ampcode.com">Amp</a>, <a href="https://pi.dev">Pi</a>, and <a href="https://openai.com/codex">Codex</a>.</p>
 
-        <aside class="docs-callout"><p>To learn more about connecting agents with Atryum, refer to <strong><a href="connect-agents.html">Connect agents</a></strong>.</p></aside>
+        <aside class="docs-callout"><p>To learn more about connecting agents with Atryum, refer to <strong><a href="integrations/connect-agents.html">Connect agents</a></strong>.</p></aside>
 
         <h3 id="with-mcp-servers">With MCP servers</h3>
 
@@ -92,7 +92,7 @@
 
         <p>Connect MCP servers to add other upstream tools — such as local subprocess servers, remote HTTP servers with a static bearer token, or OAuth-protected services.</p>
 
-        <aside class="docs-callout"><p>To learn more about registering MCP servers in Atryum, refer to <strong><a href="connect-mcp-servers.html">Connect MCP servers</a></strong>.</p></aside>
+        <aside class="docs-callout"><p>To learn more about registering MCP servers in Atryum, refer to <strong><a href="integrations/connect-mcp-servers.html">Connect MCP servers</a></strong>.</p></aside>
 
         <h3 id="with-local-llm-providers">With local LLM providers</h3>
 
@@ -100,13 +100,13 @@
 
         <p>Local LLMs are useful for bring-your-own-key setups, on-prem or air-gapped deployments, and teams that want to register multiple models and pick the right one per rule or feature.</p>
 
-        <aside class="docs-callout"><p>To learn more about configuring local LLM providers in Atryum, refer to <strong><a href="configure-llm-providers.html">Configure LLM providers</a></strong>.</p></aside>
+        <aside class="docs-callout"><p>To learn more about configuring local LLM providers in Atryum, refer to <strong><a href="integrations/configure-llm-providers.html">Configure LLM providers</a></strong>.</p></aside>
           </article>
         </div>
       </div>
     </div>
   </main>
 
-  <div data-include="partials/footer.html"></div>
+  <div data-include="../partials/footer.html"></div>
 </body>
 </html>

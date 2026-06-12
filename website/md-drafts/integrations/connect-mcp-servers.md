@@ -6,7 +6,7 @@ Register upstream Model Context Protocol (MCP) servers so tool invocations pass 
 
 Atryum supports two server modes:
 
-- **stdio** — Run a local MCP server as a subprocess (for example, the demo `calc` server from the [Quickstart](quickstart.md)).
+- **stdio** — Run a local MCP server as a subprocess (for example, the demo `calc` server from the [Quickstart](../quickstart.md)).
 - **HTTP** — Connect to a remote MCP server over the network. Atryum can authenticate on your behalf with a static bearer token or OAuth. Your coding agent never receives upstream credentials.
 
 After you register a server, point your coding agent at Atryum's proxy.

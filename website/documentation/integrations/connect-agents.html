@@ -4,15 +4,15 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Connect agents · Atryum</title>
-<link rel="icon" type="image/svg+xml" href="assets/atryum-logo-favicon.svg" />
+<link rel="icon" type="image/svg+xml" href="../../assets/atryum-logo-favicon.svg" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="assets/style.css" />
-<script src="assets/includes.js" defer></script>
+<link rel="stylesheet" href="../../assets/style.css" />
+<script src="../../assets/includes.js" defer></script>
 </head>
-<body data-page="connect-agents">
-  <div data-include="partials/header.html"></div>
+<body data-page="integrations/connect-agents">
+  <div data-include="../../partials/header.html"></div>
 
   <main>
     <div class="docs-layout">
@@ -45,12 +45,12 @@
 
       <div class="docs-main">
         <div class="docs-shell">
-          <div class="docs-kicker">Documentation</div>
+          <div class="docs-kicker">Documentation / Integrations</div>
           <h1 class="docs-title">Connect agents</h1>
           <p class="docs-intro">Connect your coding agents to Atryum, allowing Atryum to review tool invocations before your agents run them.</p>
 
           <article class="docs-content">
-        <p>Connect your coding agents to Atryum so tool invocations pass through Atryum before they run. Atryum evaluates each call against your rules (<a href="rules.html">Rules</a>), routes calls that need review to human approval, and records every outcome in the invocation audit log (<a href="invocations.html">Invocations</a>).</p>
+        <p>Connect your coding agents to Atryum so tool invocations pass through Atryum before they run. Atryum evaluates each call against your rules (<a href="../rules.html">Rules</a>), routes calls that need review to human approval, and records every outcome in the invocation audit log (<a href="../invocations.html">Invocations</a>).</p>
 
         <h2 id="connect-cursor-and-claude-code">Connect Cursor and Claude Code</h2>
 
@@ -82,7 +82,7 @@
 
         <p>Use this path for agents that gate native tools (shell, file edits, in-process tools) through Atryum before execution:</p>
 
-        <ol><li>Make sure Atryum is running and reachable (<a href="quickstart.html">Quickstart</a>).</li><li>Set <code>ATRYUM_URL</code> (and optionally <code>ATRYUM_AGENT_ID</code>) in the same terminal session where you start the agent. (<a href="#set-environment-variables">Set environment variables</a>)</li><li>Follow the setup steps in the example for your agent:<ul><li><a href="https://github.com/validmind/atryum/tree/main/examples/amp-plugin">Amp plugin</a> — Requires <code>PLUGINS=all</code> when starting Amp</li><li><a href="https://github.com/validmind/atryum/tree/main/examples/pi-extension">Pi extension</a></li><li><a href="https://github.com/validmind/atryum/tree/main/examples/claude-code-hook">Claude Code hooks</a> — Or use <a href="#connect-cursor-and-claude-code">Connect Cursor and Claude Code</a> to install hooks automatically.</li></ul></li><li>Start your agent from that terminal session. Pending tool calls appear under <strong>Invocations</strong> in the Atryum platform left sidebar.</li></ol>
+        <ol><li>Make sure Atryum is running and reachable (<a href="../quickstart.html">Quickstart</a>).</li><li>Set <code>ATRYUM_URL</code> (and optionally <code>ATRYUM_AGENT_ID</code>) in the same terminal session where you start the agent. (<a href="#set-environment-variables">Set environment variables</a>)</li><li>Follow the setup steps in the example for your agent:<ul><li><a href="https://github.com/validmind/atryum/tree/main/examples/amp-plugin">Amp plugin</a> — Requires <code>PLUGINS=all</code> when starting Amp</li><li><a href="https://github.com/validmind/atryum/tree/main/examples/pi-extension">Pi extension</a></li><li><a href="https://github.com/validmind/atryum/tree/main/examples/claude-code-hook">Claude Code hooks</a> — Or use <a href="#connect-cursor-and-claude-code">Connect Cursor and Claude Code</a> to install hooks automatically.</li></ul></li><li>Start your agent from that terminal session. Pending tool calls appear under <strong>Invocations</strong> in the Atryum platform left sidebar.</li></ol>
 
         <h4 id="set-environment-variables">Set environment variables</h4>
 
@@ -191,7 +191,7 @@ export ATRYUM_AGENT_ID=amp-local</code></pre><button class="copy-btn code-block-
 
         <h2 id="agent-identity-and-authentication">Agent identity and authentication</h2>
 
-        <p>When coding agents connect to Atryum, they present an <em>agent identity</em> that Atryum uses to tag invocations and match rules (<a href="rules.html">Rules</a>) scoped to specific agents. Atryum supports two inbound authentication modes:</p>
+        <p>When coding agents connect to Atryum, they present an <em>agent identity</em> that Atryum uses to tag invocations and match rules (<a href="../rules.html">Rules</a>) scoped to specific agents. Atryum supports two inbound authentication modes:</p>
 
         <ol><li><strong>No-auth mode</strong> — The default when no <code>[[auth]]</code> blocks are configured in <code>atryum.toml</code>. Agents self-declare an agent ID.</li><li><strong>Auth mode</strong> — Agents authenticate with OAuth bearer tokens. Atryum derives a verified agent ID from the token and ignores self-declared labels.</li></ol>
 
@@ -235,6 +235,6 @@ agent_id_claim = &quot;client_id&quot;</code></pre><button class="copy-btn code-
     </div>
   </main>
 
-  <div data-include="partials/footer.html"></div>
+  <div data-include="../../partials/footer.html"></div>
 </body>
 </html>

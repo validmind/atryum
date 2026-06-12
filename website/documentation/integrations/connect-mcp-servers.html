@@ -4,15 +4,15 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Connect MCP servers · Atryum</title>
-<link rel="icon" type="image/svg+xml" href="assets/atryum-logo-favicon.svg" />
+<link rel="icon" type="image/svg+xml" href="../../assets/atryum-logo-favicon.svg" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="assets/style.css" />
-<script src="assets/includes.js" defer></script>
+<link rel="stylesheet" href="../../assets/style.css" />
+<script src="../../assets/includes.js" defer></script>
 </head>
-<body data-page="connect-mcp-servers">
-  <div data-include="partials/header.html"></div>
+<body data-page="integrations/connect-mcp-servers">
+  <div data-include="../../partials/header.html"></div>
 
   <main>
     <div class="docs-layout">
@@ -35,7 +35,7 @@
 
       <div class="docs-main">
         <div class="docs-shell">
-          <div class="docs-kicker">Documentation</div>
+          <div class="docs-kicker">Documentation / Integrations</div>
           <h1 class="docs-title">Connect MCP servers</h1>
           <p class="docs-intro">Register upstream MCP servers in Atryum, allowing your coding agents to reach external tools through Atryum's MCP proxy.</p>
 
@@ -44,7 +44,7 @@
 
         <p>Atryum supports two server modes:</p>
 
-        <ul><li><strong>stdio</strong> — Run a local MCP server as a subprocess (for example, the demo <code>calc</code> server from the <a href="quickstart.html">Quickstart</a>).</li><li><strong>HTTP</strong> — Connect to a remote MCP server over the network. Atryum can authenticate on your behalf with a static bearer token or OAuth. Your coding agent never receives upstream credentials.</li></ul>
+        <ul><li><strong>stdio</strong> — Run a local MCP server as a subprocess (for example, the demo <code>calc</code> server from the <a href="../quickstart.html">Quickstart</a>).</li><li><strong>HTTP</strong> — Connect to a remote MCP server over the network. Atryum can authenticate on your behalf with a static bearer token or OAuth. Your coding agent never receives upstream credentials.</li></ul>
 
         <p>After you register a server, point your coding agent at Atryum's proxy.</p>
 
@@ -105,6 +105,6 @@
     </div>
   </main>
 
-  <div data-include="partials/footer.html"></div>
+  <div data-include="../../partials/footer.html"></div>
 </body>
 </html>

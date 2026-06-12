@@ -2,7 +2,7 @@
 
 Configure local LLM providers to power AI evaluation rules and invocation summarization.
 
-In addition to powering AI evaluation rules ([Rules](rules.md)) and invocation summarization ([Invocations](invocations.md)), configuring local large language model (LLM) providers also allows you to use credentials and endpoints controlled by your team to evaluate tool calls against each agent's *constitution*:
+In addition to powering AI evaluation rules ([Rules](../rules.md)) and invocation summarization ([Invocations](../invocations.md)), configuring local large language model (LLM) providers also allows you to use credentials and endpoints controlled by your team to evaluate tool calls against each agent's *constitution*:
 
 - A constitution is a plain-language policy that describes what an agent can do, what it cannot do, and which actions require human approval.
 - Constitutions can be as terse or expressive as you would like. It's good to call out specifics when you can but be sure to include general statements to give the LLM something to hold on to when seeing an unanticipated tool call.
