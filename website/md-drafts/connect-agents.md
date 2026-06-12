@@ -104,6 +104,21 @@ Use this path when your agent speaks MCP and you want tool calls routed through 
 
 5. Start your agent. To tag invocations to an agent record in no-auth mode, append `?agent_id=<your_id>` to the MCP proxy URL — for example, `http://localhost:8080/mcp/calc?agent_id=amp-local`. ([Agent identity and authentication](#agent-identity-and-authentication))
 
+### Setup examples
+
+Refer to the repository examples for agent-specific configuration:
+
+#### Hook and extension integrations
+
+- [Amp](https://github.com/validmind/atryum/tree/main/examples/amp-plugin)
+- [Pi](https://github.com/validmind/atryum/tree/main/examples/pi-extension)
+- [Claude Code (hooks)](https://github.com/validmind/atryum/tree/main/examples/claude-code-hook)
+
+#### MCP proxy integrations
+
+- [Codex](https://github.com/validmind/atryum/tree/main/examples/codex-mcp)
+- [Other agents](https://github.com/validmind/atryum/tree/main/examples)
+
 ## Tag invocations to agent records
 
 To apply agent-scoped rules, attach invocations to an agent record, or supply a constitution for local AI evaluation:
@@ -155,20 +170,96 @@ To apply agent-scoped rules, attach invocations to an agent record, or supply a 
 For how Atryum uses agent identity in no-auth and auth mode, refer to [Agent identity and authentication](#agent-identity-and-authentication).
 :::
 
-### Setup examples
+## Edit connected coding agents
 
-Refer to the repository examples for agent-specific configuration:
+After you connect an agent, update its integration files, environment variables, or MCP settings on the machine where the agent runs. Update agents in the Atryum platform user interface when you need to change agent IDs, constitutions, or which record invocations map to.
 
-#### Hook and extension integrations
+### Edit Cursor and Claude Code hooks
 
-- [Amp](https://github.com/validmind/atryum/tree/main/examples/amp-plugin)
-- [Pi](https://github.com/validmind/atryum/tree/main/examples/pi-extension)
-- [Claude Code (hooks)](https://github.com/validmind/atryum/tree/main/examples/claude-code-hook)
+To refresh the shared hook script or re-apply hook entries after an Atryum upgrade:
 
-#### MCP proxy integrations
+```bash
+./atryum hooks install cursor
+```
 
-- [Codex](https://github.com/validmind/atryum/tree/main/examples/codex-mcp)
-- [Other agents](https://github.com/validmind/atryum/tree/main/examples)
+```bash
+./atryum hooks install claude-code
+```
+
+Restart Cursor or Claude Code after changing hooks.
+
+To change `ATRYUM_URL` or `ATRYUM_AGENT_ID`, export the new values in the terminal session where you start the agent, then restart the agent. The installed hook reads these at runtime — you do not need to reinstall hooks when only the values change.
+
+### Edit hook and extension agents
+
+Amp, Pi, and manually configured Claude Code hooks follow the same pattern:
+
+1. Update `ATRYUM_URL`, `ATRYUM_AGENT_ID`, or optional label variables in the terminal session where you start the agent. ([Set environment variables](#set-environment-variables))
+
+2. If you changed plugin or extension source files, copy the updated file from the repository example into your install path — for example `~/.config/amp/plugins/atryum.ts` or `~/.pi/agent/extensions/atryum/index.ts`.
+
+3. Restart the agent from that terminal session so it picks up the changes.
+
+    Pi can reload extensions without a full restart when the extension is already installed — run `/reload` in an active Pi session.
+
+To retag invocations to a different agent record, update **Agent IDs** in Atryum and export the matching `ATRYUM_AGENT_ID` before restarting. ([Tag invocations to agent records](#tag-invocations-to-agent-records))
+
+### Edit MCP proxy connections
+
+1. Open your agent's MCP configuration file — for example `~/.codex/config.toml` for Codex.
+
+2. Update the proxy URL when Atryum's host, port, upstream **Servers** name, or `?agent_id=` value changes:
+
+    ```text
+    http://<atryum-host-and-port>/mcp/<server_name>?agent_id=<your_id>
+    ```
+
+3. Restart your agent so it reconnects with the updated URL.
+
+When the upstream MCP server itself changes, edit the registration under **Servers** in Atryum. ([Connect MCP servers](connect-mcp-servers.md))
+
+### Edit agent records
+
+1. In Atryum, click **Agents** in the left sidebar.
+
+2. Click the agent you want to edit.
+
+3. Update the fields as desired:
+
+    - **Name**
+    - **Description**
+    - **Constitution** — Editable for local agent records only. Synced ValidMind records show the constitution as read-only — edit the source field in ValidMind instead. ([Connect ValidMind](connect-validmind.md))
+    - **Agent IDs** — Type an ID and press **Enter** to add it. Remove individual IDs with the control on each tag.
+
+4. To turn the record on or off:
+
+    - Check **Enabled** to mark the agent record as active.
+    - Uncheck **Enabled** to mark it inactive.
+
+5. Click **Save**.
+
+When you change **Agent IDs**, update `ATRYUM_AGENT_ID` or the `?agent_id=` query parameter on the MCP proxy URL to match, then restart the agent. ([Tag invocations to agent records](#tag-invocations-to-agent-records))
+
+### Disconnect or remove agents
+
+**Cursor and Claude Code** — Remove Atryum hook commands:
+
+```bash
+./atryum hooks uninstall cursor
+```
+
+```bash
+./atryum hooks uninstall claude-code
+```
+
+Restart Cursor or Claude Code after uninstalling hooks. The shared hook script remains at `~/.atryum/hooks/atryum-hook.mjs` until you delete it manually.
+
+- **Amp** — Delete `atryum.ts` from `~/.config/amp/plugins/` or `.amp/plugins/` in your project.
+- **Pi** — Delete `index.ts` from `~/.pi/agent/extensions/atryum/` or `.pi/extensions/atryum/` in your project.
+- **MCP proxy agents** — Remove or comment out the Atryum MCP server entry in your agent's MCP configuration, then restart the agent.
+- **Local agent records** — In Atryum, open the agent under **Agents** and click **Delete**. This action is permanent.
+
+Synced ValidMind agent records cannot be deleted from Atryum — remove them by changing Agent Record Sync settings or deleting the source record in ValidMind. ([Connect ValidMind](connect-validmind.md))
 
 ## Agent identity and authentication
 
