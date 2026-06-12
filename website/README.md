@@ -15,7 +15,6 @@ website/
 ```
 
 ## Author documentation
-
 1. Add or edit a file under `md-drafts/`.
 
     Filename convention: `use-dashes-please.md` (Align more or less with guide title. Follow the **[ValidMind style guide](https://docs.validmind.ai/about/contributing/style-guide/style-guide.html)**.)
@@ -23,6 +22,7 @@ website/
 2. Run `make docs` from the repo root.
 
 3. Commit the `.md` source and the generated HTML.
+
 
 ### Page structure
 
@@ -116,7 +116,7 @@ Commit both the Markdown sources and the generated files. CI runs `make docs` on
 From the repo root:
 
 ```bash
-make preview
+make preview-docs
 ```
 
 Or equivalently:
