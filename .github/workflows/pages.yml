@@ -31,6 +31,12 @@ jobs:
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
+      - name: Build documentation
+        run: python3 website/scripts/md_to_html.py
+
+      - name: Verify generated documentation is committed
+        run: git diff --exit-code website/documentation website/partials/docs-nav.html
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
