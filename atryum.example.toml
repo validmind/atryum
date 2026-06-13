@@ -60,15 +60,18 @@ request_timeout_seconds = 30
 # api_key are skipped; with no usable entry the bridge is disabled. See
 # examples/managed-agents/.
 #
-# Environment overrides for api_key/workspace (single-account convenience only):
+# Environment overrides for api_key/workspace label (single-account convenience only):
 # ATRYUM_MANAGED_AGENTS_API_KEY (highest), then ANTHROPIC_API_KEY. These apply
 # only when zero or one [[managed_agents]] entry is configured. With multiple
 # entries each must set its own api_key in TOML. Set
-# ATRYUM_MANAGED_AGENTS_WORKSPACE when using the env-only API key path.
+# ATRYUM_MANAGED_AGENTS_WORKSPACE when using the env-only API key path. The API
+# key itself must be created in the target Anthropic workspace; workspace is a
+# label used by Atryum for display and ownership metadata, not an Anthropic
+# request selector.
 [[managed_agents]]
 name    = "default"   # unique label; targeted by the session-registration "account" field
-workspace = ""        # required when api_key is set; Anthropic workspace identifier/name
-api_key = ""
+workspace = ""        # required label when api_key is set; Anthropic workspace identifier/name
+api_key = ""          # Anthropic API key created in that workspace
 # Optional tuning (defaults shown):
 # base_url                  = "https://api.anthropic.com"
 # poll_interval_millis      = 1000

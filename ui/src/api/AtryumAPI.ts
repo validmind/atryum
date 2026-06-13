@@ -405,6 +405,16 @@ export interface ClaudeManagedAgentAccount {
   workspace: string;
 }
 
+export interface ManagedAgentSession {
+  session_id: string;
+  account: string;
+  agent_id?: string;
+  description?: string;
+  last_event_id?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export const agentsApi = {
   list: async (): Promise<{ items: Agent[] }> => {
     const { data } = await atryumApi.get('/api/v1/admin/agents');
@@ -436,6 +446,22 @@ export const agentsApi = {
 
   managedAgentAccounts: async (): Promise<{ items: ClaudeManagedAgentAccount[] }> => {
     const { data } = await atryumApi.get('/api/v1/admin/managed-agents/accounts');
+    return data;
+  },
+
+  managedAgentSessions: async (): Promise<{ items: ManagedAgentSession[] }> => {
+    const { data } = await atryumApi.get('/api/v1/admin/managed-agents/sessions');
+    return data;
+  },
+
+  deleteManagedAgentSession: async (sessionID: string): Promise<void> => {
+    await atryumApi.delete(
+      `/api/v1/admin/managed-agents/sessions/${encodeURIComponent(sessionID)}`,
+    );
+  },
+
+  clearManagedAgentSessions: async (): Promise<{ deleted: number }> => {
+    const { data } = await atryumApi.delete('/api/v1/admin/managed-agents/sessions');
     return data;
   },
 

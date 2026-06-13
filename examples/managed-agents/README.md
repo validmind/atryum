@@ -65,15 +65,15 @@ Because Atryum answers the harness's own confirmation prompts, it can gate the
 
 ### 1. Enable the bridge in `atryum.toml`
 
-Declare one `[[managed_agents]]` table per Anthropic account/workspace. The
-`name` is a unique label the session-registration API uses to target a specific
-account.
+Declare one `[[managed_agents]]` table per Anthropic account/workspace API key.
+The `name` is a unique label the session-registration API uses to target a
+specific account.
 
 ```toml
 [[managed_agents]]
 name    = "default"   # unique label; targeted by the registration "account" field
-workspace = "anthropic-workspace-name-or-id"
-# Anthropic API key. Env overrides (single account only):
+workspace = "anthropic-workspace-name-or-id" # display/metadata label
+# Anthropic API key created in that workspace. Env overrides (single account only):
 # ATRYUM_MANAGED_AGENTS_API_KEY, then ANTHROPIC_API_KEY.
 # If using env for the key, set ATRYUM_MANAGED_AGENTS_WORKSPACE too.
 api_key = "sk-ant-..."
@@ -95,7 +95,9 @@ Entries with an empty `api_key` are skipped; when no account has a usable key
 the bridge is disabled and the admin endpoint returns `501`. The
 `ATRYUM_MANAGED_AGENTS_API_KEY` / `ANTHROPIC_API_KEY` env overrides apply only
 when zero or one `[[managed_agents]]` entry is configured. `workspace` is
-required whenever `api_key` is set.
+required whenever `api_key` is set, but it is not sent as an Anthropic request
+selector: Anthropic API keys are already workspace-scoped, so use an API key
+created in the workspace whose Claude agents you want to list.
 
 ### 2. Create an agent whose tools ask for confirmation
 

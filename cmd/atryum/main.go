@@ -255,7 +255,7 @@ func runServer(args []string) error {
 			continue
 		}
 		if ma.Workspace == "" {
-			return fmt.Errorf("managed_agents workspace is required for account %q", emptyDefault(ma.Name, managedagents.DefaultAccountName))
+			return fmt.Errorf("managed_agents workspace label is required for account %q; use an Anthropic API key created in that workspace", emptyDefault(ma.Name, managedagents.DefaultAccountName))
 		}
 		acctCfg := managedagents.Config{
 			Name:             ma.Name,
@@ -361,6 +361,10 @@ func (a *managedSessionStoreAdapter) List(ctx context.Context) ([]managedagents.
 		out = append(out, managedSessionToReg(row))
 	}
 	return out, nil
+}
+
+func (a *managedSessionStoreAdapter) Delete(ctx context.Context, sessionID string) error {
+	return a.repo.Delete(ctx, sessionID)
 }
 
 func (a *managedSessionStoreAdapter) UpdateCursor(ctx context.Context, sessionID, lastEventID string) error {

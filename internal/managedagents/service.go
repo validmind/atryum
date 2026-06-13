@@ -26,6 +26,7 @@ type SessionStore interface {
 	Upsert(ctx context.Context, s SessionRegistration) error
 	Get(ctx context.Context, sessionID string) (SessionRegistration, error)
 	List(ctx context.Context) ([]SessionRegistration, error)
+	Delete(ctx context.Context, sessionID string) error
 	UpdateCursor(ctx context.Context, sessionID, lastEventID string) error
 }
 
@@ -195,6 +196,52 @@ func (s *Service) RegisterSession(ctx context.Context, req RegisterSessionReques
 	}
 	s.startWatcher(stored)
 	return stored, nil
+}
+
+// ListSessions returns every persisted Claude Managed Agents session watcher.
+func (s *Service) ListSessions(ctx context.Context) ([]SessionRegistration, error) {
+	return s.sessions.List(ctx)
+}
+
+// DeleteSession stops a watcher and removes its persisted registration.
+func (s *Service) DeleteSession(ctx context.Context, sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return fmt.Errorf("session_id is required")
+	}
+	if err := s.sessions.Delete(ctx, sessionID); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if cancel, ok := s.watchers[sessionID]; ok {
+		cancel()
+		delete(s.watchers, sessionID)
+	}
+	s.mu.Unlock()
+	return nil
+}
+
+// ClearSessions stops and removes every persisted Claude Managed Agents session
+// watcher. Linked agents will be rediscovered by the discovery loop.
+func (s *Service) ClearSessions(ctx context.Context) (int, error) {
+	sessions, err := s.sessions.List(ctx)
+	if err != nil {
+		return 0, err
+	}
+	for _, session := range sessions {
+		if err := s.sessions.Delete(ctx, session.SessionID); err != nil {
+			return 0, err
+		}
+	}
+	s.mu.Lock()
+	for _, session := range sessions {
+		if cancel, ok := s.watchers[session.SessionID]; ok {
+			cancel()
+			delete(s.watchers, session.SessionID)
+		}
+	}
+	s.mu.Unlock()
+	return len(sessions), nil
 }
 
 func (s *Service) startDiscovery() {

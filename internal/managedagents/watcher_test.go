@@ -155,6 +155,7 @@ func (s *fakeSessionStore) Get(ctx context.Context, id string) (SessionRegistrat
 	return SessionRegistration{SessionID: id}, nil
 }
 func (s *fakeSessionStore) List(ctx context.Context) ([]SessionRegistration, error) { return nil, nil }
+func (s *fakeSessionStore) Delete(ctx context.Context, id string) error             { return nil }
 func (s *fakeSessionStore) UpdateCursor(ctx context.Context, id, lastEventID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

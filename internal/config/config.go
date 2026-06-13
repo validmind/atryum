@@ -35,8 +35,10 @@ type Config struct {
 // Managed Agents "events and streaming" API. When APIKey is empty the entry is
 // skipped. Name distinguishes entries when more than one is configured and is
 // used by the session-registration API to target a specific account. Workspace
-// is required whenever APIKey is set; it identifies the Anthropic workspace this
-// account belongs to.
+// is required whenever APIKey is set; it labels the Anthropic workspace this
+// account belongs to for UI display and Atryum ownership metadata. Anthropic API
+// keys are already scoped by Anthropic, so this value does not retarget a key to
+// a different workspace.
 type ManagedAgentsConfig struct {
 	Name                    string `toml:"name"`
 	Workspace               string `toml:"workspace"`

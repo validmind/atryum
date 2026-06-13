@@ -118,11 +118,11 @@ machine_key = ""
 machine_secret = ""
 connection_timeout_seconds = 5
 
-[[managed_agents]]                 # optional, repeatable — one per Anthropic account
+[[managed_agents]]                 # optional, repeatable — one per Anthropic account/workspace key
 name     = "default"               # unique label; the session-registration "account" targets it
-workspace = ""                     # required when api_key is set
-api_key  = ""                      # Anthropic API key; empty entries are skipped
-                                   # env override (single account only): ATRYUM_MANAGED_AGENTS_API_KEY, then ANTHROPIC_API_KEY; workspace via ATRYUM_MANAGED_AGENTS_WORKSPACE
+workspace = ""                     # required label when api_key is set; used for display/metadata
+api_key  = ""                      # Anthropic API key created in that workspace; empty entries are skipped
+                                   # env override (single account only): ATRYUM_MANAGED_AGENTS_API_KEY, then ANTHROPIC_API_KEY; workspace label via ATRYUM_MANAGED_AGENTS_WORKSPACE
 
 [[auth]]                           # optional — repeatable per authorization server
 issuer    = "https://keycloak.example/realms/agents"

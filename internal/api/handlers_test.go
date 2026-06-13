@@ -142,9 +142,12 @@ func (s *stubSummarizer) SummarizeInvocation(_ context.Context, req backendclien
 }
 
 type stubManagedAgentsAdmin struct {
-	err    error
-	req    managedagents.RegisterSessionRequest
-	agents []managedagents.AgentInfo
+	err      error
+	req      managedagents.RegisterSessionRequest
+	agents   []managedagents.AgentInfo
+	sessions []managedagents.SessionRegistration
+	deleted  string
+	cleared  bool
 }
 
 func (s *stubManagedAgentsAdmin) RegisterSession(_ context.Context, req managedagents.RegisterSessionRequest) (managedagents.SessionRegistration, error) {
@@ -153,6 +156,26 @@ func (s *stubManagedAgentsAdmin) RegisterSession(_ context.Context, req manageda
 		return managedagents.SessionRegistration{}, s.err
 	}
 	return managedagents.SessionRegistration{SessionID: req.SessionID, Account: req.Account, AgentID: req.AgentID}, nil
+}
+
+func (s *stubManagedAgentsAdmin) ListSessions(context.Context) ([]managedagents.SessionRegistration, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.sessions, nil
+}
+
+func (s *stubManagedAgentsAdmin) DeleteSession(_ context.Context, sessionID string) error {
+	s.deleted = sessionID
+	return s.err
+}
+
+func (s *stubManagedAgentsAdmin) ClearSessions(context.Context) (int, error) {
+	s.cleared = true
+	if s.err != nil {
+		return 0, s.err
+	}
+	return len(s.sessions), nil
 }
 
 func (s *stubManagedAgentsAdmin) Accounts() []managedagents.AccountInfo {

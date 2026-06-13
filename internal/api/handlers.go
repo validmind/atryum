@@ -13,6 +13,7 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -162,6 +163,9 @@ type Handler struct {
 // needs for session registration and Claude agent discovery.
 type managedAgentsAdmin interface {
 	RegisterSession(ctx context.Context, req managedagents.RegisterSessionRequest) (managedagents.SessionRegistration, error)
+	ListSessions(ctx context.Context) ([]managedagents.SessionRegistration, error)
+	DeleteSession(ctx context.Context, sessionID string) error
+	ClearSessions(ctx context.Context) (int, error)
 	Accounts() []managedagents.AccountInfo
 	ListAgents(ctx context.Context, req managedagents.ListAgentsRequest) ([]managedagents.AgentInfo, error)
 	ClaimAgent(ctx context.Context, req managedagents.AgentClaimRequest) (managedagents.AgentInfo, error)
@@ -396,6 +400,14 @@ type AdminManagedAgentBinding struct {
 
 type ManagedAgentAccountListResponse struct {
 	Items []managedagents.AccountInfo `json:"items"`
+}
+
+type ManagedAgentSessionListResponse struct {
+	Items []managedagents.SessionRegistration `json:"items"`
+}
+
+type ManagedAgentSessionClearResponse struct {
+	Deleted int `json:"deleted"`
 }
 
 type ManagedAgentListResponse struct {
@@ -735,6 +747,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/api/v1/admin/policy", h.adminPolicy)
 	mux.HandleFunc("/api/v1/admin/managed-agents/accounts", h.adminManagedAgentAccounts)
 	mux.HandleFunc("/api/v1/admin/managed-agents/agents", h.adminManagedAgents)
+	mux.HandleFunc("/api/v1/admin/managed-agents/sessions/", h.adminManagedAgentSessionDetail)
 	mux.HandleFunc("/api/v1/admin/managed-agents/sessions", h.adminManagedAgentSessions)
 	agentRulesHandler := auth.MiddlewareWithOptions(h.authValidator, "/.well-known/oauth-protected-resource", auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})(http.HandlerFunc(h.agentRules))
 	agentRulesHandler = h.noAuthAgentIDHint(agentRulesHandler)
@@ -3409,6 +3422,24 @@ func (h *Handler) adminManagedAgentSessions(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusNotImplemented, "managed agents bridge not configured (set [managed_agents].api_key)")
 		return
 	}
+	if r.Method == http.MethodGet {
+		sessions, err := h.managedAgents.ListSessions(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, ManagedAgentSessionListResponse{Items: sessions})
+		return
+	}
+	if r.Method == http.MethodDelete {
+		deleted, err := h.managedAgents.ClearSessions(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, ManagedAgentSessionClearResponse{Deleted: deleted})
+		return
+	}
 	if r.Method != http.MethodPost {
 		h.debugf("managed-agents session registration rejected: method not allowed method=%s path=%s remote=%s", r.Method, r.URL.Path, r.RemoteAddr)
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -3429,6 +3460,32 @@ func (h *Handler) adminManagedAgentSessions(w http.ResponseWriter, r *http.Reque
 	}
 	h.debugf("managed-agents session registered session_id=%q account=%q agent_id=%q last_event_id=%q", resp.SessionID, resp.Account, resp.AgentID, resp.LastEventID)
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) adminManagedAgentSessionDetail(w http.ResponseWriter, r *http.Request) {
+	if h.managedAgents == nil {
+		writeError(w, http.StatusNotImplemented, "managed agents bridge not configured (set [managed_agents].api_key)")
+		return
+	}
+	if r.Method != http.MethodDelete {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	rawID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/admin/managed-agents/sessions/"), "/")
+	sessionID, err := url.PathUnescape(rawID)
+	if err != nil || strings.TrimSpace(sessionID) == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if err := h.managedAgents.DeleteSession(r.Context(), sessionID); err != nil {
+		status := http.StatusBadRequest
+		if err == sql.ErrNoRows {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) adminManagedAgentAccounts(w http.ResponseWriter, r *http.Request) {

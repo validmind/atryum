@@ -12,7 +12,7 @@ Concepts in Anthropic terms:
 
 To use this with Atryum:
 
-1. Configure `[[managed_agents]]` with an Anthropic `api_key` and `workspace`.
+1. Configure `[[managed_agents]]` with an Anthropic `api_key` created in the target workspace, plus a `workspace` label for display and metadata.
 2. Restart Atryum.
 3. In Agents, edit an Atryum agent and link a Claude Managed Agent.
 4. Configure the Claude agent's tools to ask for confirmation, usually `permission_policy = always_ask`.
