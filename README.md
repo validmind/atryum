@@ -43,6 +43,9 @@ These paths converge on a single service so rules, audit, and the UI work identi
 
 ## The rule engine
 
+<img width="2192" height="927" alt="rules_example" src="https://github.com/user-attachments/assets/6453d060-8a69-4e70-966d-29d97d7e0fed" />
+
+
 Rules live in the `approval_rules` table and are evaluated in priority order (lowest `rule_order` first). Each rule has:
 
 - **Match dimensions** — server patterns, tool patterns, agent ID pattern (the authenticated identity from the harness's JWT), and agent record IDs. An empty list or `"*"` means "match any."
@@ -56,13 +59,9 @@ Rules live in the `approval_rules` table and are evaluated in priority order (lo
 
 Every tool call is a durable invocation row with status transitions logged as `invocation_events`:
 
-```
-received → executing → succeeded | failed
-        ↘ pending_approval → approved → executing → succeeded | failed
-                          ↘ denied
-                          ↘ expired
-                          ↘ cancelled
-```
+
+<img width="1769" height="647" alt="image" src="https://github.com/user-attachments/assets/40ae26d8-9ab9-420e-acfe-13d4cda52c7b" />
+
 
 The approval record tracks status (auto_approved, auto_denied, approved, denied), reason, actor (for human decisions), and decision timestamp. The matched rule's ID is recorded alongside for audit.
 
