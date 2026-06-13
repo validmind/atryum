@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Connect Claude Managed Agents · Atryum</title>
+<link rel="icon" type="image/svg+xml" href="../../assets/atryum-logo-favicon.svg" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="../../assets/style.css" />
+<script src="../../assets/includes.js" defer></script>
+</head>
+<body data-page="1_integrations/5_connect-claude-managed-agents">
+  <div data-include="../../partials/header.html"></div>
+
+  <main>
+    <div class="docs-layout">
+      <aside class="docs-toc" aria-label="On this page">
+        <div class="docs-toc-inner">
+          <p class="docs-toc-label">On this page</p>
+          <nav class="docs-toc-nav" aria-label="Table of contents">
+          <ul>
+          <li><a href="#how-the-integration-works">How the integration works</a></li>
+          <li><a href="#before-you-begin">Before you begin</a></li>
+          <li><a href="#enable-claude-managed-agents-in-atryum">Enable Claude Managed Agents in Atryum</a></li>
+          <li><a href="#link-a-claude-managed-agent">Link a Claude Managed Agent</a></li>
+          <li><a href="#configure-claude-tool-approvals">Configure Claude tool approvals</a></li>
+          <li><a href="#write-rules-for-claude-managed-agents">Write rules for Claude Managed Agents</a></li>
+          <li><a href="#manage-watched-sessions">Manage watched sessions</a></li>
+          <li><a href="#troubleshooting">Troubleshooting</a></li>
+          <li class="docs-toc-h3"><a href="#the-claude-agent-list-shows-the-wrong-workspace">The Claude agent list shows the wrong workspace</a></li>
+          <li class="docs-toc-h3"><a href="#a-tool-call-was-recorded-but-not-blocked">A tool call was recorded but not blocked</a></li>
+          <li class="docs-toc-h3"><a href="#a-rule-did-not-match-an-mcp-tool">A rule did not match an MCP tool</a></li>
+          <li class="docs-toc-h3"><a href="#old-watchers-keep-logging-errors">Old watchers keep logging errors</a></li>
+          </ul>
+          </nav>
+        </div>
+      </aside>
+
+      <div class="docs-main">
+        <div class="docs-shell">
+          <div class="docs-kicker">Documentation / integrations</div>
+          <h1 class="docs-title">Connect Claude Managed Agents</h1>
+          <p class="docs-intro">Connect Anthropic-hosted Claude Managed Agents to Atryum so Atryum can review hosted tool calls before Claude continues.</p>
+
+          <article class="docs-content">
+        <p>Claude Managed Agents run in Anthropic's hosted harness and sandbox. Atryum polls Anthropic for tool approval requests and responds by approving or denynig them.</p>
+
+        <p>Managed Agents do not call Atryum before every tool call. Instead, Atryum connects outbound to Anthropic, watches linked session events, creates Atryum invocations for tool-use events, and answers Claude when a session stops for <code>requires_action</code>.</p>
+
+        <p>Use this integration when you want Atryum to gate Claude Managed Agents tools, including built-in agent tools and MCP tools declared on the Claude agent.</p>
+
+        <aside class="docs-callout"><p>For non-hosted coding agents, refer to <a href="2_connect-agents.html">Connect agents</a>. For upstream MCP servers that Atryum proxies directly, refer to <a href="3_connect-mcp-servers.html">Connect MCP servers</a>.</p></aside>
+
+        <h2 id="how-the-integration-works">How the integration works</h2>
+
+        <p>In Anthropic terms:</p>
+
+        <ul><li><strong>Agent</strong> — A reusable Claude configuration, including tools, MCP servers, skills, and a system prompt.</li><li><strong>Environment</strong> — The hosted sandbox where Anthropic runs sessions.</li><li><strong>Session</strong> — One running Claude agent task in an environment.</li><li><strong>Events</strong> — The session log and stream that Atryum watches.</li></ul>
+
+        <p>Atryum uses those events to manage approvals:</p>
+
+        <ol><li>A Claude session emits a tool-use event, such as <code>agent.tool_use</code>, <code>agent.mcp_tool_use</code>, or <code>agent.custom_tool_use</code>.</li><li>Atryum records the tool call as an invocation and evaluates it against your rules. (<a href="../3_rules.html">Rules</a>)</li><li>When the Claude session pauses with <code>session.status_idle</code> and <code>requires_action</code>, Atryum sends Claude an allow or deny response.</li><li>Atryum records the later tool result on the invocation audit log. (<a href="../2_invocations.html">Invocations</a>)</li></ol>
+
+        <h2 id="before-you-begin">Before you begin</h2>
+
+        <p>Make sure you have:</p>
+
+        <ul class="docs-checklist"><li>An Anthropic API key created in the Claude workspace that owns the managed agents you want to list and watch.</li><li>At least one Claude Managed Agent configured in Anthropic.</li><li>At least one tool on the Agent definition configured with the <code>always_ask</code> permission.</li><li>Atryum running with a writable database. (<a href="../1_quickstart.html">Quickstart</a>)</li><li>An Atryum agent record to link to the Claude Managed Agent. (<a href="2_connect-agents.html#tag-invocations-to-agent-records">Tag invocations to agent records</a>)</li></ul>
+
+        <p>The <code>workspace</code> value in <code>atryum.toml</code> is a label Atryum uses for display and ownership metadata. It does not retarget an Anthropic API key to a different workspace. Use an API key created in the target workspace.</p>
+
+        <h2 id="enable-claude-managed-agents-in-atryum">Enable Claude Managed Agents in Atryum</h2>
+
+        <ol><li>Open your <code>atryum.toml</code> file.</li><li>Add one <code>[[managed_agents]]</code> block for each Anthropic account or workspace API key you want Atryum to use:<div class="code-block"><pre><code class="language-toml">[[managed_agents]]
+name = &quot;default&quot;
+workspace = &quot;anthropic-workspace-name-or-id&quot;
+api_key = &quot;sk-ant-...&quot;</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="[[managed_agents]]&#10;name = &quot;default&quot;&#10;workspace = &quot;anthropic-workspace-name-or-id&quot;&#10;api_key = &quot;sk-ant-...&quot;" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
+
+        <ul><li><strong>name</strong> — The local Atryum account label. Use a unique value when configuring multiple Anthropic accounts.</li><li><strong>workspace</strong> — A display and metadata label for the Anthropic workspace.</li><li><strong>api_key</strong> — An Anthropic API key created in that workspace.</li></ul></li><li>Restart Atryum.</li><li>Confirm the bridge is available:<ul><li>Open <strong>Agents</strong> in the Atryum platform left sidebar.</li><li>Open an agent record.</li><li>Confirm that <strong>Claude Managed Agents</strong> appears in the edit panel.</li></ul></li></ol>
+
+        <aside class="docs-callout"><p>When no <code>[[managed_agents]]</code> entry has an API key, Atryum disables the bridge and the Claude Managed Agents controls are hidden or show a not-configured message.</p></aside>
+
+        <h2 id="link-a-claude-managed-agent">Link a Claude Managed Agent</h2>
+
+        <ol><li>In Atryum, click <strong>Agents</strong> in the left sidebar.</li><li>Open the Atryum agent record that should own the Claude Managed Agent.</li><li>Under <strong>Claude Managed Agents</strong>, select the Claude agent to link.<br><p>If you configured multiple <code>[[managed_agents]]</code> accounts, choose the account first.</p></li><li>Click <strong>Save</strong>.</li></ol>
+
+        <p>Saving writes Atryum ownership metadata to the Claude Managed Agent. This prevents two Atryum instances from accidentally managing the same hosted Claude agent.</p>
+
+        <p>Use <strong>Force connect</strong> only when you intentionally want this Atryum instance to take over a Claude Managed Agent that already has Atryum ownership metadata.</p>
+
+        <h2 id="configure-claude-tool-approvals">Configure Claude tool approvals</h2>
+
+        <p>Claude tools must be configured to ask before Atryum can block them.</p>
+
+        <p>Set the Claude Managed Agent tool permission policy to <code>always_ask</code>. Tools left as <code>always_allow</code> run immediately in Anthropic's harness. Atryum can record those calls after the fact, but it cannot stop them before execution.</p>
+
+        <h2 id="write-rules-for-claude-managed-agents">Write rules for Claude Managed Agents</h2>
+
+        <p>Rules match Claude Managed Agents calls by the source Atryum receives for that tool call.</p>
+
+        <p>For built-in Claude agent tools, use:</p>
+
+        <table class="docs-table"><thead><tr><th>Rule field</th><th>Value</th></tr></thead><tbody><tr><td>Server patterns</td><td><code>claude-managed-agents</code></td></tr><tr><td>Tool patterns</td><td>The Claude tool name, such as <code>Bash</code></td></tr></tbody></table>
+
+        <p>For MCP tools declared on the Claude Managed Agent, use:</p>
+
+        <table class="docs-table"><thead><tr><th>Rule field</th><th>Value</th></tr></thead><tbody><tr><td>Server patterns</td><td>The MCP server name, such as <code>slack</code></td></tr><tr><td>Tool patterns</td><td>The MCP tool name, such as <code>slack_send_message</code></td></tr></tbody></table>
+
+        <p>Rule matching is exact unless you use <code>*</code>. Empty pattern lists match everything. Rule order still applies: the first matching final rule wins.</p>
+
+        <h2 id="manage-watched-sessions">Manage watched sessions</h2>
+
+        <p>Atryum discovers sessions for linked Claude Managed Agents and starts watchers automatically.</p>
+
+        <p>To review or clear watchers:</p>
+
+        <ol><li>Open <strong>Settings</strong> in the Atryum platform left sidebar.</li><li>Find <strong>Claude Managed Agents</strong>.</li><li>Review the watched sessions table.</li><li>Click <strong>Delete</strong> to remove one stale watcher, or click <strong>Clear all</strong> to remove every watcher.</li></ol>
+
+        <p>Clearing watchers does not remove Claude agent links. Watchers for linked Claude agents can come back when the discovery loop finds active sessions again.</p>
+
+        <h2 id="troubleshooting">Troubleshooting</h2>
+
+        <h3 id="the-claude-agent-list-shows-the-wrong-workspace">The Claude agent list shows the wrong workspace</h3>
+
+        <p>Create or use an Anthropic API key in the workspace you want Atryum to list. The <code>workspace</code> value in <code>atryum.toml</code> is not sent to Anthropic as a selector.</p>
+
+        <h3 id="a-tool-call-was-recorded-but-not-blocked">A tool call was recorded but not blocked</h3>
+
+        <p>Check the Claude Managed Agent's tool permission policy. If the tool is <code>always_allow</code>, Anthropic runs it without waiting for Atryum.</p>
+
+        <h3 id="a-rule-did-not-match-an-mcp-tool">A rule did not match an MCP tool</h3>
+
+        <p>Use the MCP server name as the rule's server pattern. For example, a Slack MCP tool call uses <code>slack</code> as the server pattern, not <code>claude-managed-agents</code>.</p>
+
+        <h3 id="old-watchers-keep-logging-errors">Old watchers keep logging errors</h3>
+
+        <p>Open <strong>Settings</strong> → <strong>Claude Managed Agents</strong> and click <strong>Clear all</strong>. Linked agents can rediscover active sessions afterward.</p>
+          </article>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <div data-include="../../partials/footer.html"></div>
+</body>
+</html>
