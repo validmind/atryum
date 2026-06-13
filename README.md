@@ -1,9 +1,36 @@
+<h1 align="center"> <img width="173" height="51" alt="Atryum" src="https://github.com/user-attachments/assets/c87319f8-215e-4e29-bd0c-f3b1dd9852cd" /> 
+    </h1>
+    <p align="center">
+        <p align="center">The control plane for agent actions.
+        </p>
+        <p align="center">Self-hosted and lightweight. Every tool your agents call passes through one place to be approved, denied, and logged.</p>
+        <p align="center">
+        </p>
+    </p>
+<h4 align="center"> <a href="https://atryum.org/documentation/1_quickstart.html" target="_blank"> QuickStart</a> | <a href="https://validmind.com/platform/agent-authority/">ValidMind Agent Authority</a> | <a href="https://atryum.org" target="_blank">Website</a></h4>
+<h4 align="center">
+
+  <img src="https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square" alt="License: Apache 2.0" />
+<img src="https://img.shields.io/badge/version-0.0.5-green?style=flat-square" alt="Version 0.0.5" />
+<img src="https://img.shields.io/badge/MCP%20spec-2025--11--25-orange?style=flat-square" alt="MCP spec 2025-11-25" />
+    <a href="https://github.com/validmind/atryum" target="_blank">
+        <img src="https://img.shields.io/github/stars/validmind/atryum.svg?style=social" alt="GitHub Stars">
+    </a>
+
+</h4>
+
+
+
 # Atryum
 
 Atryum is a permissions gateway for AI agents. It sits between an agent harness and the tools that harness wants to call, intercepts each tool invocation, evaluates it against configured rules, and either auto-approves, auto-denies, or routes it to a human for approval. Every decision and every outcome is recorded as a durable invocation with a full lifecycle event log.
 
-Atryum runs standalone and enforces locally. It is the open-source nervous system: the interception path, the rule engine, the approval UI, and the audit store. Higher-order policy reasoning (an agent registry, per-agent charters, LLM-as-judge evaluation) lives in ValidMind, the commercial product that consumes Atryum's surface.
+Atryum can intercept raw tool calls from the harness, proxy mcp tool calls, or coordinate approvals in an agent orchestrator like Claude Managed Agents. 
 
+<img width="2098" height="804" alt="image" src="https://github.com/user-attachments/assets/c414b421-b7e0-448e-b791-e751eb2af641" />
+
+
+--- 
 ## How agents reach Atryum
 
 Atryum mediates three kinds of tool calls:
