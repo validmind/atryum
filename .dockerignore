@@ -11,6 +11,14 @@ atryum.toml
 docker-compose.override.yml
 internal/api/web
 releases
+integrations/.venv
+integrations/.run
+integrations/.harness-config
+integrations/results
+integrations/*.db
+integrations/*.db-journal
+integrations/*.log
+integrations/*.pid
 opencode-state
 node_modules
 ui/node_modules

@@ -113,8 +113,14 @@ run_single_case() {
   template="$(auth_protocol_template "$auth_id")"
   config_path="$RUN_DIR/atryum.toml"
   render_atryum_config "$auth_id" "$target_id" "$template" "$config_path"
-  start_atryum "$config_path"
-  seed_auto_approve_rules
+  start_atryum "$config_path" || {
+    write_result "$case_name" "failed" "atryum startup failed"
+    return 1
+  }
+  seed_auto_approve_rules || {
+    write_result "$case_name" "failed" "failed to seed auto-approve rule"
+    return 1
+  }
 
   if (( skip_direct == 0 )); then
     verify_upstream_direct "$target_id" "$auth_id" || {

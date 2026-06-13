@@ -2,6 +2,7 @@ set shell := ["bash", "-cu"]
 
 config := "./atryum.toml"
 release_dir := "releases"
+integration_image := "atryum-integrations"
 
 # List justfile targets
 default:
@@ -39,9 +40,11 @@ check: fmt test
 build:
 	CGO_ENABLED=0 go build -o ./atryum ./cmd/atryum
 
-# Remove generated binaries, release artifacts, and built UI assets
+# Remove generated binaries, release artifacts, built UI assets, and integration test debris
 clean:
-	rm -rf ./atryum {{release_dir}} ui/dist internal/api/web
+	rm -rf ./atryum {{release_dir}} ui/dist internal/api/web \
+	  integrations/.venv integrations/.run integrations/.harness-config integrations/results \
+	  integrations/*.db integrations/*.db-journal integrations/*.log integrations/*.pid
 
 # Build local production-like atryum binary with the local UI embedded
 build-prod: build-ui build
@@ -163,3 +166,17 @@ integration-test harness="fake-agent" auth="no-auth" target="calculator":
 # Run the full integration matrix (skips unavailable harnesses and placeholder auth)
 integration-test-matrix *args:
 	integrations/scripts/agent_harness_integration_tests.sh matrix --only-passing {{args}}
+
+# Build Docker image for integration tests
+integration-docker-build:
+	docker build -f Dockerfile.integrations -t {{integration_image}} .
+
+# Run integration tests inside the Docker image
+integration-docker-test *args:
+	docker run --rm \
+	  -e OPENAI_API_KEY \
+	  -e CODEX_API_KEY \
+	  -e ANTHROPIC_API_KEY \
+	  -e AMP_API_KEY \
+	  -e XAI_API_KEY \
+	  {{integration_image}} {{args}}
