@@ -6,6 +6,10 @@ Install and initialize Atryum, then integrate Atryum with ValidMind and your oth
 
 Download Atryum and register a server in Atryum for testing.
 
+:::
+Atryum is not production ready yet.
+:::
+
 ### Download Atryum
 
 ```bash
@@ -17,6 +21,10 @@ The install script downloads the latest Atryum release and selects the correct b
 [Microsoft Windows](https://www.microsoft.com/windows/) is not supported natively — use [Windows Subsystem for Linux (WSL)](https://learn.microsoft.com/en-us/windows/wsl/) as a workaround. Alternatively, clone the [repository](https://github.com/validmind/atryum) and run Atryum with [Docker](https://www.docker.com/) — refer to the repository [README](https://github.com/validmind/atryum/blob/main/README.md#running) for [Docker Compose](https://docs.docker.com/compose/) setup.
 
 ### Set up Atryum test server
+
+:::
+This quickstart will run atryum with a local sqlite. This is great for first use, bad for performance and real work. See [docker-compose.yaml](https://github.com/validmind/atryum/blob/main/docker-compose.yml#L2) for an example running with postgres.
+:::
 
 1. Generate a minimal testing configuration with a simple calculator Model Context Protocol (MCP) server that does not require any external credentials:
 
