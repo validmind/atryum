@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
   Alert,
   AlertDescription,
@@ -34,16 +34,28 @@ import {
   VStack,
   useDisclosure,
 } from '@chakra-ui/react';
-import { CreatableSelect } from 'chakra-react-select';
+import { CreatableSelect, Select } from 'chakra-react-select';
 import { CpuChipIcon } from '@heroicons/react/24/outline';
+import { useQuery } from 'react-query';
 
 import { ContentPageTitle } from '../components/Layout';
 import { useAgents, useCreateAgent, useUpdateAgent, useDeleteAgent } from '../hooks/useAgents';
 import { useSettings } from '../hooks/useSettings';
-import type { Agent, AgentCreateInput, AgentUpdateInput } from '../api/AtryumAPI';
+import type {
+  Agent,
+  AgentCreateInput,
+  AgentUpdateInput,
+  ClaudeManagedAgent,
+  ClaudeManagedAgentBinding,
+} from '../api/AtryumAPI';
 import { agentsApi } from '../api/AtryumAPI';
 
 type SelectOption = { value: string; label: string };
+type ManagedAgentOption = {
+  value: string;
+  label: string;
+  binding: ClaudeManagedAgentBinding;
+};
 const toOptions = (ids: string[]): SelectOption[] =>
   ids.map((id) => ({ value: id, label: id }));
 const fromOptions = (opts: readonly SelectOption[]): string[] =>
@@ -61,12 +73,12 @@ const formatDate = (iso: string): string => {
 };
 
 const errorMessage = (err: unknown, fallback: string): string => {
-  // Prefer the API response body: { error: { message: "..." } }
-  if (typeof err === 'object' && err !== null) {
-    const apiMsg = (err as { response?: { data?: { error?: { message?: unknown } } } }).response
-      ?.data?.error?.message;
-    if (typeof apiMsg === 'string' && apiMsg) return apiMsg;
-  }
+	// Prefer the API response body: { error: { message: "..." } }
+	if (typeof err === 'object' && err !== null) {
+		const apiMsg = (err as { response?: { data?: { error?: { message?: unknown } } } }).response
+			?.data?.error?.message;
+		if (typeof apiMsg === 'string' && apiMsg) return apiMsg;
+	}
   if (err instanceof Error) return err.message;
   if (typeof err === 'object' && err !== null && 'message' in err) {
     const msg = (err as { message: unknown }).message;
@@ -74,6 +86,36 @@ const errorMessage = (err: unknown, fallback: string): string => {
   }
   return fallback;
 };
+
+const statusCode = (err: unknown): number | undefined => {
+  if (typeof err !== 'object' || err === null || !('response' in err)) return undefined;
+  return (err as { response?: { status?: number } }).response?.status;
+};
+
+const bindingKey = (binding: ClaudeManagedAgentBinding): string =>
+  `${binding.account || 'default'}:${binding.claude_agent_id}`;
+
+const bindingLabel = (binding: ClaudeManagedAgentBinding): string => {
+  const name = binding.claude_agent_name || binding.claude_agent_id;
+  return `${name} (${binding.claude_agent_id})`;
+};
+
+const toManagedAgentBinding = (
+  agent: ClaudeManagedAgent,
+  account: string,
+): ClaudeManagedAgentBinding => ({
+  account: account || 'default',
+  claude_agent_id: agent.id,
+  claude_agent_name: agent.name,
+  claude_agent_model: agent.model,
+  claude_agent_version: agent.version,
+});
+
+const toManagedAgentOption = (binding: ClaudeManagedAgentBinding): ManagedAgentOption => ({
+  value: bindingKey(binding),
+  label: bindingLabel(binding),
+  binding,
+});
 
 // ─── Create Modal ─────────────────────────────────────────────────────────────
 
@@ -238,34 +280,83 @@ type EditAgentModalProps = {
 const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose }) => {
   const [name, setName] = useState(agent.name);
   const [description, setDescription] = useState(agent.description ?? '');
-  const [charter, setCharter] = useState(agent.charter ?? '');
-  const [enabled, setEnabled] = useState(agent.enabled);
-  const [agentIDs, setAgentIDs] = useState<string[]>(agent.agent_ids);
-  const [statusMsg, setStatusMsg] = useState<StatusMsg | null>(null);
+	const [charter, setCharter] = useState(agent.charter ?? '');
+	const [enabled, setEnabled] = useState(agent.enabled);
+	const [agentIDs, setAgentIDs] = useState<string[]>(agent.agent_ids);
+	const [managedBindings, setManagedBindings] = useState<ClaudeManagedAgentBinding[]>(
+		agent.claude_managed_agents ?? [],
+	);
+  const [managedAccount, setManagedAccount] = useState(
+    agent.claude_managed_agents?.[0]?.account ?? 'default',
+  );
+	const [managedSearch, setManagedSearch] = useState('');
+	const [forceManagedConnect, setForceManagedConnect] = useState(false);
+	const [statusMsg, setStatusMsg] = useState<StatusMsg | null>(null);
 
-  const updateMutation = useUpdateAgent();
-  const deleteMutation = useDeleteAgent();
-  const { data: agentsData } = useAgents();
-
-  const handleUpdate = async () => {
-    if (!name.trim()) {
-      setStatusMsg({ text: 'Name is required.', isError: true });
-      return;
+	const updateMutation = useUpdateAgent();
+	const deleteMutation = useDeleteAgent();
+	const { data: agentsData } = useAgents();
+	const accountsQuery = useQuery(
+    ['claude-managed-agent-accounts'],
+    () => agentsApi.managedAgentAccounts(),
+    { enabled: isOpen, refetchOnWindowFocus: false, retry: false },
+  );
+  const accountItems = accountsQuery.data?.items ?? [];
+  const selectedAccount = accountItems.some((account) => account.name === managedAccount)
+    ? managedAccount
+    : accountItems[0]?.name || managedAccount || 'default';
+  const managedAgentsQuery = useQuery(
+    ['claude-managed-agents', selectedAccount, managedSearch],
+    () => agentsApi.managedAgents(selectedAccount, managedSearch),
+    {
+      enabled: isOpen && !accountsQuery.isError && !accountsQuery.isLoading,
+      refetchOnWindowFocus: false,
+      retry: false,
+    },
+  );
+  const managedAgentsUnavailable = accountsQuery.isError && statusCode(accountsQuery.error) === 501;
+  const managedAgentOptions = useMemo(() => {
+    const byKey = new Map<string, ManagedAgentOption>();
+    for (const binding of managedBindings) {
+      byKey.set(bindingKey(binding), toManagedAgentOption(binding));
     }
-    const conflicts = agentIDs.flatMap((id) => {
-      const owner = agentsData?.items.find((a) => a.cuid !== agent.cuid && a.agent_ids.includes(id));
-      return owner ? [`${id} is already in use by "${owner.name}"`] : [];
+    for (const managedAgent of managedAgentsQuery.data?.items ?? []) {
+      const binding = toManagedAgentBinding(managedAgent, selectedAccount);
+      byKey.set(bindingKey(binding), toManagedAgentOption(binding));
+    }
+    return Array.from(byKey.values());
+	}, [managedAgentsQuery.data?.items, managedBindings, selectedAccount]);
+	const selectedManagedAgentOptions = managedBindings.map(toManagedAgentOption);
+
+	const handleUpdate = async () => {
+		if (!name.trim()) {
+			setStatusMsg({ text: 'Name is required.', isError: true });
+			return;
+		}
+		const conflicts = agentIDs.flatMap((id) => {
+			const owner = agentsData?.items.find((a) => a.cuid !== agent.cuid && a.agent_ids.includes(id));
+			return owner ? [`${id} is already in use by "${owner.name}"`] : [];
     });
     if (conflicts.length > 0) {
       setStatusMsg({
         text: 'Agent ID(s) already in use by another agent:',
         lines: conflicts,
         isError: true,
-      });
-      return;
-    }
-    const input: AgentUpdateInput = { name, description, enabled, agent_ids: agentIDs, charter };
-    try {
+			});
+			return;
+		}
+		const input: AgentUpdateInput = {
+			name,
+			description,
+      enabled,
+      agent_ids: agentIDs,
+      charter,
+    };
+    if (!managedAgentsUnavailable) {
+			input.claude_managed_agents = managedBindings;
+			input.force_claude_managed_agent_connect = forceManagedConnect;
+		}
+		try {
       await updateMutation.mutateAsync({ cuid: agent.cuid, input });
       setStatusMsg(null);
       onClose();
@@ -289,7 +380,7 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
   const isBusy = updateMutation.isLoading || deleteMutation.isLoading;
 
   return (
-    <Modal size="lg" isCentered isOpen={isOpen} onClose={onClose}>
+    <Modal size="xl" isCentered isOpen={isOpen} onClose={onClose}>
       <ModalOverlay />
       <ModalContent>
         <ModalHeader>{agent.name}</ModalHeader>
@@ -380,6 +471,114 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
                 noOptionsMessage={noOptionsMessage}
               />
             </FormControl>
+
+            {!managedAgentsUnavailable && <Divider />}
+
+            {!managedAgentsUnavailable && (
+            <FormControl>
+              <FormLabel fontSize="sm">Claude Managed Agents</FormLabel>
+              <Text fontSize="xs" color="text.subtle" mb={2}>
+                Link Anthropic-hosted Claude agents to this Atryum agent. Session
+                discovery will use these links.
+              </Text>
+              {accountsQuery.isError ? (
+                <Alert status="info" borderRadius="md" py={2}>
+                  <AlertIcon />
+                  <AlertDescription fontSize="sm">
+                    Claude Managed Agents bridge is not configured.
+                  </AlertDescription>
+                </Alert>
+              ) : (
+                <VStack align="stretch" gap={3}>
+                  {accountItems.length > 1 && (
+                    <Select
+                      size="sm"
+                      value={{ value: selectedAccount, label: selectedAccount }}
+                      options={accountItems.map((account) => ({
+                        value: account.name,
+                        label: account.workspace ? `${account.name} (${account.workspace})` : account.name,
+                      }))}
+                      onChange={(option) => {
+                        if (option) setManagedAccount(option.value);
+                      }}
+                    />
+                  )}
+                  {accountItems.length === 1 && (
+                    <Text fontSize="xs" color="text.subtle">
+                      Account: {accountItems[0].name}
+                      {accountItems[0].workspace ? ` (${accountItems[0].workspace})` : ''}
+                    </Text>
+                  )}
+                  {managedAgentsQuery.isError && (
+                    <Alert status="warning" borderRadius="md" py={2}>
+                      <AlertIcon />
+                      <AlertDescription fontSize="sm">
+                        {errorMessage(managedAgentsQuery.error, 'Failed to load Claude managed agents.')}
+                      </AlertDescription>
+                    </Alert>
+                  )}
+                  <Select<ManagedAgentOption, true>
+                    isMulti
+                    isClearable
+                    isLoading={managedAgentsQuery.isLoading || managedAgentsQuery.isFetching}
+                    placeholder="Search Claude managed agents…"
+                    value={selectedManagedAgentOptions}
+                    options={managedAgentOptions}
+                    onInputChange={(value) => setManagedSearch(value)}
+                    onChange={(selected) => setManagedBindings(selected.map((option) => option.binding))}
+                    noOptionsMessage={() => 'No Claude managed agents found'}
+                  />
+                  {managedBindings.length > 0 && (
+                    <VStack align="stretch" gap={2}>
+                      {managedBindings.map((binding) => (
+                        <Box
+                          key={bindingKey(binding)}
+                          borderWidth={1}
+                          borderColor="border.base"
+                          borderRadius="md"
+                          px={3}
+                          py={2}
+                        >
+                          <HStack justify="space-between" align="start" gap={3}>
+                            <Box minW={0}>
+                              <Text fontSize="sm" fontWeight="medium" noOfLines={1}>
+                                {binding.claude_agent_name || binding.claude_agent_id}
+                              </Text>
+                              <Text fontSize="xs" color="text.subtle" fontFamily="mono" noOfLines={1}>
+                                {binding.claude_agent_id}
+                              </Text>
+                              <Text fontSize="xs" color="text.subtle">
+                                {binding.account}
+                                {binding.claude_agent_model ? ` · ${binding.claude_agent_model}` : ''}
+                                {binding.claude_agent_version ? ` · v${binding.claude_agent_version}` : ''}
+                              </Text>
+                            </Box>
+                            <Button
+                              size="xs"
+                              variant="ghost"
+                              onClick={() =>
+                                setManagedBindings((items) =>
+                                  items.filter((item) => bindingKey(item) !== bindingKey(binding)),
+                                )
+                              }
+                            >
+                              Remove
+                            </Button>
+                          </HStack>
+                        </Box>
+                      ))}
+                    </VStack>
+                  )}
+                  <Checkbox
+                    isChecked={forceManagedConnect}
+                    onChange={(e) => setForceManagedConnect(e.target.checked)}
+                  >
+                    <Text fontSize="sm">Force connect if Claude metadata says another Atryum instance owns it</Text>
+                  </Checkbox>
+                </VStack>
+              )}
+            </FormControl>
+            )}
 
             <Divider />
 
@@ -589,13 +788,19 @@ const Agents: React.FC = () => {
                     </Text>
                   </Td>
                   <Td>
-                    <Badge
-                      colorScheme={agent.agent_ids.length === 0 ? 'gray' : 'blue'}
-                      fontSize="2xs"
-                    >
-                      {agent.agent_ids.length} Agent ID
-                      {agent.agent_ids.length !== 1 ? 's' : ''}
-                    </Badge>
+                    {(() => {
+                      const claudeCount = agent.claude_managed_agents?.length ?? 0;
+                      const totalIDs = agent.agent_ids.length + claudeCount;
+                      return (
+                        <Badge
+                          colorScheme={totalIDs === 0 ? 'gray' : 'blue'}
+                          fontSize="2xs"
+                        >
+                          {totalIDs} Agent ID
+                          {totalIDs !== 1 ? 's' : ''}
+                        </Badge>
+                      );
+                    })()}
                   </Td>
                   <Td>
                     <Badge

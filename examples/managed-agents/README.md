@@ -65,15 +65,17 @@ Because Atryum answers the harness's own confirmation prompts, it can gate the
 
 ### 1. Enable the bridge in `atryum.toml`
 
-Declare one `[[managed_agents]]` table per Anthropic account/workspace. The
-`name` is a unique label the session-registration API uses to target a specific
-account.
+Declare one `[[managed_agents]]` table per Anthropic account/workspace API key.
+The `name` is a unique label the session-registration API uses to target a
+specific account.
 
 ```toml
 [[managed_agents]]
 name    = "default"   # unique label; targeted by the registration "account" field
-# Anthropic API key. Env overrides (single account only):
+workspace = "anthropic-workspace-name-or-id" # display/metadata label
+# Anthropic API key created in that workspace. Env overrides (single account only):
 # ATRYUM_MANAGED_AGENTS_API_KEY, then ANTHROPIC_API_KEY.
+# If using env for the key, set ATRYUM_MANAGED_AGENTS_WORKSPACE too.
 api_key = "sk-ant-..."
 # Optional tuning (defaults shown):
 # base_url                  = "https://api.anthropic.com"
@@ -85,13 +87,17 @@ api_key = "sk-ant-..."
 # Watch a second account by repeating the table:
 # [[managed_agents]]
 # name    = "staging"
+# workspace = "staging-workspace"
 # api_key = "sk-ant-..."
 ```
 
 Entries with an empty `api_key` are skipped; when no account has a usable key
 the bridge is disabled and the admin endpoint returns `501`. The
 `ATRYUM_MANAGED_AGENTS_API_KEY` / `ANTHROPIC_API_KEY` env overrides apply only
-when zero or one `[[managed_agents]]` entry is configured.
+when zero or one `[[managed_agents]]` entry is configured. `workspace` is
+required whenever `api_key` is set, but it is not sent as an Anthropic request
+selector: Anthropic API keys are already workspace-scoped, so use an API key
+created in the workspace whose Claude agents you want to list.
 
 ### 2. Create an agent whose tools ask for confirmation
 
@@ -112,11 +118,16 @@ curl -sS https://api.anthropic.com/v1/agents \
   }'
 ```
 
-Create an environment and a session as usual (see the
-[quickstart](https://platform.claude.com/docs/en/managed-agents/quickstart)),
-and note the session ID.
+Create an environment and sessions as usual (see the
+[quickstart](https://platform.claude.com/docs/en/managed-agents/quickstart)).
 
-### 3. Register the session with Atryum
+### 3. Link the Claude agent in Atryum
+
+Open the Agents page, edit the Atryum agent you want rules to apply to, and
+select the Claude Managed Agent. Atryum writes ownership metadata to the Claude
+agent and discovers its sessions automatically.
+
+Manual session registration still exists as an escape hatch:
 
 ```bash
 curl -sS -X POST http://localhost:8080/api/v1/admin/managed-agents/sessions \
@@ -129,10 +140,10 @@ curl -sS -X POST http://localhost:8080/api/v1/admin/managed-agents/sessions \
   }'
 ```
 
-Atryum starts watching immediately and resumes watching registered sessions on
-restart (the cursor is persisted, so it replays anything missed). Send the
-session a user message; blocking tool calls now flow through your Atryum rules
-and appear live in the invocations UI.
+Atryum starts watching linked sessions as it discovers them and resumes watched
+sessions on restart (the cursor is persisted, so it replays anything missed).
+Send the session a user message; blocking tool calls now flow through your
+Atryum rules and appear live in the invocations UI.
 
 ### Approval rules
 

@@ -1,0 +1,41 @@
+FROM golang:1.25-bookworm
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PATH=/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    python3 \
+    python3-pip \
+    python3-venv \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends nodejs \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g @openai/codex @anthropic-ai/claude-code
+
+WORKDIR /src
+
+COPY ui/package.json ui/package-lock.json ./ui/
+RUN cd ui && npm ci
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+RUN cd ui && npm run build \
+  && rm -rf ../internal/api/web \
+  && mkdir -p ../internal/api/web \
+  && cp -R dist/. ../internal/api/web/
+
+ENTRYPOINT ["bash", "/src/integrations/scripts/agent_harness_integration_tests.sh"]
+CMD ["matrix", "--only-passing", "--harnesses", "fake-agent", "--targets", "calculator"]

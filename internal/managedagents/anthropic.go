@@ -39,6 +39,282 @@ func (c *httpClient) setHeaders(req *http.Request) {
 	req.Header.Set("content-type", "application/json")
 }
 
+func (c *httpClient) ListAgents(ctx context.Context) ([]AgentInfo, error) {
+	values := url.Values{}
+	values.Set("limit", "100")
+	var agents []AgentInfo
+	for {
+		endpoint := c.base + "/v1/agents"
+		if encoded := values.Encode(); encoded != "" {
+			endpoint += "?" + encoded
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		c.setHeaders(req)
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			resp.Body.Close()
+			return nil, fmt.Errorf("list agents: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+		var payload struct {
+			Data     []json.RawMessage `json:"data"`
+			NextPage string            `json:"next_page"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("list agents: decode: %w", err)
+		}
+		resp.Body.Close()
+		for _, raw := range payload.Data {
+			if agent, ok := parseAgentInfo(raw); ok {
+				agents = append(agents, agent)
+			}
+		}
+		if payload.NextPage == "" {
+			return agents, nil
+		}
+		values.Set("page", payload.NextPage)
+	}
+}
+
+func (c *httpClient) GetAgent(ctx context.Context, agentID string) (AgentInfo, error) {
+	endpoint := fmt.Sprintf("%s/v1/agents/%s", c.base, url.PathEscape(agentID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return AgentInfo{}, err
+	}
+	c.setHeaders(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return AgentInfo{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return AgentInfo{}, fmt.Errorf("get agent: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return AgentInfo{}, err
+	}
+	agent, ok := parseAgentInfo(raw)
+	if !ok {
+		return AgentInfo{}, fmt.Errorf("get agent: invalid response")
+	}
+	return agent, nil
+}
+
+func (c *httpClient) UpdateAgentMetadata(ctx context.Context, agentID string, version int, metadata map[string]*string) (AgentInfo, error) {
+	body, err := json.Marshal(map[string]any{"version": version, "metadata": metadata})
+	if err != nil {
+		return AgentInfo{}, err
+	}
+	endpoint := fmt.Sprintf("%s/v1/agents/%s", c.base, url.PathEscape(agentID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return AgentInfo{}, err
+	}
+	c.setHeaders(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return AgentInfo{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return AgentInfo{}, fmt.Errorf("update agent metadata: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return AgentInfo{}, err
+	}
+	agent, ok := parseAgentInfo(raw)
+	if !ok {
+		return AgentInfo{}, fmt.Errorf("update agent metadata: invalid response")
+	}
+	return agent, nil
+}
+
+func (c *httpClient) ListSessions(ctx context.Context, filter SessionListFilter) ([]SessionInfo, error) {
+	values := url.Values{}
+	if filter.AgentID != "" {
+		values.Set("agent_id", filter.AgentID)
+	}
+	values.Set("limit", "100")
+	values.Set("order", "desc")
+	var sessions []SessionInfo
+	for {
+		endpoint := c.base + "/v1/sessions"
+		if encoded := values.Encode(); encoded != "" {
+			endpoint += "?" + encoded
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		c.setHeaders(req)
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			resp.Body.Close()
+			return nil, fmt.Errorf("list sessions: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+		var payload struct {
+			Data     []json.RawMessage `json:"data"`
+			NextPage string            `json:"next_page"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("list sessions: decode: %w", err)
+		}
+		resp.Body.Close()
+		for _, raw := range payload.Data {
+			if session, ok := parseSessionInfo(raw); ok {
+				sessions = append(sessions, session)
+			}
+		}
+		if payload.NextPage == "" {
+			return sessions, nil
+		}
+		values.Set("page", payload.NextPage)
+	}
+}
+
+func parseAgentInfo(raw json.RawMessage) (AgentInfo, bool) {
+	var env struct {
+		ID          string          `json:"id"`
+		Name        string          `json:"name"`
+		Description *string         `json:"description"`
+		Model       json.RawMessage `json:"model"`
+		Metadata    json.RawMessage `json:"metadata"`
+		Version     int             `json:"version"`
+		CreatedAt   string          `json:"created_at"`
+		UpdatedAt   string          `json:"updated_at"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil || env.ID == "" {
+		return AgentInfo{}, false
+	}
+	agent := AgentInfo{ID: env.ID, Name: env.Name, Version: env.Version, Model: parseAgentModel(env.Model), Metadata: parseMetadata(env.Metadata)}
+	if env.Description != nil {
+		agent.Description = *env.Description
+	}
+	if env.CreatedAt != "" {
+		if t, err := time.Parse(time.RFC3339Nano, env.CreatedAt); err == nil {
+			agent.CreatedAt = t.UTC()
+		}
+	}
+	if env.UpdatedAt != "" {
+		if t, err := time.Parse(time.RFC3339Nano, env.UpdatedAt); err == nil {
+			agent.UpdatedAt = t.UTC()
+		}
+	}
+	return agent, true
+}
+
+func parseMetadata(raw json.RawMessage) map[string]string {
+	out := map[string]string{}
+	if len(raw) == 0 || string(raw) == "null" {
+		return out
+	}
+	var values map[string]any
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return out
+	}
+	for key, value := range values {
+		switch v := value.(type) {
+		case string:
+			out[key] = v
+		case bool:
+			if v {
+				out[key] = "true"
+			} else {
+				out[key] = "false"
+			}
+		case float64:
+			out[key] = fmt.Sprintf("%g", v)
+		case nil:
+			// Deleted/empty values are ignored.
+		default:
+			b, _ := json.Marshal(v)
+			out[key] = string(b)
+		}
+	}
+	return out
+}
+
+func parseAgentModel(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var obj struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &obj); err == nil {
+		return obj.ID
+	}
+	return ""
+}
+
+func parseSessionInfo(raw json.RawMessage) (SessionInfo, bool) {
+	var env struct {
+		ID        string          `json:"id"`
+		Agent     json.RawMessage `json:"agent"`
+		AgentID   string          `json:"agent_id"`
+		Title     string          `json:"title"`
+		Status    string          `json:"status"`
+		CreatedAt string          `json:"created_at"`
+		UpdatedAt string          `json:"updated_at"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil || env.ID == "" {
+		return SessionInfo{}, false
+	}
+	session := SessionInfo{ID: env.ID, AgentID: env.AgentID, Title: env.Title, Status: env.Status}
+	if session.AgentID == "" {
+		session.AgentID = parseSessionAgentID(env.Agent)
+	}
+	if env.CreatedAt != "" {
+		if t, err := time.Parse(time.RFC3339Nano, env.CreatedAt); err == nil {
+			session.CreatedAt = t.UTC()
+		}
+	}
+	if env.UpdatedAt != "" {
+		if t, err := time.Parse(time.RFC3339Nano, env.UpdatedAt); err == nil {
+			session.UpdatedAt = t.UTC()
+		}
+	}
+	return session, true
+}
+
+func parseSessionAgentID(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var obj struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &obj); err == nil {
+		return obj.ID
+	}
+	return ""
+}
+
 // rawEventEnvelope captures the fields the bridge keys on. The full JSON is
 // retained separately so downstream handling has access to everything.
 type rawEventEnvelope struct {
@@ -70,30 +346,45 @@ func parseEnvelopeStrict(raw json.RawMessage) (RawEvent, error) {
 }
 
 func (c *httpClient) ListEventsSince(ctx context.Context, sessionID, afterEventID string) ([]RawEvent, error) {
-	endpoint := fmt.Sprintf("%s/v1/sessions/%s/events", c.base, url.PathEscape(sessionID))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	c.setHeaders(req)
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("list events: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	var payload struct {
-		Data []json.RawMessage `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return nil, fmt.Errorf("list events: decode: %w", err)
-	}
-	events := make([]RawEvent, 0, len(payload.Data))
-	for _, raw := range payload.Data {
-		events = append(events, parseEnvelope(raw))
+	values := url.Values{}
+	values.Set("limit", "100")
+	values.Set("order", "asc")
+	var events []RawEvent
+	for {
+		endpoint := fmt.Sprintf("%s/v1/sessions/%s/events", c.base, url.PathEscape(sessionID))
+		if encoded := values.Encode(); encoded != "" {
+			endpoint += "?" + encoded
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		c.setHeaders(req)
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			resp.Body.Close()
+			return nil, fmt.Errorf("list events: status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+		var payload struct {
+			Data     []json.RawMessage `json:"data"`
+			NextPage string            `json:"next_page"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("list events: decode: %w", err)
+		}
+		resp.Body.Close()
+		for _, raw := range payload.Data {
+			events = append(events, parseEnvelope(raw))
+		}
+		if payload.NextPage == "" {
+			break
+		}
+		values.Set("page", payload.NextPage)
 	}
 	// Drop everything up to and including the cursor so callers only see new
 	// events. The API returns history oldest-first.

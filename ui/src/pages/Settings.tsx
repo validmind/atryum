@@ -40,15 +40,18 @@ import {
 } from '@chakra-ui/react';
 import { Select as GroupedSelect } from 'chakra-react-select';
 import { Cog6ToothIcon, PlusIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { useMutation, useQuery, useQueryClient } from 'react-query';
 
 import { useSettings, useUpdateSettings } from '../hooks/useSettings';
 import { useCreateLLMConfig, useDeleteLLMConfig, useLLMConfigs, useUpdateLLMConfig } from '../hooks/useLLMConfigs';
 import {
+  agentsApi,
   modelConfigsApi,
   vmDiscoveryApi,
   type LLMConfig,
   type LLMConfigInput,
   type LLMProvider,
+  type ManagedAgentSession,
   type ModelConfig,
   type VmCustomField,
   type VmOrg,
@@ -59,6 +62,28 @@ const PROVIDER_LABELS: Record<LLMProvider, string> = {
   openai: 'OpenAI',
   anthropic: 'Anthropic',
   openai_compatible: 'OpenAI-compatible',
+};
+
+const managedSessionsKey = ['claude-managed-agent-sessions'];
+
+const statusCode = (err: unknown): number | undefined => {
+  if (typeof err !== 'object' || err === null || !('response' in err)) return undefined;
+  return (err as { response?: { status?: number } }).response?.status;
+};
+
+const errorMessage = (err: unknown, fallback: string): string => {
+  if (typeof err === 'object' && err !== null && 'response' in err) {
+    const data = (err as { response?: { data?: { error?: string } } }).response?.data;
+    if (data?.error) return data.error;
+  }
+  return err instanceof Error ? err.message : fallback;
+};
+
+const formatDateTime = (value?: string): string => {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
 };
 
 interface LLMConfigFormProps {
@@ -143,8 +168,33 @@ const LLMConfigForm: React.FC<LLMConfigFormProps> = ({ initial, onSave, onClose,
 
 const Settings: React.FC = () => {
   const toast = useToast();
+  const queryClient = useQueryClient();
   const { data: savedSettings, isLoading: loadingSettings, isError: settingsError } = useSettings();
   const updateMutation = useUpdateSettings();
+
+  const managedSessionsQuery = useQuery(
+    managedSessionsKey,
+    () => agentsApi.managedAgentSessions(),
+    { refetchOnWindowFocus: false, retry: false },
+  );
+  const managedSessions = managedSessionsQuery.data?.items ?? [];
+  const managedSessionsUnavailable = managedSessionsQuery.isError && statusCode(managedSessionsQuery.error) === 501;
+  const deleteManagedSession = useMutation(
+    (sessionID: string) => agentsApi.deleteManagedAgentSession(sessionID),
+    {
+      onSuccess: async () => {
+        await queryClient.invalidateQueries(managedSessionsKey);
+      },
+    },
+  );
+  const clearManagedSessions = useMutation(
+    () => agentsApi.clearManagedAgentSessions(),
+    {
+      onSuccess: async () => {
+        await queryClient.invalidateQueries(managedSessionsKey);
+      },
+    },
+  );
 
   // ── Local LLM hooks ───────────────────────────────────────────────────────────
   const { data: llmConfigsData } = useLLMConfigs();
@@ -427,6 +477,46 @@ const Settings: React.FC = () => {
     }
   }, [deleteLLMConfig, toast]);
 
+  const handleDeleteManagedSession = useCallback(async (session: ManagedAgentSession) => {
+    const label = session.description || session.session_id;
+    if (!window.confirm(`Delete Claude Managed Agents watcher "${label}"?`)) return;
+    try {
+      await deleteManagedSession.mutateAsync(session.session_id);
+      toast({ title: 'Watcher deleted', status: 'success', duration: 3000, isClosable: true });
+    } catch (err: unknown) {
+      toast({
+        title: 'Failed to delete watcher',
+        description: errorMessage(err, 'Delete failed.'),
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+    }
+  }, [deleteManagedSession, toast]);
+
+  const handleClearManagedSessions = useCallback(async () => {
+    if (managedSessions.length === 0) return;
+    if (!window.confirm(`Delete all ${managedSessions.length} Claude Managed Agents watchers? Linked agents will be rediscovered automatically.`)) return;
+    try {
+      const result = await clearManagedSessions.mutateAsync();
+      toast({
+        title: 'Watchers cleared',
+        description: `Deleted ${result.deleted} watcher${result.deleted === 1 ? '' : 's'}.`,
+        status: 'success',
+        duration: 3000,
+        isClosable: true,
+      });
+    } catch (err: unknown) {
+      toast({
+        title: 'Failed to clear watchers',
+        description: errorMessage(err, 'Clear failed.'),
+        status: 'error',
+        duration: 5000,
+        isClosable: true,
+      });
+    }
+  }, [clearManagedSessions, managedSessions.length, toast]);
+
   if (loadingSettings) {
     return (
       <Stack align="center" pt={16} gap={4}>
@@ -473,8 +563,148 @@ const Settings: React.FC = () => {
         </Alert>
       )}
 
+      <Box
+        order={2}
+        borderWidth={1}
+        borderColor="border.base"
+        borderRadius="md"
+        p={6}
+        bg="background.container.subtle"
+      >
+        <Stack gap={4}>
+          <HStack justify="space-between" align="flex-start">
+            <Stack gap={1}>
+              <Heading as="h2" size="sm" color="text.heading">
+                Claude Managed Agents
+              </Heading>
+              <Text fontSize="sm" color="text.subtle">
+                Active watched Claude sessions. Delete stale watchers to stop retry loops for sessions that no longer exist.
+              </Text>
+            </Stack>
+            <HStack flexShrink={0}>
+              <Button
+                size="sm"
+                colorScheme="red"
+                onClick={() => void handleClearManagedSessions()}
+                isLoading={clearManagedSessions.isLoading}
+                isDisabled={managedSessions.length === 0 || managedSessionsQuery.isLoading || managedSessionsQuery.isError}
+              >
+                Clear all
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => void managedSessionsQuery.refetch()}
+                isLoading={managedSessionsQuery.isFetching}
+              >
+                Refresh
+              </Button>
+            </HStack>
+          </HStack>
+
+          {managedSessionsUnavailable ? (
+            <Alert status="info" borderRadius="md" py={2}>
+              <AlertIcon />
+              <AlertDescription fontSize="sm">
+                Claude Managed Agents bridge is not configured.
+              </AlertDescription>
+            </Alert>
+          ) : managedSessionsQuery.isError ? (
+            <Alert status="warning" borderRadius="md" py={2}>
+              <AlertIcon />
+              <AlertDescription fontSize="sm">
+                {errorMessage(managedSessionsQuery.error, 'Failed to load Claude Managed Agents watchers.')}
+              </AlertDescription>
+            </Alert>
+          ) : managedSessionsQuery.isLoading ? (
+            <Spinner size="sm" />
+          ) : managedSessions.length === 0 ? (
+            <Box
+              borderWidth={1}
+              borderColor="border.base"
+              borderRadius="md"
+              p={6}
+              textAlign="center"
+              bg="background.base"
+            >
+              <Text color="text.subtle" fontSize="sm">
+                No watched Claude Managed Agents sessions.
+              </Text>
+            </Box>
+          ) : (
+            <TableContainer>
+              <Table size="sm" variant="simple">
+                <Thead>
+                  <Tr>
+                    <Th>Session</Th>
+                    <Th>Account</Th>
+                    <Th>Agent</Th>
+                    <Th>Last Updated</Th>
+                    <Th />
+                  </Tr>
+                </Thead>
+                <Tbody>
+                  {managedSessions.map((session) => (
+                    <Tr key={session.session_id}>
+                      <Td>
+                        <Stack gap={0}>
+                          <Text fontSize="xs" fontFamily="mono">
+                            {session.session_id}
+                          </Text>
+                          {session.description && (
+                            <Text fontSize="xs" color="text.subtle">
+                              {session.description}
+                            </Text>
+                          )}
+                        </Stack>
+                      </Td>
+                      <Td>
+                        <Badge variant="subtle" colorScheme="purple" fontSize="xs">
+                          {session.account}
+                        </Badge>
+                      </Td>
+                      <Td>
+                        {session.agent_id ? (
+                          <Text fontSize="xs" fontFamily="mono">
+                            {session.agent_id}
+                          </Text>
+                        ) : (
+                          <Text fontSize="xs" color="text.subtle">Manual</Text>
+                        )}
+                      </Td>
+                      <Td>
+                        <Stack gap={0}>
+                          <Text fontSize="xs">{formatDateTime(session.updated_at)}</Text>
+                          {session.last_event_id && (
+                            <Text fontSize="xs" color="text.subtle" fontFamily="mono">
+                              cursor {session.last_event_id}
+                            </Text>
+                          )}
+                        </Stack>
+                      </Td>
+                      <Td>
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          colorScheme="red"
+                          leftIcon={<Icon as={TrashIcon} />}
+                          onClick={() => void handleDeleteManagedSession(session)}
+                          isLoading={deleteManagedSession.isLoading}
+                        >
+                          Delete
+                        </Button>
+                      </Td>
+                    </Tr>
+                  ))}
+                </Tbody>
+              </Table>
+            </TableContainer>
+          )}
+        </Stack>
+      </Box>
+
       {/* Agent Sync + Local LLM side by side */}
-      <SimpleGrid columns={2} gap={6} alignItems="start">
+      <SimpleGrid order={1} columns={{ base: 1, xl: 2 }} gap={6} alignItems="start">
 
       {/* Agent Sync section — only shown when a backend URL is configured */}
       {isBackendConfigured && <Box

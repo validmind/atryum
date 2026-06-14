@@ -102,6 +102,26 @@ func (r *ManagedAgentSessionRepo) List(ctx context.Context) ([]ManagedAgentSessi
 	return out, rows.Err()
 }
 
+// Delete removes a watched session registration. It returns sql.ErrNoRows when
+// no session with the given ID exists.
+func (r *ManagedAgentSessionRepo) Delete(ctx context.Context, sessionID string) error {
+	query, args, err := r.sb.
+		Delete("managed_agent_sessions").
+		Where(sq.Eq{"session_id": sessionID}).
+		ToSql()
+	if err != nil {
+		return err
+	}
+	res, err := r.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 // UpdateCursor advances the last_event_id watermark for a session.
 func (r *ManagedAgentSessionRepo) UpdateCursor(ctx context.Context, sessionID, lastEventID string) error {
 	query, args, err := r.sb.Update("managed_agent_sessions").

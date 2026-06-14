@@ -110,7 +110,7 @@ func parseToolResult(evt RawEvent) (toolResult, bool) {
 	}
 	m := asObject(evt.Raw)
 	tr := toolResult{
-		ToolUseID: firstString(m, "tool_use_id", "custom_tool_use_id", "tool_use_event_id"),
+		ToolUseID: firstString(m, "tool_use_id", "mcp_tool_use_id", "custom_tool_use_id", "tool_use_event_id"),
 	}
 	if tr.ToolUseID == "" {
 		return toolResult{}, false

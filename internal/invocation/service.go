@@ -825,15 +825,21 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		return InvocationResponse{}, err
 	}
 	ruleAction := ""
+	var matchedRuleID *string
 	var resolvedAIDecision *policy.Decision
 	var resolvedAIConfidence *float64
 	if s.rules != nil {
 		if approvalRules, err := s.rules.ListApprovalRules(ctx); err == nil {
 			for _, rule := range matchRules(approvalRules, source, req.Tool, agentRec.ID) {
 				r := rule
+				if r.ID != "" {
+					id := r.ID
+					matchedRuleID = &id
+				}
 				if r.Action == RuleActionAIEvaluation {
 					d, conf := s.runAIEvaluation(ctx, &r, source, req.Tool, req.Input, agentID, agentRec)
 					if d.Disposition == dispositionContinue {
+						matchedRuleID = nil
 						slog.Info("ai_evaluation: LLM deferred to next rule; continuing rule iteration",
 							"rule_id", r.ID, "server", source, "tool", req.Tool)
 						continue
@@ -848,6 +854,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 			}
 		}
 	}
+	inv.MatchedRuleID = matchedRuleID
 
 	receivedPayload := map[string]any{"tool": req.Tool, "upstream": source, "request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "external": true}
 	if agentID != "" {

@@ -69,7 +69,11 @@ start_atryum() {
   local config_path="$1"
   build_atryum
   log "Starting atryum on :${ATRYUM_PORT} (config: $config_path)"
-  ATRYUM_MCP_DEBUG="${ATRYUM_MCP_DEBUG:-1}" \
+  env \
+    -u ANTHROPIC_API_KEY \
+    -u ATRYUM_MANAGED_AGENTS_API_KEY \
+    -u ATRYUM_MANAGED_AGENTS_WORKSPACE \
+    ATRYUM_MCP_DEBUG="${ATRYUM_MCP_DEBUG:-1}" \
     "$ATRYUM_BIN" run -config "$config_path" \
     >"$RUN_DIR/atryum.log" 2>&1 &
   echo $! >"$RUN_DIR/atryum.pid"

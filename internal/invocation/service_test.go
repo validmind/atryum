@@ -283,6 +283,49 @@ func TestSubmitPendingApprovalAutomaticallySummarizesInvocation(t *testing.T) {
 	}
 }
 
+func TestSubmitMatchesApprovalRuleByExternalToolName(t *testing.T) {
+	db := newSQLiteTestDB(t)
+	invRepo := store.NewInvocationRepo(db)
+	eventRepo := store.NewEventRepo(db)
+	rulesRepo := store.NewRulesRepo(db)
+	if err := rulesRepo.Create(context.Background(), store.Rule{
+		ID:             "rule-managed-bash",
+		Action:         invocation.RuleActionAutoApprove,
+		ServerPatterns: []string{"claude-managed-agents"},
+		ToolPatterns:   []string{"Bash"},
+		Enabled:        true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service := invocation.NewService(
+		invRepo,
+		eventRepo,
+		nil,
+		nil,
+		nil,
+		5*time.Second,
+		rulesRepo,
+		nil,
+		nil,
+		nil,
+	)
+
+	resp, err := service.Submit(context.Background(), invocation.ExternalSubmitRequest{
+		Source: "claude-managed-agents",
+		Tool:   "Bash",
+		Input:  map[string]any{"command": "pwd"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusApproved {
+		t.Fatalf("status = %q, want approved", resp.Status)
+	}
+	if resp.MatchedRuleID == nil || *resp.MatchedRuleID != "rule-managed-bash" {
+		t.Fatalf("matched rule id = %v, want rule-managed-bash", resp.MatchedRuleID)
+	}
+}
+
 func TestSubmitAIEvaluationUsesDefaultAgentRecordForUnmappedAgentID(t *testing.T) {
 	db := newSQLiteTestDB(t)
 	invRepo := store.NewInvocationRepo(db)
@@ -303,7 +346,6 @@ func TestSubmitAIEvaluationUsesDefaultAgentRecordForUnmappedAgentID(t *testing.T
 		nil,
 		5*time.Second,
 		rulesStoreStub{rules: []invocation.ApprovalRule{{
-			ID:              "rule-ai",
 			Action:          invocation.RuleActionAIEvaluation,
 			ToolPatterns:    []string{"bash"},
 			ModelConfigCUID: "model-ai",

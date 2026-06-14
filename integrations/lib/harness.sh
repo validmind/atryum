@@ -318,6 +318,10 @@ PY
   install_hook "$harness_id"
   configure_harness_mcp "$harness_id" "$auth_id" "$target_id"
 
+  if [[ "$harness_id" == "codex" && -z "${CODEX_API_KEY:-}" && -n "${OPENAI_API_KEY:-}" ]]; then
+    export CODEX_API_KEY="$OPENAI_API_KEY"
+  fi
+
   local invoke
   log "Running harness=$harness_id auth=$auth_id target=$target_id"
 

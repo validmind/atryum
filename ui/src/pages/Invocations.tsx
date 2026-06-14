@@ -274,6 +274,11 @@ const Invocations: React.FC = () => {
         }
         map.set(id, { cuid: agent.cuid, name: agent.name });
       }
+      for (const binding of agent.claude_managed_agents ?? []) {
+        if (!map.has(binding.claude_agent_id)) {
+          map.set(binding.claude_agent_id, { cuid: agent.cuid, name: agent.name });
+        }
+      }
     }
     return map;
   }, [agentsData?.items]);
@@ -911,8 +916,8 @@ const Invocations: React.FC = () => {
                                     mr={1.5}
                                   />
                                   <Box as="span" mb="1px">
-                                    {STATUS_LABEL[detail.status] ??
-                                      detail.status}
+									{STATUS_LABEL[detail.status] ??
+										detail.status}
                                   </Box>
                                 </Tag>
                               );

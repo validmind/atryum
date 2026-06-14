@@ -4,6 +4,9 @@ listen_addr = ":8080"
 # In local dev this should point at the Atryum API server, not the Vite UI.
 # In production/Kubernetes it should be the ingress URL.
 public_base_url = "http://localhost:8080"
+# Stable identity written into Claude Managed Agent metadata when Atryum links
+# to an Anthropic agent. Defaults to public_base_url when omitted.
+atryum_instance = ""
 # SQLite remains the default. database_path is used when database_url is empty.
 database_path = "./atryum.db"
 # Optional: select storage provider by URL scheme.
@@ -57,13 +60,18 @@ request_timeout_seconds = 30
 # api_key are skipped; with no usable entry the bridge is disabled. See
 # examples/managed-agents/.
 #
-# Environment overrides for api_key (single-account convenience only):
+# Environment overrides for api_key/workspace label (single-account convenience only):
 # ATRYUM_MANAGED_AGENTS_API_KEY (highest), then ANTHROPIC_API_KEY. These apply
 # only when zero or one [[managed_agents]] entry is configured. With multiple
-# entries each must set its own api_key in TOML.
+# entries each must set its own api_key in TOML. Set
+# ATRYUM_MANAGED_AGENTS_WORKSPACE when using the env-only API key path. The API
+# key itself must be created in the target Anthropic workspace; workspace is a
+# label used by Atryum for display and ownership metadata, not an Anthropic
+# request selector.
 [[managed_agents]]
 name    = "default"   # unique label; targeted by the session-registration "account" field
-api_key = ""
+workspace = ""        # required label when api_key is set; Anthropic workspace identifier/name
+api_key = ""          # Anthropic API key created in that workspace
 # Optional tuning (defaults shown):
 # base_url                  = "https://api.anthropic.com"
 # poll_interval_millis      = 1000
@@ -74,6 +82,7 @@ api_key = ""
 # Add more accounts by repeating the table:
 # [[managed_agents]]
 # name    = "staging"
+# workspace = "staging-workspace"
 # api_key = ""
 
 # Agent sync and AI evaluation settings (org, record type, charter field)

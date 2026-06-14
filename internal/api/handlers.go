@@ -13,6 +13,7 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -99,6 +100,12 @@ type agentsRepo interface {
 	DeleteAll(ctx context.Context) error
 }
 
+type managedAgentBindingsRepo interface {
+	ListByAgent(ctx context.Context, agentCUID string) ([]store.ManagedAgentBinding, error)
+	GetByClaudeAgentID(ctx context.Context, account, claudeAgentID string) (store.ManagedAgentBinding, error)
+	ReplaceForAgent(ctx context.Context, agentCUID string, bindings []store.ManagedAgentBinding) error
+}
+
 type agentSyncSettingsRepo interface {
 	Get(ctx context.Context) (store.AgentSyncSettings, error)
 	Save(ctx context.Context, s store.AgentSyncSettings) error
@@ -127,6 +134,7 @@ type Handler struct {
 	agentsRepo            agentsRepo
 	agentSyncSettingsRepo agentSyncSettingsRepo
 	llmConfigsRepo        llmConfigsRepo
+	managedAgentBindings  managedAgentBindingsRepo
 	backendClient         *backendclient.Client
 	summarizeClient       invocationSummarizer
 	localSummarizer       localInvocationSummarizer
@@ -152,9 +160,16 @@ type Handler struct {
 }
 
 // managedAgentsAdmin is the slice of the managed-agents service the admin API
-// needs to register a session for watching.
+// needs for session registration and Claude agent discovery.
 type managedAgentsAdmin interface {
 	RegisterSession(ctx context.Context, req managedagents.RegisterSessionRequest) (managedagents.SessionRegistration, error)
+	ListSessions(ctx context.Context) ([]managedagents.SessionRegistration, error)
+	DeleteSession(ctx context.Context, sessionID string) error
+	ClearSessions(ctx context.Context) (int, error)
+	Accounts() []managedagents.AccountInfo
+	ListAgents(ctx context.Context, req managedagents.ListAgentsRequest) ([]managedagents.AgentInfo, error)
+	ClaimAgent(ctx context.Context, req managedagents.AgentClaimRequest) (managedagents.AgentInfo, error)
+	ReleaseAgent(ctx context.Context, req managedagents.AgentClaimRequest) error
 }
 
 type PolicyStatusResponse struct {
@@ -339,14 +354,15 @@ type RuleListResponse struct {
 // ─── Agent admin types ────────────────────────────────────────────────────────
 
 type AdminAgent struct {
-	CUID        string    `json:"cuid"`
-	OrgName     string    `json:"org_name"`
-	Name        string    `json:"name"`
-	Description string    `json:"description,omitempty"`
-	AgentIDs    []string  `json:"agent_ids"`
-	SyncedAt    time.Time `json:"synced_at"`
-	Enabled     bool      `json:"enabled"`
-	Charter     string    `json:"charter,omitempty"`
+	CUID                string                     `json:"cuid"`
+	OrgName             string                     `json:"org_name"`
+	Name                string                     `json:"name"`
+	Description         string                     `json:"description,omitempty"`
+	AgentIDs            []string                   `json:"agent_ids"`
+	ClaudeManagedAgents []AdminManagedAgentBinding `json:"claude_managed_agents,omitempty"`
+	SyncedAt            time.Time                  `json:"synced_at"`
+	Enabled             bool                       `json:"enabled"`
+	Charter             string                     `json:"charter,omitempty"`
 	// Synced is true when this agent originated from a ValidMind sync
 	// (vm_organization_cuid is non-empty). Synced agents cannot be deleted
 	// manually — they are removed by re-syncing with a different org/record-type.
@@ -354,19 +370,48 @@ type AdminAgent struct {
 }
 
 type AdminAgentInput struct {
-	Enabled     bool     `json:"enabled"`
-	AgentIDs    []string `json:"agent_ids,omitempty"`
-	Name        string   `json:"name,omitempty"`
-	Description string   `json:"description,omitempty"`
-	Charter     string   `json:"charter,omitempty"`
+	Enabled                        bool                        `json:"enabled"`
+	AgentIDs                       []string                    `json:"agent_ids,omitempty"`
+	Name                           string                      `json:"name,omitempty"`
+	Description                    string                      `json:"description,omitempty"`
+	Charter                        string                      `json:"charter,omitempty"`
+	ClaudeManagedAgents            *[]AdminManagedAgentBinding `json:"claude_managed_agents,omitempty"`
+	ForceClaudeManagedAgentConnect bool                        `json:"force_claude_managed_agent_connect,omitempty"`
 }
 
 type AdminAgentCreateInput struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description,omitempty"`
-	Enabled     bool     `json:"enabled"`
-	AgentIDs    []string `json:"agent_ids,omitempty"`
-	Charter     string   `json:"charter,omitempty"`
+	Name                           string                     `json:"name"`
+	Description                    string                     `json:"description,omitempty"`
+	Enabled                        bool                       `json:"enabled"`
+	AgentIDs                       []string                   `json:"agent_ids,omitempty"`
+	Charter                        string                     `json:"charter,omitempty"`
+	ClaudeManagedAgents            []AdminManagedAgentBinding `json:"claude_managed_agents,omitempty"`
+	ForceClaudeManagedAgentConnect bool                       `json:"force_claude_managed_agent_connect,omitempty"`
+}
+
+type AdminManagedAgentBinding struct {
+	ID                 string `json:"id,omitempty"`
+	Account            string `json:"account"`
+	ClaudeAgentID      string `json:"claude_agent_id"`
+	ClaudeAgentName    string `json:"claude_agent_name,omitempty"`
+	ClaudeAgentModel   string `json:"claude_agent_model,omitempty"`
+	ClaudeAgentVersion int    `json:"claude_agent_version,omitempty"`
+}
+
+type ManagedAgentAccountListResponse struct {
+	Items []managedagents.AccountInfo `json:"items"`
+}
+
+type ManagedAgentSessionListResponse struct {
+	Items []managedagents.SessionRegistration `json:"items"`
+}
+
+type ManagedAgentSessionClearResponse struct {
+	Deleted int `json:"deleted"`
+}
+
+type ManagedAgentListResponse struct {
+	Items []managedagents.AgentInfo `json:"items"`
 }
 
 type AgentListResponse struct {
@@ -386,6 +431,158 @@ func toAdminAgent(a store.AgentRecord) AdminAgent {
 		Charter:     a.Charter,
 		Synced:      a.VMOrganizationCUID != "",
 	}
+}
+
+func (h *Handler) toAdminAgent(ctx context.Context, a store.AgentRecord) AdminAgent {
+	out := toAdminAgent(a)
+	if h.managedAgentBindings == nil {
+		return out
+	}
+	bindings, err := h.managedAgentBindings.ListByAgent(ctx, a.ID)
+	if err != nil {
+		return out
+	}
+	out.ClaudeManagedAgents = toAdminManagedAgentBindings(bindings)
+	return out
+}
+
+func toAdminManagedAgentBindings(bindings []store.ManagedAgentBinding) []AdminManagedAgentBinding {
+	out := make([]AdminManagedAgentBinding, 0, len(bindings))
+	for _, b := range bindings {
+		out = append(out, AdminManagedAgentBinding{
+			ID:                 b.ID,
+			Account:            b.Account,
+			ClaudeAgentID:      b.ClaudeAgentID,
+			ClaudeAgentName:    b.ClaudeAgentName,
+			ClaudeAgentModel:   b.ClaudeAgentModel,
+			ClaudeAgentVersion: b.ClaudeAgentVersion,
+		})
+	}
+	return out
+}
+
+func toStoreManagedAgentBindings(agentCUID string, bindings []AdminManagedAgentBinding) []store.ManagedAgentBinding {
+	out := make([]store.ManagedAgentBinding, 0, len(bindings))
+	seen := make(map[string]bool, len(bindings))
+	for _, b := range bindings {
+		account := strings.TrimSpace(b.Account)
+		if account == "" {
+			account = managedagents.DefaultAccountName
+		}
+		claudeAgentID := strings.TrimSpace(b.ClaudeAgentID)
+		if claudeAgentID == "" {
+			continue
+		}
+		key := account + "\x00" + claudeAgentID
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		id := strings.TrimSpace(b.ID)
+		if id == "" {
+			id = uuid.NewString()
+		}
+		out = append(out, store.ManagedAgentBinding{
+			ID:                 id,
+			AgentCUID:          agentCUID,
+			Account:            account,
+			ClaudeAgentID:      claudeAgentID,
+			ClaudeAgentName:    strings.TrimSpace(b.ClaudeAgentName),
+			ClaudeAgentModel:   strings.TrimSpace(b.ClaudeAgentModel),
+			ClaudeAgentVersion: b.ClaudeAgentVersion,
+		})
+	}
+	return out
+}
+
+func (h *Handler) claimManagedAgentBindings(ctx context.Context, agentCUID string, bindings []store.ManagedAgentBinding, force bool) error {
+	if len(bindings) == 0 {
+		return nil
+	}
+	if h.managedAgents == nil {
+		return fmt.Errorf("managed agents bridge not configured (set [managed_agents].api_key)")
+	}
+	if h.managedAgentBindings != nil {
+		for _, binding := range bindings {
+			existing, err := h.managedAgentBindings.GetByClaudeAgentID(ctx, binding.Account, binding.ClaudeAgentID)
+			if err == nil && existing.AgentCUID != agentCUID {
+				if !force {
+					return &managedagents.AgentClaimConflictError{ClaudeAgentID: binding.ClaudeAgentID, Instance: "local", AgentCUID: existing.AgentCUID}
+				}
+				continue
+			}
+			if err != nil && err != sql.ErrNoRows {
+				return err
+			}
+		}
+	}
+	for _, binding := range bindings {
+		_, err := h.managedAgents.ClaimAgent(ctx, managedagents.AgentClaimRequest{
+			Account:         binding.Account,
+			ClaudeAgentID:   binding.ClaudeAgentID,
+			AtryumAgentCUID: agentCUID,
+			BindingID:       binding.ID,
+			Force:           force,
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (h *Handler) releaseManagedAgentBindings(ctx context.Context, agentCUID string, bindings []store.ManagedAgentBinding) {
+	if h.managedAgents == nil || len(bindings) == 0 {
+		return
+	}
+	for _, binding := range bindings {
+		_ = h.managedAgents.ReleaseAgent(ctx, managedagents.AgentClaimRequest{
+			Account:         binding.Account,
+			ClaudeAgentID:   binding.ClaudeAgentID,
+			AtryumAgentCUID: agentCUID,
+			BindingID:       binding.ID,
+		})
+	}
+}
+
+func (h *Handler) releaseNewManagedAgentClaims(ctx context.Context, agentCUID string, before, after []store.ManagedAgentBinding) {
+	if len(after) == 0 {
+		return
+	}
+	existing := make(map[string]bool, len(before))
+	for _, binding := range before {
+		existing[binding.Account+"\x00"+binding.ClaudeAgentID] = true
+	}
+	for _, binding := range after {
+		if existing[binding.Account+"\x00"+binding.ClaudeAgentID] {
+			continue
+		}
+		h.releaseManagedAgentBindings(ctx, agentCUID, []store.ManagedAgentBinding{binding})
+	}
+}
+
+func (h *Handler) releaseRemovedManagedAgentBindings(ctx context.Context, agentCUID string, before, after []store.ManagedAgentBinding) {
+	if h.managedAgents == nil || len(before) == 0 {
+		return
+	}
+	keep := make(map[string]bool, len(after))
+	for _, binding := range after {
+		keep[binding.Account+"\x00"+binding.ClaudeAgentID] = true
+	}
+	for _, binding := range before {
+		if keep[binding.Account+"\x00"+binding.ClaudeAgentID] {
+			continue
+		}
+		h.releaseManagedAgentBindings(ctx, agentCUID, []store.ManagedAgentBinding{binding})
+	}
+}
+
+func writeManagedAgentClaimError(w http.ResponseWriter, err error) {
+	if conflict, ok := err.(*managedagents.AgentClaimConflictError); ok {
+		writeError(w, http.StatusConflict, conflict.Error())
+		return
+	}
+	writeError(w, http.StatusBadRequest, err.Error())
 }
 
 func parseAgentIDs(raw string) []string {
@@ -495,6 +692,13 @@ func (h *Handler) SetManagedAgents(m managedAgentsAdmin) {
 	h.managedAgents = m
 }
 
+// SetManagedAgentBindings installs the store used to persist Atryum Agent ↔
+// Claude Managed Agent links. It is optional so narrow unit-test handlers can
+// omit it.
+func (h *Handler) SetManagedAgentBindings(repo managedAgentBindingsRepo) {
+	h.managedAgentBindings = repo
+}
+
 // SetAPIKeyAuth installs the static api-key/secret pair used to protect the
 // read-only invocation reporting endpoints.
 func (h *Handler) SetAPIKeyAuth(cfg auth.APIKeyConfig) {
@@ -541,6 +745,9 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/api/v1/admin/vm/custom-fields", h.adminVMCustomFields)
 	mux.HandleFunc("/api/v1/admin/oauth/callback", h.oauthCallback)
 	mux.HandleFunc("/api/v1/admin/policy", h.adminPolicy)
+	mux.HandleFunc("/api/v1/admin/managed-agents/accounts", h.adminManagedAgentAccounts)
+	mux.HandleFunc("/api/v1/admin/managed-agents/agents", h.adminManagedAgents)
+	mux.HandleFunc("/api/v1/admin/managed-agents/sessions/", h.adminManagedAgentSessionDetail)
 	mux.HandleFunc("/api/v1/admin/managed-agents/sessions", h.adminManagedAgentSessions)
 	agentRulesHandler := auth.MiddlewareWithOptions(h.authValidator, "/.well-known/oauth-protected-resource", auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})(http.HandlerFunc(h.agentRules))
 	agentRulesHandler = h.noAuthAgentIDHint(agentRulesHandler)
@@ -2573,7 +2780,7 @@ func (h *Handler) adminAgents(w http.ResponseWriter, r *http.Request) {
 		}
 		items := make([]AdminAgent, 0, len(records))
 		for _, a := range records {
-			items = append(items, toAdminAgent(a))
+			items = append(items, h.toAdminAgent(r.Context(), a))
 		}
 		writeJSON(w, http.StatusOK, AgentListResponse{Items: items})
 
@@ -2617,16 +2824,33 @@ func (h *Handler) adminAgents(w http.ResponseWriter, r *http.Request) {
 			Enabled:            req.Enabled,
 			Charter:            req.Charter,
 		}
+		var bindings []store.ManagedAgentBinding
+		if h.managedAgentBindings != nil && len(req.ClaudeManagedAgents) > 0 {
+			bindings = toStoreManagedAgentBindings(id, req.ClaudeManagedAgents)
+			if err := h.claimManagedAgentBindings(r.Context(), id, bindings, req.ForceClaudeManagedAgentConnect); err != nil {
+				writeManagedAgentClaimError(w, err)
+				return
+			}
+		}
 		if err := h.agentsRepo.Create(r.Context(), agent); err != nil {
+			h.releaseManagedAgentBindings(r.Context(), id, bindings)
 			writeError(w, http.StatusInternalServerError, "failed to create agent")
 			return
+		}
+		if len(bindings) > 0 {
+			if err := h.managedAgentBindings.ReplaceForAgent(r.Context(), id, bindings); err != nil {
+				h.releaseManagedAgentBindings(r.Context(), id, bindings)
+				_ = h.agentsRepo.Delete(r.Context(), id)
+				writeError(w, http.StatusInternalServerError, "failed to save managed agent bindings")
+				return
+			}
 		}
 		record, err := h.agentsRepo.Get(r.Context(), id)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to retrieve created agent")
 			return
 		}
-		writeJSON(w, http.StatusCreated, toAdminAgent(record))
+		writeJSON(w, http.StatusCreated, h.toAdminAgent(r.Context(), record))
 
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -2662,7 +2886,7 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		items := make([]AdminAgent, 0, len(records))
 		for _, a := range records {
-			items = append(items, toAdminAgent(a))
+			items = append(items, h.toAdminAgent(r.Context(), a))
 		}
 		writeJSON(w, http.StatusOK, AgentListResponse{Items: items})
 		return
@@ -2681,7 +2905,7 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 			writeError(w, status, "agent not found")
 			return
 		}
-		writeJSON(w, http.StatusOK, toAdminAgent(record))
+		writeJSON(w, http.StatusOK, h.toAdminAgent(r.Context(), record))
 
 	case http.MethodPatch:
 		var req AdminAgentInput
@@ -2698,7 +2922,42 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		var beforeBindings []store.ManagedAgentBinding
+		var bindings []store.ManagedAgentBinding
+		managedBindingsTouched := false
+		if req.ClaudeManagedAgents != nil {
+			if h.managedAgentBindings == nil {
+				writeError(w, http.StatusServiceUnavailable, "managed agent bindings not configured")
+				return
+			}
+			if _, err := h.agentsRepo.Get(r.Context(), id); err != nil {
+				status := http.StatusInternalServerError
+				if err == sql.ErrNoRows {
+					status = http.StatusNotFound
+				}
+				writeError(w, status, "agent not found")
+				return
+			}
+			var err error
+			beforeBindings, err = h.managedAgentBindings.ListByAgent(r.Context(), id)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to list managed agent bindings")
+				return
+			}
+			bindings = toStoreManagedAgentBindings(id, *req.ClaudeManagedAgents)
+			if err := h.claimManagedAgentBindings(r.Context(), id, bindings, req.ForceClaudeManagedAgentConnect); err != nil {
+				writeManagedAgentClaimError(w, err)
+				return
+			}
+			managedBindingsTouched = true
+		}
+		cleanupNewClaims := func() {
+			if managedBindingsTouched {
+				h.releaseNewManagedAgentClaims(r.Context(), id, beforeBindings, bindings)
+			}
+		}
 		if err := h.agentsRepo.UpdateEnabled(r.Context(), id, req.Enabled); err != nil {
+			cleanupNewClaims()
 			status := http.StatusInternalServerError
 			if err == sql.ErrNoRows {
 				status = http.StatusNotFound
@@ -2709,10 +2968,12 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 		if req.AgentIDs != nil {
 			idsJSON, err := json.Marshal(req.AgentIDs)
 			if err != nil {
+				cleanupNewClaims()
 				writeError(w, http.StatusInternalServerError, "failed to encode agent_ids")
 				return
 			}
 			if err := h.agentsRepo.UpdateAgentIDs(r.Context(), id, string(idsJSON)); err != nil {
+				cleanupNewClaims()
 				status := http.StatusInternalServerError
 				if err == sql.ErrNoRows {
 					status = http.StatusNotFound
@@ -2721,8 +2982,9 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if req.Name != "" || req.Charter != "" {
+		if req.Name != "" || req.Description != "" || req.Charter != "" {
 			if err := h.agentsRepo.UpdateMeta(r.Context(), id, req.Name, req.Description, req.Charter); err != nil {
+				cleanupNewClaims()
 				status := http.StatusInternalServerError
 				if err == sql.ErrNoRows {
 					status = http.StatusNotFound
@@ -2730,13 +2992,21 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 				writeError(w, status, "agent not found")
 				return
 			}
+		}
+		if managedBindingsTouched {
+			if err := h.managedAgentBindings.ReplaceForAgent(r.Context(), id, bindings); err != nil {
+				cleanupNewClaims()
+				writeError(w, http.StatusInternalServerError, "failed to save managed agent bindings")
+				return
+			}
+			h.releaseRemovedManagedAgentBindings(r.Context(), id, beforeBindings, bindings)
 		}
 		record, err := h.agentsRepo.Get(r.Context(), id)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to retrieve agent")
 			return
 		}
-		writeJSON(w, http.StatusOK, toAdminAgent(record))
+		writeJSON(w, http.StatusOK, h.toAdminAgent(r.Context(), record))
 
 	case http.MethodDelete:
 		record, err := h.agentsRepo.Get(r.Context(), id)
@@ -3152,6 +3422,24 @@ func (h *Handler) adminManagedAgentSessions(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusNotImplemented, "managed agents bridge not configured (set [managed_agents].api_key)")
 		return
 	}
+	if r.Method == http.MethodGet {
+		sessions, err := h.managedAgents.ListSessions(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, ManagedAgentSessionListResponse{Items: sessions})
+		return
+	}
+	if r.Method == http.MethodDelete {
+		deleted, err := h.managedAgents.ClearSessions(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, ManagedAgentSessionClearResponse{Deleted: deleted})
+		return
+	}
 	if r.Method != http.MethodPost {
 		h.debugf("managed-agents session registration rejected: method not allowed method=%s path=%s remote=%s", r.Method, r.URL.Path, r.RemoteAddr)
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -3172,6 +3460,64 @@ func (h *Handler) adminManagedAgentSessions(w http.ResponseWriter, r *http.Reque
 	}
 	h.debugf("managed-agents session registered session_id=%q account=%q agent_id=%q last_event_id=%q", resp.SessionID, resp.Account, resp.AgentID, resp.LastEventID)
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) adminManagedAgentSessionDetail(w http.ResponseWriter, r *http.Request) {
+	if h.managedAgents == nil {
+		writeError(w, http.StatusNotImplemented, "managed agents bridge not configured (set [managed_agents].api_key)")
+		return
+	}
+	if r.Method != http.MethodDelete {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	rawID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/admin/managed-agents/sessions/"), "/")
+	sessionID, err := url.PathUnescape(rawID)
+	if err != nil || strings.TrimSpace(sessionID) == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if err := h.managedAgents.DeleteSession(r.Context(), sessionID); err != nil {
+		status := http.StatusBadRequest
+		if err == sql.ErrNoRows {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) adminManagedAgentAccounts(w http.ResponseWriter, r *http.Request) {
+	if h.managedAgents == nil {
+		writeError(w, http.StatusNotImplemented, "managed agents bridge not configured (set [managed_agents].api_key)")
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	writeJSON(w, http.StatusOK, ManagedAgentAccountListResponse{Items: h.managedAgents.Accounts()})
+}
+
+func (h *Handler) adminManagedAgents(w http.ResponseWriter, r *http.Request) {
+	if h.managedAgents == nil {
+		writeError(w, http.StatusNotImplemented, "managed agents bridge not configured (set [managed_agents].api_key)")
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	agents, err := h.managedAgents.ListAgents(r.Context(), managedagents.ListAgentsRequest{
+		Account: r.URL.Query().Get("account"),
+		Query:   r.URL.Query().Get("q"),
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, ManagedAgentListResponse{Items: agents})
 }
 
 func (h *Handler) externalInvocationDetail(w http.ResponseWriter, r *http.Request) {

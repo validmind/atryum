@@ -352,6 +352,7 @@ export interface Agent {
   name: string;
   description: string;
   agent_ids: string[];
+  claude_managed_agents?: ClaudeManagedAgentBinding[];
   enabled: boolean;
   synced_at: string;
   /** True when this agent originated from a ValidMind sync and cannot be deleted manually. */
@@ -366,6 +367,8 @@ export interface AgentCreateInput {
   enabled: boolean;
   agent_ids?: string[];
   charter?: string;
+  claude_managed_agents?: ClaudeManagedAgentBinding[];
+  force_claude_managed_agent_connect?: boolean;
 }
 
 export interface AgentUpdateInput {
@@ -374,6 +377,42 @@ export interface AgentUpdateInput {
   enabled: boolean;
   agent_ids?: string[];
   charter?: string;
+  claude_managed_agents?: ClaudeManagedAgentBinding[];
+  force_claude_managed_agent_connect?: boolean;
+}
+
+export interface ClaudeManagedAgentBinding {
+  id?: string;
+  account: string;
+  claude_agent_id: string;
+  claude_agent_name?: string;
+  claude_agent_model?: string;
+  claude_agent_version?: number;
+}
+
+export interface ClaudeManagedAgent {
+  id: string;
+  name: string;
+  description?: string;
+  model?: string;
+  version?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ClaudeManagedAgentAccount {
+  name: string;
+  workspace: string;
+}
+
+export interface ManagedAgentSession {
+  session_id: string;
+  account: string;
+  agent_id?: string;
+  description?: string;
+  last_event_id?: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export const agentsApi = {
@@ -403,6 +442,39 @@ export const agentsApi = {
 
   sync: async (): Promise<void> => {
     await atryumApi.post('/api/v1/admin/agents/sync');
+  },
+
+  managedAgentAccounts: async (): Promise<{ items: ClaudeManagedAgentAccount[] }> => {
+    const { data } = await atryumApi.get('/api/v1/admin/managed-agents/accounts');
+    return data;
+  },
+
+  managedAgentSessions: async (): Promise<{ items: ManagedAgentSession[] }> => {
+    const { data } = await atryumApi.get('/api/v1/admin/managed-agents/sessions');
+    return data;
+  },
+
+  deleteManagedAgentSession: async (sessionID: string): Promise<void> => {
+    await atryumApi.delete(
+      `/api/v1/admin/managed-agents/sessions/${encodeURIComponent(sessionID)}`,
+    );
+  },
+
+  clearManagedAgentSessions: async (): Promise<{ deleted: number }> => {
+    const { data } = await atryumApi.delete('/api/v1/admin/managed-agents/sessions');
+    return data;
+  },
+
+  managedAgents: async (
+    account?: string,
+    q?: string,
+  ): Promise<{ items: ClaudeManagedAgent[] }> => {
+    const params = new URLSearchParams();
+    if (account) params.set('account', account);
+    if (q) params.set('q', q);
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    const { data } = await atryumApi.get(`/api/v1/admin/managed-agents/agents${suffix}`);
+    return data;
   },
 };
 

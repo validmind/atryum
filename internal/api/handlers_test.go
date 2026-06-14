@@ -142,8 +142,12 @@ func (s *stubSummarizer) SummarizeInvocation(_ context.Context, req backendclien
 }
 
 type stubManagedAgentsAdmin struct {
-	err error
-	req managedagents.RegisterSessionRequest
+	err      error
+	req      managedagents.RegisterSessionRequest
+	agents   []managedagents.AgentInfo
+	sessions []managedagents.SessionRegistration
+	deleted  string
+	cleared  bool
 }
 
 func (s *stubManagedAgentsAdmin) RegisterSession(_ context.Context, req managedagents.RegisterSessionRequest) (managedagents.SessionRegistration, error) {
@@ -152,6 +156,48 @@ func (s *stubManagedAgentsAdmin) RegisterSession(_ context.Context, req manageda
 		return managedagents.SessionRegistration{}, s.err
 	}
 	return managedagents.SessionRegistration{SessionID: req.SessionID, Account: req.Account, AgentID: req.AgentID}, nil
+}
+
+func (s *stubManagedAgentsAdmin) ListSessions(context.Context) ([]managedagents.SessionRegistration, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.sessions, nil
+}
+
+func (s *stubManagedAgentsAdmin) DeleteSession(_ context.Context, sessionID string) error {
+	s.deleted = sessionID
+	return s.err
+}
+
+func (s *stubManagedAgentsAdmin) ClearSessions(context.Context) (int, error) {
+	s.cleared = true
+	if s.err != nil {
+		return 0, s.err
+	}
+	return len(s.sessions), nil
+}
+
+func (s *stubManagedAgentsAdmin) Accounts() []managedagents.AccountInfo {
+	return []managedagents.AccountInfo{{Name: managedagents.DefaultAccountName}}
+}
+
+func (s *stubManagedAgentsAdmin) ListAgents(context.Context, managedagents.ListAgentsRequest) ([]managedagents.AgentInfo, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.agents, nil
+}
+
+func (s *stubManagedAgentsAdmin) ClaimAgent(_ context.Context, req managedagents.AgentClaimRequest) (managedagents.AgentInfo, error) {
+	if s.err != nil {
+		return managedagents.AgentInfo{}, s.err
+	}
+	return managedagents.AgentInfo{ID: req.ClaudeAgentID, Version: 1}, nil
+}
+
+func (s *stubManagedAgentsAdmin) ReleaseAgent(context.Context, managedagents.AgentClaimRequest) error {
+	return nil
 }
 
 type stubAgentSyncSettingsRepo struct {
