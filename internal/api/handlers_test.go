@@ -399,8 +399,8 @@ func TestMCPInitializeNegotiatesProtocolVersion(t *testing.T) {
 		t.Fatalf("expected protocol version 2025-06-18, got %#v", result["protocolVersion"])
 	}
 	instructions, ok := result["instructions"].(string)
-	if !ok || !strings.Contains(instructions, "atryum.rules.get") {
-		t.Fatalf("expected initialize instructions to mention atryum.rules.get, got %#v", result["instructions"])
+	if !ok || !strings.Contains(instructions, "gated by the Atryum harness") || !strings.Contains(instructions, "rules may change between conversation turns") {
+		t.Fatalf("expected initialize instructions to describe Atryum gating and changing rules, got %#v", result["instructions"])
 	}
 }
 
@@ -790,8 +790,8 @@ func TestMCPToolsList(t *testing.T) {
 	if !strings.Contains(w.Body.String(), `"demo_tool"`) {
 		t.Fatalf("expected tools list, got %s", w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), `"atryum.rules.get"`) {
-		t.Fatalf("expected synthetic rules tool, got %s", w.Body.String())
+	if strings.Contains(w.Body.String(), `"atryum.rules.get"`) {
+		t.Fatalf("did not expect synthetic rules tool, got %s", w.Body.String())
 	}
 }
 
@@ -877,41 +877,6 @@ func TestMCPAgentIDQueryHintIgnoredWhenAuthConfigured(t *testing.T) {
 	}
 	if got := auth.AgentIDFromContext(svc.invokedCtx); got != "" {
 		t.Fatalf("agent id = %q", got)
-	}
-}
-
-func TestMCPRulesToolReturnsApplicableRulesWithoutInvocation(t *testing.T) {
-	rules := &stubRulesRepo{rules: []store.Rule{
-		{ID: "read-auto", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Read"}, Enabled: true, Order: 0},
-	}}
-	svc := &stubService{}
-	h := NewHandler(svc, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
-	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"atryum.rules.get","arguments":{"tool":"Read"}}}`))
-	w := httptest.NewRecorder()
-
-	h.Routes().ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
-	}
-	if svc.invokedReq != nil {
-		t.Fatalf("rules tool should not create invocation, got %#v", svc.invokedReq)
-	}
-	var rpcResp struct {
-		Result struct {
-			Content []struct {
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &rpcResp); err != nil {
-		t.Fatal(err)
-	}
-	if len(rpcResp.Result.Content) != 1 {
-		t.Fatalf("expected one content item, got %#v", rpcResp.Result.Content)
-	}
-	if !strings.Contains(rpcResp.Result.Content[0].Text, `"read-auto"`) || !strings.Contains(rpcResp.Result.Content[0].Text, `"action": "auto_approve"`) {
-		t.Fatalf("expected rules payload in tool result, got %s", rpcResp.Result.Content[0].Text)
 	}
 }
 
@@ -1039,9 +1004,8 @@ func TestMCPToolsListAnnotatesEffectiveAction(t *testing.T) {
 	if otherTool.Annotations == nil || otherTool.Annotations.Atryum.EffectiveAction != invocation.RuleActionHumanApproval {
 		t.Fatalf("Other tool annotations: %#v", otherTool.Annotations)
 	}
-	rulesTool := rpcResp.Result.Tools[byName["atryum.rules.get"]]
-	if rulesTool.Annotations != nil {
-		t.Fatalf("synthetic rules tool should not be annotated, got %#v", rulesTool.Annotations)
+	if _, ok := byName["atryum.rules.get"]; ok {
+		t.Fatalf("did not expect synthetic rules tool in tools/list")
 	}
 }
 
