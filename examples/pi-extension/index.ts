@@ -24,6 +24,9 @@ type InvocationStatus =
 type InvocationResponse = {
   invocation_id: string;
   status: InvocationStatus;
+  approval?: {
+    reason?: string;
+  };
   error?: unknown;
 };
 
@@ -156,9 +159,12 @@ export default function (pi: ExtensionAPI) {
 
       invocationMap.delete(event.toolCallId);
       ctx.ui.setStatus("atryum", `blocked ${event.toolName}`);
+      const reviewerReason = decided.approval?.reason
+        ? ` Reason: ${decided.approval.reason}`
+        : "";
       return {
         block: true,
-        reason: `atryum: tool call '${event.toolName}' was ${decided.status} by reviewer.`,
+        reason: `atryum: tool call '${event.toolName}' was ${decided.status} by reviewer.${reviewerReason}`,
       };
     } catch (err) {
       ctx.ui.setStatus("atryum", "gate failed");
