@@ -29,6 +29,7 @@ Atryum can intercept raw tool calls from the harness, proxy mcp tool calls, or c
 
 <img width="2098" height="804" alt="image" src="https://github.com/user-attachments/assets/c414b421-b7e0-448e-b791-e751eb2af641" />
 
+Ready to install and try it? Follow the [quickstart](https://atryum.org/documentation/1_quickstart.html) for a 5 minute tour!
 
 --- 
 ## How agents reach Atryum
