@@ -88,14 +88,19 @@ To remove the global plugin later:
 | `ATRYUM_AGENT_ID` | _(empty)_ | self-declared agent identifier; matched against Agent Record `agent_ids` (see below) |
 | `ATRYUM_CHAT_MESSAGES_LIMIT` | `100` | recent Amp thread messages sent as LLM-as-judge context |
 | `ATRYUM_AMP_THREADS_DIR` | `~/.local/share/amp/threads` | Amp thread JSON directory |
+| `ATRYUM_AMP_SESSION_FILE` | `~/.local/share/amp/session.json` | Amp session state file used to identify the active thread |
 
 ## LLM-as-judge chat context
 
-Before each tool call, the plugin builds a compact recent chat transcript and
-sends it to Atryum as `chat_context` and `chat_context_messages` (plus the
-deprecated `context` alias for compatibility). It first tries the live plugin
-context when available, then falls back to Amp's local thread JSON files under
-`ATRYUM_AMP_THREADS_DIR`.
+Before each tool call, the plugin builds compact recent context and sends it
+to Atryum as `chat_context` and `chat_context_messages` (plus the deprecated
+`context` alias for compatibility). It first tries the live plugin context
+when available. If Amp has persisted the active thread under
+`ATRYUM_AMP_THREADS_DIR`, the plugin includes that archived chat text.
+For active sessions where Amp has not written a thread JSON file yet, it uses
+the active thread ID from `ATRYUM_AMP_SESSION_FILE`, reads Amp's current
+thread log, and includes fresh message/tool activity plus the tool calls and
+results observed by the plugin.
 
 Set `ATRYUM_CHAT_MESSAGES_LIMIT` to change how many recent messages are sent.
 Set it to `0` to disable Amp chat context.
