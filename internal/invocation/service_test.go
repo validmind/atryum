@@ -387,6 +387,166 @@ func TestSubmitAIEvaluationUsesDefaultAgentRecordForUnmappedAgentID(t *testing.T
 	}
 }
 
+func TestInvokeAIEvaluationIncludesToolDescriptionInContext(t *testing.T) {
+	toolDescription := "Attach an external URL reference to a Shortcut story. Non-destructive."
+	toolSchema := `{"type":"object","properties":{"story_public_id":{"type":"integer"},"url":{"type":"string"}}}`
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		switch body["method"] {
+		case "initialize":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0", "id": body["id"],
+				"result": map[string]any{
+					"serverInfo":   map[string]any{"name": "fake-shortcut", "version": "0.1.0"},
+					"capabilities": map[string]any{},
+				},
+			})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0", "id": body["id"],
+				"result": map[string]any{"tools": []map[string]any{{
+					"name":        "stories-add-external-link",
+					"description": toolDescription,
+					"inputSchema": json.RawMessage(toolSchema),
+				}}},
+			})
+		case "tools/call":
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": body["id"], "result": map[string]any{"content": []map[string]any{{"type": "text", "text": "ok"}}}})
+		default:
+			t.Errorf("unexpected method: %v", body["method"])
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer upstream.Close()
+
+	db := newSQLiteTestDB(t)
+	serverRepo := store.NewServerRepo(db)
+	resolver := mcp.NewResolver(serverRepo, config.Config{
+		Upstreams: []config.UpstreamConfig{{Name: "shortcut", Mode: "http", BaseURL: upstream.URL, Enabled: true, TimeoutSeconds: 5}},
+	})
+	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	evaluator := &evaluateClientStub{
+		resp: invocation.EvaluateResponse{Verdict: "approved", Reason: "charter allows non-destructive link operations"},
+	}
+	defaultAgent := invocation.AgentRecord{
+		ID:                 "agent-local-default",
+		VMCUID:             "agent-vm-default",
+		VMOrganizationCUID: "org-default",
+		Charter:            "Deny destructive tool calls, otherwise approve.",
+	}
+
+	service := invocation.NewService(
+		store.NewInvocationRepo(db),
+		store.NewEventRepo(db),
+		resolver,
+		mcp.NewHTTPClient(),
+		nil,
+		5*time.Second,
+		rulesStoreStub{rules: []invocation.ApprovalRule{{
+			Action:          invocation.RuleActionAIEvaluation,
+			ServerPatterns:  []string{"shortcut"},
+			ToolPatterns:    []string{"stories-add-external-link"},
+			ModelConfigCUID: "model-ai",
+			Enabled:         true,
+		}}},
+		agentLookupStub{byVMCUID: map[string]invocation.AgentRecord{defaultAgent.VMCUID: defaultAgent}},
+		evaluator,
+		summarySettingsStub{
+			charterFieldKey:    "constitution",
+			defaultAgentVMCUID: defaultAgent.VMCUID,
+		},
+	)
+
+	resp, err := service.Invoke(context.Background(), invocation.CreateInvocationRequest{
+		Server: "shortcut",
+		Tool:   "stories-add-external-link",
+		Input:  map[string]any{"story_public_id": 16782, "url": "https://example.com"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusSucceeded {
+		t.Fatalf("status = %q, want succeeded", resp.Status)
+	}
+
+	req := evaluator.request()
+	if req.Context == "" {
+		t.Fatalf("EvaluateRequest.Context is empty; expected tool description")
+	}
+	if !strings.Contains(req.Context, toolDescription) {
+		t.Fatalf("EvaluateRequest.Context missing tool description; got %q", req.Context)
+	}
+	if !strings.Contains(req.Context, "story_public_id") {
+		t.Fatalf("EvaluateRequest.Context missing input schema; got %q", req.Context)
+	}
+}
+
+func TestInvokeAIEvaluationToleratesMissingToolDescription(t *testing.T) {
+	// When tools/list fails or omits the tool, evaluation must still run —
+	// just without the context enrichment.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		switch body["method"] {
+		case "initialize":
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": body["id"], "result": map[string]any{"serverInfo": map[string]any{"name": "fake", "version": "0.1.0"}, "capabilities": map[string]any{}}})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/list":
+			w.WriteHeader(http.StatusInternalServerError)
+		case "tools/call":
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": body["id"], "result": map[string]any{"content": []map[string]any{{"type": "text", "text": "ok"}}}})
+		}
+	}))
+	defer upstream.Close()
+
+	db := newSQLiteTestDB(t)
+	serverRepo := store.NewServerRepo(db)
+	resolver := mcp.NewResolver(serverRepo, config.Config{
+		Upstreams: []config.UpstreamConfig{{Name: "shortcut", Mode: "http", BaseURL: upstream.URL, Enabled: true, TimeoutSeconds: 5}},
+	})
+	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	evaluator := &evaluateClientStub{resp: invocation.EvaluateResponse{Verdict: "approved", Reason: "ok"}}
+	defaultAgent := invocation.AgentRecord{ID: "a", VMCUID: "vm-a", VMOrganizationCUID: "org", Charter: "c"}
+	service := invocation.NewService(
+		store.NewInvocationRepo(db),
+		store.NewEventRepo(db),
+		resolver,
+		mcp.NewHTTPClient(),
+		nil,
+		5*time.Second,
+		rulesStoreStub{rules: []invocation.ApprovalRule{{Action: invocation.RuleActionAIEvaluation, ServerPatterns: []string{"shortcut"}, ToolPatterns: []string{"stories-search"}, ModelConfigCUID: "m", Enabled: true}}},
+		agentLookupStub{byVMCUID: map[string]invocation.AgentRecord{defaultAgent.VMCUID: defaultAgent}},
+		evaluator,
+		summarySettingsStub{charterFieldKey: "constitution", defaultAgentVMCUID: defaultAgent.VMCUID},
+	)
+
+	resp, err := service.Invoke(context.Background(), invocation.CreateInvocationRequest{Server: "shortcut", Tool: "stories-search", Input: map[string]any{"q": "x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusSucceeded {
+		t.Fatalf("status = %q", resp.Status)
+	}
+	if evaluator.request().Context != "" {
+		t.Fatalf("expected empty Context when tools/list fails, got %q", evaluator.request().Context)
+	}
+}
+
 func newTestService(t *testing.T, cfg config.Config) *invocation.Service {
 	t.Helper()
 	db := newSQLiteTestDB(t)
