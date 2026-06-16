@@ -76,6 +76,7 @@ api_key = ""          # Anthropic API key created in that workspace
 # base_url                  = "https://api.anthropic.com"
 # poll_interval_millis      = 1000
 # reconnect_backoff_seconds = 2
+# recent_chat_messages_limit = 100  # recent chat messages included as LLM-as-judge context
 # client_name               = "claude-managed-agents"
 # client_version            = ""
 

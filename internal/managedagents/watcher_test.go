@@ -548,6 +548,9 @@ func TestToolUseSubmitIncludesRecentChatContext(t *testing.T) {
 	if got := strings.Count(context, "\n- "); got != 100 {
 		t.Fatalf("context message count = %d, want 100", got)
 	}
+	if got := g.submitted[0].ChatContextMessages; got != 100 {
+		t.Fatalf("ChatContextMessages = %d, want 100", got)
+	}
 }
 
 func TestToolUseSubmitHonorsRecentChatMessageLimit(t *testing.T) {
@@ -580,6 +583,9 @@ func TestToolUseSubmitHonorsRecentChatMessageLimit(t *testing.T) {
 	}
 	if got := strings.Count(context, "\n- "); got != 3 {
 		t.Fatalf("context message count = %d, want 3", got)
+	}
+	if got := g.submitted[0].ChatContextMessages; got != 3 {
+		t.Fatalf("ChatContextMessages = %d, want 3", got)
 	}
 }
 

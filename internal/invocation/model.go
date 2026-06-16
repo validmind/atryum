@@ -102,15 +102,16 @@ type CreateInvocationRequest struct {
 // call for human approval and record audit events. Atryum will NOT execute
 // the tool when this path is used.
 type ExternalSubmitRequest struct {
-	Source         string         `json:"source"`
-	Tool           string         `json:"tool"`
-	Description    string         `json:"description,omitempty"`
-	Input          map[string]any `json:"input"`
-	RequestID      *string        `json:"request_id,omitempty"`
-	IdempotencyKey *string        `json:"idempotency_key,omitempty"`
-	ThreadID       string         `json:"thread_id,omitempty"`
-	ChatContext    string         `json:"chat_context,omitempty"`
-	Context        string         `json:"context,omitempty"` // deprecated alias for ChatContext
+	Source              string         `json:"source"`
+	Tool                string         `json:"tool"`
+	Description         string         `json:"description,omitempty"`
+	Input               map[string]any `json:"input"`
+	RequestID           *string        `json:"request_id,omitempty"`
+	IdempotencyKey      *string        `json:"idempotency_key,omitempty"`
+	ThreadID            string         `json:"thread_id,omitempty"`
+	ChatContext         string         `json:"chat_context,omitempty"`
+	ChatContextMessages int            `json:"chat_context_messages,omitempty"`
+	Context             string         `json:"context,omitempty"` // deprecated alias for ChatContext
 	// ClientName / ClientVersion identify the harness making the call.
 	// Optional — when omitted, Source is used for ClientName. Prefer these
 	// when the caller knows its own identity (e.g. amp plugin sending

@@ -77,6 +77,12 @@ func (w *watcher) recentChatContext() string {
 	return b.String()
 }
 
+func (w *watcher) recentChatCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.recentChat)
+}
+
 // run is the per-session supervisor loop: catch up on missed history, then
 // follow the live stream, reconnecting with backoff until the context is done.
 func (w *watcher) run(ctx context.Context) {
@@ -206,17 +212,18 @@ func (w *watcher) handleToolUse(ctx context.Context, evt RawEvent) bool {
 	source := w.cfgSource(tu)
 	eventID := tu.EventID
 	resp, err := w.svc.inv.Submit(ctx, invocation.ExternalSubmitRequest{
-		Source:         source,
-		Tool:           tu.ToolName,
-		Description:    "Claude managed agent " + tu.Kind + " in session " + w.reg.SessionID,
-		Input:          tu.Input,
-		ChatContext:    w.recentChatContext(),
-		RequestID:      &eventID,
-		IdempotencyKey: &eventID, // dedupe across stream reconnects/replays
-		ThreadID:       w.reg.SessionID,
-		ClientName:     w.acct.cfg.ClientName,
-		ClientVersion:  w.acct.cfg.ClientVersion,
-		AgentID:        w.reg.AgentID,
+		Source:              source,
+		Tool:                tu.ToolName,
+		Description:         "Claude managed agent " + tu.Kind + " in session " + w.reg.SessionID,
+		Input:               tu.Input,
+		ChatContext:         w.recentChatContext(),
+		ChatContextMessages: w.recentChatCount(),
+		RequestID:           &eventID,
+		IdempotencyKey:      &eventID, // dedupe across stream reconnects/replays
+		ThreadID:            w.reg.SessionID,
+		ClientName:          w.acct.cfg.ClientName,
+		ClientVersion:       w.acct.cfg.ClientVersion,
+		AgentID:             w.reg.AgentID,
 	})
 	if err != nil {
 		w.log().Warn("submit tool call failed", "tool", tu.ToolName, "error", err)
