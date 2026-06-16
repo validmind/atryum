@@ -79,6 +79,9 @@ func (s *stubService) Submit(ctx context.Context, req invocation.ExternalSubmitR
 	}
 	return invocation.InvocationResponse{InvocationID: "inv_submit", ToolName: req.Tool, Status: invocation.StatusPendingApproval}, s.invErr
 }
+func (s *stubService) CreateSession(context.Context, invocation.CreateSessionRequest, string) (invocation.SessionResponse, error) {
+	return invocation.SessionResponse{}, nil
+}
 func (s *stubService) SetSummary(_ context.Context, id string, summary string) (invocation.InvocationResponse, error) {
 	s.setID = id
 	s.setText = summary

@@ -42,18 +42,18 @@ type chatMessage struct {
 	Text string
 }
 
+// parseChatMessage extracts human (user) messages only. Agent-authored messages
+// are intentionally excluded from judge context: the agent under evaluation is
+// not trusted, and its messages add a prompt-injection surface with little
+// value for judging a concrete tool call.
 func parseChatMessage(evt RawEvent) (chatMessage, bool) {
-	if evt.Type != "user.message" && evt.Type != "agent.message" {
+	if evt.Type != "user.message" {
 		return chatMessage{}, false
 	}
 	m := asObject(evt.Raw)
 	role := firstString(m, "role", "sender", "author")
 	if role == "" {
-		if strings.HasPrefix(evt.Type, "user.") {
-			role = "user"
-		} else {
-			role = "assistant"
-		}
+		role = "user"
 	}
 	text := messageText(m)
 	if strings.TrimSpace(text) == "" {
@@ -163,6 +163,7 @@ func requiresAction(evt RawEvent) (eventIDs []string, ok bool) {
 
 // toolResult holds the outcome parsed from a tool-result event.
 type toolResult struct {
+	Kind      string
 	ToolUseID string
 	IsError   bool
 	Content   json.RawMessage
@@ -176,6 +177,7 @@ func parseToolResult(evt RawEvent) (toolResult, bool) {
 	}
 	m := asObject(evt.Raw)
 	tr := toolResult{
+		Kind:      evt.Type,
 		ToolUseID: firstString(m, "tool_use_id", "mcp_tool_use_id", "custom_tool_use_id", "tool_use_event_id"),
 	}
 	if tr.ToolUseID == "" {

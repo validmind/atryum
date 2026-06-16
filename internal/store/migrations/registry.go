@@ -68,5 +68,6 @@ func All() []Definition {
 		migration022(),
 		migration023(),
 		migration024(),
+		migration025(),
 	}
 }

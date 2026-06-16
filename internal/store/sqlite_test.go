@@ -44,8 +44,8 @@ func TestInitDB_FreshDatabase(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 24 {
-		t.Fatalf("expected 24 migrations, got %d", count)
+	if count != 25 {
+		t.Fatalf("expected 25 migrations, got %d", count)
 	}
 
 	// Verify all tables exist
@@ -73,8 +73,8 @@ func TestInitDB_Idempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 24 {
-		t.Fatalf("expected 24 migrations after double init, got %d", count)
+	if count != 25 {
+		t.Fatalf("expected 25 migrations after double init, got %d", count)
 	}
 }
 
@@ -548,8 +548,12 @@ func TestInitDBBackfillsEndpointSlugCollisionsDeterministically(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("seed old schema: %v", err)
 	}
+	// Isolate migration 024 (server endpoint_slug backfill): mark every other
+	// migration as already applied so InitDB runs only 024 against this minimal
+	// seed. Later migrations (025 external_sessions, 026 expires_at) touch tables
+	// this fixture never creates, so they must stay marked-applied here.
 	for _, m := range migrations {
-		if m.Version >= 24 {
+		if m.Version == 24 {
 			continue
 		}
 		if _, err := db.Exec(`INSERT INTO schema_migrations(version, name) VALUES (?, ?)`, m.Version, m.Name); err != nil {
