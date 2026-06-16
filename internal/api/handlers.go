@@ -3139,7 +3139,7 @@ func (s *ServerAdminService) Test(ctx context.Context, name string) (ServerTestR
 	if err != nil {
 		return ServerTestResponse{}, err
 	}
-	if token, tokenErr := s.oauthRepo.GetCredential(ctx, name); tokenErr == nil {
+	if token, tokenErr := store.NewRefreshingOAuthCredentialStore(s.oauthRepo, s.client).GetCredential(ctx, upstream); tokenErr == nil {
 		upstream.AuthToken = token.AccessToken
 	}
 	testCtx, cancel := context.WithTimeout(ctx, s.timeout)

@@ -203,9 +203,10 @@ type ServerFilter struct {
 // requests (tools/list, tools/call, forward) get the live access token
 // attached. The interface is intentionally narrow — the resolver does not
 // need to know about refresh tokens or expiry; that's the credential
-// store's problem.
+// store's problem. The upstream is passed so the store can refresh with the
+// correct token endpoint/client credentials when needed.
 type CredentialStore interface {
-	GetCredential(ctx context.Context, serverName string) (AccessTokenView, error)
+	GetCredential(ctx context.Context, upstream Upstream) (AccessTokenView, error)
 }
 
 type AccessTokenView struct {
@@ -326,7 +327,7 @@ func (r *Resolver) overlayCredential(ctx context.Context, upstream Upstream) Ups
 	if r.credentials == nil {
 		return upstream
 	}
-	cred, err := r.credentials.GetCredential(ctx, upstream.Name)
+	cred, err := r.credentials.GetCredential(ctx, upstream)
 	if err != nil || strings.TrimSpace(cred.AccessToken) == "" {
 		return upstream
 	}
@@ -457,6 +458,45 @@ func (c *Client) ExchangeOAuthCode(ctx context.Context, upstream Upstream, code 
 	defer resp.Body.Close()
 	bodyBytes, _ := io.ReadAll(resp.Body)
 	c.debugf("oauth token exchange response server=%s status=%d body=%s", upstream.Name, resp.StatusCode, truncateForLog(bodyBytes, 600))
+	return parseOAuthTokenResponse(resp.StatusCode, bodyBytes, "oauth token exchange")
+}
+
+func (c *Client) RefreshOAuthToken(ctx context.Context, upstream Upstream, refreshToken string) (OAuthToken, error) {
+	if strings.TrimSpace(upstream.OAuthTokenURL) == "" {
+		return OAuthToken{}, fmt.Errorf("oauth_token_url is required")
+	}
+	if strings.TrimSpace(upstream.OAuthClientID) == "" {
+		return OAuthToken{}, fmt.Errorf("oauth client id is required")
+	}
+	if strings.TrimSpace(refreshToken) == "" {
+		return OAuthToken{}, fmt.Errorf("oauth refresh token is required")
+	}
+	values := url.Values{}
+	values.Set("grant_type", "refresh_token")
+	values.Set("refresh_token", refreshToken)
+	values.Set("client_id", upstream.OAuthClientID)
+	if strings.TrimSpace(upstream.OAuthClientSecret) != "" {
+		values.Set("client_secret", upstream.OAuthClientSecret)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstream.OAuthTokenURL, strings.NewReader(values.Encode()))
+	if err != nil {
+		return OAuthToken{}, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	c.debugf("oauth token refresh server=%s token_url=%s client_id=%s has_secret=%t", upstream.Name, upstream.OAuthTokenURL, upstream.OAuthClientID, strings.TrimSpace(upstream.OAuthClientSecret) != "")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		c.debugf("oauth token refresh transport error server=%s err=%v", upstream.Name, err)
+		return OAuthToken{}, err
+	}
+	defer resp.Body.Close()
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	c.debugf("oauth token refresh response server=%s status=%d body=%s", upstream.Name, resp.StatusCode, truncateForLog(bodyBytes, 600))
+	return parseOAuthTokenResponse(resp.StatusCode, bodyBytes, "oauth token refresh")
+}
+
+func parseOAuthTokenResponse(statusCode int, bodyBytes []byte, operation string) (OAuthToken, error) {
 	var payload struct {
 		AccessToken      string `json:"access_token"`
 		RefreshToken     string `json:"refresh_token"`
@@ -467,22 +507,22 @@ func (c *Client) ExchangeOAuthCode(ctx context.Context, upstream Upstream, code 
 		ErrorDescription string `json:"error_description"`
 	}
 	_ = json.Unmarshal(bodyBytes, &payload)
-	if resp.StatusCode >= http.StatusBadRequest || payload.Error != "" || payload.AccessToken == "" {
-		// Surface as much of the AS response as we can — the bare status is
-		// useless for diagnosing why an OAuth exchange failed.
+	if statusCode >= http.StatusBadRequest || payload.Error != "" || payload.AccessToken == "" {
+		// Surface as much of the AS response as we can; the bare status is
+		// useless for diagnosing why an OAuth token request failed.
 		snippet := strings.TrimSpace(string(bodyBytes))
 		if len(snippet) > 400 {
 			snippet = snippet[:400] + "…"
 		}
 		switch {
 		case payload.Error != "" && payload.ErrorDescription != "":
-			return OAuthToken{}, fmt.Errorf("oauth token exchange failed (status %d): %s — %s", resp.StatusCode, payload.Error, payload.ErrorDescription)
+			return OAuthToken{}, fmt.Errorf("%s failed (status %d): %s — %s", operation, statusCode, payload.Error, payload.ErrorDescription)
 		case payload.Error != "":
-			return OAuthToken{}, fmt.Errorf("oauth token exchange failed (status %d): %s", resp.StatusCode, payload.Error)
+			return OAuthToken{}, fmt.Errorf("%s failed (status %d): %s", operation, statusCode, payload.Error)
 		case snippet != "":
-			return OAuthToken{}, fmt.Errorf("oauth token exchange failed (status %d): %s", resp.StatusCode, snippet)
+			return OAuthToken{}, fmt.Errorf("%s failed (status %d): %s", operation, statusCode, snippet)
 		default:
-			return OAuthToken{}, fmt.Errorf("oauth token exchange failed with status %d (empty body)", resp.StatusCode)
+			return OAuthToken{}, fmt.Errorf("%s failed with status %d (empty body)", operation, statusCode)
 		}
 	}
 	var expiresAt *time.Time

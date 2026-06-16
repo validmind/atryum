@@ -162,11 +162,11 @@ func runServer(args []string) error {
 			}
 		}
 	}
-	resolver := mcp.NewResolver(serverRepo, cfg).WithCredentials(credentialAdapter{repo: oauthRepo})
+	client := mcp.NewHTTPClient()
+	resolver := mcp.NewResolver(serverRepo, cfg).WithCredentials(store.NewRefreshingOAuthCredentialStore(oauthRepo, client))
 	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
 		return fmt.Errorf("bootstrap servers: %w", err)
 	}
-	client := mcp.NewHTTPClient()
 
 	manualApproval := policy.ManualApprovalProvider{}
 	policyRegistry := policy.NewRegistry(
@@ -622,19 +622,4 @@ func emptyDefault(value, fallback string) string {
 		return fallback
 	}
 	return value
-}
-
-// credentialAdapter bridges store.OAuthRepo into the narrow
-// mcp.CredentialStore interface the resolver consumes. Keeps the mcp
-// package independent of the concrete OAuthRepo/OAuthCredential types.
-type credentialAdapter struct {
-	repo *store.OAuthRepo
-}
-
-func (a credentialAdapter) GetCredential(ctx context.Context, serverName string) (mcp.AccessTokenView, error) {
-	cred, err := a.repo.GetCredential(ctx, serverName)
-	if err != nil {
-		return mcp.AccessTokenView{}, err
-	}
-	return mcp.AccessTokenView{AccessToken: cred.AccessToken}, nil
 }
