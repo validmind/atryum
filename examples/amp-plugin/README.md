@@ -78,12 +78,27 @@ To remove the global plugin later:
 
 ## Configure (env vars)
 
-| var               | default                | meaning                                                     |
-| ----------------- | ---------------------- | ----------------------------------------------------------- |
-| `ATRYUM_URL`      | `http://localhost:8080`| base URL of the atryum server                               |
-| `ATRYUM_SOURCE`   | `amp`                  | label shown as the "upstream" column in the atryum UI       |
-| `ATRYUM_POLL_MS`  | `2000`                 | how often the plugin polls atryum while awaiting approval   |
-| `ATRYUM_AGENT_ID` | _(empty)_              | self-declared agent identifier; matched against Agent Record `agent_ids` (see below) |
+| var | default | meaning |
+| --- | --- | --- |
+| `ATRYUM_URL` | `http://localhost:8080` | base URL of the atryum server |
+| `ATRYUM_SOURCE` | `amp` | label shown as the "upstream" column in the atryum UI |
+| `ATRYUM_POLL_MS` | `2000` | how often the plugin polls atryum while awaiting approval |
+| `ATRYUM_CLIENT_NAME` | `amp` | harness name shown in the Atryum Agent column |
+| `ATRYUM_CLIENT_VERSION` | `AMP_VERSION` if set | harness version shown in Atryum |
+| `ATRYUM_AGENT_ID` | _(empty)_ | self-declared agent identifier; matched against Agent Record `agent_ids` (see below) |
+| `ATRYUM_CHAT_MESSAGES_LIMIT` | `100` | recent Amp thread messages sent as LLM-as-judge context |
+| `ATRYUM_AMP_THREADS_DIR` | `~/.local/share/amp/threads` | Amp thread JSON directory |
+
+## LLM-as-judge chat context
+
+Before each tool call, the plugin builds a compact recent chat transcript and
+sends it to Atryum as `chat_context` and `chat_context_messages` (plus the
+deprecated `context` alias for compatibility). It first tries the live plugin
+context when available, then falls back to Amp's local thread JSON files under
+`ATRYUM_AMP_THREADS_DIR`.
+
+Set `ATRYUM_CHAT_MESSAGES_LIMIT` to change how many recent messages are sent.
+Set it to `0` to disable Amp chat context.
 
 ## Tagging invocations to an Agent Record
 

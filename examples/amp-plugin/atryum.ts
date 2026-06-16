@@ -17,12 +17,31 @@
 //                    invocations from this plugin will be tagged to that
 //                    Agent Record (so agent-scoped approval rules apply).
 //                    Default: empty (no agent tagging).
+//   ATRYUM_CHAT_MESSAGES_LIMIT
+//                    recent Amp thread messages sent as LLM-as-judge context,
+//                    default 100. Set to 0 to disable.
+//   ATRYUM_AMP_THREADS_DIR
+//                    override Amp thread JSON directory, default
+//                    ~/.local/share/amp/threads.
 
 import type { PluginAPI } from "@ampcode/plugin";
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 const API = process.env.ATRYUM_URL || "http://localhost:8080";
 const SOURCE = process.env.ATRYUM_SOURCE || "amp";
 const POLL_INTERVAL = Number(process.env.ATRYUM_POLL_MS || 2000);
+const CHAT_MESSAGES_LIMIT = Number(process.env.ATRYUM_CHAT_MESSAGES_LIMIT || 100);
+const MAX_MESSAGE_CHARS = 2000;
+const AMP_THREADS_DIR =
+  process.env.ATRYUM_AMP_THREADS_DIR ||
+  join(homedir(), ".local", "share", "amp", "threads");
 // Amp exposes the current thread ID as $THREAD_ID in the plugin process env.
 const THREAD_ID = process.env.THREAD_ID || "";
 // Harness identity for the Atryum invocations UI Agent column. Falls back
@@ -55,8 +74,153 @@ type InvocationResponse = {
   error?: unknown;
 };
 
+type ChatMessage = {
+  role: string;
+  text: string;
+};
+
 // toolUseID -> atryum invocation id, so tool.result can patch the right row.
 const invocationMap = new Map<string, string>();
+
+function normalizeRole(role: unknown): string | undefined {
+  if (role !== "user" && role !== "assistant" && role !== "system") {
+    return undefined;
+  }
+  return role;
+}
+
+function trimMessage(text: string): string {
+  const compact = text.replace(/\s+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (compact.length <= MAX_MESSAGE_CHARS) return compact;
+  return `${compact.slice(0, MAX_MESSAGE_CHARS)}...`;
+}
+
+function extractText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return "";
+
+  if (Array.isArray(value)) {
+    return value.map(extractText).filter(Boolean).join("\n");
+  }
+
+  const record = value as Record<string, unknown>;
+  if (typeof record.text === "string") return record.text;
+
+  const type = typeof record.type === "string" ? record.type : "";
+  if (type === "tool_use" || type === "tool-call") {
+    const name = typeof record.name === "string" ? record.name : "tool";
+    return `[tool call: ${name}]`;
+  }
+  if (type === "tool_result" || type === "tool-result") {
+    const run = record.run as Record<string, unknown> | undefined;
+    const status =
+      typeof record.status === "string"
+        ? record.status
+        : typeof run?.status === "string"
+          ? run.status
+          : "completed";
+    return `[tool result: ${status}]`;
+  }
+  if (record.content !== undefined) return extractText(record.content);
+  if (record.message !== undefined) return extractText(record.message);
+  return "";
+}
+
+function chatMessagesFromValue(value: unknown): ChatMessage[] {
+  if (!value || typeof value !== "object") return [];
+
+  const root = value as Record<string, unknown>;
+  const source = Array.isArray(root.messages) ? root.messages : value;
+  if (!Array.isArray(source)) return [];
+
+  const messages: ChatMessage[] = [];
+  for (const item of source) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const role = normalizeRole(record.role);
+    if (!role) continue;
+    const text = trimMessage(extractText(record.content ?? record.message));
+    if (text) messages.push({ role, text });
+  }
+  return messages;
+}
+
+function chatMessagesFromContext(ctx: unknown): ChatMessage[] {
+  const manager = (ctx as { sessionManager?: unknown } | undefined)
+    ?.sessionManager as
+    | {
+        getBranch?: () => unknown;
+        getThread?: () => unknown;
+        getMessages?: () => unknown;
+      }
+    | undefined;
+
+  for (const getter of [
+    manager?.getBranch,
+    manager?.getThread,
+    manager?.getMessages,
+  ]) {
+    if (typeof getter !== "function") continue;
+    try {
+      const messages = chatMessagesFromValue(getter.call(manager));
+      if (messages.length > 0) return messages;
+    } catch {
+      // Amp plugin internals are not stable; fall through to thread file.
+    }
+  }
+  return [];
+}
+
+function ampThreadFile(): string | undefined {
+  if (!existsSync(AMP_THREADS_DIR)) return undefined;
+
+  if (THREAD_ID) {
+    const file = join(AMP_THREADS_DIR, `${THREAD_ID}.json`);
+    if (existsSync(file)) return file;
+  }
+
+  try {
+    return readdirSync(AMP_THREADS_DIR)
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => {
+        const file = join(AMP_THREADS_DIR, name);
+        return { file, mtime: statSync(file).mtimeMs };
+      })
+      .sort((a, b) => b.mtime - a.mtime)[0]?.file;
+  } catch {
+    return undefined;
+  }
+}
+
+function chatMessagesFromThreadFile(): ChatMessage[] {
+  const file = ampThreadFile();
+  if (!file) return [];
+  try {
+    return chatMessagesFromValue(JSON.parse(readFileSync(file, "utf8")));
+  } catch {
+    return [];
+  }
+}
+
+function recentChatContext(ctx: unknown): { context: string; count: number } | undefined {
+  if (!Number.isFinite(CHAT_MESSAGES_LIMIT) || CHAT_MESSAGES_LIMIT <= 0) {
+    return undefined;
+  }
+
+  const contextMessages = chatMessagesFromContext(ctx);
+  const messages =
+    contextMessages.length > 0 ? contextMessages : chatMessagesFromThreadFile();
+  const recent = messages.slice(-CHAT_MESSAGES_LIMIT);
+  if (recent.length === 0) return undefined;
+
+  return {
+    count: recent.length,
+    context: [
+      `Recent Amp chat messages (oldest to newest, up to ${CHAT_MESSAGES_LIMIT}):`,
+      ...recent.map((msg) => `- ${msg.role}: ${msg.text}`),
+    ].join("\n"),
+  };
+}
 
 function describe(input: Record<string, unknown>): string {
   const parts = Object.entries(input)
@@ -71,7 +235,8 @@ function describe(input: Record<string, unknown>): string {
 async function submit(
   tool: string,
   toolUseID: string,
-  input: Record<string, unknown>
+  input: Record<string, unknown>,
+  chat: { context: string; count: number } | undefined
 ): Promise<InvocationResponse> {
   const res = await fetch(`${API}/api/v1/external/invocations`, {
     method: "POST",
@@ -83,6 +248,9 @@ async function submit(
       input,
       request_id: toolUseID,
       thread_id: THREAD_ID || undefined,
+      chat_context: chat?.context,
+      chat_context_messages: chat?.count,
+      context: chat?.context,
       client_name: CLIENT_NAME,
       client_version: CLIENT_VERSION || undefined,
       agent_id: AGENT_ID || undefined,
@@ -129,7 +297,13 @@ async function patchExecution(
 export default function (amp: PluginAPI) {
   amp.on("tool.call", async (event, ctx) => {
     try {
-      const submitted = await submit(event.tool, event.toolUseID, event.input);
+      const chat = recentChatContext(ctx);
+      const submitted = await submit(
+        event.tool,
+        event.toolUseID,
+        event.input,
+        chat
+      );
       invocationMap.set(event.toolUseID, submitted.invocation_id);
 
       // If rules already decided (auto_approve / auto_deny), skip polling.
