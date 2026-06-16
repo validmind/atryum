@@ -589,6 +589,40 @@ func TestToolUseSubmitHonorsRecentChatMessageLimit(t *testing.T) {
 	}
 }
 
+func TestWatcherHydratesRecentChatFromAuditOnStartup(t *testing.T) {
+	g := newFakeGateway()
+	a := newFakeAudit()
+	w := newTestWatcher(g, &fakeClient{}, a)
+	ctx := context.Background()
+
+	if err := w.ensureAudit(ctx); err != nil {
+		t.Fatalf("ensure audit: %v", err)
+	}
+	for i := 1; i <= 105; i++ {
+		w.svc.appendSessionEvent(ctx, w.auditID, w.reg.SessionID, chatEvent("msg_"+itoa(i), "user.message", "chat-"+itoa(i)+"."))
+	}
+
+	restarted := newTestWatcher(g, &fakeClient{}, a)
+	restarted.hydrateRecentChat(ctx)
+	restarted.handleEvent(ctx, toolUseEvent("tool_evt_1", evtAgentToolUse, "Bash", nil))
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.submitted) != 1 {
+		t.Fatalf("expected one submitted tool call, got %d", len(g.submitted))
+	}
+	context := g.submitted[0].ChatContext
+	if strings.Contains(context, "chat-5.") {
+		t.Fatalf("context contains trimmed message: %s", context)
+	}
+	if !strings.Contains(context, "chat-6.") || !strings.Contains(context, "chat-105.") {
+		t.Fatalf("context missing expected hydrated messages: %s", context)
+	}
+	if got := g.submitted[0].ChatContextMessages; got != 100 {
+		t.Fatalf("ChatContextMessages = %d, want 100", got)
+	}
+}
+
 func TestToolUsePersistsKindForRecovery(t *testing.T) {
 	g := newFakeGateway()
 	a := newFakeAudit()
