@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -66,6 +67,54 @@ func TestConnectionDebugLogsHTTPProbeWithoutSecrets(t *testing.T) {
 	for _, secret := range []string{"secret-token", "super-secret"} {
 		if strings.Contains(got, secret) {
 			t.Fatalf("expected logs to redact %q, got:\n%s", secret, got)
+		}
+	}
+}
+
+func TestRefreshOAuthTokenSendsRefreshGrant(t *testing.T) {
+	var form url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", r.Method)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/x-www-form-urlencoded" {
+			t.Fatalf("content-type = %q", got)
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm: %v", err)
+		}
+		form = r.PostForm
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"access-new","refresh_token":"refresh-new","token_type":"Bearer","scope":"openid","expires_in":3600}`))
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient()
+	client.httpClient = server.Client()
+	token, err := client.RefreshOAuthToken(context.Background(), Upstream{
+		Name:              "shortcut",
+		OAuthTokenURL:     server.URL,
+		OAuthClientID:     "client-id",
+		OAuthClientSecret: "client-secret",
+	}, "refresh-old")
+	if err != nil {
+		t.Fatalf("RefreshOAuthToken: %v", err)
+	}
+	if token.AccessToken != "access-new" || token.RefreshToken != "refresh-new" {
+		t.Fatalf("unexpected token: %#v", token)
+	}
+	if token.ExpiresAt == nil {
+		t.Fatal("expected expires_at to be set")
+	}
+	want := map[string]string{
+		"grant_type":    "refresh_token",
+		"refresh_token": "refresh-old",
+		"client_id":     "client-id",
+		"client_secret": "client-secret",
+	}
+	for key, value := range want {
+		if got := form.Get(key); got != value {
+			t.Fatalf("form[%s] = %q, want %q; form=%v", key, got, value, form)
 		}
 	}
 }

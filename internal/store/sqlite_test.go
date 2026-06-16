@@ -3,6 +3,9 @@ package store
 import (
 	"context"
 	"database/sql"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -615,6 +618,92 @@ func TestOAuthRepo_CredentialCRUD(t *testing.T) {
 	_, err = oauthRepo.GetCredential(ctx, "oauth-srv")
 	if err == nil {
 		t.Error("expected error after delete")
+	}
+}
+
+func TestRefreshingOAuthCredentialStoreRefreshesExpiredCredential(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+	if err := InitDB(db); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+
+	var form url.Values
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm: %v", err)
+		}
+		form = r.PostForm
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"access-new","token_type":"Bearer","scope":"openid","expires_in":3600}`))
+	}))
+	defer tokenServer.Close()
+
+	serverRepo := NewServerRepo(db)
+	oauthRepo := NewOAuthRepo(db)
+	ctx := context.Background()
+	upstream := mcp.Upstream{
+		Name:              "oauth-refresh-srv",
+		Mode:              mcp.UpstreamModeHTTP,
+		BaseURL:           "http://localhost",
+		OAuthTokenURL:     tokenServer.URL,
+		OAuthClientID:     "client-id",
+		OAuthClientSecret: "client-secret",
+		Timeout:           30 * time.Second,
+		Enabled:           true,
+		Status: mcp.ServerStatus{
+			AuthType:         mcp.AuthTypeHosted,
+			ConnectionStatus: mcp.ConnectionStatusUnknown,
+			AuthStatus:       mcp.AuthStatusUnknown,
+		},
+	}
+	if err := serverRepo.CreateServer(ctx, upstream); err != nil {
+		t.Fatalf("CreateServer: %v", err)
+	}
+	expired := time.Now().Add(-1 * time.Minute).UTC()
+	if err := oauthRepo.UpsertCredential(ctx, OAuthCredential{
+		ServerName:   upstream.Name,
+		AccessToken:  "access-old",
+		RefreshToken: "refresh-old",
+		TokenType:    "Bearer",
+		Scope:        "openid",
+		ExpiresAt:    &expired,
+	}); err != nil {
+		t.Fatalf("UpsertCredential: %v", err)
+	}
+
+	client := mcp.NewHTTPClient()
+	store := NewRefreshingOAuthCredentialStoreWithSkew(oauthRepo, client, 0)
+	view, err := store.GetCredential(ctx, upstream)
+	if err != nil {
+		t.Fatalf("GetCredential: %v", err)
+	}
+	if view.AccessToken != "access-new" {
+		t.Fatalf("access token = %q, want access-new", view.AccessToken)
+	}
+	for key, value := range map[string]string{
+		"grant_type":    "refresh_token",
+		"refresh_token": "refresh-old",
+		"client_id":     "client-id",
+		"client_secret": "client-secret",
+	} {
+		if got := form.Get(key); got != value {
+			t.Fatalf("form[%s] = %q, want %q; form=%v", key, got, value, form)
+		}
+	}
+
+	got, err := oauthRepo.GetCredential(ctx, upstream.Name)
+	if err != nil {
+		t.Fatalf("GetCredential after refresh: %v", err)
+	}
+	if got.AccessToken != "access-new" {
+		t.Fatalf("stored access token = %q, want access-new", got.AccessToken)
+	}
+	if got.RefreshToken != "refresh-old" {
+		t.Fatalf("stored refresh token = %q, want preserved refresh-old", got.RefreshToken)
+	}
+	if got.ExpiresAt == nil || !got.ExpiresAt.After(time.Now().UTC()) {
+		t.Fatalf("stored expires_at was not updated: %#v", got.ExpiresAt)
 	}
 }
 
