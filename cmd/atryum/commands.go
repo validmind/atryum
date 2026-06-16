@@ -32,6 +32,8 @@ Commands:
 	  atryum setup mcp
 	  atryum setup validmind
 	  atryum hooks install cursor
+	  atryum hooks install amp
+	  atryum hooks install pi
 	  atryum licenses`)
 }
 
@@ -439,7 +441,7 @@ func runHooks(args []string) error {
 		return errors.New("missing action and target. tell me exactly what you want, for example:\n" + hooksUsage())
 	}
 	if len(remaining) == 1 {
-		return errors.New("missing target (cursor|claude-code). tell me exactly what you want:\n" + hooksUsage())
+		return errors.New("missing target (cursor|claude-code|amp|pi). tell me exactly what you want:\n" + hooksUsage())
 	}
 	if len(remaining) > 2 {
 		return errors.New("too many arguments\n" + hooksUsage())
@@ -450,7 +452,7 @@ func runHooks(args []string) error {
 	if action != "install" && action != "uninstall" {
 		return fmt.Errorf("unknown hooks action %q\n%s", action, hooksUsage())
 	}
-	if target != "cursor" && target != "claude-code" {
+	if target != "cursor" && target != "claude-code" && target != "amp" && target != "pi" {
 		return fmt.Errorf("unknown hooks target %q\n%s", target, hooksUsage())
 	}
 
@@ -473,18 +475,22 @@ func runHooks(args []string) error {
 }
 
 func hooksUsage() string {
-	return strings.TrimSpace(`usage: atryum hooks [install|uninstall] [-y|--yes] [cursor|claude-code]
+	return strings.TrimSpace(`usage: atryum hooks [install|uninstall] [-y|--yes] [cursor|claude-code|amp|pi]
 
 Commands:
-  install    Install shared Atryum hook script and add hook commands.
-  uninstall  Remove only Atryum hook commands from target settings.
+  install    Install Atryum hook/plugin files and add hook commands when needed.
+  uninstall  Remove Atryum hook commands or plugin files from target settings.
 
 Targets:
   cursor       ~/.cursor/hooks.json
   claude-code  ~/.claude/settings.json
+  amp          ~/.config/amp/plugins/atryum.ts
+  pi           ~/.pi/agent/extensions/atryum/index.ts
 
 Examples:
   atryum hooks install cursor
+  atryum hooks install amp
+  atryum hooks install pi
   atryum hooks uninstall --yes claude-code
   atryum hooks --help`)
 }
@@ -509,6 +515,10 @@ func promptConfirm(reader *bufio.Reader, label string) (bool, error) {
 }
 
 func installHooks(target string) error {
+	if target == "amp" || target == "pi" {
+		return installAgentPlugin(target)
+	}
+
 	hookScript, err := resolveHookScript()
 	if err != nil {
 		return err
@@ -544,6 +554,10 @@ func installHooks(target string) error {
 }
 
 func uninstallHooks(target string) error {
+	if target == "amp" || target == "pi" {
+		return uninstallAgentPlugin(target)
+	}
+
 	settingsPath, err := hookSettingsPath(target)
 	if err != nil {
 		return err
@@ -580,6 +594,94 @@ func resolveHookScript() ([]byte, error) {
 	}
 
 	return nil, errors.New("could not locate examples/shared-agent-hook/atryum-hook.mjs")
+}
+
+func installAgentPlugin(target string) error {
+	plugin, err := resolveAgentPlugin(target)
+	if err != nil {
+		return err
+	}
+	path, err := agentPluginPath(target)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, plugin, 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("installed %s plugin in %s\n", target, path)
+	if target == "amp" {
+		fmt.Println("start Amp with PLUGINS=all so it loads plugins")
+	} else if target == "pi" {
+		fmt.Println("restart Pi or run /reload in an active Pi session")
+	}
+	return nil
+}
+
+func uninstallAgentPlugin(target string) error {
+	path, err := agentPluginPath(target)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			fmt.Printf("no %s plugin found at %s\n", target, path)
+			return nil
+		}
+		return err
+	}
+	fmt.Printf("uninstalled %s plugin from %s\n", target, path)
+	return nil
+}
+
+func resolveAgentPlugin(target string) ([]byte, error) {
+	srcPath, err := agentPluginSourcePath(target)
+	if err != nil {
+		return nil, err
+	}
+	wdPath := filepath.Join(srcPath...)
+	if raw, err := os.ReadFile(wdPath); err == nil {
+		return raw, nil
+	}
+
+	_, thisFile, _, ok := runtime.Caller(0)
+	if ok {
+		root := filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", ".."))
+		path := filepath.Join(append([]string{root}, srcPath...)...)
+		if raw, err := os.ReadFile(path); err == nil {
+			return raw, nil
+		}
+	}
+
+	return nil, fmt.Errorf("could not locate %s", filepath.Join(srcPath...))
+}
+
+func agentPluginSourcePath(target string) ([]string, error) {
+	switch target {
+	case "amp":
+		return []string{"examples", "amp-plugin", "atryum.ts"}, nil
+	case "pi":
+		return []string{"examples", "pi-extension", "index.ts"}, nil
+	default:
+		return nil, fmt.Errorf("unsupported plugin target %q", target)
+	}
+}
+
+func agentPluginPath(target string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	switch target {
+	case "amp":
+		return filepath.Join(home, ".config", "amp", "plugins", "atryum.ts"), nil
+	case "pi":
+		return filepath.Join(home, ".pi", "agent", "extensions", "atryum", "index.ts"), nil
+	default:
+		return "", fmt.Errorf("unsupported plugin target %q", target)
+	}
 }
 
 func hookSettingsPath(target string) (string, error) {

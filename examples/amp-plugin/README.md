@@ -43,8 +43,14 @@ export PLUGINS=all
 
 ### System-wide (recommended)
 
-Drop the plugin into `~/.config/amp/plugins/` and it will gate every amp
-session on the machine:
+Use the Atryum CLI to install the plugin into `~/.config/amp/plugins/`:
+
+```sh
+./atryum hooks install amp
+```
+
+Or copy it manually. Once installed there, it will gate every amp session on
+the machine:
 
 ```sh
 mkdir -p ~/.config/amp/plugins
@@ -63,6 +69,12 @@ cp examples/amp-plugin/atryum.ts .amp/plugins/atryum.ts
 Make sure atryum is running (default `http://localhost:8080`) and open the
 admin UI at <http://localhost:8080/ui/>. Pending tool calls will appear there
 with Approve / Deny buttons.
+
+To remove the global plugin later:
+
+```sh
+./atryum hooks uninstall amp
+```
 
 ## Configure (env vars)
 

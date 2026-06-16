@@ -44,6 +44,12 @@ invocations unless your Atryum rules auto-approve or auto-deny them.
 For all Pi sessions on the machine:
 
 ```sh
+./atryum hooks install pi
+```
+
+Or copy it manually:
+
+```sh
 mkdir -p ~/.pi/agent/extensions/atryum
 cp examples/pi-extension/index.ts ~/.pi/agent/extensions/atryum/index.ts
 ```
@@ -57,6 +63,12 @@ cp examples/pi-extension/index.ts .pi/extensions/atryum/index.ts
 
 Restart Pi after installing the extension. If Pi is already running, `/reload`
 will reload extensions in the auto-discovered extension directories.
+
+To remove the global extension later:
+
+```sh
+./atryum hooks uninstall pi
+```
 
 ## Configure
 
