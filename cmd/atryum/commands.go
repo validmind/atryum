@@ -23,6 +23,7 @@ Commands:
   run        Start the Atryum server.
 	  setup      First-time setup flows (demo, mcp, validmind).
   hooks      Install or uninstall agent hooks.
+  licenses   Print bundled third-party license notices.
   help       Show this help.
 
 	Examples:
@@ -30,7 +31,8 @@ Commands:
 	  atryum setup demo
 	  atryum setup mcp
 	  atryum setup validmind
-	  atryum hooks install cursor`)
+	  atryum hooks install cursor
+	  atryum licenses`)
 }
 
 func runUsage() string {
@@ -51,6 +53,14 @@ Examples:
 	  atryum run
 	  atryum run --config ./atryum.toml
 	  atryum run --init-servers`)
+}
+
+func runLicenses() error {
+	fmt.Print(thirdPartyNotices)
+	if !strings.HasSuffix(thirdPartyNotices, "\n") {
+		fmt.Println()
+	}
+	return nil
 }
 
 func runSetup(args []string) error {

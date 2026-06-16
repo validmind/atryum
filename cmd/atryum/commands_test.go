@@ -9,10 +9,16 @@ import (
 
 func TestGlobalUsageIncludesCommands(t *testing.T) {
 	usage := globalUsage()
-	for _, expected := range []string{"run", "setup", "hooks"} {
+	for _, expected := range []string{"run", "setup", "hooks", "licenses"} {
 		if !strings.Contains(usage, expected) {
 			t.Fatalf("usage missing %q: %s", expected, usage)
 		}
+	}
+}
+
+func TestRunLicensesReturnsNoError(t *testing.T) {
+	if err := runLicenses(); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
 	}
 }
 

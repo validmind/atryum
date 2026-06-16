@@ -3,6 +3,11 @@ set shell := ["bash", "-cu"]
 config := "./atryum.toml"
 release_dir := "releases"
 integration_image := "atryum-integrations"
+license_dir := "license-reports"
+go_licenses := "github.com/google/go-licenses/v2@v2.0.1"
+license_checker := "license-checker@25.0.1"
+allowed_go_licenses := "Apache-2.0,BSD-3-Clause,CC-BY-4.0,ISC,MIT,0BSD,Unlicense"
+allowed_npm_licenses := "Apache-2.0;BSD-3-Clause;CC-BY-4.0;ISC;MIT;0BSD;Unlicense"
 
 # List justfile targets
 default:
@@ -36,18 +41,52 @@ fmt:
 # Go fmt and test
 check: fmt test
 
+# Generate Go and UI third-party dependency license reports
+licenses: licenses-go licenses-ui
+	@echo "License reports written to {{license_dir}}/"
+
+# Generate Go dependency license inventory and enforce the approved license allowlist
+licenses-go:
+	#!/usr/bin/env bash
+	set -euo pipefail
+	mkdir -p "{{license_dir}}"
+	go run {{go_licenses}} csv --ignore atryum ./... > "{{license_dir}}/go-licenses.csv"
+	go run {{go_licenses}} check --ignore atryum --allowed_licenses "{{allowed_go_licenses}}" ./...
+
+# Generate UI dependency license inventories and summaries
+licenses-ui:
+	#!/usr/bin/env bash
+	set -euo pipefail
+	mkdir -p "{{license_dir}}"
+	(cd ui && npm install --ignore-scripts --no-audit --no-fund)
+	(cd ui && npx --yes {{license_checker}} --json --excludePrivatePackages --start . --out "../{{license_dir}}/ui-licenses.json")
+	(cd ui && npx --yes {{license_checker}} --summary --excludePrivatePackages --onlyAllow "{{allowed_npm_licenses}}" --start .) | tee "{{license_dir}}/ui-license-summary.txt"
+	(cd ui && npx --yes {{license_checker}} --production --json --excludePrivatePackages --start . --out "../{{license_dir}}/ui-production-licenses.json")
+	(cd ui && npx --yes {{license_checker}} --production --summary --excludePrivatePackages --onlyAllow "{{allowed_npm_licenses}}" --start .) | tee "{{license_dir}}/ui-production-license-summary.txt"
+
+# Generate third-party notice and license-file bundle for release artifacts
+third-party-notices:
+	GO_LICENSES="{{go_licenses}}" \
+	LICENSE_CHECKER="{{license_checker}}" \
+	ALLOWED_GO_LICENSES="{{allowed_go_licenses}}" \
+	ALLOWED_NPM_LICENSES="{{allowed_npm_licenses}}" \
+	GO_NOTICE_FILE="cmd/atryum/licenses_gen.go" \
+	  scripts/generate_third_party_notices.sh "{{license_dir}}/third-party"
+
 # Build local atryum binary with the currently embedded web assets
 build:
 	CGO_ENABLED=0 go build -o ./atryum ./cmd/atryum
 
 # Remove generated binaries, release artifacts, built UI assets, and integration test debris
 clean:
-	rm -rf ./atryum {{release_dir}} ui/dist internal/api/web \
+	rm -rf ./atryum {{release_dir}} {{license_dir}} ui/dist internal/api/web \
+	  cmd/atryum/licenses_gen.go \
 	  integrations/.venv integrations/.run integrations/.harness-config integrations/results \
 	  integrations/*.db integrations/*.db-journal integrations/*.log integrations/*.pid
 
 # Build local production-like atryum binary with the local UI embedded
-build-prod: build-ui build
+build-prod: third-party-notices build-ui
+	CGO_ENABLED=0 go build -tags release_notices -o ./atryum ./cmd/atryum
 
 # Build the FOSS React UI and embed it in internal/api/web/
 build-ui:
@@ -87,7 +126,7 @@ release tag:
         just release-push "{{tag}}"
 
 # Build release artifacts into releases/<tag>/
-release-build tag: build-ui
+release-build tag: third-party-notices build-ui
         #!/usr/bin/env bash
         set -euo pipefail
 
@@ -100,6 +139,12 @@ release-build tag: build-ui
         release_dir="$repo_dir/{{release_dir}}/{{tag}}"
         rm -rf "$release_dir"
         mkdir -p "$release_dir"
+        cp LICENSE NOTICE "$release_dir/"
+        cp "{{license_dir}}/third-party/THIRD_PARTY_NOTICES" "$release_dir/"
+        cp -R "{{license_dir}}/third-party/licenses" "$release_dir/third_party_licenses"
+        cp "{{license_dir}}/third-party/go-licenses.csv" "$release_dir/"
+        cp "{{license_dir}}/third-party/npm-production-licenses.json" "$release_dir/"
+        cp "{{license_dir}}/third-party/npm-production-license-files.tsv" "$release_dir/"
 
         build_target() {
           local goos="$1"
@@ -119,7 +164,7 @@ release-build tag: build-ui
             --exclude /ui/dist \
             "$repo_dir/" "$tmp_dir/atryum/"
 
-          (cd "$tmp_dir/atryum" && GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build -o "$release_dir/$out" ./cmd/atryum)
+          (cd "$tmp_dir/atryum" && GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build -tags release_notices -o "$release_dir/$out" ./cmd/atryum)
         }
 
         # Build targets
