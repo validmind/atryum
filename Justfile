@@ -3,6 +3,11 @@ set shell := ["bash", "-cu"]
 config := "./atryum.toml"
 release_dir := "releases"
 integration_image := "atryum-integrations"
+license_dir := "license-reports"
+go_licenses := "github.com/google/go-licenses/v2@v2.0.1"
+license_checker := "license-checker@25.0.1"
+allowed_go_licenses := "Apache-2.0,BSD-3-Clause,CC-BY-4.0,ISC,MIT,0BSD,Unlicense"
+allowed_npm_licenses := "Apache-2.0;BSD-3-Clause;CC-BY-4.0;ISC;MIT;0BSD;Unlicense"
 
 # List justfile targets
 default:
@@ -36,18 +41,41 @@ fmt:
 # Go fmt and test
 check: fmt test
 
+# Generate Go and UI third-party dependency license reports
+licenses: licenses-go licenses-ui
+	@echo "License reports written to {{license_dir}}/"
+
+# Generate Go dependency license inventory and enforce the approved license allowlist
+licenses-go:
+	#!/usr/bin/env bash
+	set -euo pipefail
+	mkdir -p "{{license_dir}}"
+	go run {{go_licenses}} csv --ignore atryum ./... > "{{license_dir}}/go-licenses.csv"
+	go run {{go_licenses}} check --ignore atryum --allowed_licenses "{{allowed_go_licenses}}" ./...
+
+# Generate UI dependency license inventories and summaries
+licenses-ui:
+	#!/usr/bin/env bash
+	set -euo pipefail
+	mkdir -p "{{license_dir}}"
+	(cd ui && npm install --ignore-scripts --no-audit --no-fund)
+	(cd ui && npx --yes {{license_checker}} --json --excludePrivatePackages --start . --out "../{{license_dir}}/ui-licenses.json")
+	(cd ui && npx --yes {{license_checker}} --summary --excludePrivatePackages --onlyAllow "{{allowed_npm_licenses}}" --start .) | tee "{{license_dir}}/ui-license-summary.txt"
+	(cd ui && npx --yes {{license_checker}} --production --json --excludePrivatePackages --start . --out "../{{license_dir}}/ui-production-licenses.json")
+	(cd ui && npx --yes {{license_checker}} --production --summary --excludePrivatePackages --onlyAllow "{{allowed_npm_licenses}}" --start .) | tee "{{license_dir}}/ui-production-license-summary.txt"
+
 # Build local atryum binary with the currently embedded web assets
 build:
 	CGO_ENABLED=0 go build -o ./atryum ./cmd/atryum
 
 # Remove generated binaries, release artifacts, built UI assets, and integration test debris
 clean:
-	rm -rf ./atryum {{release_dir}} ui/dist internal/api/web \
+	rm -rf ./atryum {{release_dir}} {{license_dir}} ui/dist internal/api/web \
 	  integrations/.venv integrations/.run integrations/.harness-config integrations/results \
 	  integrations/*.db integrations/*.db-journal integrations/*.log integrations/*.pid
 
 # Build local production-like atryum binary with the local UI embedded
-build-prod: build-ui build
+build-prod: licenses build-ui build
 
 # Build the FOSS React UI and embed it in internal/api/web/
 build-ui:
@@ -87,7 +115,7 @@ release tag:
         just release-push "{{tag}}"
 
 # Build release artifacts into releases/<tag>/
-release-build tag: build-ui
+release-build tag: licenses build-ui
         #!/usr/bin/env bash
         set -euo pipefail
 
