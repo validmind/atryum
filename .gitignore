@@ -21,8 +21,11 @@ docker-compose.override.yml
 
 # build
 atryum
+!cmd/atryum/
+!cmd/atryum/licenses_stub.go
 releases
 license-reports
+cmd/atryum/licenses_gen.go
 __pycache__/
 *.py[cod]
 

@@ -44,6 +44,8 @@ func main() {
 		err = runSetup(os.Args[2:])
 	case "hooks":
 		err = runHooks(os.Args[2:])
+	case "licenses":
+		err = runLicenses()
 	default:
 		err = fmt.Errorf("unknown command %q\n%s", os.Args[1], globalUsage())
 	}
