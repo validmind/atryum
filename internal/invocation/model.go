@@ -109,6 +109,8 @@ type ExternalSubmitRequest struct {
 	RequestID      *string        `json:"request_id,omitempty"`
 	IdempotencyKey *string        `json:"idempotency_key,omitempty"`
 	ThreadID       string         `json:"thread_id,omitempty"`
+	ChatContext    string         `json:"chat_context,omitempty"`
+	Context        string         `json:"context,omitempty"` // deprecated alias for ChatContext
 	// ClientName / ClientVersion identify the harness making the call.
 	// Optional — when omitted, Source is used for ClientName. Prefer these
 	// when the caller knows its own identity (e.g. amp plugin sending

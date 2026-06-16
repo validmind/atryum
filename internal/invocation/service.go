@@ -302,7 +302,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 					decision = policy.Decision{Disposition: policy.DispositionAuto, Reason: "matched approval rule (auto_approve)"}
 				case RuleActionAIEvaluation:
 					var conf *float64
-					decision, conf = s.runAIEvaluation(ctx, &r, upstream.Name, req.Tool, req.Input, agentID, agentRec)
+					decision, conf = s.runAIEvaluation(ctx, &r, upstream.Name, req.Tool, req.Input, agentID, agentRec, "")
 					if decision.Disposition != dispositionContinue {
 						aiConfidence = conf
 					}
@@ -458,11 +458,21 @@ func buildEvaluationContext(tool mcp.Tool) string {
 	return sb.String()
 }
 
+func combineEvaluationContext(parts ...string) string {
+	nonEmpty := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			nonEmpty = append(nonEmpty, trimmed)
+		}
+	}
+	return strings.Join(nonEmpty, "\n\n")
+}
+
 // runAIEvaluation dispatches to either the VM backend evaluator (when
 // rule.ModelConfigCUID is set) or the local LLM evaluator (when
 // rule.AtryumLLMConfigID is set). Falls back to DispositionHuman on any error
 // so no invocation is silently lost.
-func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serverName, toolName string, toolArgs map[string]any, agentID string, agentRec AgentRecord) (policy.Decision, *float64) {
+func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serverName, toolName string, toolArgs map[string]any, agentID string, agentRec AgentRecord, chatContext string) (policy.Decision, *float64) {
 	if s.evaluator == nil {
 		slog.Warn("ai_evaluation rule matched but no evaluator configured; falling back to human_approval",
 			"rule_id", rule.ID, "tool", toolName, "server", serverName)
@@ -473,6 +483,7 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 	if tool, ok := s.lookupToolInfo(ctx, serverName, toolName); ok {
 		evalContext = buildEvaluationContext(tool)
 	}
+	evalContext = combineEvaluationContext(evalContext, chatContext)
 
 	// --- Local LLM path ---
 	if rule.AtryumLLMConfigID != "" {
@@ -836,6 +847,10 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	if req.Tool == "" {
 		return InvocationResponse{}, fmt.Errorf("tool is required")
 	}
+	chatContext := req.ChatContext
+	if chatContext == "" {
+		chatContext = req.Context
+	}
 	source := req.Source
 	if source == "" {
 		source = "external"
@@ -913,7 +928,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 					matchedRuleID = &id
 				}
 				if r.Action == RuleActionAIEvaluation {
-					d, conf := s.runAIEvaluation(ctx, &r, source, req.Tool, req.Input, agentID, agentRec)
+					d, conf := s.runAIEvaluation(ctx, &r, source, req.Tool, req.Input, agentID, agentRec, chatContext)
 					if d.Disposition == dispositionContinue {
 						matchedRuleID = nil
 						slog.Info("ai_evaluation: LLM deferred to next rule; continuing rule iteration",

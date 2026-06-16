@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,10 +41,40 @@ type watcher struct {
 	mu            sync.Mutex
 	pending       map[string]pendingCall // keyed by tool-use event ID
 	toolUseCustom map[string]bool
+	recentChat    []chatMessage
 }
 
 func (w *watcher) log() *slog.Logger {
 	return slog.With("component", "managed_agents", "session_id", w.reg.SessionID)
+}
+
+func (w *watcher) recordChatMessage(msg chatMessage) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.recentChat = append(w.recentChat, msg)
+	limit := w.acct.cfg.RecentChatMessagesLimit
+	if len(w.recentChat) > limit {
+		w.recentChat = append([]chatMessage(nil), w.recentChat[len(w.recentChat)-limit:]...)
+	}
+}
+
+func (w *watcher) recentChatContext() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.recentChat) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Recent chat messages (oldest to newest, up to ")
+	b.WriteString(strconv.Itoa(w.acct.cfg.RecentChatMessagesLimit))
+	b.WriteString("):")
+	for _, msg := range w.recentChat {
+		b.WriteString("\n- ")
+		b.WriteString(msg.Role)
+		b.WriteString(": ")
+		b.WriteString(msg.Text)
+	}
+	return b.String()
 }
 
 // run is the per-session supervisor loop: catch up on missed history, then
@@ -125,6 +157,9 @@ func (w *watcher) handleEvent(ctx context.Context, evt RawEvent) {
 	} else {
 		w.svc.appendSessionEvent(ctx, w.auditID, w.reg.SessionID, evt)
 	}
+	if msg, ok := parseChatMessage(evt); ok {
+		w.recordChatMessage(msg)
+	}
 
 	switch {
 	case isToolUse(evt.Type):
@@ -175,6 +210,7 @@ func (w *watcher) handleToolUse(ctx context.Context, evt RawEvent) bool {
 		Tool:           tu.ToolName,
 		Description:    "Claude managed agent " + tu.Kind + " in session " + w.reg.SessionID,
 		Input:          tu.Input,
+		ChatContext:    w.recentChatContext(),
 		RequestID:      &eventID,
 		IdempotencyKey: &eventID, // dedupe across stream reconnects/replays
 		ThreadID:       w.reg.SessionID,

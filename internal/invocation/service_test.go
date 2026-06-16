@@ -362,9 +362,10 @@ func TestSubmitAIEvaluationUsesDefaultAgentRecordForUnmappedAgentID(t *testing.T
 
 	ctx := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "hunners-codex"})
 	resp, err := service.Submit(ctx, invocation.ExternalSubmitRequest{
-		Source: "github",
-		Tool:   "bash",
-		Input:  map[string]any{"cmd": "pwd"},
+		Source:      "github",
+		Tool:        "bash",
+		Input:       map[string]any{"cmd": "pwd"},
+		ChatContext: "Recent chat thread:\n- user: please inspect the repo first",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -384,6 +385,9 @@ func TestSubmitAIEvaluationUsesDefaultAgentRecordForUnmappedAgentID(t *testing.T
 	}
 	if req.ModelConfigCUID != "model-ai" {
 		t.Fatalf("ModelConfigCUID = %q", req.ModelConfigCUID)
+	}
+	if req.Context != "Recent chat thread:\n- user: please inspect the repo first" {
+		t.Fatalf("Context = %q", req.Context)
 	}
 }
 
