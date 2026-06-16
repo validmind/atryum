@@ -43,6 +43,9 @@ jobs:
       - name: Verify generated documentation is committed
         run: git diff --exit-code -- website/documentation website/partials/docs-nav.html
 
+      - name: Build PDF documentation
+        run: make docs-pdf
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
