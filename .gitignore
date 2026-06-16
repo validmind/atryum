@@ -24,6 +24,7 @@ atryum
 releases
 __pycache__/
 *.py[cod]
+website/atryum-docs.pdf
 
 # frontend build
 internal/api/web/assets/

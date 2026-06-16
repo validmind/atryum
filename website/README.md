@@ -12,7 +12,7 @@ website/
 ├── partials/               # Shared HTML fragments (docs-nav.html is generated)
 ├── assets/                 # CSS, JS, images
 ├── CNAME                   # Custom domain for GitHub Pages (manual)
-└── scripts/md_to_html.py   # Markdown → HTML converter
+└── scripts/                # Markdown → HTML/PDF converters
 ```
 
 ## Author documentation
@@ -108,6 +108,16 @@ This regenerates:
 - `partials/docs-nav.html` — Documentation dropdown links in the header
 
 Commit both the Markdown sources and the generated files. Pushes to `main` that touch `website/**`, `Makefile`, or `.github/workflows/pages.yml` run `make docs` in CI and fail if `documentation/` or `partials/docs-nav.html` are out of date.
+
+## Build documentation PDF
+
+From the repo root:
+
+```bash
+make docs-pdf
+```
+
+This generates `website/atryum-docs.pdf` from the same Markdown sources and navigation order. The PDF is ignored locally and built into the GitHub Pages artifact during deployment, so it is available at `/atryum-docs.pdf` without committing the binary file.
 
 ### Preview website locally
 
