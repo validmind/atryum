@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"log/slog"
 	"os"
 	"strings"
@@ -622,7 +623,7 @@ func debugf(format string, args ...any) {
 	if !debugEnabled() {
 		return
 	}
-	slog.Info("[mcp] " + fmt.Sprintf(format, args...))
+	log.Printf("[mcp] "+format, args...)
 }
 
 func debugEnabled() bool {
