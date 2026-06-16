@@ -163,6 +163,13 @@ type upstreamClient interface {
 	ForwardEnvelope(ctx context.Context, upstream mcp.Upstream, envelope mcp.Envelope, protocolVersion string) (mcp.ForwardResult, error)
 }
 
+const toolCatalogTTL = 5 * time.Minute
+
+type toolCatalogEntry struct {
+	tools     map[string]mcp.Tool
+	fetchedAt time.Time
+}
+
 type Service struct {
 	invocations      invocationRepo
 	events           eventRepo
@@ -177,6 +184,9 @@ type Service struct {
 	defaultTimeout   time.Duration
 	mu               sync.Mutex
 	pendingApprovals map[string]chan approvalDecision
+
+	toolCatalogMu sync.Mutex
+	toolCatalog   map[string]toolCatalogEntry
 }
 
 func NewService(
@@ -203,6 +213,7 @@ func NewService(
 		syncSettings:     syncSettings,
 		defaultTimeout:   defaultTimeout,
 		pendingApprovals: make(map[string]chan approvalDecision),
+		toolCatalog:      make(map[string]toolCatalogEntry),
 	}
 }
 
@@ -389,6 +400,64 @@ func (s *Service) resolveAgentRecord(ctx context.Context, agentID string) AgentR
 	return rec
 }
 
+func (s *Service) lookupToolInfo(ctx context.Context, serverName, toolName string) (mcp.Tool, bool) {
+	if serverName == "" || toolName == "" || s.resolver == nil || s.client == nil {
+		return mcp.Tool{}, false
+	}
+
+	s.toolCatalogMu.Lock()
+	entry, ok := s.toolCatalog[serverName]
+	fresh := ok && time.Since(entry.fetchedAt) < toolCatalogTTL
+	s.toolCatalogMu.Unlock()
+
+	if fresh {
+		tool, found := entry.tools[toolName]
+		return tool, found
+	}
+
+	upstream, err := s.resolver.ResolveContext(ctx, serverName)
+	if err != nil {
+		return mcp.Tool{}, false
+	}
+
+	listCtx, cancel := context.WithTimeout(ctx, s.defaultTimeout)
+	defer cancel()
+	tools, err := s.client.ListTools(listCtx, upstream)
+	if err != nil {
+		slog.Warn("ai_evaluation: tools/list failed; judge will run without tool description",
+			"server", serverName, "tool", toolName, "error", err)
+		return mcp.Tool{}, false
+	}
+
+	byName := make(map[string]mcp.Tool, len(tools))
+	for _, t := range tools {
+		byName[t.Name] = t
+	}
+	s.toolCatalogMu.Lock()
+	s.toolCatalog[serverName] = toolCatalogEntry{tools: byName, fetchedAt: time.Now()}
+	s.toolCatalogMu.Unlock()
+
+	tool, found := byName[toolName]
+	return tool, found
+}
+
+func buildEvaluationContext(tool mcp.Tool) string {
+	var sb strings.Builder
+	desc := strings.TrimSpace(tool.Description)
+	if desc != "" {
+		sb.WriteString("Tool description: ")
+		sb.WriteString(desc)
+	}
+	if len(tool.InputSchema) > 0 {
+		if sb.Len() > 0 {
+			sb.WriteString("\n\n")
+		}
+		sb.WriteString("Tool input schema (JSON Schema):\n")
+		sb.Write(tool.InputSchema)
+	}
+	return sb.String()
+}
+
 // runAIEvaluation dispatches to either the VM backend evaluator (when
 // rule.ModelConfigCUID is set) or the local LLM evaluator (when
 // rule.AtryumLLMConfigID is set). Falls back to DispositionHuman on any error
@@ -398,6 +467,11 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 		slog.Warn("ai_evaluation rule matched but no evaluator configured; falling back to human_approval",
 			"rule_id", rule.ID, "tool", toolName, "server", serverName)
 		return policy.Decision{Disposition: policy.DispositionHuman, Reason: "ai_evaluation: evaluator not configured (falling back to human_approval)"}, nil
+	}
+
+	evalContext := ""
+	if tool, ok := s.lookupToolInfo(ctx, serverName, toolName); ok {
+		evalContext = buildEvaluationContext(tool)
 	}
 
 	// --- Local LLM path ---
@@ -428,6 +502,7 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 			ServerName:        serverName,
 			ToolName:          toolName,
 			ToolArgs:          toolArgs,
+			Context:           evalContext,
 		})
 		if err != nil {
 			slog.Error("ai_evaluation (local): LLM call failed; falling back to human_approval",
@@ -494,6 +569,7 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 		ServerName:      serverName,
 		ToolName:        toolName,
 		ToolArgs:        toolArgs,
+		Context:         evalContext,
 	})
 	if err != nil {
 		slog.Error("ai_evaluation: LLM evaluation failed; falling back to human_approval",

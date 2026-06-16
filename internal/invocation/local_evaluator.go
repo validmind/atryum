@@ -100,10 +100,14 @@ func (e *LocalEvaluatorClient) EvaluateToolCall(ctx context.Context, req Evaluat
 
 func (e *LocalEvaluatorClient) buildUserMessage(req EvaluateRequest) string {
 	toolArgsJSON, _ := json.Marshal(req.ToolArgs)
-	return fmt.Sprintf(
+	msg := fmt.Sprintf(
 		"Tool call to evaluate:\n- Server: %s\n- Tool: %s\n- Arguments: %s",
 		req.ServerName, req.ToolName, string(toolArgsJSON),
 	)
+	if ctx := strings.TrimSpace(req.Context); ctx != "" {
+		msg += "\n\nAdditional context:\n" + ctx
+	}
+	return msg
 }
 
 // callOpenAI calls the OpenAI chat completions API (or any compatible endpoint).
