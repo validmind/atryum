@@ -68,18 +68,6 @@ will reload extensions in the auto-discovered extension directories.
 | `ATRYUM_CLIENT_NAME` | `pi` | harness name shown in the Atryum Agent column |
 | `ATRYUM_CLIENT_VERSION` | `PI_VERSION` if set | harness version shown in Atryum |
 | `ATRYUM_AGENT_ID` | _(empty)_ | self-declared agent identifier; matched against Agent Record `agent_ids` |
-| `ATRYUM_CHAT_MESSAGES_LIMIT` | `100` | recent Pi session chat messages sent as LLM-as-judge context |
-
-## LLM-as-judge chat context
-
-When Pi exposes a session file through `ctx.sessionManager.getSessionFile()`,
-the extension reads it before each tool call, extracts recent user/assistant
-messages on a best-effort basis, and sends them as `chat_context` to Atryum.
-LLM-as-judge rules then receive that chat context along with the tool call and
-tool metadata.
-
-Set `ATRYUM_CHAT_MESSAGES_LIMIT` to change how many recent messages are sent.
-Set it to `0` to disable Pi chat context.
 
 ## Tagging invocations to an Agent Record
 
