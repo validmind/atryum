@@ -217,7 +217,7 @@ func (e *LocalEvaluatorClient) callAnthropic(ctx context.Context, cfg LocalLLMCo
 }
 
 // parseVerdict extracts verdict/confidence/reason from the LLM JSON output.
-// Falls back to "next_rule" on any parse error so no invocation is silently lost.
+// Falls back to "denied" on any parse error so no invocation is silently approved.
 func (e *LocalEvaluatorClient) parseVerdict(raw string) (verdict string, confidence float64, reason string) {
 	raw = strings.TrimSpace(raw)
 	// Strip markdown fences if the model wrapped the JSON anyway.
