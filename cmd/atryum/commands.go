@@ -32,6 +32,7 @@ Commands:
 	  atryum setup mcp
 	  atryum setup validmind
 	  atryum hooks install cursor
+	  atryum hooks install claude-code
 	  atryum hooks install amp
 	  atryum hooks install pi
 	  atryum licenses`)
@@ -489,6 +490,7 @@ Targets:
 
 Examples:
   atryum hooks install cursor
+  atryum hooks install claude-code
   atryum hooks install amp
   atryum hooks install pi
   atryum hooks uninstall --yes claude-code
