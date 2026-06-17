@@ -4,7 +4,12 @@ Connect Anthropic-hosted Claude Managed Agents to Atryum to record hosted tool i
 
 Unlike local coding agents that send each tool call to Atryum before execution, Claude Managed Agents run on Anthropic's hosted infrastructure.
 
-Under Anthropic's model, an *agent* is a reusable Claude configuration (tools, MCP servers, skills, and system prompt); an *environment* is the hosted sandbox where sessions run; a *session* is one running task; and *events* are the session log and stream that Atryum watches.
+Under Anthropic's model, a(n):
+
+- *agent* is a reusable Claude configuration, such as tools, Model Context Protocol (MCP) servers, skills, and system prompts
+- *environment* is the hosted sandbox where sessions run
+- *session* is one running task
+- *events* are the session log and stream that Atryum watches
 
 Atryum connects outbound to Anthropic and uses those events to record, evaluate, and gate tool calls — including built-in agent tools and MCP tools declared on the Claude agent:
 
@@ -46,8 +51,15 @@ Before connecting Atryum to Claude Managed Agents, make sure you have:
     ```
 
     - **name** — The local Atryum account label. Use a unique value when configuring multiple Anthropic accounts.
-    - **workspace** — A display and metadata label for the Anthropic workspace. It is not sent to Anthropic as a selector; use an API key created in the workspace whose agents you want to list.
+    - **workspace** — A display and metadata label for the Anthropic workspace.
+    :::
+    Atryum uses `workspace` in the UI and when writing ownership metadata on linked Claude agents. It is not sent to Anthropic as a selector — use an `api_key` created in the workspace whose agents you want to list.
+    :::
     - **api_key** — An Anthropic API key created in that workspace.
+    :::
+    When no `[[managed_agents]]` entry has an API key, Atryum disables the bridge and the Claude Managed Agents controls are hidden or show a not-configured message.
+    :::
+
 
 3. Restart Atryum so it loads the updated Claude Managed Agents credentials:
 
@@ -63,9 +75,6 @@ Before connecting Atryum to Claude Managed Agents, make sure you have:
     b. Open an agent record by clicking on it.
     c. Confirm that the **Claude Managed Agents** section is displayed.
 
-:::
-When no `[[managed_agents]]` entry has an API key, Atryum disables the bridge and the Claude Managed Agents controls are hidden or show a not-configured message.
-:::
 
 ## Link Claude Managed Agents
 
@@ -90,13 +99,13 @@ When no `[[managed_agents]]` entry has an API key, Atryum disables the bridge an
 
 Create a rule in Atryum to evaluate matching Claude Managed Agents tool invocations:
 
-1. In Atryum, click **Rules** in the left sidebar.
+1. Within Atryum, click **Rules** in the left sidebar.
 
 2. Click **New Rule**.
 
-3. Under **Action**, select the action you want — for example `AI Evaluation`, `Allow`, `Deny`, or `Escalate`.
+3. Under **Action**, select your desired action. For example: `AI Evaluation`
 
-4. (For AI Evaluation) Under **Evaluation Model**, select the model configuration to use for the evaluation.
+    (For AI Evaluation Actions) Under **Evaluation Model**, select the model configuration to use for the evaluation.
 
 5. Under **Agents**, select the Atryum agent records linked to Claude Managed Agents you want this rule to apply to. Leave this empty to match all agents.
 
@@ -114,32 +123,41 @@ Create a rule in Atryum to evaluate matching Claude Managed Agents tool invocati
 
 9. Make sure that **Enabled** is checked, then click **Create Rule**.
 
+:::
 - When a Claude session emits a tool-use event, Atryum records it as an invocation and evaluates it against your rules.
 - When the session pauses with `requires_action`, Atryum sends Claude an allow or deny response.
 - Atryum records the later tool result on the invocation audit log.
 - Rule matching is exact unless you use `*`. Empty pattern lists match everything. Rule order still applies: the first matching final rule wins.
+:::
 
 ## Manage watched sessions
 
-Atryum discovers sessions for linked Claude Managed Agents and starts watchers automatically.
+Atryum discovers sessions for linked Claude Managed Agents and starts *watchers* automatically. A watcher is Atryum's per-session connection to a running Claude Managed Agent session. For each watched session, Atryum:
+
+- Streams session events from Anthropic and records tool calls as invocations.
+- Evaluates pending tool calls against your rules when the session pauses for approval.
+- Sends allow or deny responses back to Anthropic before the tool runs.
+- Persists its place in the event log so it can catch up after a restart or reconnect.
+
+Each row in the watched sessions table is one active watcher — one Claude session Atryum is listening to.
 
 To review or clear watchers:
 
-1. In Atryum, click **Settings** in the left sidebar.
+1. Within Atryum, click **Settings** in the left sidebar.
 
-2. Find **Claude Managed Agents**.
+2. Review the watched sessions table under **Claude Managed Agents**.
 
-3. Review the watched sessions table.
+3. Click **Delete** to remove one stale watcher, or click **Clear All** to remove every watcher.
 
-4. Click **Delete** to remove one stale watcher, or click **Clear all** to remove every watcher.
-
+:::
 Clearing watchers does not remove Claude agent links. Watchers for linked Claude agents can come back when the discovery loop finds active sessions again.
+:::
 
 ## Troubleshooting
 
-### The Claude agent list shows the wrong workspace
+### The Claude Managed Agents list shows the wrong workspace
 
-Create or use an Anthropic API key in the workspace you want Atryum to list. The `workspace` value in `atryum.toml` is not sent to Anthropic as a selector.
+Create or use an Anthropic API key in the workspace you want Atryum to list. Changing `workspace` in `atryum.toml` will not fix a wrong agent list.
 
 ### A tool call was recorded but not blocked
 
@@ -151,4 +169,4 @@ Use the MCP server name as the rule's server pattern. For example, a Slack MCP t
 
 ### Old watchers keep logging errors
 
-Open **Settings** → **Claude Managed Agents** and click **Clear All**. Linked agents can rediscover active sessions afterward.
+Within Atryum, open **Settings** → **Claude Managed Agents** and click **Clear All**. Linked agents can rediscover active sessions afterward.
