@@ -30,6 +30,7 @@
           <li class="docs-toc-h3"><a href="#with-coding-agents">With coding agents</a></li>
           <li class="docs-toc-h3"><a href="#with-mcp-servers">With MCP servers</a></li>
           <li class="docs-toc-h3"><a href="#with-local-llm-providers">With local LLM providers</a></li>
+          <li class="docs-toc-h3"><a href="#with-claude-managed-agents">With Claude Managed Agents</a></li>
           </ul>
           </nav>
         </div>
@@ -107,6 +108,14 @@
         <p>Local LLMs are useful for bring-your-own-key setups, on-prem or air-gapped deployments, and teams that want to register multiple models and pick the right one per rule or feature.</p>
 
         <aside class="docs-callout"><p>To learn more about configuring local LLM providers in Atryum, refer to <strong><a href="1_integrations/4_configure-llm-providers.html">Configure LLM providers</a></strong>.</p></aside>
+
+        <h3 id="with-claude-managed-agents">With Claude Managed Agents</h3>
+
+        <p>Connect Anthropic-hosted Claude Managed Agents to Atryum so Atryum can review hosted tool calls before Claude continues. Atryum watches linked Claude session events, records tool-use events as invocations, evaluates them against your rules, and responds when Anthropic pauses the session for approval.</p>
+
+        <p>Unlike coding agents that route every tool call through Atryum's MCP proxy, this integration connects outbound to Anthropic. Use it to gate built-in Claude agent tools and MCP tools declared on a Claude Managed Agent.</p>
+
+        <aside class="docs-callout"><p>To learn more about connecting Claude Managed Agents with Atryum, refer to <strong><a href="1_integrations/5_connect-claude-managed-agents.html">Connect Claude Managed Agents</a></strong>.</p></aside>
           </article>
         </div>
       </div>
