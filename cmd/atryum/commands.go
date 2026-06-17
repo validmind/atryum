@@ -33,6 +33,7 @@ Commands:
 	  atryum setup validmind
 	  atryum hooks install cursor
 	  atryum hooks install claude-code
+	  atryum hooks install codex
 	  atryum hooks install amp
 	  atryum hooks install pi
 	  atryum licenses`)
@@ -442,7 +443,7 @@ func runHooks(args []string) error {
 		return errors.New("missing action and target. tell me exactly what you want, for example:\n" + hooksUsage())
 	}
 	if len(remaining) == 1 {
-		return errors.New("missing target (cursor|claude-code|amp|pi). tell me exactly what you want:\n" + hooksUsage())
+		return errors.New("missing target (cursor|claude-code|codex|amp|pi). tell me exactly what you want:\n" + hooksUsage())
 	}
 	if len(remaining) > 2 {
 		return errors.New("too many arguments\n" + hooksUsage())
@@ -453,7 +454,7 @@ func runHooks(args []string) error {
 	if action != "install" && action != "uninstall" {
 		return fmt.Errorf("unknown hooks action %q\n%s", action, hooksUsage())
 	}
-	if target != "cursor" && target != "claude-code" && target != "amp" && target != "pi" {
+	if target != "cursor" && target != "claude-code" && target != "codex" && target != "amp" && target != "pi" {
 		return fmt.Errorf("unknown hooks target %q\n%s", target, hooksUsage())
 	}
 
@@ -476,7 +477,7 @@ func runHooks(args []string) error {
 }
 
 func hooksUsage() string {
-	return strings.TrimSpace(`usage: atryum hooks [install|uninstall] [-y|--yes] [cursor|claude-code|amp|pi]
+	return strings.TrimSpace(`usage: atryum hooks [install|uninstall] [-y|--yes] [cursor|claude-code|codex|amp|pi]
 
 Commands:
   install    Install Atryum hook/plugin files and add hook commands when needed.
@@ -485,12 +486,14 @@ Commands:
 Targets:
   cursor       ~/.cursor/hooks.json
   claude-code  ~/.claude/settings.json
+  codex        ~/.codex/hooks.json
   amp          ~/.config/amp/plugins/atryum.ts
   pi           ~/.pi/agent/extensions/atryum/index.ts
 
 Examples:
   atryum hooks install cursor
   atryum hooks install claude-code
+  atryum hooks install codex
   atryum hooks install amp
   atryum hooks install pi
   atryum hooks uninstall --yes claude-code
@@ -697,6 +700,9 @@ func hookSettingsPath(target string) (string, error) {
 	if target == "claude-code" {
 		return filepath.Join(home, ".claude", "settings.json"), nil
 	}
+	if target == "codex" {
+		return filepath.Join(home, ".codex", "hooks.json"), nil
+	}
 	return "", fmt.Errorf("unsupported hook target %q", target)
 }
 
@@ -748,10 +754,16 @@ func applyInstallHookConfig(settings map[string]any, target string) {
 		return
 	}
 
+	host := "claude"
+	source := "claude-code"
+	if target == "codex" {
+		host = "codex"
+		source = "codex"
+	}
 	pre := ensureSlice(hooks, "PreToolUse")
 	post := ensureSlice(hooks, "PostToolUse")
-	pre = appendUniqueClaudeEntry(pre, "ATRYUM_HOOK_HOST=claude ATRYUM_HOOK_EVENT=PreToolUse ATRYUM_SOURCE=claude-code node ~/.atryum/hooks/atryum-hook.mjs")
-	post = appendUniqueClaudeEntry(post, "ATRYUM_HOOK_HOST=claude ATRYUM_HOOK_EVENT=PostToolUse ATRYUM_SOURCE=claude-code node ~/.atryum/hooks/atryum-hook.mjs")
+	pre = appendUniqueNestedHookEntry(pre, fmt.Sprintf("ATRYUM_HOOK_HOST=%s ATRYUM_HOOK_EVENT=PreToolUse ATRYUM_SOURCE=%s node ~/.atryum/hooks/atryum-hook.mjs", host, source))
+	post = appendUniqueNestedHookEntry(post, fmt.Sprintf("ATRYUM_HOOK_HOST=%s ATRYUM_HOOK_EVENT=PostToolUse ATRYUM_SOURCE=%s node ~/.atryum/hooks/atryum-hook.mjs", host, source))
 	hooks["PreToolUse"] = pre
 	hooks["PostToolUse"] = post
 }
@@ -763,8 +775,8 @@ func applyUninstallHookConfig(settings map[string]any, target string) {
 		hooks["postToolUse"] = removeAtryumCommands(ensureSlice(hooks, "postToolUse"))
 		return
 	}
-	hooks["PreToolUse"] = removeAtryumClaudeCommands(ensureSlice(hooks, "PreToolUse"))
-	hooks["PostToolUse"] = removeAtryumClaudeCommands(ensureSlice(hooks, "PostToolUse"))
+	hooks["PreToolUse"] = removeAtryumNestedHookCommands(ensureSlice(hooks, "PreToolUse"))
+	hooks["PostToolUse"] = removeAtryumNestedHookCommands(ensureSlice(hooks, "PostToolUse"))
 }
 
 func ensureMap(parent map[string]any, key string) map[string]any {
@@ -801,7 +813,7 @@ func appendUniqueCommand(slice []any, entry map[string]any) []any {
 	return append(slice, entry)
 }
 
-func appendUniqueClaudeEntry(slice []any, command string) []any {
+func appendUniqueNestedHookEntry(slice []any, command string) []any {
 	for _, item := range slice {
 		entry, ok := item.(map[string]any)
 		if !ok {
@@ -847,7 +859,7 @@ func removeAtryumCommands(slice []any) []any {
 	return kept
 }
 
-func removeAtryumClaudeCommands(slice []any) []any {
+func removeAtryumNestedHookCommands(slice []any) []any {
 	kept := make([]any, 0, len(slice))
 	for _, item := range slice {
 		entry, ok := item.(map[string]any)

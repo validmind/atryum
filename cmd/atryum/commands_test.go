@@ -76,6 +76,9 @@ func TestHooksUsageIncludesPluginTargets(t *testing.T) {
 		"claude-code",
 		"~/.claude/settings.json",
 		"atryum hooks install claude-code",
+		"codex",
+		"~/.codex/hooks.json",
+		"atryum hooks install codex",
 		"pi",
 		"~/.pi/agent/extensions/atryum/index.ts",
 		"atryum hooks install pi",
@@ -254,6 +257,47 @@ func TestApplyInstallUninstallHookConfigClaudeCode(t *testing.T) {
 	cmd := innerHooks[0].(map[string]any)["command"].(string)
 	if cmd != "echo keep-claude" {
 		t.Fatalf("unexpected remaining command: %s", cmd)
+	}
+}
+
+func TestApplyInstallUninstallHookConfigCodex(t *testing.T) {
+	settings := map[string]any{
+		"hooks": map[string]any{
+			"PreToolUse": []any{map[string]any{
+				"matcher": "Bash",
+				"hooks": []any{map[string]any{
+					"type":    "command",
+					"command": "echo keep-codex",
+				}},
+			}},
+			"PostToolUse": []any{},
+		},
+	}
+
+	applyInstallHookConfig(settings, "codex")
+	hooks := settings["hooks"].(map[string]any)
+	pre := hooks["PreToolUse"].([]any)
+	post := hooks["PostToolUse"].([]any)
+	if len(pre) != 2 {
+		t.Fatalf("expected 2 pre entries after install, got %d", len(pre))
+	}
+	if len(post) != 1 {
+		t.Fatalf("expected 1 post entry after install, got %d", len(post))
+	}
+
+	installCmd := pre[1].(map[string]any)["hooks"].([]any)[0].(map[string]any)["command"].(string)
+	if !strings.Contains(installCmd, "ATRYUM_HOOK_HOST=codex") || !strings.Contains(installCmd, "ATRYUM_SOURCE=codex") {
+		t.Fatalf("unexpected codex command: %s", installCmd)
+	}
+
+	applyUninstallHookConfig(settings, "codex")
+	pre = hooks["PreToolUse"].([]any)
+	post = hooks["PostToolUse"].([]any)
+	if len(pre) != 1 {
+		t.Fatalf("expected non-Atryum pre entry to remain, got %d", len(pre))
+	}
+	if len(post) != 0 {
+		t.Fatalf("expected Atryum post entry removed, got %d", len(post))
 	}
 }
 

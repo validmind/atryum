@@ -4,6 +4,7 @@
 // Supported host modes:
 //   ATRYUM_HOOK_HOST=claude  Claude Code settings hooks
 //   ATRYUM_HOOK_HOST=cursor  Cursor hooks
+//   ATRYUM_HOOK_HOST=codex   Codex hooks
 //
 // The hook submits PreToolUse events to Atryum's external invocation API, blocks
 // until the invocation is approved or denied, and reports successful PostToolUse
@@ -14,7 +15,7 @@
 // LLM-as-judge context.
 
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -25,6 +26,8 @@ const HOST = process.env.CURSOR_INVOKED_AS ? "cursor" : RAW_HOST;
 const SOURCE =
   HOST === "cursor"
     ? "cursor"
+    : HOST === "codex"
+      ? "codex"
     : HOST === "claude"
       ? "claude-code"
       : process.env.ATRYUM_SOURCE || process.env.ATRYUM_HOOK_HOST || "agent";
@@ -152,6 +155,9 @@ function extractText(value) {
 function messageFromRecord(record) {
   if (!record || typeof record !== "object") return undefined;
 
+  const codex = messageFromCodexRecord(record);
+  if (codex) return codex;
+
   const nested =
     record.message && typeof record.message === "object" ? record.message : undefined;
   const role = normalizeRole(
@@ -168,6 +174,31 @@ function messageFromRecord(record) {
   );
   if (!text) return undefined;
   return { role, text };
+}
+
+function messageFromCodexRecord(record) {
+  if (record.type === "response_item" && record.payload?.type === "message") {
+    const role = normalizeRole(record.payload.role);
+    const text = trimMessage(extractText(record.payload.content));
+    return role && text ? { role, text } : undefined;
+  }
+
+  if (record.type === "event_msg" && record.payload?.type === "user_message") {
+    const text = trimMessage(record.payload.message);
+    return text ? { role: "user", text } : undefined;
+  }
+
+  if (record.type === "event_msg" && record.payload?.type === "agent_message") {
+    const text = trimMessage(record.payload.message);
+    return text ? { role: "assistant", text } : undefined;
+  }
+
+  if (record.type === "event_msg" && record.payload?.type === "task_complete") {
+    const text = trimMessage(record.payload.last_agent_message);
+    return text ? { role: "assistant", text } : undefined;
+  }
+
+  return undefined;
 }
 
 function parseChatMessages(raw) {
@@ -246,6 +277,7 @@ function chatHistoryPath(event) {
     process.env.ATRYUM_CHAT_HISTORY_PATH ||
     process.env.ATRYUM_CLAUDE_TRANSCRIPT_PATH ||
     process.env.ATRYUM_CURSOR_TRANSCRIPT_PATH ||
+    process.env.ATRYUM_CODEX_TRANSCRIPT_PATH ||
     event.transcript_path ||
     event.transcriptPath ||
     event.conversation_path ||
@@ -254,10 +286,107 @@ function chatHistoryPath(event) {
   );
 }
 
+function sessionId(event) {
+  return (
+    event.session_id ||
+    event.sessionId ||
+    event.thread_id ||
+    event.threadId ||
+    event.conversation_id ||
+    event.conversationId ||
+    ""
+  );
+}
+
+function codexHome() {
+  return process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+}
+
+async function findCodexSessionPath(id) {
+  if (!id) return "";
+  const root = path.join(codexHome(), "sessions");
+  const stack = [root];
+
+  while (stack.length > 0) {
+    const dir = stack.pop();
+    let entries = [];
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(fullPath);
+      } else if (entry.isFile() && entry.name.endsWith(".jsonl") && entry.name.includes(id)) {
+        return fullPath;
+      }
+    }
+  }
+
+  return "";
+}
+
+async function codexSessionMessages(event) {
+  const id = sessionId(event) || (await latestCodexHistorySessionId());
+  const sessionPath = await findCodexSessionPath(id);
+  if (sessionPath) {
+    try {
+      return parseChatMessages(await readFile(sessionPath, "utf8"));
+    } catch {
+      return [];
+    }
+  }
+
+  if (!id) return [];
+  try {
+    const raw = await readFile(path.join(codexHome(), "history.jsonl"), "utf8");
+    return raw
+      .split(/\r?\n/)
+      .map((line) => {
+        if (!line.trim()) return undefined;
+        try {
+          const record = JSON.parse(line);
+          if (record.session_id !== id || !record.text) return undefined;
+          return { role: "user", text: trimMessage(record.text) };
+        } catch {
+          return undefined;
+        }
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function latestCodexHistorySessionId() {
+  try {
+    const raw = await readFile(path.join(codexHome(), "history.jsonl"), "utf8");
+    const lines = raw.trim().split(/\r?\n/);
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      try {
+        const record = JSON.parse(lines[i]);
+        if (record.session_id) return record.session_id;
+      } catch {
+        // Keep scanning older history lines.
+      }
+    }
+  } catch {
+    return "";
+  }
+  return "";
+}
+
 async function chatContext(event) {
   if (CHAT_MESSAGES_LIMIT <= 0) return undefined;
 
   let messages = chatMessagesFromEvent(event);
+
+  if (messages.length === 0 && HOST === "codex") {
+    messages = await codexSessionMessages(event);
+  }
 
   if (messages.length === 0) {
     const file = chatHistoryPath(event);
@@ -276,7 +405,13 @@ async function chatContext(event) {
   if (recent.length === 0) return undefined;
 
   const hostLabel =
-    HOST === "claude" ? "Claude Code" : HOST === "cursor" ? "Cursor" : SOURCE;
+    HOST === "claude"
+      ? "Claude Code"
+      : HOST === "cursor"
+        ? "Cursor"
+        : HOST === "codex"
+          ? "Codex"
+          : SOURCE;
 
   return {
     count: recent.length,
@@ -328,7 +463,7 @@ async function submit(event) {
       description: describe(input),
       input,
       request_id: id,
-      thread_id: event.session_id || event.sessionId || undefined,
+      thread_id: sessionId(event) || undefined,
       chat_context: chat?.context,
       chat_context_messages: chat?.count,
       context: chat?.context,
