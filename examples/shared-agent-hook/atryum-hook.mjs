@@ -8,6 +8,9 @@
 // The hook submits PreToolUse events to Atryum's external invocation API, blocks
 // until the invocation is approved or denied, and reports successful PostToolUse
 // results back to the same invocation.
+//
+// Claude Code includes a transcript_path in hook input. When available, this
+// hook sends recent chat messages as LLM-as-judge context.
 
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -21,6 +24,8 @@ const HOST = (process.env.ATRYUM_HOOK_HOST || "claude").toLowerCase();
 const STATE_DIR =
   process.env.ATRYUM_STATE_DIR ||
   path.join(os.homedir(), ".atryum", "agent-hook-state");
+const CHAT_MESSAGES_LIMIT = Number(process.env.ATRYUM_CHAT_MESSAGES_LIMIT || 100);
+const MAX_MESSAGE_CHARS = Number(process.env.ATRYUM_MAX_MESSAGE_CHARS || 2000);
 // Self-declared agent identity sent to Atryum as the invocation `agent_id`.
 // When this string is listed in an Agent Record's `agent_ids` array in the
 // Atryum UI, invocations from this hook get tagged to that Agent Record
@@ -93,6 +98,143 @@ function describe(input) {
   return parts.join(" | ") || "(no string params)";
 }
 
+function normalizeRole(value) {
+  const role = String(value || "").toLowerCase();
+  if (role === "human") return "user";
+  if (role === "ai") return "assistant";
+  if (role === "user" || role === "assistant" || role === "system") return role;
+  return "";
+}
+
+function trimMessage(text) {
+  const compact = String(text || "")
+    .replace(/\s+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (compact.length <= MAX_MESSAGE_CHARS) return compact;
+  return `${compact.slice(0, MAX_MESSAGE_CHARS)}...`;
+}
+
+function extractText(value) {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return "";
+
+  if (Array.isArray(value)) {
+    return value.map(extractText).filter(Boolean).join("\n");
+  }
+
+  const record = value;
+  if (typeof record.text === "string") return record.text;
+
+  const type = typeof record.type === "string" ? record.type : "";
+  if (type === "tool_use" || type === "tool-call") {
+    const name = typeof record.name === "string" ? record.name : "tool";
+    return `[tool call: ${name}]`;
+  }
+  if (type === "tool_result" || type === "tool-result") {
+    const status = typeof record.status === "string" ? record.status : "completed";
+    return `[tool result: ${status}]`;
+  }
+  if (record.content !== undefined) return extractText(record.content);
+  if (record.message !== undefined) return extractText(record.message);
+  return "";
+}
+
+function messageFromRecord(record) {
+  if (!record || typeof record !== "object") return undefined;
+
+  const nested =
+    record.message && typeof record.message === "object" ? record.message : undefined;
+  const role = normalizeRole(
+    nested?.role ||
+      record.role ||
+      record.type ||
+      record.sender ||
+      record.author
+  );
+  if (!role) return undefined;
+
+  const text = trimMessage(
+    extractText(nested?.content ?? record.content ?? nested ?? record)
+  );
+  if (!text) return undefined;
+  return { role, text };
+}
+
+function parseChatMessages(raw) {
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+
+  if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      const source = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed.messages)
+          ? parsed.messages
+          : Array.isArray(parsed.entries)
+            ? parsed.entries
+            : [];
+      if (source.length > 0) {
+        return source.map(messageFromRecord).filter(Boolean);
+      }
+      const message = messageFromRecord(parsed);
+      return message ? [message] : [];
+    } catch {
+      // Fall through to JSONL parsing below.
+    }
+  }
+
+  const messages = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmedLine = line.trim();
+    if (!trimmedLine) continue;
+    try {
+      const message = messageFromRecord(JSON.parse(trimmedLine));
+      if (message) messages.push(message);
+    } catch {
+      // Ignore malformed or non-message transcript lines.
+    }
+  }
+  return messages;
+}
+
+function transcriptPath(event) {
+  return (
+    process.env.ATRYUM_CLAUDE_TRANSCRIPT_PATH ||
+    event.transcript_path ||
+    event.transcriptPath ||
+    event.conversation_path ||
+    event.conversationPath ||
+    ""
+  );
+}
+
+async function chatContext(event) {
+  if (HOST !== "claude" || CHAT_MESSAGES_LIMIT <= 0) return undefined;
+
+  const file = transcriptPath(event);
+  if (!file) return undefined;
+
+  let raw = "";
+  try {
+    raw = await readFile(file, "utf8");
+  } catch {
+    return undefined;
+  }
+
+  const messages = parseChatMessages(raw).slice(-CHAT_MESSAGES_LIMIT);
+  if (messages.length === 0) return undefined;
+
+  return {
+    count: messages.length,
+    context: [
+      `Recent Claude Code chat messages (oldest to newest, up to ${CHAT_MESSAGES_LIMIT}):`,
+      ...messages.map((msg) => `- ${msg.role}: ${msg.text}`),
+    ].join("\n"),
+  };
+}
+
 function statePath(id) {
   const safe = createHash("sha256").update(id).digest("hex");
   return path.join(STATE_DIR, `${safe}.json`);
@@ -124,6 +266,7 @@ async function submit(event) {
   const name = toolName(event);
   const input = toolInput(event);
   const id = toolUseID(event);
+  const chat = await chatContext(event);
   const res = await fetch(`${API}/api/v1/external/invocations`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -134,6 +277,9 @@ async function submit(event) {
       input,
       request_id: id,
       thread_id: event.session_id || event.sessionId || undefined,
+      chat_context: chat?.context,
+      chat_context_messages: chat?.count,
+      context: chat?.context,
       agent_id: AGENT_ID || undefined,
     }),
   });
