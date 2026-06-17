@@ -9,8 +9,9 @@
 // until the invocation is approved or denied, and reports successful PostToolUse
 // results back to the same invocation.
 //
-// Claude Code includes a transcript_path in hook input. When available, this
-// hook sends recent chat messages as LLM-as-judge context.
+// Some hosts include messages or a transcript_path/conversation_path in hook
+// input. When available, this hook sends recent chat messages as
+// LLM-as-judge context.
 
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -18,9 +19,17 @@ import os from "node:os";
 import path from "node:path";
 
 const API = process.env.ATRYUM_URL || "http://localhost:8080";
-const SOURCE = process.env.ATRYUM_SOURCE || process.env.ATRYUM_HOOK_HOST || "agent";
 const POLL_INTERVAL = Number(process.env.ATRYUM_POLL_MS || 2000);
-const HOST = (process.env.ATRYUM_HOOK_HOST || "claude").toLowerCase();
+const RAW_HOST = (process.env.ATRYUM_HOOK_HOST || "claude").toLowerCase();
+const HOST = process.env.CURSOR_INVOKED_AS ? "cursor" : RAW_HOST;
+const SOURCE =
+  HOST === "cursor"
+    ? "cursor"
+    : HOST === "claude"
+      ? "claude-code"
+      : process.env.ATRYUM_SOURCE || process.env.ATRYUM_HOOK_HOST || "agent";
+const CLIENT_NAME = process.env.ATRYUM_CLIENT_NAME || SOURCE;
+const CLIENT_VERSION = process.env.ATRYUM_CLIENT_VERSION || "";
 const STATE_DIR =
   process.env.ATRYUM_STATE_DIR ||
   path.join(os.homedir(), ".atryum", "agent-hook-state");
@@ -199,9 +208,44 @@ function parseChatMessages(raw) {
   return messages;
 }
 
-function transcriptPath(event) {
+function chatMessagesFromValue(value) {
+  if (typeof value === "string") return parseChatMessages(value);
+  if (!value || typeof value !== "object") return [];
+  if (Array.isArray(value)) return value.map(messageFromRecord).filter(Boolean);
+
+  const source = Array.isArray(value.messages)
+    ? value.messages
+    : Array.isArray(value.entries)
+      ? value.entries
+      : [];
+  if (source.length > 0) return source.map(messageFromRecord).filter(Boolean);
+
+  const message = messageFromRecord(value);
+  return message ? [message] : [];
+}
+
+function chatMessagesFromEvent(event) {
+  for (const value of [
+    event.chat_messages,
+    event.chatMessages,
+    event.messages,
+    event.conversation,
+    event.transcript,
+    event.chat_history,
+    event.chatHistory,
+    event.history,
+  ]) {
+    const messages = chatMessagesFromValue(value);
+    if (messages.length > 0) return messages;
+  }
+  return [];
+}
+
+function chatHistoryPath(event) {
   return (
+    process.env.ATRYUM_CHAT_HISTORY_PATH ||
     process.env.ATRYUM_CLAUDE_TRANSCRIPT_PATH ||
+    process.env.ATRYUM_CURSOR_TRANSCRIPT_PATH ||
     event.transcript_path ||
     event.transcriptPath ||
     event.conversation_path ||
@@ -211,26 +255,34 @@ function transcriptPath(event) {
 }
 
 async function chatContext(event) {
-  if (HOST !== "claude" || CHAT_MESSAGES_LIMIT <= 0) return undefined;
+  if (CHAT_MESSAGES_LIMIT <= 0) return undefined;
 
-  const file = transcriptPath(event);
-  if (!file) return undefined;
+  let messages = chatMessagesFromEvent(event);
 
-  let raw = "";
-  try {
-    raw = await readFile(file, "utf8");
-  } catch {
-    return undefined;
+  if (messages.length === 0) {
+    const file = chatHistoryPath(event);
+    if (!file) return undefined;
+
+    let raw = "";
+    try {
+      raw = await readFile(file, "utf8");
+    } catch {
+      return undefined;
+    }
+    messages = parseChatMessages(raw);
   }
 
-  const messages = parseChatMessages(raw).slice(-CHAT_MESSAGES_LIMIT);
-  if (messages.length === 0) return undefined;
+  const recent = messages.slice(-CHAT_MESSAGES_LIMIT);
+  if (recent.length === 0) return undefined;
+
+  const hostLabel =
+    HOST === "claude" ? "Claude Code" : HOST === "cursor" ? "Cursor" : SOURCE;
 
   return {
-    count: messages.length,
+    count: recent.length,
     context: [
-      `Recent Claude Code chat messages (oldest to newest, up to ${CHAT_MESSAGES_LIMIT}):`,
-      ...messages.map((msg) => `- ${msg.role}: ${msg.text}`),
+      `Recent ${hostLabel} chat messages (oldest to newest, up to ${CHAT_MESSAGES_LIMIT}):`,
+      ...recent.map((msg) => `- ${msg.role}: ${msg.text}`),
     ].join("\n"),
   };
 }
@@ -280,6 +332,8 @@ async function submit(event) {
       chat_context: chat?.context,
       chat_context_messages: chat?.count,
       context: chat?.context,
+      client_name: CLIENT_NAME,
+      client_version: CLIENT_VERSION || undefined,
       agent_id: AGENT_ID || undefined,
     }),
   });
