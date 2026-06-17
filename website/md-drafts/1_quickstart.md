@@ -142,12 +142,11 @@ To learn more about configuring local LLM providers in Atryum, refer to **[Confi
 
 ### With Claude Managed Agents
 
-Connect Anthropic-hosted Claude Managed Agents to Atryum so Atryum can review hosted tool calls before Claude continues. Atryum watches linked Claude session events, records tool-use events as invocations, evaluates them against your rules, and responds when Anthropic pauses the session for approval.
+Connect Anthropic-hosted Claude Managed Agents to Atryum to record tool invocations, apply agent-scoped rules, and gate tools awaiting Anthropic approval.
 
-Unlike coding agents that route every tool call through Atryum's MCP proxy, this integration connects outbound to Anthropic. Use it to gate built-in Claude agent tools and MCP tools declared on a Claude Managed Agent.
+Unlike local coding agents that send each tool call to Atryum before execution, Claude Managed Agents run on Anthropic's hosted infrastructure. Atryum connects outbound, watches session events for linked agents, and responds when Anthropic pauses the session for approval.
 
 :::
 To learn more about connecting Claude Managed Agents with Atryum, refer to **[Connect Claude Managed Agents](1_integrations/5_connect-claude-managed-agents.md)**.
 :::
-
 

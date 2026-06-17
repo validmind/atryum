@@ -1,12 +1,12 @@
 # Connect Claude Managed Agents
 
-Connect Anthropic-hosted Claude Managed Agents to Atryum to record hosted tool invocations, evaluate invocations against agent-scoped rules, and gate invocations when Anthropic pauses for approval.
+Connect Anthropic-hosted Claude Managed Agents to Atryum to record tool invocations, apply agent-scoped rules, and gate tools awaiting Anthropic approval.
 
 Unlike local coding agents that send each tool call to Atryum before execution, Claude Managed Agents run on Anthropic's hosted infrastructure.
 
 Under Anthropic's model, a(n):
 
-- *agent* is a reusable Claude configuration, such as tools, Model Context Protocol (MCP) servers, skills, and system prompts
+- *agent* is a reusable Claude configuration — such as tools, Model Context Protocol (MCP) servers, skills, and system prompts
 - *environment* is the hosted sandbox where sessions run
 - *session* is one running task
 - *events* are the session log and stream that Atryum watches
@@ -52,14 +52,16 @@ Before connecting Atryum to Claude Managed Agents, make sure you have:
 
     - **name** — The local Atryum account label. Use a unique value when configuring multiple Anthropic accounts.
     - **workspace** — A display and metadata label for the Anthropic workspace.
+
     :::
     Atryum uses `workspace` in the UI and when writing ownership metadata on linked Claude agents. It is not sent to Anthropic as a selector — use an `api_key` created in the workspace whose agents you want to list.
     :::
+
     - **api_key** — An Anthropic API key created in that workspace.
+
     :::
     When no `[[managed_agents]]` entry has an API key, Atryum disables the bridge and the Claude Managed Agents controls are hidden or show a not-configured message.
     :::
-
 
 3. Restart Atryum so it loads the updated Claude Managed Agents credentials:
 
@@ -74,7 +76,6 @@ Before connecting Atryum to Claude Managed Agents, make sure you have:
     a. Within Atryum, click **Agents** in the left sidebar.
     b. Open an agent record by clicking on it.
     c. Confirm that the **Claude Managed Agents** section is displayed.
-
 
 ## Link Claude Managed Agents
 
@@ -93,7 +94,6 @@ Before connecting Atryum to Claude Managed Agents, make sure you have:
     :::
 
 4. Click **Save** to write Atryum ownership metadata to the Claude Managed Agent.
-
 
 ## Set up Claude Managed Agents rules
 

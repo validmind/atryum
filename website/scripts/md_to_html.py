@@ -214,16 +214,48 @@ def inline_format(text: str) -> str:
     return restore_html_entities(restore_html_spans(text))
 
 
+def dedent_callout_body(lines: list[str]) -> str:
+    """Remove shared leading indentation from callout body lines."""
+    non_empty = [line for line in lines if line.strip()]
+    if not non_empty:
+        return ""
+    min_indent = min(len(line) - len(line.lstrip()) for line in non_empty)
+    dedented: list[str] = []
+    for line in lines:
+        if not line.strip():
+            dedented.append("")
+            continue
+        dedented.append(line[min_indent:] if len(line) >= min_indent else line.lstrip())
+    return "\n".join(dedented).strip("\n")
+
+
 def extract_callouts(source: str) -> tuple[str, list[str]]:
-    pattern = re.compile(r":::\n(.*?)\n:::", re.DOTALL)
+    lines = source.splitlines()
     callouts: list[str] = []
+    output_lines: list[str] = []
 
-    def repl(match: re.Match[str]) -> str:
-        index = len(callouts)
-        callouts.append(match.group(1).strip("\n"))
-        return CALLOUT_PLACEHOLDER.format(index=index)
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if line.strip() == ":::":
+            fence_indent = line[: len(line) - len(line.lstrip())]
+            index += 1
+            body_lines: list[str] = []
+            while index < len(lines) and lines[index].strip() != ":::":
+                body_lines.append(lines[index])
+                index += 1
+            if index < len(lines):
+                index += 1
+            callout_index = len(callouts)
+            callouts.append(dedent_callout_body(body_lines))
+            output_lines.append(
+                f"{fence_indent}{CALLOUT_PLACEHOLDER.format(index=callout_index)}"
+            )
+            continue
+        output_lines.append(line)
+        index += 1
 
-    return pattern.sub(repl, source), callouts
+    return "\n".join(output_lines), callouts
 
 
 def inject_callouts(content_html: str, callouts: list[str]) -> str:
