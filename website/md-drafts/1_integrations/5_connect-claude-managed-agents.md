@@ -36,7 +36,7 @@ Before connecting Atryum to Claude Managed Agents, make sure you have:
     - On macOS, this is typically under `~/Library/Application Support/atryum/atryum.toml`.
     - On Linux, this is typically under `~/.config/atryum/atryum.toml`.
 
-2. Add oane `[[managed_agents]]` block for each Anthropic account or workspace API key you want Atryum to use:
+2. Add an `[[managed_agents]]` block for each Anthropic account or workspace API key you want Atryum to use. For example:
 
     ```toml
     [[managed_agents]]
@@ -57,34 +57,34 @@ Before connecting Atryum to Claude Managed Agents, make sure you have:
         ```bash
         ./atryum run --init-servers
         ```
-4. Confirm the bridge is available:
+4. Verify that the Claude Managed Agents bridge is enabled:
 
     a. Within Atryum, click **Agents** in the left sidebar.
-    b. Click on an agent record to open its details.
-    c. Confirm that **Claude Managed Agents** appears in the edit panel.
+    b. Open an agent record by clicking on it.
+    c. Confirm that the **Claude Managed Agents** section is displayed.
 
 :::
 When no `[[managed_agents]]` entry has an API key, Atryum disables the bridge and the Claude Managed Agents controls are hidden or show a not-configured message.
 :::
-
 
 ## Link Claude Managed Agents
 
-4. In Atryum, click **Agents** in the left sidebar.
+1. Within Atryum, click **Agents** in the left sidebar.
 
-5. Open the Atryum agent record that should own the Claude Managed Agent.
+2. Click to open the Atryum agent record that should own the Claude Managed Agent.
 
-6. Under **Claude Managed Agents**, select the Claude agent to link.
+3. Under Claude Managed Agents, select the Claude agent(s) to link from the **Linked Agents** drop-down menu.
 
-    If you configured multiple `[[managed_agents]]` accounts, choose the account first.
+    If you configured multiple `[[managed_agents]]` accounts, choose the **Account** first.
 
-7. Click **Save**.
+    :::
+    Each Claude-managed agent can only be linked to one Atryum agent record at a time (within the same Atryum instance).
 
-Saving writes Atryum ownership metadata to the Claude Managed Agent. This prevents two Atryum instances from accidentally managing the same hosted Claude agent.
+    Check **Force connect if Claude metadata says another Atryum instance owns it** only when you intentionally want the Atryum agent you are configuring to take over a Claude Managed Agent that already has Atryum ownership metadata.
+    :::
 
-Use **Force connect** only when you intentionally want this Atryum instance to take over a Claude Managed Agent that already has Atryum ownership metadata.
+4. Click **Save** to write Atryum ownership metadata to the Claude Managed Agent.
 
-When no `[[managed_agents]]` entry has an API key, Atryum disables the bridge and the Claude Managed Agents controls are hidden or show a not-configured message.
 
 ## Set up Claude Managed Agents rules
 
@@ -151,4 +151,4 @@ Use the MCP server name as the rule's server pattern. For example, a Slack MCP t
 
 ### Old watchers keep logging errors
 
-Open **Settings** → **Claude Managed Agents** and click **Clear all**. Linked agents can rediscover active sessions afterward.
+Open **Settings** → **Claude Managed Agents** and click **Clear All**. Linked agents can rediscover active sessions afterward.

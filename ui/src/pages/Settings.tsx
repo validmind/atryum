@@ -589,7 +589,7 @@ const Settings: React.FC = () => {
                 isLoading={clearManagedSessions.isLoading}
                 isDisabled={managedSessions.length === 0 || managedSessionsQuery.isLoading || managedSessionsQuery.isError}
               >
-                Clear all
+                Clear All
               </Button>
               <Button
                 size="sm"
