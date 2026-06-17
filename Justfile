@@ -104,6 +104,18 @@ build-with-ui: build-ui build
 ui-dev:
 	cd ui && npm install && npm run dev
 
+# Build documentation HTML from md-drafts/
+docs:
+	python3 website/scripts/md_to_html.py
+
+# Build documentation PDF from md-drafts/
+docs-pdf:
+	python3 website/scripts/md_to_pdf.py
+
+# Regenerate docs, then serve the website locally
+preview-docs: docs
+	python3 -m http.server 8000 --directory website
+
 # Run atryum process locally
 run:
 	go run ./cmd/atryum run --config {{config}}

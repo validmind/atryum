@@ -23,7 +23,7 @@ website/
     - Generated HTML paths keep those numeric prefixes. Nav link text comes from each page's `#` H1. Folder prefixes are removed from nav section headings only (`1_integrations/` → **integrations**).
     - Follow the **[ValidMind style guide](https://docs.validmind.ai/about/contributing/style-guide/style-guide.html)** for prose.
 
-2. Run `make docs` from the repo root.
+2. Run `just docs` from the repo root.
 
 3. Commit the `.md` source and the generated output (`documentation/**/*.html` and `partials/docs-nav.html`), as well as any other manually edited files.
 
@@ -99,7 +99,7 @@ Standard pipe tables are supported.
 From the repo root:
 
 ```bash
-make docs
+just docs
 ```
 
 This regenerates:
@@ -107,20 +107,20 @@ This regenerates:
 - `documentation/**/*.html` — Mirrors the structure of `md-drafts/` (and removes stale HTML for deleted drafts)
 - `partials/docs-nav.html` — Documentation dropdown links in the header
 
-Commit both the Markdown sources and the generated files. Pushes to `main` that touch `website/**`, `Makefile`, or `.github/workflows/pages.yml` run `make docs` in CI and fail if `documentation/` or `partials/docs-nav.html` are out of date.
+Commit both the Markdown sources and the generated files. Pushes to `main` that touch `website/**`, `Justfile`, or `.github/workflows/pages.yml` run `just docs` in CI and fail if `documentation/` or `partials/docs-nav.html` are out of date.
 
 ### Preview website locally
 
 From the repo root:
 
 ```bash
-make preview-docs
+just preview-docs
 ```
 
-`make preview-docs` runs `make docs` automatically before starting the server.
+`just preview-docs` runs `just docs` automatically before starting the server.
 
 - Open [http://localhost:8000/](http://localhost:8000/) for the homepage.
-- Partials such as `docs-nav.html` are loaded with JavaScript — a normal refresh picks up nav changes after `make docs`. Hard-refresh if you changed `includes.js` or CSS.
+- Partials such as `docs-nav.html` are loaded with JavaScript — a normal refresh picks up nav changes after `just docs`. Hard-refresh if you changed `includes.js` or CSS.
 
 ### Navigation logic
 
@@ -146,7 +146,7 @@ The Documentation dropdown is generated from the draft tree:
 From the repo root:
 
 ```bash
-make docs-pdf
+just docs-pdf
 ```
 
 This generates `website/atryum-docs.pdf` from the same Markdown sources and navigation order. The PDF is ignored locally and built into the GitHub Pages artifact during deployment, so it is available at `/atryum-docs.pdf` without committing the binary file.
