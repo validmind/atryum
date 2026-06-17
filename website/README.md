@@ -109,16 +109,6 @@ This regenerates:
 
 Commit both the Markdown sources and the generated files. Pushes to `main` that touch `website/**`, `Makefile`, or `.github/workflows/pages.yml` run `make docs` in CI and fail if `documentation/` or `partials/docs-nav.html` are out of date.
 
-## Build documentation PDF
-
-From the repo root:
-
-```bash
-make docs-pdf
-```
-
-This generates `website/atryum-docs.pdf` from the same Markdown sources and navigation order. The PDF is ignored locally and built into the GitHub Pages artifact during deployment, so it is available at `/atryum-docs.pdf` without committing the binary file.
-
 ### Preview website locally
 
 From the repo root:
@@ -150,6 +140,16 @@ The Documentation dropdown is generated from the draft tree:
 | --- | --- |
 | `md-drafts/1_quickstart.md` | `documentation/1_quickstart.html` |
 | `md-drafts/1_integrations/2_connect-agents.md` | `documentation/1_integrations/2_connect-agents.html` |
+
+## Build documentation PDF
+
+From the repo root:
+
+```bash
+make docs-pdf
+```
+
+This generates `website/atryum-docs.pdf` from the same Markdown sources and navigation order. The PDF is ignored locally and built into the GitHub Pages artifact during deployment, so it is available at `/atryum-docs.pdf` without committing the binary file.
 
 ## Do NOT edit
 
