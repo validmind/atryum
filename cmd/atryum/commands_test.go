@@ -67,6 +67,28 @@ func TestRunHooksRequiresActionAndTarget(t *testing.T) {
 	}
 }
 
+func TestHooksUsageIncludesPluginTargets(t *testing.T) {
+	usage := hooksUsage()
+	for _, expected := range []string{
+		"amp",
+		"~/.config/amp/plugins/atryum.ts",
+		"atryum hooks install amp",
+		"claude-code",
+		"~/.claude/settings.json",
+		"atryum hooks install claude-code",
+		"codex",
+		"~/.codex/hooks.json",
+		"atryum hooks install codex",
+		"pi",
+		"~/.pi/agent/extensions/atryum/index.ts",
+		"atryum hooks install pi",
+	} {
+		if !strings.Contains(usage, expected) {
+			t.Fatalf("usage missing %q: %s", expected, usage)
+		}
+	}
+}
+
 func TestUpsertBackendCredentialsCreatesSection(t *testing.T) {
 	updated := upsertBackendCredentials("[server]\nlisten_addr = \":8080\"\n", "https://vm.example", "k1", "s1")
 	if !strings.Contains(updated, "[backend]") {
@@ -235,5 +257,90 @@ func TestApplyInstallUninstallHookConfigClaudeCode(t *testing.T) {
 	cmd := innerHooks[0].(map[string]any)["command"].(string)
 	if cmd != "echo keep-claude" {
 		t.Fatalf("unexpected remaining command: %s", cmd)
+	}
+}
+
+func TestApplyInstallUninstallHookConfigCodex(t *testing.T) {
+	settings := map[string]any{
+		"hooks": map[string]any{
+			"PreToolUse": []any{map[string]any{
+				"matcher": "Bash",
+				"hooks": []any{map[string]any{
+					"type":    "command",
+					"command": "echo keep-codex",
+				}},
+			}},
+			"PostToolUse": []any{},
+		},
+	}
+
+	applyInstallHookConfig(settings, "codex")
+	hooks := settings["hooks"].(map[string]any)
+	pre := hooks["PreToolUse"].([]any)
+	post := hooks["PostToolUse"].([]any)
+	if len(pre) != 2 {
+		t.Fatalf("expected 2 pre entries after install, got %d", len(pre))
+	}
+	if len(post) != 1 {
+		t.Fatalf("expected 1 post entry after install, got %d", len(post))
+	}
+
+	installCmd := pre[1].(map[string]any)["hooks"].([]any)[0].(map[string]any)["command"].(string)
+	if !strings.Contains(installCmd, "ATRYUM_HOOK_HOST=codex") || !strings.Contains(installCmd, "ATRYUM_SOURCE=codex") {
+		t.Fatalf("unexpected codex command: %s", installCmd)
+	}
+
+	applyUninstallHookConfig(settings, "codex")
+	pre = hooks["PreToolUse"].([]any)
+	post = hooks["PostToolUse"].([]any)
+	if len(pre) != 1 {
+		t.Fatalf("expected non-Atryum pre entry to remain, got %d", len(pre))
+	}
+	if len(post) != 0 {
+		t.Fatalf("expected Atryum post entry removed, got %d", len(post))
+	}
+}
+
+func TestInstallUninstallAgentPlugins(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cases := []struct {
+		target   string
+		path     string
+		contains string
+	}{
+		{
+			target:   "amp",
+			path:     filepath.Join(home, ".config", "amp", "plugins", "atryum.ts"),
+			contains: "Atryum amp plugin",
+		},
+		{
+			target:   "pi",
+			path:     filepath.Join(home, ".pi", "agent", "extensions", "atryum", "index.ts"),
+			contains: "@earendil-works/pi-coding-agent",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.target, func(t *testing.T) {
+			if err := installHooks(tc.target); err != nil {
+				t.Fatalf("install %s: %v", tc.target, err)
+			}
+			raw, err := os.ReadFile(tc.path)
+			if err != nil {
+				t.Fatalf("read installed plugin: %v", err)
+			}
+			if !strings.Contains(string(raw), tc.contains) {
+				t.Fatalf("installed plugin did not look like %s plugin:\n%s", tc.target, string(raw))
+			}
+
+			if err := uninstallHooks(tc.target); err != nil {
+				t.Fatalf("uninstall %s: %v", tc.target, err)
+			}
+			if _, err := os.Stat(tc.path); !os.IsNotExist(err) {
+				t.Fatalf("expected plugin to be removed, stat err=%v", err)
+			}
+		})
 	}
 }

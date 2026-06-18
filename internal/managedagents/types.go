@@ -27,6 +27,8 @@ const (
 	defaultClientName       = "claude-managed-agents"
 	defaultPollInterval     = time.Second
 	defaultReconnectBackoff = 2 * time.Second
+
+	DefaultRecentChatMessagesLimit = 100
 )
 
 // Config holds one account's runtime settings.
@@ -39,8 +41,11 @@ type Config struct {
 	APIKey           string
 	PollInterval     time.Duration
 	ReconnectBackoff time.Duration
-	ClientName       string
-	ClientVersion    string
+	// RecentChatMessagesLimit controls how many recent chat messages are
+	// retained and passed to the shared LLM-as-judge chat context.
+	RecentChatMessagesLimit int
+	ClientName              string
+	ClientVersion           string
 }
 
 // DefaultAccountName is used when an account is configured without a name.
@@ -59,6 +64,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.ReconnectBackoff <= 0 {
 		c.ReconnectBackoff = defaultReconnectBackoff
+	}
+	if c.RecentChatMessagesLimit <= 0 {
+		c.RecentChatMessagesLimit = DefaultRecentChatMessagesLimit
 	}
 	if c.ClientName == "" {
 		c.ClientName = defaultClientName

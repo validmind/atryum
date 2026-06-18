@@ -81,6 +81,7 @@ api_key = "sk-ant-..."
 # base_url                  = "https://api.anthropic.com"
 # poll_interval_millis      = 1000   # how often a pending approval is re-checked
 # reconnect_backoff_seconds = 2      # SSE reconnect backoff
+# recent_chat_messages_limit = 100   # chat messages sent as LLM-as-judge context
 # client_name               = "claude-managed-agents"  # shown in the Agent column
 # client_version            = ""
 
