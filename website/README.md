@@ -20,7 +20,7 @@ website/
 1. Add or edit a file under `md-drafts/`.
 
     - **Filename convention:** Prefix files and folders with a number to control nav order, then use dashes for the slug — for example `1_quickstart.md`, `1_integrations/2_connect-agents.md`.
-    - Generated HTML paths keep those numeric prefixes. Nav link text comes from each page's `#` H1. Folder prefixes are removed from nav section headings only (`1_integrations/` → **integrations**).
+    - Generated HTML paths keep those numeric prefixes. Nav link text comes from each page's `#` H1. Subdirectory dropdown labels use the folder name with the numeric prefix removed and title-cased (`1_integrations/` → **Integrations**).
     - Follow the **[ValidMind style guide](https://docs.validmind.ai/about/contributing/style-guide/style-guide.html)** for prose.
 
 2. Run `just docs` from the repo root.
@@ -51,6 +51,8 @@ See [Rules](3_rules.md) and [Connect agents](1_integrations/2_connect-agents.md)
 ```
 
 - Unprefixed slugs such as `rules.md` also resolve when the target is unique, but prefer numbered source filenames for consistency with the repo.
+- On each build, the script rewrites `.md` links in source files to canonical relative paths when it can resolve a target but the written path is stale (for example after a numeric prefix change).
+- If you rename a draft, use `git mv` when possible so the build can migrate `NAV_LABEL_OVERRIDES` keys and fix links that still use the old filename.
 - External links use full URLs as usual.
 
 ### Callouts
@@ -104,8 +106,10 @@ just docs
 
 This regenerates:
 
-- `documentation/**/*.html` — Mirrors the structure of `md-drafts/` (and removes stale HTML for deleted drafts)
-- `partials/docs-nav.html` — Documentation dropdown links in the header
+- `documentation/**/*.html` — Mirrors the structure of `md-drafts/` (and removes stale HTML and empty directories for deleted or moved drafts)
+- `partials/docs-nav.html` — Header documentation links and section dropdowns
+
+The build also updates `md-drafts/**/*.md` in place when cross-links can be normalized to canonical paths, and migrates `NAV_LABEL_OVERRIDES` keys when git detects draft renames.
 
 Commit both the Markdown sources and the generated files. Pushes to `main` that touch `website/**`, `Justfile`, or `.github/workflows/pages.yml` run `just docs` in CI and fail if `documentation/` or `partials/docs-nav.html` are out of date.
 
@@ -124,22 +128,26 @@ just preview-docs
 
 ### Navigation logic
 
-The Documentation dropdown is generated from the draft tree:
+The header nav is generated from the draft tree and included via `partials/docs-nav.html`:
 
-1. **Root pages first** — sorted by numeric prefix (`1_quickstart.md`, `2_invocations.md`, …).
-2. **Subdirectories next** — sorted by folder numeric prefix (`1_integrations/`, …).
-3. **Pages within each section** — sorted by their numeric prefix.
+1. **Root pages** — `.md` files directly under `md-drafts/` become top-level header links, sorted by numeric prefix (`1_quickstart.md` → **Quickstart**, `2_invocations.md` → **Invocations**, …).
+2. **Subdirectories** — Each folder under `md-drafts/` becomes its own dropdown menu, sorted by folder numeric prefix (`1_integrations/` → **Integrations** ▾).
+3. **Pages within each dropdown** — Sorted by their numeric prefix.
 
-- Section headings use the folder name with the numeric prefix removed (`1_integrations/` → **integrations**).
+Example header order: **Quickstart** | **Invocations** | **Rules** | **Integrations** ▾
+
+- Link text comes from each page's `#` H1 unless overridden (see below).
+- Dropdown summaries use the folder name with the numeric prefix removed and title-cased (`1_integrations/` → **Integrations**).
 - Doc pages also get an auto-generated **On this page** table-of-contents sidebar from `##` and `###` headings in the body.
-- Use **`NAV_LABEL_OVERRIDES`** in `scripts/md_to_html.py` only when a dropdown label should differ from the page `#` title. Keys are prefix-stripped stems — for example `quickstart` for `1_quickstart.md`, or `connect-agents` for `2_connect-agents.md`.
+- Use **`NAV_LABEL_OVERRIDES`** in `scripts/md_to_html.py` only when a nav label should differ from the page `#` title. Keys are prefix-stripped stems — for example `quickstart` for `1_quickstart.md`, or `connect-agents` for `2_connect-agents.md`. Keys are migrated automatically when git detects a rename.
 
 #### Example file placement
 
-| Location | Result |
-| --- | --- |
-| `md-drafts/1_quickstart.md` | `documentation/1_quickstart.html` |
-| `md-drafts/1_integrations/2_connect-agents.md` | `documentation/1_integrations/2_connect-agents.html` |
+| Location | Nav result | HTML output |
+| --- | --- | --- |
+| `md-drafts/1_quickstart.md` | Top-level link **Quickstart** | `documentation/1_quickstart.html` |
+| `md-drafts/2_invocations.md` | Top-level link **Invocations** | `documentation/2_invocations.html` |
+| `md-drafts/1_integrations/2_connect-agents.md` | Item under **Integrations** dropdown | `documentation/1_integrations/2_connect-agents.html` |
 
 ## Build documentation PDF
 
@@ -158,7 +166,7 @@ These files are generated or shared sitewide — change the source instead:
 | File | Edit instead |
 | --- | --- |
 | `documentation/**/*.html` | `md-drafts/**/*.md` |
-| `partials/docs-nav.html` | Add/reorder pages in `md-drafts/` using numeric prefixes |
+| `partials/docs-nav.html` | Add/reorder pages in `md-drafts/` using numeric prefixes — put section pages in subfolders |
 
 These are maintained manually (or usually, agentically...):
 
