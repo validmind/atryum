@@ -491,43 +491,52 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
               ) : (
                 <VStack align="stretch" gap={3}>
                   {accountItems.length > 1 && (
-                    <Select
-                      size="sm"
-                      value={{ value: selectedAccount, label: selectedAccount }}
-                      options={accountItems.map((account) => ({
-                        value: account.name,
-                        label: account.workspace ? `${account.name} (${account.workspace})` : account.name,
-                      }))}
-                      onChange={(option) => {
-                        if (option) setManagedAccount(option.value);
-                      }}
-                    />
+                    <FormControl>
+                      <FormLabel fontSize="sm" color="text.subtle">Account</FormLabel>
+                      <Select
+                        size="sm"
+                        value={{ value: selectedAccount, label: selectedAccount }}
+                        options={accountItems.map((account) => ({
+                          value: account.name,
+                          label: account.workspace ? `${account.name} (${account.workspace})` : account.name,
+                        }))}
+                        onChange={(option) => {
+                          if (option) setManagedAccount(option.value);
+                        }}
+                      />
+                    </FormControl>
                   )}
                   {accountItems.length === 1 && (
-                    <Text fontSize="xs" color="text.subtle">
-                      Account: {accountItems[0].name}
-                      {accountItems[0].workspace ? ` (${accountItems[0].workspace})` : ''}
-                    </Text>
+                    <FormControl>
+                      <FormLabel fontSize="sm" color="text.subtle">Account</FormLabel>
+                      <Text fontSize="sm" color="text.subtle">
+                        {accountItems[0].name}
+                        {accountItems[0].workspace ? ` (${accountItems[0].workspace})` : ''}
+                      </Text>
+                    </FormControl>
                   )}
                   {managedAgentsQuery.isError && (
                     <Alert status="warning" borderRadius="md" py={2}>
                       <AlertIcon />
                       <AlertDescription fontSize="sm">
-                        {errorMessage(managedAgentsQuery.error, 'Failed to load Claude managed agents.')}
+                        {errorMessage(managedAgentsQuery.error, 'Failed to load Claude Managed Agents.')}
                       </AlertDescription>
                     </Alert>
                   )}
-                  <Select<ManagedAgentOption, true>
-                    isMulti
-                    isClearable
-                    isLoading={managedAgentsQuery.isLoading || managedAgentsQuery.isFetching}
-                    placeholder="Search Claude managed agents…"
-                    value={selectedManagedAgentOptions}
-                    options={managedAgentOptions}
-                    onInputChange={(value) => setManagedSearch(value)}
-                    onChange={(selected) => setManagedBindings(selected.map((option) => option.binding))}
-                    noOptionsMessage={() => 'No Claude managed agents found'}
-                  />
+                  <FormControl>
+                    <FormLabel fontSize="sm" color="text.subtle">Linked Agents</FormLabel>
+                    <Select<ManagedAgentOption, true>
+                      isMulti
+                      isClearable
+                      isLoading={managedAgentsQuery.isLoading || managedAgentsQuery.isFetching}
+                      placeholder="Search Claude Managed Agents…"
+                      value={selectedManagedAgentOptions}
+                      options={managedAgentOptions}
+                      onInputChange={(value) => setManagedSearch(value)}
+                      onChange={(selected) => setManagedBindings(selected.map((option) => option.binding))}
+                      noOptionsMessage={() => 'No Claude Managed Agents found'}
+                    />
+                  </FormControl>
                   {managedBindings.length > 0 && (
                     <VStack align="stretch" gap={2}>
                       {managedBindings.map((binding) => (
