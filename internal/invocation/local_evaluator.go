@@ -60,7 +60,7 @@ func NewLocalEvaluatorClient(store LLMConfigProvider) *LocalEvaluatorClient {
 }
 
 // EvaluateToolCall calls the locally-configured LLM to judge the tool call.
-// Falls back to next_rule on unparseable output; returns an error on HTTP failure.
+// Falls back to denied on unparseable output; returns an error on HTTP failure.
 func (e *LocalEvaluatorClient) EvaluateToolCall(ctx context.Context, req EvaluateRequest) (EvaluateResponse, error) {
 	cfg, err := e.store.GetLLMConfig(ctx, req.AtryumLLMConfigID)
 	if err != nil {
@@ -119,13 +119,15 @@ func (e *LocalEvaluatorClient) callOpenAI(ctx context.Context, cfg LocalLLMConfi
 	baseURL = strings.TrimRight(baseURL, "/")
 	endpoint := baseURL + "/v1/chat/completions"
 
-	body, _ := json.Marshal(map[string]any{
-		"model": cfg.Model,
+	payload := map[string]any{
+		"model":       cfg.Model,
+		"temperature": 0.0,
 		"messages": []map[string]any{
 			{"role": "system", "content": system},
 			{"role": "user", "content": user},
 		},
-	})
+	}
+	body, _ := json.Marshal(payload)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
@@ -166,14 +168,16 @@ func (e *LocalEvaluatorClient) callOpenAI(ctx context.Context, cfg LocalLLMConfi
 func (e *LocalEvaluatorClient) callAnthropic(ctx context.Context, cfg LocalLLMConfig, system, user string) (string, error) {
 	endpoint := "https://api.anthropic.com/v1/messages"
 
-	body, _ := json.Marshal(map[string]any{
-		"model":      cfg.Model,
-		"max_tokens": 512,
-		"system":     system,
+	payload := map[string]any{
+		"model":       cfg.Model,
+		"max_tokens":  512,
+		"temperature": 0.0,
+		"system":      system,
 		"messages": []map[string]any{
 			{"role": "user", "content": user},
 		},
-	})
+	}
+	body, _ := json.Marshal(payload)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
@@ -213,7 +217,7 @@ func (e *LocalEvaluatorClient) callAnthropic(ctx context.Context, cfg LocalLLMCo
 }
 
 // parseVerdict extracts verdict/confidence/reason from the LLM JSON output.
-// Falls back to "next_rule" on any parse error so no invocation is silently lost.
+// Falls back to "denied" on any parse error so no invocation is silently approved.
 func (e *LocalEvaluatorClient) parseVerdict(raw string) (verdict string, confidence float64, reason string) {
 	raw = strings.TrimSpace(raw)
 	// Strip markdown fences if the model wrapped the JSON anyway.
