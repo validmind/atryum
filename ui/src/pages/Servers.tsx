@@ -48,6 +48,7 @@ import {
   useConnectStatus,
 } from '../hooks/useServers';
 import {
+  type AuthHeader,
   type AuthStatus,
   type ConnectionStatus,
   type Server,
@@ -75,6 +76,7 @@ const EMPTY_FORM: ServerInput = {
   base_url: '',
   timeout_seconds: 30,
   auth_token: '',
+  auth_headers: [],
   command: '',
   args: [],
   env: {},
@@ -101,6 +103,7 @@ const serverToInput = (s: Server): ServerInput => ({
   base_url: s.base_url ?? '',
   timeout_seconds: s.timeout_seconds ?? 30,
   auth_token: s.auth_token ?? '',
+  auth_headers: s.auth_headers ?? [],
   command: s.command ?? '',
   args: s.args ?? [],
   env: s.env ?? {},
@@ -204,6 +207,10 @@ const Servers: React.FC = () => {
         ...form,
         args: form.mode === 'stdio' ? parseArgs() : [],
         env: form.mode === 'stdio' ? parseEnv() : {},
+        auth_headers:
+          form.mode === 'http'
+            ? (form.auth_headers ?? []).filter((h) => h.name.trim() && h.value.trim())
+            : [],
       };
       if (isCreating) {
         const saved = await createServer.mutateAsync(payload);
@@ -514,6 +521,63 @@ const Servers: React.FC = () => {
                           </FormControl>
                         );
                       })()}
+
+                      <FormControl>
+                        <FormLabel fontSize="sm">Custom Headers</FormLabel>
+                        <Stack spacing={2}>
+                          {(form.auth_headers ?? []).map((header, idx) => (
+                            <HStack key={idx} spacing={2}>
+                              <Input
+                                size="sm"
+                                placeholder="X-API-KEY"
+                                value={header.name}
+                                onChange={(e) =>
+                                  setForm((f) => {
+                                    const next = [...(f.auth_headers ?? [])];
+                                    next[idx] = { ...next[idx], name: e.target.value };
+                                    return { ...f, auth_headers: next };
+                                  })
+                                }
+                              />
+                              <Input
+                                size="sm"
+                                type="password"
+                                placeholder="value"
+                                value={header.value}
+                                onChange={(e) =>
+                                  setForm((f) => {
+                                    const next = [...(f.auth_headers ?? [])];
+                                    next[idx] = { ...next[idx], value: e.target.value };
+                                    return { ...f, auth_headers: next };
+                                  })
+                                }
+                              />
+                              <CloseButton
+                                size="sm"
+                                onClick={() =>
+                                  setForm((f) => ({
+                                    ...f,
+                                    auth_headers: (f.auth_headers ?? []).filter((_, i) => i !== idx),
+                                  }))
+                                }
+                              />
+                            </HStack>
+                          ))}
+                          <Button
+                            size="xs"
+                            variant="outline"
+                            alignSelf="flex-start"
+                            onClick={() =>
+                              setForm((f) => ({
+                                ...f,
+                                auth_headers: [...(f.auth_headers ?? []), { name: '', value: '' } as AuthHeader],
+                              }))
+                            }
+                          >
+                            Add header
+                          </Button>
+                        </Stack>
+                      </FormControl>
 
                       <Box as="details" borderTop="1px solid" borderColor="gray.200" pt={2}>
                         <Box as="summary" cursor="pointer" fontSize="sm" fontWeight="medium">
