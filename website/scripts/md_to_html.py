@@ -3,7 +3,12 @@
 
 Generated on each run:
   - website/documentation/**/*.html (mirrors numbered md-drafts layout)
-  - website/partials/docs-nav.html (Documentation dropdown links)
+  - website/partials/docs-nav.html (header doc links and section dropdowns)
+
+Also maintained automatically when you run the script:
+  - Canonical relative links in md-drafts/**/*.md (rewritten when paths drift)
+  - NAV_LABEL_OVERRIDES keys (migrated when git detects draft renames)
+  - Stale documentation/**/*.html removed; empty output directories removed
 
 Maintained manually (not generated):
   - website/index.html
@@ -16,6 +21,8 @@ from __future__ import annotations
 import html
 import os
 import re
+import subprocess
+import sys
 import unicodedata
 from pathlib import Path
 
@@ -39,8 +46,10 @@ COPY_ICON_SVG = (
 
 # Optional numeric prefix for source ordering, e.g. 1_quickstart.md or 1_integrations/.
 NUMERIC_PREFIX = re.compile(r"^(\d+)_")
+MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 
 _partials_prefix = "../partials"
+_rename_link_lookup: dict[str, Path] = {}
 
 
 def slugify(text: str) -> str:
@@ -139,6 +148,13 @@ def resolve_md_target(source_md: Path, link: str) -> Path:
     link_name = link_path.name
     link_stem = Path(link_name).stem
 
+    if link_name in _rename_link_lookup:
+        return _rename_link_lookup[link_name]
+
+    clean_stem = strip_numeric_prefix(link_stem)
+    if clean_stem in _rename_link_lookup:
+        return _rename_link_lookup[clean_stem]
+
     matches = sorted(DRAFTS.rglob(link_name))
     if matches:
         return matches[0]
@@ -147,7 +163,15 @@ def resolve_md_target(source_md: Path, link: str) -> Path:
     if matches:
         return matches[0]
 
+    matches = sorted(DRAFTS.rglob(f"*_{clean_stem}.md"))
+    if matches:
+        return matches[0]
+
     matches = find_md_by_output_stem(link_stem)
+    if matches:
+        return matches[0]
+
+    matches = find_md_by_output_stem(clean_stem)
     if matches:
         return matches[0]
 
@@ -159,6 +183,159 @@ def resolve_md_target(source_md: Path, link: str) -> Path:
             return matches[0]
 
     return direct
+
+
+def md_relative_link(source_md: Path, target_md: Path) -> str:
+    return Path(os.path.relpath(target_md, source_md.parent)).as_posix()
+
+
+def parse_git_md_renames(output: str) -> tuple[dict[str, str], dict[str, Path]]:
+    """Return stem renames and link lookup entries from git name-status output."""
+    stem_renames: dict[str, str] = {}
+    link_lookup: dict[str, Path] = {}
+
+    for line in output.splitlines():
+        if not line.startswith("R"):
+            continue
+        parts = line.split("\t")
+        if len(parts) != 3:
+            continue
+
+        old_path = Path(parts[1])
+        new_path = Path(parts[2])
+        if old_path.suffix != ".md" or new_path.suffix != ".md":
+            continue
+        if old_path.parts[:2] != ("website", "md-drafts"):
+            continue
+
+        new_md = ROOT.parent / new_path
+        if not new_md.exists():
+            continue
+
+        old_stem = output_stem(old_path)
+        new_stem = output_stem(new_path)
+        if old_stem != new_stem:
+            stem_renames[old_stem] = new_stem
+
+        link_lookup[old_path.name] = new_md
+        link_lookup[old_stem] = new_md
+
+    return stem_renames, link_lookup
+
+
+def detect_md_renames() -> tuple[dict[str, str], dict[str, Path]]:
+    """Detect draft renames from git (working tree and index)."""
+    stem_renames: dict[str, str] = {}
+    link_lookup: dict[str, Path] = {}
+    commands = (
+        ["git", "diff", "--name-status", "--find-renames=50%", "--", "website/md-drafts"],
+        [
+            "git",
+            "diff",
+            "--cached",
+            "--name-status",
+            "--find-renames=50%",
+            "--",
+            "website/md-drafts",
+        ],
+    )
+
+    try:
+        for command in commands:
+            result = subprocess.run(
+                command,
+                cwd=ROOT.parent,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                continue
+            renames, lookup = parse_git_md_renames(result.stdout)
+            stem_renames.update(renames)
+            link_lookup.update(lookup)
+    except OSError:
+        pass
+
+    return stem_renames, link_lookup
+
+
+def normalize_md_links(pages: list[Path]) -> None:
+    """Rewrite .md links to canonical relative paths when resolution finds a target."""
+    for path in pages:
+        source = path.read_text(encoding="utf-8")
+        changed = False
+
+        def repl(match: re.Match[str]) -> str:
+            nonlocal changed
+            label, url = match.group(1), match.group(2)
+            if url.startswith(("#", "http://", "https://", "mailto:")):
+                return match.group(0)
+
+            url_path, _, anchor = url.partition("#")
+            anchor_suffix = f"#{anchor}" if anchor else ""
+            if not url_path.endswith(".md"):
+                return match.group(0)
+
+            target = resolve_md_target(path, url_path)
+            if not target.exists():
+                rel = path.relative_to(DRAFTS)
+                print(
+                    f"Warning: {rel}: broken link [{label}]({url}) — no matching draft",
+                    file=sys.stderr,
+                )
+                return match.group(0)
+
+            canonical = md_relative_link(path, target)
+            if canonical != url_path:
+                changed = True
+                return f"[{label}]({canonical}{anchor_suffix})"
+            return match.group(0)
+
+        updated = MD_LINK_RE.sub(repl, source)
+        if changed:
+            path.write_text(updated, encoding="utf-8")
+            print(f"Updated links in {path.relative_to(ROOT.parent)}")
+
+
+def migrate_nav_label_overrides(stem_renames: dict[str, str]) -> bool:
+    changed = False
+    for old_stem, new_stem in stem_renames.items():
+        if old_stem in NAV_LABEL_OVERRIDES and new_stem not in NAV_LABEL_OVERRIDES:
+            NAV_LABEL_OVERRIDES[new_stem] = NAV_LABEL_OVERRIDES.pop(old_stem)
+            changed = True
+    return changed
+
+
+def warn_orphaned_nav_label_overrides(pages: list[Path]) -> None:
+    stems = {output_stem(path) for path in pages}
+    for key in NAV_LABEL_OVERRIDES:
+        if key not in stems:
+            print(
+                f"Warning: NAV_LABEL_OVERRIDES key {key!r} has no matching draft",
+                file=sys.stderr,
+            )
+
+
+def persist_nav_label_overrides() -> None:
+    script_path = Path(__file__)
+    content = script_path.read_text(encoding="utf-8")
+    if NAV_LABEL_OVERRIDES:
+        entries = ", ".join(f"{key!r}: {value!r}" for key, value in sorted(NAV_LABEL_OVERRIDES.items()))
+        replacement = f"NAV_LABEL_OVERRIDES: dict[str, str] = {{{entries}}}"
+    else:
+        replacement = "NAV_LABEL_OVERRIDES: dict[str, str] = {}"
+
+    updated, count = re.subn(
+        r"^NAV_LABEL_OVERRIDES: dict\[str, str\] = .*",
+        replacement,
+        content,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    if count:
+        script_path.write_text(updated, encoding="utf-8")
+        print(f"Migrated NAV_LABEL_OVERRIDES in {script_path.relative_to(ROOT.parent)}")
 
 
 def md_href(source_md: Path, url: str) -> str:
@@ -185,7 +362,7 @@ def replace_md_links(text: str, source_md: Path) -> str:
         label, url = match.group(1), match.group(2)
         return f"[{label}]({md_href(source_md, url)})"
 
-    return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", repl, text)
+    return MD_LINK_RE.sub(repl, text)
 
 
 def restore_html_spans(text: str) -> str:
@@ -670,6 +847,17 @@ def page_template(
 """
 
 
+def nav_page_link(path: Path, *, link_class: str = "") -> str:
+    rel_html = html_output_path(path).relative_to(OUTPUT).as_posix()
+    slug = page_slug(path)
+    class_attr = f' class="{link_class}"' if link_class else ""
+    return (
+        f"<a{class_attr} href=\"/documentation/{rel_html}\" "
+        f'data-page="{html.escape(slug, quote=True)}">'
+        f"{html.escape(nav_label(path))}</a>"
+    )
+
+
 def render_docs_nav(pages: list[Path]) -> str:
     root_pages = sorted(
         [p for p in pages if len(p.relative_to(DRAFTS).parts) == 1],
@@ -683,25 +871,18 @@ def render_docs_nav(pages: list[Path]) -> str:
 
     parts: list[str] = []
     for path in root_pages:
-        rel_html = html_output_path(path).relative_to(OUTPUT).as_posix()
-        slug = page_slug(path)
-        parts.append(
-            f'<a href="/documentation/{rel_html}" data-page="{html.escape(slug, quote=True)}">'
-            f"{html.escape(nav_label(path))}</a>"
-        )
+        parts.append(nav_page_link(path, link_class="nav-link"))
 
     for directory in sorted(grouped, key=numeric_sort_key):
-        parts.append('<div class="nav-menu-divider" role="separator"></div>')
+        parts.append('<details class="nav-dropdown">')
         parts.append(
-            f'<div class="nav-menu-heading">{html.escape(directory_label(directory))}</div>'
+            f'<summary class="nav-link">{html.escape(directory_label(directory).title())}</summary>'
         )
+        parts.append('<div class="nav-menu">')
         for path in sorted(grouped[directory], key=lambda item: numeric_sort_key(item.stem)):
-            rel_html = html_output_path(path).relative_to(OUTPUT).as_posix()
-            slug = page_slug(path)
-            parts.append(
-                f'<a href="/documentation/{rel_html}" data-page="{html.escape(slug, quote=True)}">'
-                f"{html.escape(nav_label(path))}</a>"
-            )
+            parts.append(nav_page_link(path))
+        parts.append("</div>")
+        parts.append("</details>")
 
     return "\n        ".join(parts)
 
@@ -724,6 +905,15 @@ def remove_stale_html(generated: set[Path]) -> None:
         if path not in generated:
             path.unlink()
             print(f"Removed stale {path.relative_to(ROOT.parent)}")
+
+
+def remove_empty_output_dirs() -> None:
+    if not OUTPUT.exists():
+        return
+    for dirpath in sorted((path for path in OUTPUT.rglob("*") if path.is_dir()), reverse=True):
+        if not any(dirpath.iterdir()):
+            dirpath.rmdir()
+            print(f"Removed empty {dirpath.relative_to(ROOT.parent)}")
 
 
 def convert_file(path: Path) -> Path:
@@ -791,11 +981,22 @@ def convert_file(path: Path) -> Path:
 
 
 def main() -> None:
+    global _rename_link_lookup
+
     OUTPUT.mkdir(parents=True, exist_ok=True)
     pages = sorted(DRAFTS.rglob("*.md"))
+
+    stem_renames, _rename_link_lookup = detect_md_renames()
+    if migrate_nav_label_overrides(stem_renames):
+        persist_nav_label_overrides()
+    warn_orphaned_nav_label_overrides(pages)
+
+    normalize_md_links(pages)
+
     generated = {convert_file(path) for path in pages}
     write_docs_nav(pages)
     remove_stale_html(generated)
+    remove_empty_output_dirs()
 
 
 if __name__ == "__main__":

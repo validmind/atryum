@@ -14,18 +14,8 @@
     return filename.replace(/\.html$/, '');
   }
 
-  function isDocsPage(page) {
-    if (page && page !== 'home') {
-      return true;
-    }
-
-    return window.location.pathname.indexOf('/documentation/') !== -1;
-  }
-
   function setActiveNav() {
     var page = currentPage();
-    var onDocsPage = isDocsPage(page);
-    var navDropdown = document.querySelector('.nav-dropdown');
 
     document.querySelectorAll('.nav-menu a[data-page]').forEach(function (link) {
       if (link.dataset.page === page) {
@@ -35,18 +25,20 @@
       }
     });
 
-    if (navDropdown) {
-      navDropdown.classList.toggle('is-active', onDocsPage);
-    }
-
-    var docSummary = document.querySelector('.nav-dropdown summary.nav-link');
-    if (docSummary) {
-      if (onDocsPage) {
-        docSummary.setAttribute('aria-current', 'page');
+    document.querySelectorAll('nav > a.nav-link[data-page]').forEach(function (link) {
+      if (link.dataset.page === page) {
+        link.setAttribute('aria-current', 'page');
       } else {
-        docSummary.removeAttribute('aria-current');
+        link.removeAttribute('aria-current');
       }
-    }
+    });
+
+    document.querySelectorAll('.nav-dropdown').forEach(function (navDropdown) {
+      var hasActiveChild = navDropdown.querySelector(
+        '.nav-menu a[data-page][aria-current="page"]'
+      );
+      navDropdown.classList.toggle('is-active', !!hasActiveChild);
+    });
   }
 
   function initToc() {
