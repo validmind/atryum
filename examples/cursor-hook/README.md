@@ -49,6 +49,22 @@ Restart Cursor after changing hooks.
 | `ATRYUM_SOURCE` | `cursor` in the example | source label in Atryum |
 | `ATRYUM_POLL_MS` | `2000` | approval polling interval |
 | `ATRYUM_STATE_DIR` | `~/.atryum/agent-hook-state` | tool-use to invocation-id state |
+| `ATRYUM_CHAT_MESSAGES_LIMIT` | `100` | recent Cursor chat messages sent as LLM-as-judge context when available |
+| `ATRYUM_MAX_MESSAGE_CHARS` | `2000` | maximum characters included from any one chat message |
+| `ATRYUM_CURSOR_TRANSCRIPT_PATH` | hook transcript/conversation path | override Cursor transcript file path |
+| `ATRYUM_CHAT_HISTORY_PATH` | _(empty)_ | generic override for a chat history JSON/JSONL file |
+
+## LLM-as-judge chat context
+
+Before each Cursor `preToolUse` decision, the hook looks for recent chat
+messages in the hook payload (`messages`, `conversation`, `transcript`, or
+`chat_history`) and, when those are absent, reads a hook-provided
+`transcript_path` / `conversation_path` file if available. It sends extracted
+user/assistant/system messages to Atryum as `chat_context` and
+`chat_context_messages`.
+
+Set `ATRYUM_CHAT_MESSAGES_LIMIT` to change how many recent messages are sent.
+Set it to `0` to disable Cursor chat context.
 
 ## Plugin packaging
 

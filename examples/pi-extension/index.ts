@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { readFileSync } from "node:fs";
 
 const API = process.env.ATRYUM_URL || "http://localhost:8080";
 const SOURCE = process.env.ATRYUM_SOURCE || "pi";
@@ -6,6 +7,9 @@ const POLL_INTERVAL = Number(process.env.ATRYUM_POLL_MS || 2000);
 const CLIENT_NAME = process.env.ATRYUM_CLIENT_NAME || SOURCE;
 const CLIENT_VERSION =
   process.env.ATRYUM_CLIENT_VERSION || process.env.PI_VERSION || "";
+const CHAT_MESSAGES_LIMIT = Number(
+  process.env.ATRYUM_CHAT_MESSAGES_LIMIT || 100
+);
 // Self-declared agent identity. Atryum resolves the Agent Record via the
 // agents.agent_ids array. Not authenticated; for verified identity use OAuth.
 const AGENT_ID = process.env.ATRYUM_AGENT_ID || "";
@@ -31,6 +35,7 @@ type InvocationResponse = {
 };
 
 type ToolInput = Record<string, unknown>;
+type ChatMessage = { role: string; text: string };
 
 const invocationMap = new Map<string, string>();
 
@@ -61,11 +66,176 @@ function sessionID(ctx: unknown): string | undefined {
   return undefined;
 }
 
+function sessionFile(ctx: unknown): string | undefined {
+  const manager = (ctx as { sessionManager?: unknown }).sessionManager as
+    | { getSessionFile?: () => string }
+    | undefined;
+  if (!manager || typeof manager.getSessionFile !== "function") {
+    return undefined;
+  }
+  const file = manager.getSessionFile();
+  if (typeof file === "string" && file !== "") {
+    return file;
+  }
+  return undefined;
+}
+
+function chatContext(
+  ctx: unknown
+): { context: string; count: number } | undefined {
+  if (CHAT_MESSAGES_LIMIT <= 0) return undefined;
+  const messages = recentChatMessages(ctx, CHAT_MESSAGES_LIMIT);
+  if (messages.length === 0) return undefined;
+  return {
+    count: messages.length,
+    context: [
+      `Recent Pi chat messages (oldest to newest, up to ${CHAT_MESSAGES_LIMIT}):`,
+      ...messages.map((msg) => `- ${msg.role}: ${msg.text}`),
+    ].join("\n"),
+  };
+}
+
+function recentChatMessages(ctx: unknown, limit: number): ChatMessage[] {
+  const fromSession = recentChatMessagesFromSessionManager(ctx, limit);
+  if (fromSession.length > 0) return fromSession;
+
+  const file = sessionFile(ctx);
+  if (!file) return [];
+  return recentChatMessagesFromFile(file, limit);
+}
+
+function recentChatMessagesFromSessionManager(
+  ctx: unknown,
+  limit: number
+): ChatMessage[] {
+  const manager = (ctx as { sessionManager?: unknown }).sessionManager as
+    | {
+        getBranch?: () => unknown[];
+        getEntries?: () => unknown[];
+      }
+    | undefined;
+  const entries = manager?.getBranch?.() ?? manager?.getEntries?.();
+  if (!Array.isArray(entries)) return [];
+
+  const messages: ChatMessage[] = [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    if (record.type !== "message") continue;
+    const message =
+      record.message && typeof record.message === "object"
+        ? (record.message as Record<string, unknown>)
+        : undefined;
+    if (!message) continue;
+    const role = normalizeRole(firstString(message, ["role", "sender", "author"]));
+    const text = extractText(message);
+    if (role && text) {
+      messages.push({ role, text });
+    }
+  }
+
+  return messages.slice(-limit);
+}
+
+function recentChatMessagesFromFile(file: string, limit: number): ChatMessage[] {
+  try {
+    const raw = readFileSync(file, "utf8");
+    const messages: ChatMessage[] = [];
+    for (const value of parseSessionFile(raw)) {
+      collectChatMessages(value, messages);
+    }
+    return messages.slice(-limit);
+  } catch {
+    return [];
+  }
+}
+
+function parseSessionFile(raw: string): unknown[] {
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+  try {
+    return [JSON.parse(trimmed)];
+  } catch {
+    const values: unknown[] = [];
+    for (const line of trimmed.split(/\r?\n/)) {
+      const text = line.trim();
+      if (!text) continue;
+      try {
+        values.push(JSON.parse(text));
+      } catch {
+        // Pi session formats can change; ignore lines that are not JSON records.
+      }
+    }
+    return values;
+  }
+}
+
+function collectChatMessages(value: unknown, out: ChatMessage[]): void {
+  if (Array.isArray(value)) {
+    for (const item of value) collectChatMessages(item, out);
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+
+  const record = value as Record<string, unknown>;
+  const role = normalizeRole(firstString(record, ["role", "sender", "author"]));
+  const text = extractText(record);
+  if (role && text) {
+    out.push({ role, text });
+    return;
+  }
+
+  for (const nested of Object.values(record)) {
+    collectChatMessages(nested, out);
+  }
+}
+
+function normalizeRole(role: string | undefined): string | undefined {
+  const lower = role?.toLowerCase();
+  if (lower === "user" || lower === "human") return "user";
+  if (lower === "assistant" || lower === "agent" || lower === "ai") {
+    return "assistant";
+  }
+  return undefined;
+}
+
+function extractText(record: Record<string, unknown>): string | undefined {
+  for (const key of ["content", "text", "message"]) {
+    const text = textFromValue(record[key]);
+    if (text) return text;
+  }
+  return undefined;
+}
+
+function textFromValue(value: unknown): string | undefined {
+  if (typeof value === "string") return value.trim() || undefined;
+  if (Array.isArray(value)) {
+    const parts = value.map(textFromValue).filter(Boolean) as string[];
+    return parts.join("\n").trim() || undefined;
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return textFromValue(record.text) || textFromValue(record.content);
+  }
+  return undefined;
+}
+
+function firstString(
+  record: Record<string, unknown>,
+  keys: string[]
+): string | undefined {
+  for (const key of keys) {
+    if (typeof record[key] === "string") return record[key] as string;
+  }
+  return undefined;
+}
+
 async function submit(
   tool: string,
   toolCallID: string,
   input: ToolInput,
-  threadID: string | undefined
+  threadID: string | undefined,
+  chat: { context: string; count: number } | undefined
 ): Promise<InvocationResponse> {
   const res = await fetch(`${API}/api/v1/external/invocations`, {
     method: "POST",
@@ -77,6 +247,9 @@ async function submit(
       input,
       request_id: toolCallID,
       thread_id: threadID,
+      chat_context: chat?.context,
+      chat_context_messages: chat?.count,
+      context: chat?.context,
       agent_id: AGENT_ID || undefined,
       client_name: CLIENT_NAME,
       client_version: CLIENT_VERSION || undefined,
@@ -131,11 +304,13 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_call", async (event, ctx) => {
     try {
       const input = (event.input || {}) as ToolInput;
+      const chat = chatContext(ctx);
       const submitted = await submit(
         event.toolName,
         event.toolCallId,
         input,
-        sessionID(ctx)
+        sessionID(ctx),
+        chat
       );
       invocationMap.set(event.toolCallId, submitted.invocation_id);
 

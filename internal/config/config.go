@@ -46,6 +46,7 @@ type ManagedAgentsConfig struct {
 	APIKey                  string `toml:"api_key"`
 	PollIntervalMillis      int    `toml:"poll_interval_millis"`
 	ReconnectBackoffSeconds int    `toml:"reconnect_backoff_seconds"`
+	RecentChatMessagesLimit int    `toml:"recent_chat_messages_limit"`
 	ClientName              string `toml:"client_name"`
 	ClientVersion           string `toml:"client_version"`
 }

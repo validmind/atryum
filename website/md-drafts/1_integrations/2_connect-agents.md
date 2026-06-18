@@ -4,9 +4,9 @@ Connect your coding agents to Atryum, allowing Atryum to review tool invocations
 
 Connect your coding agents to Atryum so tool invocations pass through Atryum before they run. Atryum evaluates each call against your rules ([Rules](../3_rules.md)), routes calls that need review to human approval, and records every outcome in the invocation audit log ([Invocations](../2_invocations.md)).
 
-## Connect Cursor and Claude Code
+## Connect Cursor, Claude Code, Amp, and Pi
 
-The hooks command currently supports direct setup for [Cursor](https://cursor.com) and [Claude Code](https://www.anthropic.com/claude-code). To retrieve the available setup options for each supported coding agent:
+The hooks command supports direct setup for [Cursor](https://cursor.com), [Claude Code](https://www.anthropic.com/claude-code), [Amp](https://ampcode.com), and [Pi](https://pi.dev). To retrieve the available setup options for each supported coding agent:
 
 ```bash
 ./atryum hooks --help
@@ -28,6 +28,26 @@ Restart Cursor after changing hooks.
 
 Restart Claude Code after changing hooks.
 
+### Install the Atryum plugin for Amp
+
+```bash
+./atryum hooks install amp
+```
+
+Start Amp with plugins enabled:
+
+```bash
+PLUGINS=all amp
+```
+
+### Install the Atryum extension for Pi
+
+```bash
+./atryum hooks install pi
+```
+
+Restart Pi after changing extensions. If Pi is already running, `/reload` reloads extensions in auto-discovered extension directories.
+
 ## Connect other coding agents
 
 Other coding agents connect to Atryum in one of two ways:
@@ -47,9 +67,9 @@ Use this path for agents that gate native tools (shell, file edits, in-process t
 
 3. Follow the setup steps in the example for your agent:
 
-    - [Amp plugin](https://github.com/validmind/atryum/tree/main/examples/amp-plugin) — Requires `PLUGINS=all` when starting Amp
-    - [Pi extension](https://github.com/validmind/atryum/tree/main/examples/pi-extension)
-    - [Claude Code hooks](https://github.com/validmind/atryum/tree/main/examples/claude-code-hook) — Or use [Connect Cursor and Claude Code](#connect-cursor-and-claude-code) to install hooks automatically.
+    - Amp — Run `./atryum hooks install amp`, or follow the [manual Amp plugin setup](https://github.com/validmind/atryum/tree/main/examples/amp-plugin). Requires `PLUGINS=all` when starting Amp.
+    - Pi — Run `./atryum hooks install pi`, or follow the [manual Pi extension setup](https://github.com/validmind/atryum/tree/main/examples/pi-extension).
+    - [Claude Code hooks](https://github.com/validmind/atryum/tree/main/examples/claude-code-hook) — Or use [Connect Cursor, Claude Code, Amp, and Pi](#connect-cursor-claude-code-amp-and-pi) to install hooks automatically.
 
 4. Start your agent from that terminal session. Pending tool calls appear under **Invocations** in the Atryum platform left sidebar.
 
@@ -174,7 +194,7 @@ For how Atryum uses agent identity in no-auth and auth mode, refer to [Agent ide
 
 After you connect an agent, update its integration files, environment variables, or MCP settings on the machine where the agent runs. Update agents in the Atryum platform user interface when you need to change agent IDs, charters, or which record invocations map to.
 
-### Edit Cursor and Claude Code hooks
+### Edit Cursor, Claude Code, Amp, and Pi integrations
 
 To refresh the shared hook script or re-apply hook entries after an Atryum upgrade:
 
@@ -186,17 +206,25 @@ To refresh the shared hook script or re-apply hook entries after an Atryum upgra
 ./atryum hooks install claude-code
 ```
 
-Restart Cursor or Claude Code after changing hooks.
+```bash
+./atryum hooks install amp
+```
+
+```bash
+./atryum hooks install pi
+```
+
+Restart Cursor, Claude Code, Amp, or Pi after changing hooks, plugins, or extensions. Amp must still be started with `PLUGINS=all`. Pi can reload extensions with `/reload` when already running.
 
 To change `ATRYUM_URL` or `ATRYUM_AGENT_ID`, export the new values in the terminal session where you start the agent, then restart the agent. The installed hook reads these at runtime — you do not need to reinstall hooks when only the values change.
 
 ### Edit hook and extension agents
 
-Amp, Pi, and manually configured Claude Code hooks follow the same pattern:
+Manually configured Claude Code hooks and per-project plugin/extension installs follow the same pattern:
 
 1. Update `ATRYUM_URL`, `ATRYUM_AGENT_ID`, or optional label variables in the terminal session where you start the agent. ([Set environment variables](#set-environment-variables))
 
-2. If you changed plugin or extension source files, copy the updated file from the repository example into your install path — for example `~/.config/amp/plugins/atryum.ts` or `~/.pi/agent/extensions/atryum/index.ts`.
+2. If you changed plugin or extension source files, copy the updated file from the repository example into your install path — for example `.amp/plugins/atryum.ts` or `.pi/extensions/atryum/index.ts`.
 
 3. Restart the agent from that terminal session so it picks up the changes.
 
@@ -252,10 +280,18 @@ When you change **Agent IDs**, update `ATRYUM_AGENT_ID` or the `?agent_id=` quer
 ./atryum hooks uninstall claude-code
 ```
 
-Restart Cursor or Claude Code after uninstalling hooks. The shared hook script remains at `~/.atryum/hooks/atryum-hook.mjs` until you delete it manually.
+```bash
+./atryum hooks uninstall amp
+```
 
-- **Amp** — Delete `atryum.ts` from `~/.config/amp/plugins/` or `.amp/plugins/` in your project.
-- **Pi** — Delete `index.ts` from `~/.pi/agent/extensions/atryum/` or `.pi/extensions/atryum/` in your project.
+```bash
+./atryum hooks uninstall pi
+```
+
+Restart Cursor, Claude Code, Amp, or Pi after uninstalling hooks, plugins, or extensions. The shared hook script remains at `~/.atryum/hooks/atryum-hook.mjs` until you delete it manually.
+
+- **Amp** — `./atryum hooks uninstall amp` removes the global plugin from `~/.config/amp/plugins/`. If you installed it per-project, delete `atryum.ts` from `.amp/plugins/` in that project.
+- **Pi** — `./atryum hooks uninstall pi` removes the global extension from `~/.pi/agent/extensions/atryum/`. If you installed it per-project, delete `index.ts` from `.pi/extensions/atryum/` in that project.
 - **MCP proxy agents** — Remove or comment out the Atryum MCP server entry in your agent's MCP configuration, then restart the agent.
 - **Local agent records** — In Atryum, open the agent under **Agents** and click **Delete**. This action is permanent.
 

@@ -21,16 +21,18 @@
           <p class="docs-toc-label">On this page</p>
           <nav class="docs-toc-nav" aria-label="Table of contents">
           <ul>
-          <li><a href="#connect-cursor-and-claude-code">Connect Cursor and Claude Code</a></li>
+          <li><a href="#connect-cursor-claude-code-amp-and-pi">Connect Cursor, Claude Code, Amp, and Pi</a></li>
           <li class="docs-toc-h3"><a href="#install-atryum-hooks-for-cursor">Install Atryum hooks for Cursor</a></li>
           <li class="docs-toc-h3"><a href="#install-atryum-hooks-for-claude-code">Install Atryum hooks for Claude Code</a></li>
+          <li class="docs-toc-h3"><a href="#install-the-atryum-plugin-for-amp">Install the Atryum plugin for Amp</a></li>
+          <li class="docs-toc-h3"><a href="#install-the-atryum-extension-for-pi">Install the Atryum extension for Pi</a></li>
           <li><a href="#connect-other-coding-agents">Connect other coding agents</a></li>
           <li class="docs-toc-h3"><a href="#connect-hook-and-extension-agents">Connect hook and extension agents</a></li>
           <li class="docs-toc-h3"><a href="#connect-via-mcp-proxy">Connect via MCP proxy</a></li>
           <li class="docs-toc-h3"><a href="#setup-examples">Setup examples</a></li>
           <li><a href="#tag-invocations-to-agent-records">Tag invocations to agent records</a></li>
           <li><a href="#edit-connected-coding-agents">Edit connected coding agents</a></li>
-          <li class="docs-toc-h3"><a href="#edit-cursor-and-claude-code-hooks">Edit Cursor and Claude Code hooks</a></li>
+          <li class="docs-toc-h3"><a href="#edit-cursor-claude-code-amp-and-pi-integrations">Edit Cursor, Claude Code, Amp, and Pi integrations</a></li>
           <li class="docs-toc-h3"><a href="#edit-hook-and-extension-agents">Edit hook and extension agents</a></li>
           <li class="docs-toc-h3"><a href="#edit-mcp-proxy-connections">Edit MCP proxy connections</a></li>
           <li class="docs-toc-h3"><a href="#edit-agent-records">Edit agent records</a></li>
@@ -52,9 +54,9 @@
           <article class="docs-content">
         <p>Connect your coding agents to Atryum so tool invocations pass through Atryum before they run. Atryum evaluates each call against your rules (<a href="../3_rules.html">Rules</a>), routes calls that need review to human approval, and records every outcome in the invocation audit log (<a href="../2_invocations.html">Invocations</a>).</p>
 
-        <h2 id="connect-cursor-and-claude-code">Connect Cursor and Claude Code</h2>
+        <h2 id="connect-cursor-claude-code-amp-and-pi">Connect Cursor, Claude Code, Amp, and Pi</h2>
 
-        <p>The hooks command currently supports direct setup for <a href="https://cursor.com">Cursor</a> and <a href="https://www.anthropic.com/claude-code">Claude Code</a>. To retrieve the available setup options for each supported coding agent:</p>
+        <p>The hooks command supports direct setup for <a href="https://cursor.com">Cursor</a>, <a href="https://www.anthropic.com/claude-code">Claude Code</a>, <a href="https://ampcode.com">Amp</a>, and <a href="https://pi.dev">Pi</a>. To retrieve the available setup options for each supported coding agent:</p>
 
         <div class="code-block"><pre><code class="language-bash">./atryum hooks --help</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="./atryum hooks --help" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
 
@@ -70,6 +72,20 @@
 
         <p>Restart Claude Code after changing hooks.</p>
 
+        <h3 id="install-the-atryum-plugin-for-amp">Install the Atryum plugin for Amp</h3>
+
+        <div class="code-block"><pre><code class="language-bash">./atryum hooks install amp</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="./atryum hooks install amp" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
+
+        <p>Start Amp with plugins enabled:</p>
+
+        <div class="code-block"><pre><code class="language-bash">PLUGINS=all amp</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="PLUGINS=all amp" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
+
+        <h3 id="install-the-atryum-extension-for-pi">Install the Atryum extension for Pi</h3>
+
+        <div class="code-block"><pre><code class="language-bash">./atryum hooks install pi</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="./atryum hooks install pi" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
+
+        <p>Restart Pi after changing extensions. If Pi is already running, <code>/reload</code> reloads extensions in auto-discovered extension directories.</p>
+
         <h2 id="connect-other-coding-agents">Connect other coding agents</h2>
 
         <p>Other coding agents connect to Atryum in one of two ways:</p>
@@ -82,7 +98,7 @@
 
         <p>Use this path for agents that gate native tools (shell, file edits, in-process tools) through Atryum before execution:</p>
 
-        <ol><li>Make sure Atryum is running and reachable (<a href="../1_quickstart.html">Quickstart</a>).</li><li>Set <code>ATRYUM_URL</code> (and optionally <code>ATRYUM_AGENT_ID</code>) in the same terminal session where you start the agent. (<a href="#set-environment-variables">Set environment variables</a>)</li><li>Follow the setup steps in the example for your agent:<ul><li><a href="https://github.com/validmind/atryum/tree/main/examples/amp-plugin">Amp plugin</a> — Requires <code>PLUGINS=all</code> when starting Amp</li><li><a href="https://github.com/validmind/atryum/tree/main/examples/pi-extension">Pi extension</a></li><li><a href="https://github.com/validmind/atryum/tree/main/examples/claude-code-hook">Claude Code hooks</a> — Or use <a href="#connect-cursor-and-claude-code">Connect Cursor and Claude Code</a> to install hooks automatically.</li></ul></li><li>Start your agent from that terminal session. Pending tool calls appear under <strong>Invocations</strong> in the Atryum platform left sidebar.</li></ol>
+        <ol><li>Make sure Atryum is running and reachable (<a href="../1_quickstart.html">Quickstart</a>).</li><li>Set <code>ATRYUM_URL</code> (and optionally <code>ATRYUM_AGENT_ID</code>) in the same terminal session where you start the agent. (<a href="#set-environment-variables">Set environment variables</a>)</li><li>Follow the setup steps in the example for your agent:<ul><li>Amp — Run <code>./atryum hooks install amp</code>, or follow the <a href="https://github.com/validmind/atryum/tree/main/examples/amp-plugin">manual Amp plugin setup</a>. Requires <code>PLUGINS=all</code> when starting Amp.</li><li>Pi — Run <code>./atryum hooks install pi</code>, or follow the <a href="https://github.com/validmind/atryum/tree/main/examples/pi-extension">manual Pi extension setup</a>.</li><li><a href="https://github.com/validmind/atryum/tree/main/examples/claude-code-hook">Claude Code hooks</a> — Or use <a href="#connect-cursor-claude-code-amp-and-pi">Connect Cursor, Claude Code, Amp, and Pi</a> to install hooks automatically.</li></ul></li><li>Start your agent from that terminal session. Pending tool calls appear under <strong>Invocations</strong> in the Atryum platform left sidebar.</li></ol>
 
         <h4 id="set-environment-variables">Set environment variables</h4>
 
@@ -143,7 +159,7 @@ export ATRYUM_AGENT_ID=amp-local</code></pre><button class="copy-btn code-block-
 
         <p>After you connect an agent, update its integration files, environment variables, or MCP settings on the machine where the agent runs. Update agents in the Atryum platform user interface when you need to change agent IDs, charters, or which record invocations map to.</p>
 
-        <h3 id="edit-cursor-and-claude-code-hooks">Edit Cursor and Claude Code hooks</h3>
+        <h3 id="edit-cursor-claude-code-amp-and-pi-integrations">Edit Cursor, Claude Code, Amp, and Pi integrations</h3>
 
         <p>To refresh the shared hook script or re-apply hook entries after an Atryum upgrade:</p>
 
@@ -151,15 +167,19 @@ export ATRYUM_AGENT_ID=amp-local</code></pre><button class="copy-btn code-block-
 
         <div class="code-block"><pre><code class="language-bash">./atryum hooks install claude-code</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="./atryum hooks install claude-code" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
 
-        <p>Restart Cursor or Claude Code after changing hooks.</p>
+        <div class="code-block"><pre><code class="language-bash">./atryum hooks install amp</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="./atryum hooks install amp" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
+
+        <div class="code-block"><pre><code class="language-bash">./atryum hooks install pi</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="./atryum hooks install pi" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
+
+        <p>Restart Cursor, Claude Code, Amp, or Pi after changing hooks, plugins, or extensions. Amp must still be started with <code>PLUGINS=all</code>. Pi can reload extensions with <code>/reload</code> when already running.</p>
 
         <p>To change <code>ATRYUM_URL</code> or <code>ATRYUM_AGENT_ID</code>, export the new values in the terminal session where you start the agent, then restart the agent. The installed hook reads these at runtime — you do not need to reinstall hooks when only the values change.</p>
 
         <h3 id="edit-hook-and-extension-agents">Edit hook and extension agents</h3>
 
-        <p>Amp, Pi, and manually configured Claude Code hooks follow the same pattern:</p>
+        <p>Manually configured Claude Code hooks and per-project plugin/extension installs follow the same pattern:</p>
 
-        <ol><li>Update <code>ATRYUM_URL</code>, <code>ATRYUM_AGENT_ID</code>, or optional label variables in the terminal session where you start the agent. (<a href="#set-environment-variables">Set environment variables</a>)</li><li>If you changed plugin or extension source files, copy the updated file from the repository example into your install path — for example <code>~/.config/amp/plugins/atryum.ts</code> or <code>~/.pi/agent/extensions/atryum/index.ts</code>.</li><li>Restart the agent from that terminal session so it picks up the changes.<br><p>Pi can reload extensions without a full restart when the extension is already installed — run <code>/reload</code> in an active Pi session.</p></li></ol>
+        <ol><li>Update <code>ATRYUM_URL</code>, <code>ATRYUM_AGENT_ID</code>, or optional label variables in the terminal session where you start the agent. (<a href="#set-environment-variables">Set environment variables</a>)</li><li>If you changed plugin or extension source files, copy the updated file from the repository example into your install path — for example <code>.amp/plugins/atryum.ts</code> or <code>.pi/extensions/atryum/index.ts</code>.</li><li>Restart the agent from that terminal session so it picks up the changes.<br><p>Pi can reload extensions without a full restart when the extension is already installed — run <code>/reload</code> in an active Pi session.</p></li></ol>
 
         <p>To retag invocations to a different agent record, update <strong>Agent IDs</strong> in Atryum and export the matching <code>ATRYUM_AGENT_ID</code> before restarting. (<a href="#tag-invocations-to-agent-records">Tag invocations to agent records</a>)</p>
 
@@ -183,9 +203,13 @@ export ATRYUM_AGENT_ID=amp-local</code></pre><button class="copy-btn code-block-
 
         <div class="code-block"><pre><code class="language-bash">./atryum hooks uninstall claude-code</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="./atryum hooks uninstall claude-code" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
 
-        <p>Restart Cursor or Claude Code after uninstalling hooks. The shared hook script remains at <code>~/.atryum/hooks/atryum-hook.mjs</code> until you delete it manually.</p>
+        <div class="code-block"><pre><code class="language-bash">./atryum hooks uninstall amp</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="./atryum hooks uninstall amp" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
 
-        <ul><li><strong>Amp</strong> — Delete <code>atryum.ts</code> from <code>~/.config/amp/plugins/</code> or <code>.amp/plugins/</code> in your project.</li><li><strong>Pi</strong> — Delete <code>index.ts</code> from <code>~/.pi/agent/extensions/atryum/</code> or <code>.pi/extensions/atryum/</code> in your project.</li><li><strong>MCP proxy agents</strong> — Remove or comment out the Atryum MCP server entry in your agent's MCP configuration, then restart the agent.</li><li><strong>Local agent records</strong> — In Atryum, open the agent under <strong>Agents</strong> and click <strong>Delete</strong>. This action is permanent.</li></ul>
+        <div class="code-block"><pre><code class="language-bash">./atryum hooks uninstall pi</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="./atryum hooks uninstall pi" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
+
+        <p>Restart Cursor, Claude Code, Amp, or Pi after uninstalling hooks, plugins, or extensions. The shared hook script remains at <code>~/.atryum/hooks/atryum-hook.mjs</code> until you delete it manually.</p>
+
+        <ul><li><strong>Amp</strong> — <code>./atryum hooks uninstall amp</code> removes the global plugin from <code>~/.config/amp/plugins/</code>. If you installed it per-project, delete <code>atryum.ts</code> from <code>.amp/plugins/</code> in that project.</li><li><strong>Pi</strong> — <code>./atryum hooks uninstall pi</code> removes the global extension from <code>~/.pi/agent/extensions/atryum/</code>. If you installed it per-project, delete <code>index.ts</code> from <code>.pi/extensions/atryum/</code> in that project.</li><li><strong>MCP proxy agents</strong> — Remove or comment out the Atryum MCP server entry in your agent's MCP configuration, then restart the agent.</li><li><strong>Local agent records</strong> — In Atryum, open the agent under <strong>Agents</strong> and click <strong>Delete</strong>. This action is permanent.</li></ul>
 
         <p>Synced ValidMind agent records cannot be deleted from Atryum — remove them by changing Agent Record Sync settings or deleting the source record in ValidMind. (<a href="1_connect-validmind.html">Connect ValidMind</a>)</p>
 
