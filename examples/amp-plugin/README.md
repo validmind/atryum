@@ -126,7 +126,16 @@ and to make agent-scoped approval rules apply:
 
 This is a **self-declared** identity — anyone with network access to the
 Atryum API can claim any agent id. For verified identity, run Atryum
-behind OAuth and set `ATRYUM_ACCESS_TOKEN`.
+behind OAuth (one or more `[[auth]]` blocks) and export an OAuth access
+token instead:
+
+```sh
+export ATRYUM_ACCESS_TOKEN=<oauth-access-token>
+```
+
+The plugin sends it as `Authorization: Bearer ...` on every agent runtime
+call. In auth mode Atryum derives the agent id from the token and ignores
+`ATRYUM_AGENT_ID`.
 
 ## API used
 

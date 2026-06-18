@@ -78,7 +78,9 @@ Three pieces of identity travel with every invocation:
 
 Auth is OIDC-based and supports multiple authorization servers concurrently (Keycloak, Auth0, etc.) — see `[[auth]]` blocks. API-key-protected legacy endpoints (`/agent_ids`, `/invocations/{agent_id}`) exist for tooling that hasn't moved to bearer tokens yet.
 
-For local no-auth MCP runs, when no `[[auth]]` blocks are configured, callers may provide a best-effort agent identity with `?agent_id=` on `/mcp/{server}` and `/api/v1/agent/rules`. For example: `http://localhost:8080/mcp/shortcut?agent_id=hunners-codex`. This ID is ignored as soon as inbound auth is configured.
+For local no-auth runtime calls, when no `[[auth]]` blocks are configured, callers may provide a best-effort agent identity with `?agent_id=` on `/mcp/{server}`, `/api/v1/invocations`, and `/api/v1/agent/rules`, or with `agent_id` in external invocation API payloads. For example: `http://localhost:8080/mcp/shortcut?agent_id=hunners-codex`. This ID is ignored as soon as inbound auth is configured.
+
+When inbound auth is configured, all agent runtime surfaces require OAuth bearer tokens: `/mcp/{server}`, `/api/v1/invocations`, `/api/v1/external/invocations`, `/api/v1/external/invocations/{id}`, and `/api/v1/agent/rules`. The Amp and Pi examples, plus the shared hook script installed for agent hooks, read `ATRYUM_ACCESS_TOKEN` and send it as `Authorization: Bearer ...`.
 
 The Settings UI can also select a default ValidMind agent record. AI Evaluation uses that record when an incoming runtime agent ID is missing or does not map to a synced agent, allowing local no-auth runs to evaluate against a known charter without adding TOML.
 
@@ -190,7 +192,7 @@ docker compose --profile prod up    # one binary, embedded UI :8080
 
 ```bash
 ATRYUM_MCP_DEBUG=1                                # concise MCP proxy activity
-ATRYUM_AUTH_DEBUG_SKIP_VERIFY=1                   # local only — bypass inbound auth on /mcp/
+ATRYUM_AUTH_DEBUG_SKIP_VERIFY=1                   # local only — bypass inbound auth on agent runtime APIs
 ```
 
 Or in TOML:
