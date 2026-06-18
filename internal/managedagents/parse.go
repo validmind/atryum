@@ -37,6 +37,72 @@ func asObject(raw json.RawMessage) map[string]json.RawMessage {
 	return m
 }
 
+type chatMessage struct {
+	Role string
+	Text string
+}
+
+func parseChatMessage(evt RawEvent) (chatMessage, bool) {
+	if evt.Type != "user.message" && evt.Type != "agent.message" {
+		return chatMessage{}, false
+	}
+	m := asObject(evt.Raw)
+	role := firstString(m, "role", "sender", "author")
+	if role == "" {
+		if strings.HasPrefix(evt.Type, "user.") {
+			role = "user"
+		} else {
+			role = "assistant"
+		}
+	}
+	text := messageText(m)
+	if strings.TrimSpace(text) == "" {
+		return chatMessage{}, false
+	}
+	return chatMessage{Role: role, Text: strings.TrimSpace(text)}, true
+}
+
+func messageText(m map[string]json.RawMessage) string {
+	for _, key := range []string{"content", "text"} {
+		if text := contentText(m[key]); text != "" {
+			return text
+		}
+	}
+	if raw, ok := m["message"]; ok {
+		var nested map[string]json.RawMessage
+		if json.Unmarshal(raw, &nested) == nil {
+			if text := messageText(nested); text != "" {
+				return text
+			}
+		}
+		if text := contentText(raw); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func contentText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return strings.TrimSpace(s)
+	}
+	var blocks []map[string]json.RawMessage
+	if json.Unmarshal(raw, &blocks) == nil {
+		parts := make([]string, 0, len(blocks))
+		for _, block := range blocks {
+			if text := contentText(block["text"]); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+	return ""
+}
+
 // parseToolUse extracts the normalized tool-call fields from a tool-use event.
 // Returns ok=false when the event is not a tool-use event.
 func parseToolUse(evt RawEvent) (toolUse, bool) {

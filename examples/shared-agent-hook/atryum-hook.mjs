@@ -4,23 +4,40 @@
 // Supported host modes:
 //   ATRYUM_HOOK_HOST=claude  Claude Code settings hooks
 //   ATRYUM_HOOK_HOST=cursor  Cursor hooks
+//   ATRYUM_HOOK_HOST=codex   Codex hooks
 //
 // The hook submits PreToolUse events to Atryum's external invocation API, blocks
 // until the invocation is approved or denied, and reports successful PostToolUse
 // results back to the same invocation.
+//
+// Some hosts include messages or a transcript_path/conversation_path in hook
+// input. When available, this hook sends recent chat messages as
+// LLM-as-judge context.
 
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 const API = process.env.ATRYUM_URL || "http://localhost:8080";
-const SOURCE = process.env.ATRYUM_SOURCE || process.env.ATRYUM_HOOK_HOST || "agent";
 const POLL_INTERVAL = Number(process.env.ATRYUM_POLL_MS || 2000);
-const HOST = (process.env.ATRYUM_HOOK_HOST || "claude").toLowerCase();
+const RAW_HOST = (process.env.ATRYUM_HOOK_HOST || "claude").toLowerCase();
+const HOST = process.env.CURSOR_INVOKED_AS ? "cursor" : RAW_HOST;
+const SOURCE =
+  HOST === "cursor"
+    ? "cursor"
+    : HOST === "codex"
+      ? "codex"
+    : HOST === "claude"
+      ? "claude-code"
+      : process.env.ATRYUM_SOURCE || process.env.ATRYUM_HOOK_HOST || "agent";
+const CLIENT_NAME = process.env.ATRYUM_CLIENT_NAME || SOURCE;
+const CLIENT_VERSION = process.env.ATRYUM_CLIENT_VERSION || "";
 const STATE_DIR =
   process.env.ATRYUM_STATE_DIR ||
   path.join(os.homedir(), ".atryum", "agent-hook-state");
+const CHAT_MESSAGES_LIMIT = Number(process.env.ATRYUM_CHAT_MESSAGES_LIMIT || 100);
+const MAX_MESSAGE_CHARS = Number(process.env.ATRYUM_MAX_MESSAGE_CHARS || 2000);
 // Self-declared agent identity sent to Atryum as the invocation `agent_id`.
 // When this string is listed in an Agent Record's `agent_ids` array in the
 // Atryum UI, invocations from this hook get tagged to that Agent Record
@@ -93,6 +110,318 @@ function describe(input) {
   return parts.join(" | ") || "(no string params)";
 }
 
+function normalizeRole(value) {
+  const role = String(value || "").toLowerCase();
+  if (role === "human") return "user";
+  if (role === "ai") return "assistant";
+  if (role === "user" || role === "assistant" || role === "system") return role;
+  return "";
+}
+
+function trimMessage(text) {
+  const compact = String(text || "")
+    .replace(/\s+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (compact.length <= MAX_MESSAGE_CHARS) return compact;
+  return `${compact.slice(0, MAX_MESSAGE_CHARS)}...`;
+}
+
+function extractText(value) {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return "";
+
+  if (Array.isArray(value)) {
+    return value.map(extractText).filter(Boolean).join("\n");
+  }
+
+  const record = value;
+  if (typeof record.text === "string") return record.text;
+
+  const type = typeof record.type === "string" ? record.type : "";
+  if (type === "tool_use" || type === "tool-call") {
+    const name = typeof record.name === "string" ? record.name : "tool";
+    return `[tool call: ${name}]`;
+  }
+  if (type === "tool_result" || type === "tool-result") {
+    const status = typeof record.status === "string" ? record.status : "completed";
+    return `[tool result: ${status}]`;
+  }
+  if (record.content !== undefined) return extractText(record.content);
+  if (record.message !== undefined) return extractText(record.message);
+  return "";
+}
+
+function messageFromRecord(record) {
+  if (!record || typeof record !== "object") return undefined;
+
+  const codex = messageFromCodexRecord(record);
+  if (codex) return codex;
+
+  const nested =
+    record.message && typeof record.message === "object" ? record.message : undefined;
+  const role = normalizeRole(
+    nested?.role ||
+      record.role ||
+      record.type ||
+      record.sender ||
+      record.author
+  );
+  if (!role) return undefined;
+
+  const text = trimMessage(
+    extractText(nested?.content ?? record.content ?? nested ?? record)
+  );
+  if (!text) return undefined;
+  return { role, text };
+}
+
+function messageFromCodexRecord(record) {
+  if (record.type === "response_item" && record.payload?.type === "message") {
+    const role = normalizeRole(record.payload.role);
+    const text = trimMessage(extractText(record.payload.content));
+    return role && text ? { role, text } : undefined;
+  }
+
+  if (record.type === "event_msg" && record.payload?.type === "user_message") {
+    const text = trimMessage(record.payload.message);
+    return text ? { role: "user", text } : undefined;
+  }
+
+  if (record.type === "event_msg" && record.payload?.type === "agent_message") {
+    const text = trimMessage(record.payload.message);
+    return text ? { role: "assistant", text } : undefined;
+  }
+
+  if (record.type === "event_msg" && record.payload?.type === "task_complete") {
+    const text = trimMessage(record.payload.last_agent_message);
+    return text ? { role: "assistant", text } : undefined;
+  }
+
+  return undefined;
+}
+
+function parseChatMessages(raw) {
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+
+  if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      const source = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed.messages)
+          ? parsed.messages
+          : Array.isArray(parsed.entries)
+            ? parsed.entries
+            : [];
+      if (source.length > 0) {
+        return source.map(messageFromRecord).filter(Boolean);
+      }
+      const message = messageFromRecord(parsed);
+      return message ? [message] : [];
+    } catch {
+      // Fall through to JSONL parsing below.
+    }
+  }
+
+  const messages = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmedLine = line.trim();
+    if (!trimmedLine) continue;
+    try {
+      const message = messageFromRecord(JSON.parse(trimmedLine));
+      if (message) messages.push(message);
+    } catch {
+      // Ignore malformed or non-message transcript lines.
+    }
+  }
+  return messages;
+}
+
+function chatMessagesFromValue(value) {
+  if (typeof value === "string") return parseChatMessages(value);
+  if (!value || typeof value !== "object") return [];
+  if (Array.isArray(value)) return value.map(messageFromRecord).filter(Boolean);
+
+  const source = Array.isArray(value.messages)
+    ? value.messages
+    : Array.isArray(value.entries)
+      ? value.entries
+      : [];
+  if (source.length > 0) return source.map(messageFromRecord).filter(Boolean);
+
+  const message = messageFromRecord(value);
+  return message ? [message] : [];
+}
+
+function chatMessagesFromEvent(event) {
+  for (const value of [
+    event.chat_messages,
+    event.chatMessages,
+    event.messages,
+    event.conversation,
+    event.transcript,
+    event.chat_history,
+    event.chatHistory,
+    event.history,
+  ]) {
+    const messages = chatMessagesFromValue(value);
+    if (messages.length > 0) return messages;
+  }
+  return [];
+}
+
+function chatHistoryPath(event) {
+  return (
+    process.env.ATRYUM_CHAT_HISTORY_PATH ||
+    process.env.ATRYUM_CLAUDE_TRANSCRIPT_PATH ||
+    process.env.ATRYUM_CURSOR_TRANSCRIPT_PATH ||
+    process.env.ATRYUM_CODEX_TRANSCRIPT_PATH ||
+    event.transcript_path ||
+    event.transcriptPath ||
+    event.conversation_path ||
+    event.conversationPath ||
+    ""
+  );
+}
+
+function sessionId(event) {
+  return (
+    event.session_id ||
+    event.sessionId ||
+    event.thread_id ||
+    event.threadId ||
+    event.conversation_id ||
+    event.conversationId ||
+    ""
+  );
+}
+
+function codexHome() {
+  return process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+}
+
+async function findCodexSessionPath(id) {
+  if (!id) return "";
+  const root = path.join(codexHome(), "sessions");
+  const stack = [root];
+
+  while (stack.length > 0) {
+    const dir = stack.pop();
+    let entries = [];
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(fullPath);
+      } else if (entry.isFile() && entry.name.endsWith(".jsonl") && entry.name.includes(id)) {
+        return fullPath;
+      }
+    }
+  }
+
+  return "";
+}
+
+async function codexSessionMessages(event) {
+  const id = sessionId(event) || (await latestCodexHistorySessionId());
+  const sessionPath = await findCodexSessionPath(id);
+  if (sessionPath) {
+    try {
+      return parseChatMessages(await readFile(sessionPath, "utf8"));
+    } catch {
+      return [];
+    }
+  }
+
+  if (!id) return [];
+  try {
+    const raw = await readFile(path.join(codexHome(), "history.jsonl"), "utf8");
+    return raw
+      .split(/\r?\n/)
+      .map((line) => {
+        if (!line.trim()) return undefined;
+        try {
+          const record = JSON.parse(line);
+          if (record.session_id !== id || !record.text) return undefined;
+          return { role: "user", text: trimMessage(record.text) };
+        } catch {
+          return undefined;
+        }
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function latestCodexHistorySessionId() {
+  try {
+    const raw = await readFile(path.join(codexHome(), "history.jsonl"), "utf8");
+    const lines = raw.trim().split(/\r?\n/);
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      try {
+        const record = JSON.parse(lines[i]);
+        if (record.session_id) return record.session_id;
+      } catch {
+        // Keep scanning older history lines.
+      }
+    }
+  } catch {
+    return "";
+  }
+  return "";
+}
+
+async function chatContext(event) {
+  if (CHAT_MESSAGES_LIMIT <= 0) return undefined;
+
+  let messages = chatMessagesFromEvent(event);
+
+  if (messages.length === 0 && HOST === "codex") {
+    messages = await codexSessionMessages(event);
+  }
+
+  if (messages.length === 0) {
+    const file = chatHistoryPath(event);
+    if (!file) return undefined;
+
+    let raw = "";
+    try {
+      raw = await readFile(file, "utf8");
+    } catch {
+      return undefined;
+    }
+    messages = parseChatMessages(raw);
+  }
+
+  const recent = messages.slice(-CHAT_MESSAGES_LIMIT);
+  if (recent.length === 0) return undefined;
+
+  const hostLabel =
+    HOST === "claude"
+      ? "Claude Code"
+      : HOST === "cursor"
+        ? "Cursor"
+        : HOST === "codex"
+          ? "Codex"
+          : SOURCE;
+
+  return {
+    count: recent.length,
+    context: [
+      `Recent ${hostLabel} chat messages (oldest to newest, up to ${CHAT_MESSAGES_LIMIT}):`,
+      ...recent.map((msg) => `- ${msg.role}: ${msg.text}`),
+    ].join("\n"),
+  };
+}
+
 function statePath(id) {
   const safe = createHash("sha256").update(id).digest("hex");
   return path.join(STATE_DIR, `${safe}.json`);
@@ -124,6 +453,7 @@ async function submit(event) {
   const name = toolName(event);
   const input = toolInput(event);
   const id = toolUseID(event);
+  const chat = await chatContext(event);
   const res = await fetch(`${API}/api/v1/external/invocations`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -133,7 +463,12 @@ async function submit(event) {
       description: describe(input),
       input,
       request_id: id,
-      thread_id: event.session_id || event.sessionId || undefined,
+      thread_id: sessionId(event) || undefined,
+      chat_context: chat?.context,
+      chat_context_messages: chat?.count,
+      context: chat?.context,
+      client_name: CLIENT_NAME,
+      client_version: CLIENT_VERSION || undefined,
       agent_id: AGENT_ID || undefined,
     }),
   });

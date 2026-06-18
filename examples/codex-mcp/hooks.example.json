@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ATRYUM_HOOK_HOST=codex ATRYUM_HOOK_EVENT=PreToolUse ATRYUM_SOURCE=codex node ~/.atryum/hooks/atryum-hook.mjs"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ATRYUM_HOOK_HOST=codex ATRYUM_HOOK_EVENT=PostToolUse ATRYUM_SOURCE=codex node ~/.atryum/hooks/atryum-hook.mjs"
+          }
+        ]
+      }
+    ]
+  }
+}
