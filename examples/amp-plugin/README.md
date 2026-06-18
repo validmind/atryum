@@ -86,6 +86,7 @@ To remove the global plugin later:
 | `ATRYUM_CLIENT_NAME` | `amp` | harness name shown in the Atryum Agent column |
 | `ATRYUM_CLIENT_VERSION` | `AMP_VERSION` if set | harness version shown in Atryum |
 | `ATRYUM_AGENT_ID` | _(empty)_ | self-declared agent identifier; matched against Agent Record `agent_ids` (see below) |
+| `ATRYUM_ACCESS_TOKEN` | _(empty)_ | optional OAuth bearer token for Atryum agent runtime APIs |
 | `ATRYUM_CHAT_MESSAGES_LIMIT` | `100` | recent Amp thread messages sent as LLM-as-judge context |
 | `ATRYUM_AMP_THREADS_DIR` | `~/.local/share/amp/threads` | Amp thread JSON directory |
 | `ATRYUM_AMP_SESSION_FILE` | `~/.local/share/amp/session.json` | Amp session state file used to identify the active thread |
@@ -125,7 +126,7 @@ and to make agent-scoped approval rules apply:
 
 This is a **self-declared** identity — anyone with network access to the
 Atryum API can claim any agent id. For verified identity, run Atryum
-behind OAuth and authenticate the plugin instead.
+behind OAuth and set `ATRYUM_ACCESS_TOKEN`.
 
 ## API used
 
@@ -136,4 +137,5 @@ executors:
 - `GET  /api/v1/external/invocations/:id` — poll status (`approved`, `denied`, …)
 - `PATCH /api/v1/external/invocations/:id` — report `running` / `completed` / `failed` / `cancelled`
 
-The same admin UI and admin endpoints (`/api/v1/admin/invocations/:id/approve|deny`) used for MCP-proxied calls work for these external invocations too.
+Human approval still happens in the Atryum UI; the plugin itself only calls
+the non-admin external executor API above.

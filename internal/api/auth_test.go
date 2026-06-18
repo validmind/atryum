@@ -215,6 +215,109 @@ func TestAgentRulesRequiresAuthAndUsesTokenAgentID(t *testing.T) {
 	}
 }
 
+func TestAgentRuntimeEndpointsRequireAuthWhenValidatorConfigured(t *testing.T) {
+	rig := newAuthTestRig(t)
+	h := newAuthedHandler(t, &stubService{}, rig)
+
+	cases := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{"external submit", http.MethodPost, "/api/v1/external/invocations", `{"tool":"Read","input":{}}`},
+		{"external poll", http.MethodGet, "/api/v1/external/invocations/inv_123", ""},
+		{"external patch", http.MethodPatch, "/api/v1/external/invocations/inv_123", `{"execution_status":"running"}`},
+		{"direct submit", http.MethodPost, "/api/v1/invocations", `{"server":"demo","tool":"Read","input":{}}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req := httptest.NewRequest(c.method, c.path, strings.NewReader(c.body))
+			if c.body != "" {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("expected 401 without bearer, got %d body=%s", w.Code, w.Body.String())
+			}
+			if chal := w.Header().Get("WWW-Authenticate"); !strings.Contains(chal, "Bearer") {
+				t.Fatalf("expected Bearer challenge, got %q", chal)
+			}
+		})
+	}
+}
+
+func TestAgentRuntimeEndpointsAcceptValidToken(t *testing.T) {
+	rig := newAuthTestRig(t)
+	now := time.Now().UTC()
+	svc := &stubService{invoke: invocation.InvocationResponse{
+		InvocationID: "inv_123",
+		ServerName:   "demo",
+		ToolName:     "Read",
+		Status:       invocation.StatusApproved,
+		SubmittedAt:  now,
+	}}
+	h := newAuthedHandler(t, svc, rig)
+	tok := rig.sign(t, defaultClaims())
+
+	submitReq := httptest.NewRequest(http.MethodPost, "/api/v1/external/invocations", strings.NewReader(`{"source":"amp","tool":"Read","input":{},"agent_id":"spoofed"}`))
+	submitReq.Header.Set("Content-Type", "application/json")
+	submitReq.Header.Set("Authorization", "Bearer "+tok)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, submitReq)
+	if w.Code != http.StatusOK {
+		t.Fatalf("external submit expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if svc.submitReq == nil || svc.submitReq.AgentID != "spoofed" {
+		t.Fatalf("expected body agent_id to be passed to service, got %#v", svc.submitReq)
+	}
+	if got := auth.AgentIDFromContext(svc.submitCtx); got != "agent-007" {
+		t.Fatalf("expected token agent_id on external submit ctx, got %q", got)
+	}
+
+	pollReq := httptest.NewRequest(http.MethodGet, "/api/v1/external/invocations/inv_123?agent_id=spoofed", nil)
+	pollReq.Header.Set("Authorization", "Bearer "+tok)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, pollReq)
+	if w.Code != http.StatusOK {
+		t.Fatalf("external poll expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if got := auth.AgentIDFromContext(svc.getCtx); got != "agent-007" {
+		t.Fatalf("expected token agent_id on external poll ctx, got %q", got)
+	}
+
+	patchReq := httptest.NewRequest(http.MethodPatch, "/api/v1/external/invocations/inv_123", strings.NewReader(`{"execution_status":"running"}`))
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchReq.Header.Set("Authorization", "Bearer "+tok)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, patchReq)
+	if w.Code != http.StatusOK {
+		t.Fatalf("external patch expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if svc.recordID != "inv_123" || svc.recordReq == nil || svc.recordReq.ExecutionStatus != "running" {
+		t.Fatalf("unexpected patch call id=%q req=%#v", svc.recordID, svc.recordReq)
+	}
+	if got := auth.AgentIDFromContext(svc.recordCtx); got != "agent-007" {
+		t.Fatalf("expected token agent_id on external patch ctx, got %q", got)
+	}
+
+	directReq := httptest.NewRequest(http.MethodPost, "/api/v1/invocations?agent_id=spoofed", strings.NewReader(`{"server":"demo","tool":"Read","input":{}}`))
+	directReq.Header.Set("Content-Type", "application/json")
+	directReq.Header.Set("Authorization", "Bearer "+tok)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, directReq)
+	if w.Code != http.StatusOK {
+		t.Fatalf("direct submit expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if svc.invokedReq == nil || svc.invokedReq.Tool != "Read" {
+		t.Fatalf("expected direct invocation service call, got %#v", svc.invokedReq)
+	}
+	if got := auth.AgentIDFromContext(svc.invokedCtx); got != "agent-007" {
+		t.Fatalf("expected token agent_id on direct submit ctx, got %q", got)
+	}
+}
+
 func TestUnprotectedRoutesRemainOpenWhenAuthEnabled(t *testing.T) {
 	rig := newAuthTestRig(t)
 	now := time.Now().UTC()
@@ -230,7 +333,6 @@ func TestUnprotectedRoutesRemainOpenWhenAuthEnabled(t *testing.T) {
 		{http.MethodGet, "/healthz", "", http.StatusOK},
 		{http.MethodGet, "/api/v1/admin/invocations", "", http.StatusOK},
 		{http.MethodGet, "/ui/", "", http.StatusOK},
-		{http.MethodPost, "/api/v1/external/invocations", `{"tool":"x","input":{}}`, http.StatusOK},
 	}
 	for _, c := range cases {
 		var body *strings.Reader
@@ -281,6 +383,44 @@ func TestMCPNoValidatorPreservesAnonymousAccess(t *testing.T) {
 	h.Routes().ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 anonymous, got %d", w.Code)
+	}
+}
+
+func TestAgentRuntimeNoValidatorPreservesAnonymousAccess(t *testing.T) {
+	now := time.Now().UTC()
+	svc := &stubService{invoke: invocation.InvocationResponse{InvocationID: "inv_1", ServerName: "demo", ToolName: "Read", Status: invocation.StatusApproved, SubmittedAt: now}}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil).Routes()
+
+	cases := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+		want   int
+	}{
+		{"external submit", http.MethodPost, "/api/v1/external/invocations", `{"tool":"Read","input":{},"agent_id":"local-agent"}`, http.StatusOK},
+		{"external poll", http.MethodGet, "/api/v1/external/invocations/inv_1", "", http.StatusOK},
+		{"external patch", http.MethodPatch, "/api/v1/external/invocations/inv_1", `{"execution_status":"running"}`, http.StatusOK},
+		{"direct submit", http.MethodPost, "/api/v1/invocations?agent_id=local-agent", `{"server":"demo","tool":"Read","input":{}}`, http.StatusOK},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req := httptest.NewRequest(c.method, c.path, strings.NewReader(c.body))
+			if c.body != "" {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+			if w.Code != c.want {
+				t.Fatalf("expected %d anonymous, got %d body=%s", c.want, w.Code, w.Body.String())
+			}
+			if got := w.Header().Get("WWW-Authenticate"); got != "" {
+				t.Fatalf("did not expect WWW-Authenticate, got %q", got)
+			}
+		})
+	}
+	if got := auth.AgentIDFromContext(svc.invokedCtx); got != "local-agent" {
+		t.Fatalf("expected no-auth query agent_id on direct submit ctx, got %q", got)
 	}
 }
 

@@ -713,11 +713,10 @@ func (h *Handler) Routes() http.Handler {
 	if h.authValidator != nil {
 		mux.Handle("/.well-known/oauth-protected-resource", h.protectedResourceMetadata())
 	}
-	mcpHandler := auth.MiddlewareWithOptions(h.authValidator, "/.well-known/oauth-protected-resource", auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})(http.HandlerFunc(h.invokeUpstream))
-	mcpHandler = h.noAuthAgentIDHint(mcpHandler)
+	mcpHandler := h.agentRuntimeHandler(http.HandlerFunc(h.invokeUpstream))
 	mux.HandleFunc("/mcp", h.mcpRootNotFound)
 	mux.Handle("/mcp/", mcpHandler)
-	mux.HandleFunc("/api/v1/invocations", h.invocations)
+	mux.Handle("/api/v1/invocations", h.agentRuntimeHandler(http.HandlerFunc(h.invocations)))
 	mux.HandleFunc("/api/v1/admin/invocations", h.adminInvocations)
 	mux.HandleFunc("/api/v1/admin/invocations/stream", h.adminInvocationStream)
 	mux.HandleFunc("/api/v1/admin/invocations/", h.adminInvocationDetail)
@@ -740,11 +739,10 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/api/v1/admin/managed-agents/agents", h.adminManagedAgents)
 	mux.HandleFunc("/api/v1/admin/managed-agents/sessions/", h.adminManagedAgentSessionDetail)
 	mux.HandleFunc("/api/v1/admin/managed-agents/sessions", h.adminManagedAgentSessions)
-	agentRulesHandler := auth.MiddlewareWithOptions(h.authValidator, "/.well-known/oauth-protected-resource", auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})(http.HandlerFunc(h.agentRules))
-	agentRulesHandler = h.noAuthAgentIDHint(agentRulesHandler)
+	agentRulesHandler := h.agentRuntimeHandler(http.HandlerFunc(h.agentRules))
 	mux.Handle("/api/v1/agent/rules", agentRulesHandler)
-	mux.HandleFunc("/api/v1/external/invocations", h.externalInvocations)
-	mux.HandleFunc("/api/v1/external/invocations/", h.externalInvocationDetail)
+	mux.Handle("/api/v1/external/invocations", h.agentRuntimeHandler(http.HandlerFunc(h.externalInvocations)))
+	mux.Handle("/api/v1/external/invocations/", h.agentRuntimeHandler(http.HandlerFunc(h.externalInvocationDetail)))
 	apiKeyMW := auth.APIKeyMiddleware(h.apiKeyAuth)
 	mux.Handle("/agent_ids", apiKeyMW(http.HandlerFunc(h.agentIDs)))
 	mux.Handle("/invocations/", apiKeyMW(http.HandlerFunc(h.invocationsByAgentID)))
@@ -753,6 +751,15 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("/ui/", http.StripPrefix("/ui/", h.spaFileServer()))
 	mux.HandleFunc("/", h.root)
 	return mux
+}
+
+func (h *Handler) agentRuntimeHandler(next http.Handler) http.Handler {
+	handler := auth.MiddlewareWithOptions(
+		h.authValidator,
+		"/.well-known/oauth-protected-resource",
+		auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug},
+	)(next)
+	return h.noAuthAgentIDHint(handler)
 }
 
 func (h *Handler) noAuthAgentIDHint(next http.Handler) http.Handler {
