@@ -43,8 +43,14 @@ export PLUGINS=all
 
 ### System-wide (recommended)
 
-Drop the plugin into `~/.config/amp/plugins/` and it will gate every amp
-session on the machine:
+Use the Atryum CLI to install the plugin into `~/.config/amp/plugins/`:
+
+```sh
+./atryum hooks install amp
+```
+
+Or copy it manually. Once installed there, it will gate every amp session on
+the machine:
 
 ```sh
 mkdir -p ~/.config/amp/plugins
@@ -64,14 +70,40 @@ Make sure atryum is running (default `http://localhost:8080`) and open the
 admin UI at <http://localhost:8080/ui/>. Pending tool calls will appear there
 with Approve / Deny buttons.
 
+To remove the global plugin later:
+
+```sh
+./atryum hooks uninstall amp
+```
+
 ## Configure (env vars)
 
-| var               | default                | meaning                                                     |
-| ----------------- | ---------------------- | ----------------------------------------------------------- |
-| `ATRYUM_URL`      | `http://localhost:8080`| base URL of the atryum server                               |
-| `ATRYUM_SOURCE`   | `amp`                  | label shown as the "upstream" column in the atryum UI       |
-| `ATRYUM_POLL_MS`  | `2000`                 | how often the plugin polls atryum while awaiting approval   |
-| `ATRYUM_AGENT_ID` | _(empty)_              | self-declared agent identifier; matched against Agent Record `agent_ids` (see below) |
+| var | default | meaning |
+| --- | --- | --- |
+| `ATRYUM_URL` | `http://localhost:8080` | base URL of the atryum server |
+| `ATRYUM_SOURCE` | `amp` | label shown as the "upstream" column in the atryum UI |
+| `ATRYUM_POLL_MS` | `2000` | how often the plugin polls atryum while awaiting approval |
+| `ATRYUM_CLIENT_NAME` | `amp` | harness name shown in the Atryum Agent column |
+| `ATRYUM_CLIENT_VERSION` | `AMP_VERSION` if set | harness version shown in Atryum |
+| `ATRYUM_AGENT_ID` | _(empty)_ | self-declared agent identifier; matched against Agent Record `agent_ids` (see below) |
+| `ATRYUM_CHAT_MESSAGES_LIMIT` | `100` | recent Amp thread messages sent as LLM-as-judge context |
+| `ATRYUM_AMP_THREADS_DIR` | `~/.local/share/amp/threads` | Amp thread JSON directory |
+| `ATRYUM_AMP_SESSION_FILE` | `~/.local/share/amp/session.json` | Amp session state file used to identify the active thread |
+
+## LLM-as-judge chat context
+
+Before each tool call, the plugin builds compact recent context and sends it
+to Atryum as `chat_context` and `chat_context_messages` (plus the deprecated
+`context` alias for compatibility). It first tries the live plugin context
+when available. If Amp has persisted the active thread under
+`ATRYUM_AMP_THREADS_DIR`, the plugin includes that archived chat text.
+For active sessions where Amp has not written a thread JSON file yet, it uses
+the active thread ID from `ATRYUM_AMP_SESSION_FILE`, reads Amp's current
+thread log, and includes fresh message/tool activity plus the tool calls and
+results observed by the plugin.
+
+Set `ATRYUM_CHAT_MESSAGES_LIMIT` to change how many recent messages are sent.
+Set it to `0` to disable Amp chat context.
 
 ## Tagging invocations to an Agent Record
 

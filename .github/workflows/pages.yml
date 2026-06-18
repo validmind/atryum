@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - "website/**"
-      - "Makefile"
+      - "Justfile"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -37,14 +37,17 @@ jobs:
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
+      - name: Set up just
+        uses: extractions/setup-just@v3
+
       - name: Build documentation
-        run: make docs
+        run: just docs
 
       - name: Verify generated documentation is committed
         run: git diff --exit-code -- website/documentation website/partials/docs-nav.html
 
       - name: Build PDF documentation
-        run: make docs-pdf
+        run: just docs-pdf
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

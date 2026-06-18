@@ -2,8 +2,6 @@
 
 Invocations are durable audit records for every tool call that passes through Atryum.
 
-## What are invocations?
-
 The **Invocations** page is where you review those calls, approve or deny requests that need human input, and turn one-off decisions into reusable rules ([Rules](3_rules.md)). Invocations are displayed in a table:
 
 - **<span style="font-variant: small-caps;">agent</span>** — The client that made the tool call.

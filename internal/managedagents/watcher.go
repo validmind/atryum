@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,16 +41,118 @@ type watcher struct {
 	mu            sync.Mutex
 	pending       map[string]pendingCall // keyed by tool-use event ID
 	toolUseCustom map[string]bool
+	recentChat    []chatMessage
 }
+
+const hydrateSessionEventsPageSize = 500
 
 func (w *watcher) log() *slog.Logger {
 	return slog.With("component", "managed_agents", "session_id", w.reg.SessionID)
+}
+
+func (w *watcher) recordChatMessage(msg chatMessage) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.recentChat = append(w.recentChat, msg)
+	limit := w.acct.cfg.RecentChatMessagesLimit
+	if len(w.recentChat) > limit {
+		w.recentChat = append([]chatMessage(nil), w.recentChat[len(w.recentChat)-limit:]...)
+	}
+}
+
+func (w *watcher) recentChatContext() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.recentChat) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Recent chat messages (oldest to newest, up to ")
+	b.WriteString(strconv.Itoa(w.acct.cfg.RecentChatMessagesLimit))
+	b.WriteString("):")
+	for _, msg := range w.recentChat {
+		b.WriteString("\n- ")
+		b.WriteString(msg.Role)
+		b.WriteString(": ")
+		b.WriteString(msg.Text)
+	}
+	return b.String()
+}
+
+func (w *watcher) recentChatCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.recentChat)
+}
+
+func (w *watcher) hydrateRecentChat(ctx context.Context) {
+	if w.svc.audit == nil {
+		return
+	}
+	if err := w.ensureAudit(ctx); err != nil {
+		w.log().Warn("could not hydrate recent chat: audit invocation unavailable", "error", err)
+		return
+	}
+	offset := uint64(0)
+	hydrated := 0
+	for {
+		events, total, err := w.svc.audit.ListEvents(ctx, w.auditID, invocation.EventListFilter{
+			Offset: offset,
+			Limit:  hydrateSessionEventsPageSize,
+		})
+		if err != nil {
+			w.log().Warn("could not hydrate recent chat from audit events", "error", err)
+			return
+		}
+		for _, evt := range events {
+			rawEvt, ok := auditedSessionEvent(evt)
+			if !ok {
+				continue
+			}
+			if msg, ok := parseChatMessage(rawEvt); ok {
+				w.recordChatMessage(msg)
+				hydrated++
+			}
+		}
+		offset += uint64(len(events))
+		if len(events) == 0 || offset >= uint64(total) {
+			break
+		}
+	}
+	if hydrated > 0 {
+		w.log().Info("hydrated recent chat from audit events", "chat_messages_seen", hydrated, "chat_messages_retained", w.recentChatCount())
+	}
+}
+
+func auditedSessionEvent(evt invocation.Event) (RawEvent, bool) {
+	if evt.EventType != "managed_agents.session_event" {
+		return RawEvent{}, false
+	}
+	var payload struct {
+		EventID     string          `json:"event_id"`
+		EventType   string          `json:"event_type"`
+		ProcessedAt time.Time       `json:"processed_at"`
+		Raw         json.RawMessage `json:"raw"`
+	}
+	if err := json.Unmarshal(evt.Payload, &payload); err != nil {
+		return RawEvent{}, false
+	}
+	if payload.EventType == "" || len(payload.Raw) == 0 {
+		return RawEvent{}, false
+	}
+	return RawEvent{
+		ID:          payload.EventID,
+		Type:        payload.EventType,
+		ProcessedAt: payload.ProcessedAt,
+		Raw:         payload.Raw,
+	}, true
 }
 
 // run is the per-session supervisor loop: catch up on missed history, then
 // follow the live stream, reconnecting with backoff until the context is done.
 func (w *watcher) run(ctx context.Context) {
 	w.log().Info("watcher started", "agent_id", w.reg.AgentID, "from_event_id", w.lastEventID)
+	w.hydrateRecentChat(ctx)
 	for {
 		if ctx.Err() != nil {
 			return
@@ -125,6 +229,9 @@ func (w *watcher) handleEvent(ctx context.Context, evt RawEvent) {
 	} else {
 		w.svc.appendSessionEvent(ctx, w.auditID, w.reg.SessionID, evt)
 	}
+	if msg, ok := parseChatMessage(evt); ok {
+		w.recordChatMessage(msg)
+	}
 
 	switch {
 	case isToolUse(evt.Type):
@@ -171,16 +278,18 @@ func (w *watcher) handleToolUse(ctx context.Context, evt RawEvent) bool {
 	source := w.cfgSource(tu)
 	eventID := tu.EventID
 	resp, err := w.svc.inv.Submit(ctx, invocation.ExternalSubmitRequest{
-		Source:         source,
-		Tool:           tu.ToolName,
-		Description:    "Claude managed agent " + tu.Kind + " in session " + w.reg.SessionID,
-		Input:          tu.Input,
-		RequestID:      &eventID,
-		IdempotencyKey: &eventID, // dedupe across stream reconnects/replays
-		ThreadID:       w.reg.SessionID,
-		ClientName:     w.acct.cfg.ClientName,
-		ClientVersion:  w.acct.cfg.ClientVersion,
-		AgentID:        w.reg.AgentID,
+		Source:              source,
+		Tool:                tu.ToolName,
+		Description:         "Claude managed agent " + tu.Kind + " in session " + w.reg.SessionID,
+		Input:               tu.Input,
+		ChatContext:         w.recentChatContext(),
+		ChatContextMessages: w.recentChatCount(),
+		RequestID:           &eventID,
+		IdempotencyKey:      &eventID, // dedupe across stream reconnects/replays
+		ThreadID:            w.reg.SessionID,
+		ClientName:          w.acct.cfg.ClientName,
+		ClientVersion:       w.acct.cfg.ClientVersion,
+		AgentID:             w.reg.AgentID,
 	})
 	if err != nil {
 		w.log().Warn("submit tool call failed", "tool", tu.ToolName, "error", err)

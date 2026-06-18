@@ -260,14 +260,15 @@ func runServer(args []string) error {
 			return fmt.Errorf("managed_agents workspace label is required for account %q; use an Anthropic API key created in that workspace", emptyDefault(ma.Name, managedagents.DefaultAccountName))
 		}
 		acctCfg := managedagents.Config{
-			Name:             ma.Name,
-			Workspace:        ma.Workspace,
-			BaseURL:          ma.BaseURL,
-			APIKey:           ma.APIKey,
-			PollInterval:     time.Duration(ma.PollIntervalMillis) * time.Millisecond,
-			ReconnectBackoff: time.Duration(ma.ReconnectBackoffSeconds) * time.Second,
-			ClientName:       ma.ClientName,
-			ClientVersion:    ma.ClientVersion,
+			Name:                    ma.Name,
+			Workspace:               ma.Workspace,
+			BaseURL:                 ma.BaseURL,
+			APIKey:                  ma.APIKey,
+			PollInterval:            time.Duration(ma.PollIntervalMillis) * time.Millisecond,
+			ReconnectBackoff:        time.Duration(ma.ReconnectBackoffSeconds) * time.Second,
+			RecentChatMessagesLimit: ma.RecentChatMessagesLimit,
+			ClientName:              ma.ClientName,
+			ClientVersion:           ma.ClientVersion,
 		}
 		managedAccounts = append(managedAccounts, managedagents.Account{
 			Client: managedagents.NewAnthropicHTTPClient(acctCfg),

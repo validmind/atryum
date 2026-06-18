@@ -73,3 +73,27 @@ func TestLoadMissingConfigUsesDefaultsAndEnv(t *testing.T) {
 		t.Fatalf("Backend.APISecret = %q", cfg.Backend.APISecret)
 	}
 }
+
+func TestLoadManagedAgentsRecentChatMessagesLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "atryum.toml")
+	if err := os.WriteFile(path, []byte(`[[managed_agents]]
+name = "default"
+workspace = "workspace"
+api_key = "sk-test"
+recent_chat_messages_limit = 42
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.ManagedAgents) != 1 {
+		t.Fatalf("managed agents count = %d", len(cfg.ManagedAgents))
+	}
+	if cfg.ManagedAgents[0].RecentChatMessagesLimit != 42 {
+		t.Fatalf("RecentChatMessagesLimit = %d", cfg.ManagedAgents[0].RecentChatMessagesLimit)
+	}
+}
