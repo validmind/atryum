@@ -121,13 +121,16 @@ export const getAdminAccessToken = async (): Promise<string | null> => {
 };
 
 export const refreshAdminAccessToken = async (): Promise<string | null> => {
-  if (!activeManager) return null;
-  try {
-    activeUser = await activeManager.signinSilent();
-  } catch {
-    activeUser = await activeManager.getUser();
-  }
-  if (isUsableUser(activeUser)) return activeUser.access_token;
+	if (!activeManager) return null;
+	console.debug('[admin-auth] refreshing access token');
+	try {
+		activeUser = await activeManager.signinSilent();
+		console.debug('[admin-auth] access token refreshed');
+	} catch {
+		console.debug('[admin-auth] silent token refresh failed; checking stored user');
+		activeUser = await activeManager.getUser();
+	}
+	if (isUsableUser(activeUser)) return activeUser.access_token;
   // Silent renew failed and no usable token remains. Clear the session so the
   // provider's userUnloaded event drives the UI back to sign-in instead of
   // leaving a stale "authenticated" shell with dead data.
@@ -135,9 +138,10 @@ export const refreshAdminAccessToken = async (): Promise<string | null> => {
     await activeManager.removeUser();
   } catch {
     /* best effort */
-  }
-  activeUser = null;
-  return null;
+	}
+	activeUser = null;
+	console.debug('[admin-auth] no usable access token after refresh');
+	return null;
 };
 
 const LoadingScreen: React.FC = () => (
