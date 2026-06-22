@@ -81,13 +81,12 @@ func AdminMiddleware(v *Validator, opts MiddlewareOptions) func(http.Handler) ht
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			header := strings.TrimSpace(r.Header.Get("Authorization"))
 			if header == "" {
-				if opts.DebugLogIdentity {
-					logAuthFailure(r, "invalid_token", "missing bearer token", "")
-				}
+				logAuthFailure(r, "invalid_token", "missing bearer token", "")
 				writeChallenge(w, http.StatusUnauthorized, "missing bearer token", "", "", "")
 				return
 			}
 			if !strings.HasPrefix(strings.ToLower(header), "bearer ") {
+				logAuthFailure(r, "invalid_request", "invalid Authorization scheme", "")
 				writeChallenge(w, http.StatusUnauthorized, "invalid Authorization scheme", "invalid_request", "", "")
 				return
 			}

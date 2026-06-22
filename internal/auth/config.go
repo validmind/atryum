@@ -4,7 +4,10 @@
 // decisions and audit.
 package auth
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // DefaultAgentIDClaim is the JWT claim consulted first when extracting the
 // agent identity. Falls back to client_id, then azp, then sub.
@@ -20,18 +23,34 @@ const (
 // Config describes one configured authorization server (e.g. one Keycloak
 // realm or one Auth0 tenant). Multiple configs are supported.
 type Config struct {
-	Enabled         bool   `toml:"enabled"`
-	Issuer          string `toml:"issuer"`
-	Audience        string `toml:"audience"`
-	JWKSURL         string `toml:"jwks_url"`
-	RequiredScope   string `toml:"required_scope"`
-	AgentIDClaim    string `toml:"agent_id_claim"`
-	AdminEnabled    bool   `toml:"admin_enabled"`
-	AdminProvider   string `toml:"admin_provider"`
-	AdminClientID   string `toml:"admin_client_id"`
-	AdminScopes     string `toml:"admin_scopes"`
-	AdminClaim      string `toml:"admin_claim"`
-	AdminClaimValue string `toml:"admin_claim_value"`
+	Enabled         bool       `toml:"enabled"`
+	Issuer          string     `toml:"issuer"`
+	Audience        string     `toml:"audience"`
+	JWKSURL         string     `toml:"jwks_url"`
+	RequiredScope   string     `toml:"required_scope"`
+	AgentIDClaim    string     `toml:"agent_id_claim"`
+	AdminEnabled    bool       `toml:"admin_enabled"`
+	AdminProvider   string     `toml:"admin_provider"`
+	AdminClientID   string     `toml:"admin_client_id"`
+	AdminScopes     string     `toml:"admin_scopes"`
+	AdminClaim      string     `toml:"admin_claim"`
+	AdminClaimValue ClaimValue `toml:"admin_claim_value"`
+}
+
+type ClaimValue string
+
+func (v *ClaimValue) UnmarshalTOML(value any) error {
+	switch t := value.(type) {
+	case string:
+		*v = ClaimValue(strings.TrimSpace(t))
+	case bool:
+		*v = ClaimValue(fmt.Sprintf("%t", t))
+	case int64:
+		*v = ClaimValue(fmt.Sprintf("%d", t))
+	default:
+		return fmt.Errorf("admin_claim_value must be a string, bool, or integer")
+	}
+	return nil
 }
 
 // Normalized returns a copy with whitespace trimmed and defaults applied.
@@ -58,7 +77,7 @@ func (c Config) Normalized() Config {
 	if c.AdminClaim == "" {
 		c.AdminClaim = DefaultAdminClaim
 	}
-	c.AdminClaimValue = strings.TrimSpace(c.AdminClaimValue)
+	c.AdminClaimValue = ClaimValue(strings.TrimSpace(string(c.AdminClaimValue)))
 	if c.AdminClaimValue == "" {
 		c.AdminClaimValue = DefaultAdminClaimValue
 	}

@@ -351,6 +351,19 @@ func TestValidatorValidateAdminRequiresAdminEnabledConfig(t *testing.T) {
 	}
 }
 
+func TestClaimValueUnmarshalTOMLBool(t *testing.T) {
+	var value ClaimValue
+	if err := value.UnmarshalTOML(true); err != nil {
+		t.Fatalf("UnmarshalTOML: %v", err)
+	}
+	if value != "true" {
+		t.Fatalf("value = %q", value)
+	}
+	if !adminClaimMatches(jwt.MapClaims{"atryum_admin": true}, "atryum_admin", string(value)) {
+		t.Fatal("expected boolean token claim to match boolean-derived config value")
+	}
+}
+
 func TestValidatorAgentIDFallbackToSub(t *testing.T) {
 	idp := newTestIdP(t)
 	v := newValidatorForIdP(t, idp, func(c *Config) { c.AgentIDClaim = "preferred_username" })
@@ -680,6 +693,62 @@ func TestMiddlewareNilValidatorIsPassThrough(t *testing.T) {
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/mcp/x", nil))
 	if !called {
 		t.Fatal("expected pass-through when validator is nil")
+	}
+}
+
+func TestAdminMiddlewareLogsMissingToken(t *testing.T) {
+	idp := newTestIdP(t)
+	v := newValidatorForIdP(t, idp, func(c *Config) {
+		c.AdminEnabled = true
+		c.AdminClientID = "admin-client"
+	})
+	var logs bytes.Buffer
+	origWriter := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(origWriter) })
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	h := AdminMiddleware(v, MiddlewareOptions{})(next)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+	got := logs.String()
+	if !strings.Contains(got, "[auth] invalid_token") || !strings.Contains(got, `description="missing bearer token"`) {
+		t.Fatalf("expected missing token auth log, got %q", got)
+	}
+}
+
+func TestAdminMiddlewareLogsInvalidScheme(t *testing.T) {
+	idp := newTestIdP(t)
+	v := newValidatorForIdP(t, idp, func(c *Config) {
+		c.AdminEnabled = true
+		c.AdminClientID = "admin-client"
+	})
+	var logs bytes.Buffer
+	origWriter := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(origWriter) })
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	h := AdminMiddleware(v, MiddlewareOptions{})(next)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)
+	req.Header.Set("Authorization", "Basic abc")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+	got := logs.String()
+	if !strings.Contains(got, "[auth] invalid_request") || !strings.Contains(got, `description="invalid Authorization scheme"`) {
+		t.Fatalf("expected invalid scheme auth log, got %q", got)
+	}
+	if strings.Contains(got, "Basic abc") {
+		t.Fatal("auth log should not include Authorization header")
 	}
 }
 

@@ -154,7 +154,7 @@ const SignInScreen: React.FC<{
   selectedProvider: AdminAuthProviderMetadata | null;
   error: string | null;
   onSelect: (providerId: string) => void;
-  onSignIn: () => void;
+  onSignIn: (providerId: string) => void;
 }> = ({ providers, selectedProvider, error, onSelect, onSignIn }) => (
   <Center minH="100vh" bg="background.page" px={6}>
     <Box w="full" maxW="420px">
@@ -181,7 +181,12 @@ const SignInScreen: React.FC<{
             </FormControl>
           ) : null}
           {error ? <Text color="text.error">{error}</Text> : null}
-          <Button variant="primary" onClick={onSignIn} isDisabled={!selectedProvider}>
+          <Button
+            variant="primary"
+            onClick={() => {
+              if (selectedProvider) onSignIn(selectedProvider.id);
+            }}
+            isDisabled={!selectedProvider}>
             Sign in
           </Button>
         </Stack>
@@ -215,9 +220,12 @@ export const AdminAuthProvider: React.FC<{ children: React.ReactNode }> = ({
       if (!provider) return;
       window.localStorage.setItem(SELECTED_PROVIDER_KEY, provider.id);
       setSelectedProvider(provider);
-      void installManager(provider);
+      activeUser = null;
+      activeManager = createManager(provider);
+      setUser(null);
+      setStatus('unauthenticated');
     },
-    [installManager, providers],
+    [providers],
   );
 
   useEffect(() => {
@@ -286,7 +294,13 @@ export const AdminAuthProvider: React.FC<{ children: React.ReactNode }> = ({
         }
       }
       if (!provider || !activeManager) return;
-      await activeManager.signinRedirect();
+      try {
+        setError(null);
+        await activeManager.signinRedirect();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'failed to start sign in');
+        setStatus('unauthenticated');
+      }
     },
     [providers, selectedProvider],
   );
@@ -332,7 +346,7 @@ export const AdminAuthProvider: React.FC<{ children: React.ReactNode }> = ({
         selectedProvider={selectedProvider}
         error={error}
         onSelect={selectProvider}
-        onSignIn={() => void signIn()}
+        onSignIn={(providerId) => void signIn(providerId)}
       />
     );
   }
@@ -343,7 +357,7 @@ export const AdminAuthProvider: React.FC<{ children: React.ReactNode }> = ({
         selectedProvider={selectedProvider}
         error={error}
         onSelect={selectProvider}
-        onSignIn={() => void signIn()}
+        onSignIn={(providerId) => void signIn(providerId)}
       />
     );
   }

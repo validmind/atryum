@@ -74,6 +74,30 @@ func TestLoadMissingConfigUsesDefaultsAndEnv(t *testing.T) {
 	}
 }
 
+func TestLoadAuthAdminClaimValueAcceptsBool(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "atryum.toml")
+	if err := os.WriteFile(path, []byte(`[[auth]]
+enabled = true
+issuer = "https://idp.example/"
+audience = "atryum"
+admin_enabled = true
+admin_client_id = "admin-client"
+admin_claim = "atryum_admin"
+admin_claim_value = true
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Auth[0].Normalized().AdminClaimValue; got != "true" {
+		t.Fatalf("AdminClaimValue = %q", got)
+	}
+}
+
 func TestLoadManagedAgentsRecentChatMessagesLimit(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "atryum.toml")

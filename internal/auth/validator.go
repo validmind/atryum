@@ -150,7 +150,7 @@ func (v *Validator) ValidateAdmin(ctx context.Context, bearer string) (AdminIden
 	if !cfg.AdminEnabled {
 		return AdminIdentity{}, &ValidationError{Result: ResultInvalid, Description: "issuer/audience not allowed for admin"}
 	}
-	if !adminClaimMatches(verifiedClaims, cfg.AdminClaim, cfg.AdminClaimValue) {
+	if !adminClaimMatches(verifiedClaims, cfg.AdminClaim, string(cfg.AdminClaimValue)) {
 		return AdminIdentity{}, &ValidationError{Result: ResultMissingAdminClaim, Description: "missing admin claim"}
 	}
 	return AdminIdentity{
