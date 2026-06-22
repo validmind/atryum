@@ -106,7 +106,17 @@ export const refreshAdminAccessToken = async (): Promise<string | null> => {
   } catch {
     activeUser = await activeManager.getUser();
   }
-  return isUsableUser(activeUser) ? activeUser.access_token : null;
+  if (isUsableUser(activeUser)) return activeUser.access_token;
+  // Silent renew failed and no usable token remains. Clear the session so the
+  // provider's userUnloaded event drives the UI back to sign-in instead of
+  // leaving a stale "authenticated" shell with dead data.
+  try {
+    await activeManager.removeUser();
+  } catch {
+    /* best effort */
+  }
+  activeUser = null;
+  return null;
 };
 
 const LoadingScreen: React.FC = () => (
