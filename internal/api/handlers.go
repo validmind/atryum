@@ -734,21 +734,15 @@ func (h *Handler) adminAuthConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	redirectURI := strings.TrimRight(baseURL(r), "/") + "/ui/auth/callback"
-	for i, cfg := range h.authValidator.Configs() {
+	for _, cfg := range h.authValidator.Configs() {
 		if !cfg.AdminEnabled {
 			continue
 		}
-		id := cfg.AdminProvider + "-" + strconv.Itoa(i+1)
-		if cfg.AdminClientID != "" {
-			id = cfg.AdminProvider + "-" + cfg.AdminClientID
-		}
-		name := cfg.AdminProvider
-		if len(resp.Providers) > 0 || cfg.AdminClientID != "" {
-			name = cfg.AdminProvider + " (" + cfg.Issuer + ")"
-		}
+		// AdminClientID is guaranteed non-empty for admin-enabled configs
+		// (validated in auth.NewValidator).
 		resp.Providers = append(resp.Providers, AdminAuthProvider{
-			ID:          id,
-			Name:        name,
+			ID:          cfg.AdminProvider + "-" + cfg.AdminClientID,
+			Name:        cfg.AdminProvider + " (" + cfg.Issuer + ")",
 			Provider:    cfg.AdminProvider,
 			Issuer:      cfg.Issuer,
 			Authority:   cfg.Issuer,

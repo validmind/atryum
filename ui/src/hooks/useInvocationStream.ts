@@ -142,6 +142,14 @@ export const useInvocationStream = (
           }
         }
 
+        if (response.status === 401) {
+          // Auth could not be recovered (refresh failed or still rejected).
+          // Reconnecting would loop on the same 401, so stop and let the
+          // admin-auth provider drive the user back to sign-in.
+          void refreshAdminAccessToken();
+          return;
+        }
+
         if (!response.ok || !response.body) {
           scheduleReconnect();
           return;
