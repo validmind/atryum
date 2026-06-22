@@ -154,8 +154,8 @@ SHORTCUT_READONLY = "true"
 
 # Inbound OAuth bearer-token authentication for /mcp/. Multiple [[auth]]
 # sections are supported; the validator picks the matching one based on
-# the token's `iss` claim. Other routes (/ui, /api/v1/admin/*,
-# /api/v1/external/*, /healthz) are NOT affected.
+# the token's `iss` and `aud` claims. Admin UI/API auth is optional and is
+# enabled only for blocks with admin_enabled = true.
 #
 # [[auth]]
 # enabled        = true
@@ -167,6 +167,15 @@ SHORTCUT_READONLY = "true"
 # # Leave required_scope empty or omit it to allow tokens without a scope claim.
 # required_scope = "atryum:mcp"
 # agent_id_claim = "client_id"
+# # Optional admin UI/API auth. The backend accepts an admin token from any
+# # admin-enabled [[auth]] block and evaluates the admin claim from the matched
+# # issuer/audience block.
+# # admin_enabled     = true
+# # admin_provider    = "auth0"
+# # admin_client_id   = "admin-spa-client"
+# # admin_scopes      = "openid profile email offline_access"
+# # admin_claim       = "atryum_admin"
+# # admin_claim_value = "true"
 #
 # [[auth]]
 # enabled        = true
@@ -175,3 +184,7 @@ SHORTCUT_READONLY = "true"
 # # Leave required_scope empty or omit it to allow tokens without a scope claim.
 # required_scope = "atryum:mcp"
 # agent_id_claim = "client_id"
+# # admin_enabled     = true
+# # admin_client_id   = "auth0-admin-spa-client"
+# # admin_claim       = "permissions"
+# # admin_claim_value = "atryum:admin"

@@ -43,7 +43,7 @@ type authTestRig struct {
 	kid  string
 }
 
-func newAuthTestRig(t *testing.T) *authTestRig {
+func newAuthTestRig(t *testing.T, overrides ...func(*auth.Config)) *authTestRig {
 	t.Helper()
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -52,14 +52,18 @@ func newAuthTestRig(t *testing.T) *authTestRig {
 	rig := &authTestRig{priv: priv, kid: "k1"}
 	rig.idp = httptest.NewServer(jwksHandler(&priv.PublicKey, rig.kid))
 	t.Cleanup(rig.idp.Close)
-	v, err := auth.NewValidator([]auth.Config{{
+	cfg := auth.Config{
 		Enabled:       true,
 		Issuer:        "https://idp.test",
 		Audience:      "atryum",
 		JWKSURL:       rig.idp.URL,
 		RequiredScope: "atryum:mcp",
 		AgentIDClaim:  "client_id",
-	}}, nil)
+	}
+	for _, override := range overrides {
+		override(&cfg)
+	}
+	v, err := auth.NewValidator([]auth.Config{cfg}, nil)
 	if err != nil {
 		t.Fatalf("validator: %v", err)
 	}
@@ -350,6 +354,74 @@ func TestUnprotectedRoutesRemainOpenWhenAuthEnabled(t *testing.T) {
 		if got := w.Header().Get("WWW-Authenticate"); got != "" {
 			t.Errorf("%s %s: did not expect WWW-Authenticate, got %q", c.method, c.path, got)
 		}
+	}
+}
+
+func TestAdminRoutesRequireAdminTokenWhenAdminAuthEnabled(t *testing.T) {
+	rig := newAuthTestRig(t, func(c *auth.Config) {
+		c.AdminEnabled = true
+		c.AdminClientID = "admin-client"
+		c.AdminClaim = "atryum_admin"
+		c.AdminClaimValue = "true"
+	})
+	h := newAuthedHandler(t, &stubService{}, rig)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without bearer, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	claims := defaultClaims()
+	tok := rig.sign(t, claims)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-admin token, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	claims["atryum_admin"] = true
+	tok = rig.sign(t, claims)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for admin token, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestAdminAuthConfigEndpointReturnsSafeProviderMetadata(t *testing.T) {
+	rig := newAuthTestRig(t, func(c *auth.Config) {
+		c.AdminEnabled = true
+		c.AdminProvider = "auth0"
+		c.AdminClientID = "admin-client"
+		c.AdminScopes = "openid profile email"
+	})
+	h := newAuthedHandler(t, &stubService{}, rig)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin-auth/config", nil)
+	req.Host = "atryum.example"
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AdminAuthConfigResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Providers) != 1 {
+		t.Fatalf("providers = %#v", resp.Providers)
+	}
+	provider := resp.Providers[0]
+	if provider.ClientID != "admin-client" || provider.Audience != "atryum" || provider.Issuer != "https://idp.test" {
+		t.Fatalf("unexpected provider metadata: %#v", provider)
+	}
+	if provider.RedirectURI != "http://atryum.example/ui/auth/callback" {
+		t.Fatalf("redirect_uri = %q", provider.RedirectURI)
 	}
 }
 

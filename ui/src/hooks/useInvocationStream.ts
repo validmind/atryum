@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useQueryClient } from 'react-query';
 import type { QueryKey } from 'react-query';
+import { getAdminAccessToken, refreshAdminAccessToken } from '../auth/adminAuth';
 import { type Invocation, type InvocationDetail } from '../api/AtryumAPI';
 import {
   INVOCATION_DETAIL_KEY,
@@ -63,10 +64,13 @@ export const useInvocationStream = (
   useEffect(() => {
     if (!isEnabled) return;
 
-    const source = new EventSource(buildStreamUrl(normalizedFilters));
+    let isClosed = false;
+    let retryDelayMs = 1000;
+    let retryTimer: ReturnType<typeof window.setTimeout> | null = null;
+    let controller: AbortController | null = null;
 
-    const handleInvocations = (event: MessageEvent<string>) => {
-      const payload = JSON.parse(event.data) as InvocationStreamPayload;
+    const handleInvocations = (data: string) => {
+      const payload = JSON.parse(data) as InvocationStreamPayload;
       const items = payload.items ?? [];
 
       queryClient.setQueryData<{ items: Invocation[] }>(
@@ -97,14 +101,99 @@ export const useInvocationStream = (
       }
     };
 
-    source.addEventListener('invocations', handleInvocations as EventListener);
+    const dispatchEvent = (eventName: string, dataLines: string[]) => {
+      if (eventName !== 'invocations' || dataLines.length === 0) return;
+      handleInvocations(dataLines.join('\n'));
+    };
+
+    const scheduleReconnect = () => {
+      if (isClosed) return;
+      const delay = retryDelayMs;
+      retryDelayMs = Math.min(retryDelayMs * 2, 15000);
+      retryTimer = window.setTimeout(() => {
+        retryTimer = null;
+        void connect(false);
+      }, delay);
+    };
+
+    const connect = async (didRefresh: boolean) => {
+      if (isClosed) return;
+      controller = new AbortController();
+      try {
+        let token = await getAdminAccessToken();
+        const headers: HeadersInit = { Accept: 'text/event-stream' };
+        if (token) headers.Authorization = `Bearer ${token}`;
+
+        let response = await fetch(buildStreamUrl(normalizedFilters), {
+          headers,
+          signal: controller.signal,
+        });
+
+        if (response.status === 401 && !didRefresh) {
+          token = await refreshAdminAccessToken();
+          if (token) {
+            response = await fetch(buildStreamUrl(normalizedFilters), {
+              headers: {
+                Accept: 'text/event-stream',
+                Authorization: `Bearer ${token}`,
+              },
+              signal: controller.signal,
+            });
+          }
+        }
+
+        if (!response.ok || !response.body) {
+          scheduleReconnect();
+          return;
+        }
+
+        retryDelayMs = 1000;
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let eventName = 'message';
+        let dataLines: string[] = [];
+
+        const processLine = (rawLine: string) => {
+          const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+          if (line === '') {
+            dispatchEvent(eventName, dataLines);
+            eventName = 'message';
+            dataLines = [];
+            return;
+          }
+          if (line.startsWith(':')) return;
+          const separator = line.indexOf(':');
+          const field = separator === -1 ? line : line.slice(0, separator);
+          const rawValue = separator === -1 ? '' : line.slice(separator + 1);
+          const value = rawValue.startsWith(' ') ? rawValue.slice(1) : rawValue;
+          if (field === 'event') eventName = value;
+          if (field === 'data') dataLines.push(value);
+        };
+
+        while (!isClosed) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+          for (const line of lines) processLine(line);
+        }
+        if (buffer !== '') processLine(buffer);
+        scheduleReconnect();
+      } catch (err) {
+        if (!isClosed && !(err instanceof DOMException && err.name === 'AbortError')) {
+          scheduleReconnect();
+        }
+      }
+    };
+
+    void connect(false);
 
     return () => {
-      source.removeEventListener(
-        'invocations',
-        handleInvocations as EventListener,
-      );
-      source.close();
+      isClosed = true;
+      if (retryTimer) window.clearTimeout(retryTimer);
+      controller?.abort();
     };
   }, [isEnabled, normalizedFilters, queryClient]);
 };

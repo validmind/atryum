@@ -1,8 +1,37 @@
 import axios from 'axios';
+import type { AxiosError, InternalAxiosRequestConfig } from 'axios';
+import { getAdminAccessToken, refreshAdminAccessToken } from '../auth/adminAuth';
 
 export const atryumApi = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
+
+type RetryableRequestConfig = InternalAxiosRequestConfig & {
+  _atryumAuthRetried?: boolean;
+};
+
+atryumApi.interceptors.request.use(async (config) => {
+  const token = await getAdminAccessToken();
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+atryumApi.interceptors.response.use(
+  (response) => response,
+  async (error: AxiosError) => {
+    const config = error.config as RetryableRequestConfig | undefined;
+    if (error.response?.status !== 401 || !config || config._atryumAuthRetried) {
+      throw error;
+    }
+    const token = await refreshAdminAccessToken();
+    if (!token) throw error;
+    config._atryumAuthRetried = true;
+    config.headers.Authorization = `Bearer ${token}`;
+    return atryumApi.request(config);
+  },
+);
 
 // ─── Invocations ─────────────────────────────────────────────────────────────
 

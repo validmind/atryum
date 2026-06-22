@@ -271,6 +271,86 @@ func TestValidatorValidToken(t *testing.T) {
 	}
 }
 
+func TestValidatorValidateAdminUsesMatchedConfigClaim(t *testing.T) {
+	idp := newTestIdP(t)
+	configs := []Config{
+		{
+			Enabled:         true,
+			Issuer:          "https://idp-a.example/",
+			Audience:        "api-a",
+			JWKSURL:         idp.jwksURL(),
+			AdminEnabled:    true,
+			AdminClientID:   "admin-a",
+			AdminClaim:      "atryum_admin",
+			AdminClaimValue: "true",
+		},
+		{
+			Enabled:         true,
+			Issuer:          "https://idp-b.example/",
+			Audience:        "api-b",
+			JWKSURL:         idp.jwksURL(),
+			AdminEnabled:    true,
+			AdminClientID:   "admin-b",
+			AdminClaim:      "permissions",
+			AdminClaimValue: "atryum:admin",
+		},
+	}
+	v, err := NewValidator(configs, nil)
+	if err != nil {
+		t.Fatalf("NewValidator: %v", err)
+	}
+
+	claimsA := validClaims()
+	claimsA["iss"] = "https://idp-a.example/"
+	claimsA["aud"] = "api-a"
+	claimsA["atryum_admin"] = true
+	tokA := idp.sign(t, claimsA)
+	adminA, err := v.ValidateAdmin(context.Background(), tokA)
+	if err != nil {
+		t.Fatalf("ValidateAdmin issuer A: %v", err)
+	}
+	if adminA.Issuer != "https://idp-a.example" {
+		t.Fatalf("issuer A = %q", adminA.Issuer)
+	}
+
+	claimsB := validClaims()
+	claimsB["iss"] = "https://idp-b.example/"
+	claimsB["aud"] = "api-b"
+	claimsB["permissions"] = []any{"read:stuff", "atryum:admin"}
+	tokB := idp.sign(t, claimsB)
+	adminB, err := v.ValidateAdmin(context.Background(), tokB)
+	if err != nil {
+		t.Fatalf("ValidateAdmin issuer B: %v", err)
+	}
+	if adminB.Issuer != "https://idp-b.example" {
+		t.Fatalf("issuer B = %q", adminB.Issuer)
+	}
+
+	wrongClaim := validClaims()
+	wrongClaim["iss"] = "https://idp-b.example/"
+	wrongClaim["aud"] = "api-b"
+	wrongClaim["atryum_admin"] = true
+	tokWrong := idp.sign(t, wrongClaim)
+	_, err = v.ValidateAdmin(context.Background(), tokWrong)
+	var ve *ValidationError
+	if !errors.As(err, &ve) || ve.Result != ResultMissingAdminClaim {
+		t.Fatalf("expected ResultMissingAdminClaim from matched issuer B rules, got %v", err)
+	}
+}
+
+func TestValidatorValidateAdminRequiresAdminEnabledConfig(t *testing.T) {
+	idp := newTestIdP(t)
+	v := newValidatorForIdP(t, idp)
+	claims := validClaims()
+	claims["atryum_admin"] = true
+	tok := idp.sign(t, claims)
+	_, err := v.ValidateAdmin(context.Background(), tok)
+	var ve *ValidationError
+	if !errors.As(err, &ve) || ve.Result != ResultInvalid {
+		t.Fatalf("expected ResultInvalid for non-admin-enabled config, got %v", err)
+	}
+}
+
 func TestValidatorAgentIDFallbackToSub(t *testing.T) {
 	idp := newTestIdP(t)
 	v := newValidatorForIdP(t, idp, func(c *Config) { c.AgentIDClaim = "preferred_username" })
@@ -633,6 +713,9 @@ func TestNewValidatorRejectsMissingFields(t *testing.T) {
 	}
 	if _, err := NewValidator([]Config{{Enabled: true, Issuer: "https://x"}}, nil); err == nil {
 		t.Fatal("expected error for missing audience")
+	}
+	if _, err := NewValidator([]Config{{Enabled: true, Issuer: "https://x", Audience: "api", AdminEnabled: true}}, nil); err == nil {
+		t.Fatal("expected error for missing admin_client_id")
 	}
 	v, err := NewValidator(nil, nil)
 	if err != nil || v != nil {

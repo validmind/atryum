@@ -653,6 +653,22 @@ type invocationStreamEnvelope struct {
 	Items []invocation.InvocationResponse `json:"items"`
 }
 
+type AdminAuthConfigResponse struct {
+	Providers []AdminAuthProvider `json:"providers"`
+}
+
+type AdminAuthProvider struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Provider    string `json:"provider"`
+	Issuer      string `json:"issuer"`
+	Authority   string `json:"authority"`
+	Audience    string `json:"audience"`
+	ClientID    string `json:"client_id"`
+	Scopes      string `json:"scopes"`
+	RedirectURI string `json:"redirect_uri"`
+}
+
 func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Registry, rules rulesRepo, agents agentsRepo, agentSyncSettings agentSyncSettingsRepo, llmConfigs llmConfigsRepo, syncAgents func(ctx context.Context) error, bc *backendclient.Client, localSummarizer localInvocationSummarizer) *Handler {
 	staticSub, err := fs.Sub(webFS, "web")
 	if err != nil {
@@ -707,6 +723,44 @@ func (h *Handler) protectedResourceMetadata() http.Handler {
 	})
 }
 
+func (h *Handler) adminAuthConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	resp := AdminAuthConfigResponse{Providers: []AdminAuthProvider{}}
+	if h.authValidator == nil {
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	redirectURI := strings.TrimRight(baseURL(r), "/") + "/ui/auth/callback"
+	for i, cfg := range h.authValidator.Configs() {
+		if !cfg.AdminEnabled {
+			continue
+		}
+		id := cfg.AdminProvider + "-" + strconv.Itoa(i+1)
+		if cfg.AdminClientID != "" {
+			id = cfg.AdminProvider + "-" + cfg.AdminClientID
+		}
+		name := cfg.AdminProvider
+		if len(resp.Providers) > 0 || cfg.AdminClientID != "" {
+			name = cfg.AdminProvider + " (" + cfg.Issuer + ")"
+		}
+		resp.Providers = append(resp.Providers, AdminAuthProvider{
+			ID:          id,
+			Name:        name,
+			Provider:    cfg.AdminProvider,
+			Issuer:      cfg.Issuer,
+			Authority:   cfg.Issuer,
+			Audience:    cfg.Audience,
+			ClientID:    cfg.AdminClientID,
+			Scopes:      cfg.AdminScopes,
+			RedirectURI: redirectURI,
+		})
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", h.healthz)
@@ -714,31 +768,36 @@ func (h *Handler) Routes() http.Handler {
 		mux.Handle("/.well-known/oauth-protected-resource", h.protectedResourceMetadata())
 	}
 	mcpHandler := h.agentRuntimeHandler(http.HandlerFunc(h.invokeUpstream))
+	adminAuthMW := auth.AdminMiddleware(h.authValidator, auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})
+	admin := func(fn http.HandlerFunc) http.Handler {
+		return adminAuthMW(fn)
+	}
 	mux.HandleFunc("/mcp", h.mcpRootNotFound)
 	mux.Handle("/mcp/", mcpHandler)
 	mux.Handle("/api/v1/invocations", h.agentRuntimeHandler(http.HandlerFunc(h.invocations)))
-	mux.HandleFunc("/api/v1/admin/invocations", h.adminInvocations)
-	mux.HandleFunc("/api/v1/admin/invocations/stream", h.adminInvocationStream)
-	mux.HandleFunc("/api/v1/admin/invocations/", h.adminInvocationDetail)
-	mux.HandleFunc("/api/v1/admin/servers", h.adminServers)
-	mux.HandleFunc("/api/v1/admin/servers/", h.adminServerDetail)
-	mux.HandleFunc("/api/v1/admin/rules", h.adminRules)
-	mux.HandleFunc("/api/v1/admin/rules/", h.adminRuleDetail)
-	mux.HandleFunc("/api/v1/admin/agents", h.adminAgents)
-	mux.HandleFunc("/api/v1/admin/agents/", h.adminAgentDetail)
-	mux.HandleFunc("/api/v1/admin/model-configs", h.adminModelConfigs)
-	mux.HandleFunc("/api/v1/admin/llm-configs", h.adminLLMConfigs)
-	mux.HandleFunc("/api/v1/admin/llm-configs/", h.adminLLMConfigDetail)
-	mux.HandleFunc("/api/v1/admin/settings", h.adminSettings)
-	mux.HandleFunc("/api/v1/admin/vm/organizations", h.adminVMOrganizations)
-	mux.HandleFunc("/api/v1/admin/vm/record-types", h.adminVMRecordTypes)
-	mux.HandleFunc("/api/v1/admin/vm/custom-fields", h.adminVMCustomFields)
+	mux.HandleFunc("/api/v1/admin-auth/config", h.adminAuthConfig)
+	mux.Handle("/api/v1/admin/invocations", admin(h.adminInvocations))
+	mux.Handle("/api/v1/admin/invocations/stream", admin(h.adminInvocationStream))
+	mux.Handle("/api/v1/admin/invocations/", admin(h.adminInvocationDetail))
+	mux.Handle("/api/v1/admin/servers", admin(h.adminServers))
+	mux.Handle("/api/v1/admin/servers/", admin(h.adminServerDetail))
+	mux.Handle("/api/v1/admin/rules", admin(h.adminRules))
+	mux.Handle("/api/v1/admin/rules/", admin(h.adminRuleDetail))
+	mux.Handle("/api/v1/admin/agents", admin(h.adminAgents))
+	mux.Handle("/api/v1/admin/agents/", admin(h.adminAgentDetail))
+	mux.Handle("/api/v1/admin/model-configs", admin(h.adminModelConfigs))
+	mux.Handle("/api/v1/admin/llm-configs", admin(h.adminLLMConfigs))
+	mux.Handle("/api/v1/admin/llm-configs/", admin(h.adminLLMConfigDetail))
+	mux.Handle("/api/v1/admin/settings", admin(h.adminSettings))
+	mux.Handle("/api/v1/admin/vm/organizations", admin(h.adminVMOrganizations))
+	mux.Handle("/api/v1/admin/vm/record-types", admin(h.adminVMRecordTypes))
+	mux.Handle("/api/v1/admin/vm/custom-fields", admin(h.adminVMCustomFields))
 	mux.HandleFunc("/api/v1/admin/oauth/callback", h.oauthCallback)
-	mux.HandleFunc("/api/v1/admin/policy", h.adminPolicy)
-	mux.HandleFunc("/api/v1/admin/managed-agents/accounts", h.adminManagedAgentAccounts)
-	mux.HandleFunc("/api/v1/admin/managed-agents/agents", h.adminManagedAgents)
-	mux.HandleFunc("/api/v1/admin/managed-agents/sessions/", h.adminManagedAgentSessionDetail)
-	mux.HandleFunc("/api/v1/admin/managed-agents/sessions", h.adminManagedAgentSessions)
+	mux.Handle("/api/v1/admin/policy", admin(h.adminPolicy))
+	mux.Handle("/api/v1/admin/managed-agents/accounts", admin(h.adminManagedAgentAccounts))
+	mux.Handle("/api/v1/admin/managed-agents/agents", admin(h.adminManagedAgents))
+	mux.Handle("/api/v1/admin/managed-agents/sessions/", admin(h.adminManagedAgentSessionDetail))
+	mux.Handle("/api/v1/admin/managed-agents/sessions", admin(h.adminManagedAgentSessions))
 	agentRulesHandler := h.agentRuntimeHandler(http.HandlerFunc(h.agentRules))
 	mux.Handle("/api/v1/agent/rules", agentRulesHandler)
 	mux.Handle("/api/v1/external/invocations", h.agentRuntimeHandler(http.HandlerFunc(h.externalInvocations)))

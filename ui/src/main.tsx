@@ -6,6 +6,7 @@ import { ChakraProvider } from '@chakra-ui/react';
 
 import { theme } from './theme';
 import App from './App';
+import { AdminAuthProvider } from './auth/adminAuth';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -24,7 +25,9 @@ root.render(
     <BrowserRouter basename="/ui">
       <QueryClientProvider client={queryClient}>
         <ChakraProvider theme={theme}>
-          <App />
+          <AdminAuthProvider>
+            <App />
+          </AdminAuthProvider>
         </ChakraProvider>
       </QueryClientProvider>
     </BrowserRouter>
