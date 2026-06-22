@@ -61,6 +61,7 @@ const AdminAuthContext = createContext<AdminAuthContextValue | null>(null);
 
 let activeManager: UserManager | null = null;
 let activeUser: User | null = null;
+let authCallbackPromise: Promise<void> | null = null;
 
 const SELECTED_PROVIDER_KEY = 'atryum.adminAuth.provider';
 
@@ -73,10 +74,11 @@ const fetchConfig = async (): Promise<AdminAuthConfig> => {
 };
 
 const createManager = (provider: AdminAuthProviderMetadata): UserManager => {
+  const redirectURI = `${window.location.origin}/ui/auth/callback`;
   const settings: UserManagerSettings = {
     authority: provider.authority || provider.issuer,
     client_id: provider.client_id,
-    redirect_uri: provider.redirect_uri,
+    redirect_uri: redirectURI,
     response_type: 'code',
     scope: provider.scopes,
     automaticSilentRenew: true,
@@ -85,6 +87,25 @@ const createManager = (provider: AdminAuthProviderMetadata): UserManager => {
     extraQueryParams: provider.audience ? { audience: provider.audience } : undefined,
   };
   return new UserManager(settings);
+};
+
+const managerForCallback = async (): Promise<UserManager> => {
+  if (activeManager) return activeManager;
+  const config = await fetchConfig();
+  const storedId = window.localStorage.getItem(SELECTED_PROVIDER_KEY);
+  const provider =
+    config.providers?.find((item) => item.id === storedId) ??
+    config.providers?.[0];
+  if (!provider) throw new Error('admin auth provider is not configured');
+  activeManager = createManager(provider);
+  return activeManager;
+};
+
+const completeSignInCallback = async (): Promise<void> => {
+  const manager = await managerForCallback();
+  activeUser = await manager.signinRedirectCallback();
+  window.history.replaceState({}, document.title, '/ui/');
+  window.location.assign('/ui/');
 };
 
 const isUsableUser = (user: User | null): user is User =>
@@ -334,33 +355,39 @@ export const AdminAuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
 const AuthCallback: React.FC = () => {
   const [message, setMessage] = useState('Completing sign in');
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    void (async () => {
-      try {
-        if (!activeManager) {
-          const config = await fetchConfig();
-          const storedId = window.localStorage.getItem(SELECTED_PROVIDER_KEY);
-          const provider =
-            config.providers?.find((item) => item.id === storedId) ??
-            config.providers?.[0];
-          if (!provider) throw new Error('admin auth provider is not configured');
-          activeManager = createManager(provider);
-        }
-        activeUser = await activeManager.signinRedirectCallback();
-        window.history.replaceState({}, document.title, '/ui/');
-        window.location.assign('/ui/');
-      } catch (err) {
-        setMessage(err instanceof Error ? err.message : 'Sign in failed');
-      }
-    })();
+    if (!authCallbackPromise) {
+      authCallbackPromise = completeSignInCallback();
+    }
+    authCallbackPromise.catch((err) => {
+      authCallbackPromise = null;
+      setMessage('Sign in failed');
+      setError(err instanceof Error ? err.message : 'No matching sign-in state was found');
+    });
   }, []);
 
   return (
     <Center minH="100vh" bg="background.page">
       <Stack align="center" gap={4}>
-        <Spinner color="brand.base" />
+        {error ? null : <Spinner color="brand.base" />}
         <Text color="text.secondary">{message}</Text>
+        {error ? (
+          <>
+            <Text color="text.error" textAlign="center">
+              {error}
+            </Text>
+            <Button
+              variant="primary"
+              onClick={() => {
+                window.history.replaceState({}, document.title, '/ui/');
+                window.location.assign('/ui/');
+              }}>
+              Back to sign in
+            </Button>
+          </>
+        ) : null}
       </Stack>
     </Center>
   );

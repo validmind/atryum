@@ -425,6 +425,55 @@ func TestAdminAuthConfigEndpointReturnsSafeProviderMetadata(t *testing.T) {
 	}
 }
 
+func TestAdminAuthConfigProviderIDsAreUniqueForSharedClientID(t *testing.T) {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa: %v", err)
+	}
+	idp := httptest.NewServer(jwksHandler(&priv.PublicKey, "k1"))
+	t.Cleanup(idp.Close)
+	v, err := auth.NewValidator([]auth.Config{
+		{
+			Enabled:       true,
+			Issuer:        "https://login.example/",
+			Audience:      "atryum",
+			JWKSURL:       idp.URL,
+			AdminEnabled:  true,
+			AdminClientID: "shared-client",
+		},
+		{
+			Enabled:       true,
+			Issuer:        "https://tenant.auth0.com/",
+			Audience:      "atryum",
+			JWKSURL:       idp.URL,
+			AdminEnabled:  true,
+			AdminClientID: "shared-client",
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("validator: %v", err)
+	}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	h.SetAuthValidator(v)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin-auth/config", nil)
+	w := httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AdminAuthConfigResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Providers) != 2 {
+		t.Fatalf("providers = %#v", resp.Providers)
+	}
+	if resp.Providers[0].ID == resp.Providers[1].ID {
+		t.Fatalf("expected unique provider IDs, got %q", resp.Providers[0].ID)
+	}
+}
+
 func TestProtectedResourceMetadataServed(t *testing.T) {
 	rig := newAuthTestRig(t)
 	h := newAuthedHandler(t, &stubService{}, rig)

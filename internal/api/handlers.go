@@ -741,7 +741,7 @@ func (h *Handler) adminAuthConfig(w http.ResponseWriter, r *http.Request) {
 		// AdminClientID is guaranteed non-empty for admin-enabled configs
 		// (validated in auth.NewValidator).
 		resp.Providers = append(resp.Providers, AdminAuthProvider{
-			ID:          cfg.AdminProvider + "-" + cfg.AdminClientID,
+			ID:          cfg.AdminProvider + "-" + cfg.AdminClientID + "-" + cfg.Issuer,
 			Name:        cfg.AdminProvider + " (" + cfg.Issuer + ")",
 			Provider:    cfg.AdminProvider,
 			Issuer:      cfg.Issuer,
