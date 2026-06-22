@@ -14,7 +14,7 @@ import (
 const DefaultAgentIDClaim = "client_id"
 
 const (
-	DefaultAdminProvider   = "auth0"
+	DefaultAdminProvider   = "keycloak"
 	DefaultAdminScopes     = "openid profile email offline_access"
 	DefaultAdminClaim      = "atryum_admin"
 	DefaultAdminClaimValue = "true"
