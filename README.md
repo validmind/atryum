@@ -84,6 +84,47 @@ When inbound auth is configured, all agent runtime surfaces require OAuth bearer
 
 The Settings UI can also select a default ValidMind agent record. AI Evaluation uses that record when an incoming runtime agent ID is missing or does not map to a synced agent, allowing local no-auth runs to evaluate against a known charter without adding TOML.
 
+## Admin authentication
+
+Admin UI and `/api/v1/admin/*` authentication is optional. When no `[[auth]]` block has `admin_enabled = true`, the admin UI/API behave as before and remain open. When one or more blocks are admin-enabled, Atryum requires a browser OIDC access token for admin API calls and accepts tokens from any admin-enabled issuer.
+
+Admin auth reuses the same issuer/audience/JWKS validation as agent auth, then checks the admin claim configured on the matched `[[auth]]` block. This means different IdPs can use different admin claims at the same time.
+
+Example:
+
+```toml
+[[auth]]
+enabled = true
+issuer = "https://your-tenant.us.auth0.com/"
+audience = "https://api.example.com/atryum"
+agent_id_claim = "azp"
+
+admin_enabled = true
+admin_provider = "auth0"
+admin_client_id = "atryum-admin-spa-client"
+admin_scopes = "openid profile email offline_access"
+admin_claim = "atryum_admin"
+admin_claim_value = "true"
+
+[[auth]]
+enabled = true
+issuer = "http://localhost:8089/realms/atryum"
+audience = "atryum"
+required_scope = "atryum:mcp"
+agent_id_claim = "client_id"
+
+admin_enabled = true
+admin_provider = "keycloak"
+admin_client_id = "atryum-admin"
+admin_scopes = "openid profile email atryum:mcp"
+admin_claim = "atryum_admin"
+admin_claim_value = true
+```
+
+The admin client must be a browser-safe public SPA client that supports authorization code with PKCE. For Auth0, create a Single Page Application client and allow `http://localhost:5174/ui/auth/callback` for Vite development and `http://localhost:8080/ui/auth/callback` for the embedded UI. For local Keycloak, run `KC_URL=http://localhost:8089 ./keycloak/setup-realm.sh`; it provisions the `atryum-admin` public client and an `atryum_admin=true` access-token claim.
+
+The frontend fetches `/api/v1/admin-auth/config`, redirects through the selected provider, attaches `Authorization: Bearer <access_token>` to admin API calls, and uses authenticated fetch-based SSE for `/api/v1/admin/invocations/stream`. It attempts silent token refresh before retrying an expiry-related `401` once. Browser console debug logs are emitted for refresh attempts and outcomes under the `[admin-auth]` prefix; access token values are never logged.
+
 ## HTTP surface
 
 Public (auth-protected when `[[auth]]` is configured):
@@ -105,6 +146,7 @@ Admin (UI and operators):
 - `/api/v1/admin/managed-agents/accounts`, `/managed-agents/agents` — discover configured Anthropic accounts and Claude agents for UI linking
 - `/api/v1/admin/managed-agents/sessions` — manually register a Claude Managed Agents session for the events bridge to watch; kept as a debugging escape hatch
 - `/api/v1/admin/oauth/callback` — OAuth callback for upstream MCP server connect flows
+- `/api/v1/admin-auth/config` — public, non-secret OIDC metadata for the admin UI login screen
 
 ## Frontend
 

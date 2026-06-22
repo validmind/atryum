@@ -155,7 +155,9 @@ SHORTCUT_READONLY = "true"
 # Inbound OAuth bearer-token authentication for /mcp/. Multiple [[auth]]
 # sections are supported; the validator picks the matching one based on
 # the token's `iss` and `aud` claims. Admin UI/API auth is optional and is
-# enabled only for blocks with admin_enabled = true.
+# enabled only for blocks with admin_enabled = true. Admin auth accepts
+# tokens from any admin-enabled [[auth]] block and evaluates the admin claim
+# from the matched issuer/audience block.
 #
 # [[auth]]
 # enabled        = true
@@ -167,15 +169,15 @@ SHORTCUT_READONLY = "true"
 # # Leave required_scope empty or omit it to allow tokens without a scope claim.
 # required_scope = "atryum:mcp"
 # agent_id_claim = "client_id"
-# # Optional admin UI/API auth. The backend accepts an admin token from any
-# # admin-enabled [[auth]] block and evaluates the admin claim from the matched
-# # issuer/audience block.
+# # Optional admin UI/API auth. For local Keycloak, keycloak/setup-realm.sh
+# # provisions a public SPA client named "atryum-admin" and an access-token
+# # claim atryum_admin=true.
 # # admin_enabled     = true
-# # admin_provider    = "auth0"
-# # admin_client_id   = "admin-spa-client"
-# # admin_scopes      = "openid profile email offline_access"
+# # admin_provider    = "keycloak"
+# # admin_client_id   = "atryum-admin"
+# # admin_scopes      = "openid profile email atryum:mcp"
 # # admin_claim       = "atryum_admin"
-# # admin_claim_value = "true"
+# # admin_claim_value = true
 #
 # [[auth]]
 # enabled        = true
@@ -184,7 +186,12 @@ SHORTCUT_READONLY = "true"
 # # Leave required_scope empty or omit it to allow tokens without a scope claim.
 # required_scope = "atryum:mcp"
 # agent_id_claim = "client_id"
+# # For Auth0, use a Single Page Application client with authorization code +
+# # PKCE enabled. Add http://localhost:5174/ui/auth/callback and
+# # http://localhost:8080/ui/auth/callback to Allowed Callback URLs, and add
+# # http://localhost:5174 and http://localhost:8080 to Allowed Web Origins.
 # # admin_enabled     = true
+# # admin_provider    = "auth0"
 # # admin_client_id   = "auth0-admin-spa-client"
 # # admin_claim       = "permissions"
 # # admin_claim_value = "atryum:admin"
