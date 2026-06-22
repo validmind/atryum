@@ -83,10 +83,11 @@ func (r *AgentsRepo) Upsert(ctx context.Context, agent AgentRecord) error {
 			vm_organization_name = excluded.vm_organization_name,
 			vm_name              = excluded.vm_name,
 			vm_description       = excluded.vm_description,
+			charter              = excluded.charter,
 			synced_at            = excluded.synced_at`).
 		ToSql()
-	// Note: charter is intentionally NOT updated on upsert — it is a
-	// manually-maintained field and must survive agent re-syncs.
+	// Note: charter is sourced from the ValidMind charter custom field and
+	// refreshed on every re-sync (the UI shows it read-only, "managed by sync").
 	if err != nil {
 		return fmt.Errorf("build agent upsert: %w", err)
 	}
