@@ -97,7 +97,7 @@ Example:
 enabled = true
 issuer = "https://your-tenant.us.auth0.com/"
 audience = "https://api.example.com/atryum"
-agent_id_claim = "azp"
+agent_id_claim = "client_id"
 
 admin_enabled = true
 admin_provider = "auth0"
