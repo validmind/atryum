@@ -14,7 +14,7 @@ import (
 	"strings"
 )
 
-const validMindSetupBaseURL = "https://app.dev.vm.validmind.ai"
+const validMindSetupBaseURL = "https://app.prod.validmind.ai"
 
 func globalUsage() string {
 	return strings.TrimSpace(`usage: atryum <command> [options]
