@@ -141,9 +141,20 @@ func runServer(args []string) error {
 		}
 		log.Printf("agent sync: fetched %d agent(s) for org=%s (%s) record_type=%s", agentsResp.Total, agentsResp.OrgCUID, agentsResp.OrgName, settings.AgentRecordTypeSlug)
 		syncedAt := time.Now().UTC()
+		charterKey := settings.CharterFieldKey
 		for _, a := range agentsResp.Results {
 			description, _ := a.CustomFields["description"].(string)
-			log.Printf("  agent cuid=%s name=%q description=%q", a.CUID, a.Name, description)
+			// Pull the charter from the configured custom field. Tolerate both a
+			// flat custom_fields map and one nested under "model".
+			charter := ""
+			if charterKey != "" {
+				if v, ok := a.CustomFields[charterKey].(string); ok {
+					charter = v
+				} else if model, ok := a.CustomFields["model"].(map[string]any); ok {
+					charter, _ = model[charterKey].(string)
+				}
+			}
+			log.Printf("  agent cuid=%s name=%q description=%q charter_key=%q charter_len=%d", a.CUID, a.Name, description, charterKey, len(charter))
 			if upsertErr := agentsRepo.Upsert(ctx, store.AgentRecord{
 				ID:                 uuid.NewString(),
 				VMOrganizationCUID: agentsResp.OrgCUID,
@@ -151,6 +162,7 @@ func runServer(args []string) error {
 				VMCUID:             a.CUID,
 				VMName:             a.Name,
 				VMDescription:      description,
+				Charter:            charter,
 				Enabled:            true,
 				SyncedAt:           syncedAt,
 			}); upsertErr != nil {
