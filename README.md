@@ -86,7 +86,7 @@ The Settings UI can also select a default ValidMind agent record. AI Evaluation 
 
 ## Admin authentication
 
-Admin UI and `/api/v1/admin/*` authentication is optional. When no `[[auth]]` block has `admin_enabled = true`, the admin UI/API behave as before and remain open. When one or more blocks are admin-enabled, Atryum requires a browser OIDC access token for admin API calls and accepts tokens from any admin-enabled issuer.
+Admin UI and admin API authentication is optional. When no `[[auth]]` block has `admin_enabled = true`, the admin UI/API behave as before and remain open. When one or more blocks are admin-enabled, Atryum requires a browser OIDC access token for admin API calls and accepts tokens from any admin-enabled issuer. The upstream MCP OAuth callback at `/api/v1/admin/oauth/callback` remains public so external identity providers can complete browser redirects.
 
 Admin auth reuses the same issuer/audience/JWKS validation as agent auth, then checks the admin claim configured on the matched `[[auth]]` block. This means different IdPs can use different admin claims at the same time.
 
@@ -123,7 +123,7 @@ admin_claim_value = true
 
 The admin client must be a browser-safe public SPA client that supports authorization code with PKCE. For Auth0, create a Single Page Application client and allow `http://localhost:5174/ui/auth/callback` for Vite development and `http://localhost:8080/ui/auth/callback` for the embedded UI. For local Keycloak, run `KC_URL=http://localhost:8089 ./keycloak/setup-realm.sh`; it provisions the `atryum-admin` public client and an `atryum_admin=true` access-token claim.
 
-The frontend fetches `/api/v1/admin-auth/config`, redirects through the selected provider, attaches `Authorization: Bearer <access_token>` to admin API calls, and uses authenticated fetch-based SSE for `/api/v1/admin/invocations/stream`. It attempts silent token refresh before retrying an expiry-related `401` once. Browser console debug logs are emitted for refresh attempts and outcomes under the `[admin-auth]` prefix; access token values are never logged.
+The frontend fetches `/api/v1/admin-auth/config`, shows a sign-in screen, redirects through the selected provider, attaches `Authorization: Bearer <access_token>` to admin API calls, and uses authenticated fetch-based SSE for `/api/v1/admin/invocations/stream`. With one configured provider, the screen skips the provider selector; with several, it shows an identity-provider selector. It attempts silent token refresh before retrying an expiry-related `401` once. Browser console debug logs are emitted for refresh attempts and outcomes under the `[admin-auth]` prefix; access token values are never logged.
 
 ## HTTP surface
 
@@ -145,7 +145,7 @@ Admin (UI and operators):
 - `/api/v1/admin/settings`, `/api/v1/admin/policy`
 - `/api/v1/admin/managed-agents/accounts`, `/managed-agents/agents` — discover configured Anthropic accounts and Claude agents for UI linking
 - `/api/v1/admin/managed-agents/sessions` — manually register a Claude Managed Agents session for the events bridge to watch; kept as a debugging escape hatch
-- `/api/v1/admin/oauth/callback` — OAuth callback for upstream MCP server connect flows
+- `/api/v1/admin/oauth/callback` — public OAuth callback for upstream MCP server connect flows
 - `/api/v1/admin-auth/config` — public, non-secret OIDC metadata for the admin UI login screen
 
 ## Frontend
