@@ -70,7 +70,6 @@ services:
       KC_ADMIN: admin
       KC_PASSWORD: admin
       REALM: atryum
-      KC_SETUP_SKIP_IF_REALM_EXISTS: "false"
     volumes:
       - ./keycloak/setup-realm.sh:/setup-realm.sh:ro
     command:
