@@ -1235,11 +1235,61 @@ func TestAgentRulesListsApplicableRulesAndDisposition(t *testing.T) {
 	if resp.MatchedRuleID == nil || *resp.MatchedRuleID != "read-auto" {
 		t.Fatalf("expected matched rule read-auto, got %#v", resp.MatchedRuleID)
 	}
+	if resp.GeneratedAt.IsZero() {
+		t.Fatal("expected generated_at to be populated")
+	}
+	if resp.EvaluationMode != "static_only" {
+		t.Fatalf("expected static_only evaluation mode, got %q", resp.EvaluationMode)
+	}
+	if !strings.Contains(resp.Explanation, "advisory") {
+		t.Fatalf("expected advisory explanation, got %q", resp.Explanation)
+	}
 	if len(resp.Items) != 3 {
 		t.Fatalf("expected three applicable rules, got %#v", resp.Items)
 	}
 	if resp.Items[0].ID != "bash-deny" || resp.Items[1].ID != "read-auto" || resp.Items[2].ID != "fallback-human" {
 		t.Fatalf("unexpected applicable rules order: %#v", resp.Items)
+	}
+	if resp.Items[1].Guidance == "" {
+		t.Fatalf("expected rule guidance, got %#v", resp.Items[1])
+	}
+}
+
+func TestAgentRulesFiltersOutRulesScopedToOtherAgents(t *testing.T) {
+	agent := store.AgentRecord{ID: "agent-cuid-007", AgentIDs: `["agent-007"]`}
+	other := store.AgentRecord{ID: "agent-cuid-other", AgentIDs: `["other-agent"]`}
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "other-agent", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentCUIDs: []string{other.ID}, Enabled: true, Order: 0},
+		{ID: "this-agent", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentCUIDs: []string{agent.ID}, Enabled: true, Order: 1},
+		{ID: "unscoped", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 2},
+	}}
+	agents := &stubAgentsRepo{records: []store.AgentRecord{agent, other}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, agents, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?agent_id=agent-007&source=amp&tool=Read", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Action != invocation.RuleActionAutoApprove {
+		t.Fatalf("expected this-agent auto approve disposition, got %q", resp.Action)
+	}
+	if resp.MatchedRuleID == nil || *resp.MatchedRuleID != "this-agent" {
+		t.Fatalf("expected matched rule this-agent, got %#v", resp.MatchedRuleID)
+	}
+	if len(resp.Items) != 2 {
+		t.Fatalf("expected two visible rules, got %#v", resp.Items)
+	}
+	for _, item := range resp.Items {
+		if item.ID == "other-agent" {
+			t.Fatalf("other-agent scoped rule leaked into response: %#v", resp.Items)
+		}
 	}
 }
 
@@ -1276,6 +1326,70 @@ func TestAgentRulesUsesDefaultAgentRecordForAgentScopedRules(t *testing.T) {
 	}
 	if resp.Items[0].ID != "default-agent" || resp.Items[1].ID != "fallback-human" {
 		t.Fatalf("unexpected applicable rules order: %#v", resp.Items)
+	}
+}
+
+func TestAgentRulesNoAuthAgentIDFiltering(t *testing.T) {
+	agent := store.AgentRecord{ID: "agent-cuid-007", AgentIDs: `["agent-007"]`}
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "scoped", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentCUIDs: []string{agent.ID}, Enabled: true, Order: 0},
+		{ID: "other", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentCUIDs: []string{"agent-other"}, Enabled: true, Order: 1},
+	}}
+	agents := &stubAgentsRepo{records: []store.AgentRecord{agent}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, agents, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?agent_id=agent-007&source=amp&tool=Read", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Action != invocation.RuleActionAutoApprove {
+		t.Fatalf("expected scoped auto approve disposition, got %q", resp.Action)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].ID != "scoped" {
+		t.Fatalf("expected only scoped visible rule, got %#v", resp.Items)
+	}
+}
+
+func TestAgentRulesGuidanceForEachAction(t *testing.T) {
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "auto-approve", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, Enabled: true, Order: 0},
+		{ID: "auto-deny", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Bash"}, Enabled: true, Order: 1},
+		{ID: "human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 2},
+		{ID: "ai", Action: invocation.RuleActionAIEvaluation, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Search"}, Enabled: true, Order: 3},
+	}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]string{}
+	for _, item := range resp.Items {
+		byID[item.ID] = item.Guidance
+	}
+	for id, want := range map[string]string{
+		"auto-approve": "Likely to pass",
+		"auto-deny":    "Will be rejected",
+		"human":        "Requires reviewer approval",
+		"ai":           "real gated call",
+	} {
+		if !strings.Contains(byID[id], want) {
+			t.Fatalf("expected %s guidance to contain %q, got %q", id, want, byID[id])
+		}
 	}
 }
 
@@ -1427,6 +1541,49 @@ func TestMCPToolsCallDenialIncludesRulesContext(t *testing.T) {
 	last := rpcResp.Result.Content[len(rpcResp.Result.Content)-1].Text
 	if !strings.Contains(last, "Atryum approval rules") || !strings.Contains(last, "bash-deny") {
 		t.Fatalf("expected rules context in denial result, got %q", last)
+	}
+}
+
+func TestMCPToolsCallDenialRulesContextFiltersAgentScopedRules(t *testing.T) {
+	now := time.Now().UTC()
+	agent := store.AgentRecord{ID: "agent-cuid-007", AgentIDs: `["agent-007"]`}
+	other := store.AgentRecord{ID: "agent-cuid-other", AgentIDs: `["other-agent"]`}
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "other-deny", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Bash"}, AgentCUIDs: []string{other.ID}, Enabled: true, Order: 0},
+		{ID: "agent-deny", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Bash"}, AgentCUIDs: []string{agent.ID}, Enabled: true, Order: 1},
+	}}
+	svc := &stubService{invoke: invocation.InvocationResponse{
+		InvocationID: "inv_denied", ServerName: "demo", ToolName: "Bash",
+		Status:      invocation.StatusDenied,
+		SubmittedAt: now, CompletedAt: &now,
+		Error: json.RawMessage(`{"content":[{"type":"text","text":"Tool call denied by approval rule (auto_deny)."}],"isError":true}`),
+	}}
+	agents := &stubAgentsRepo{records: []store.AgentRecord{agent, other}}
+	h := NewHandler(svc, stubServerService{}, nil, rules, agents, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":"agent-007","method":"tools/call","params":{"name":"Bash","arguments":{"cmd":"ls"}}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	var rpcResp struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &rpcResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(rpcResp.Result.Content) < 2 {
+		t.Fatalf("expected denial text plus rules context, got %#v", rpcResp.Result.Content)
+	}
+	last := rpcResp.Result.Content[len(rpcResp.Result.Content)-1].Text
+	if !strings.Contains(last, "agent-deny") {
+		t.Fatalf("expected agent scoped rule in denial context, got %q", last)
+	}
+	if strings.Contains(last, "other-deny") {
+		t.Fatalf("other agent rule leaked into denial context: %q", last)
 	}
 }
 
