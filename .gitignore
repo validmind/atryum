@@ -33,3 +33,6 @@ website/atryum-docs.pdf
 # frontend build
 internal/api/web/assets/
 internal/api/web/atryum-logo.png
+internal/api/web/atryum-logo.svg
+internal/api/web/atryum-logo-favicon.svg
+internal/api/web/atryum-notification-icon.svg
