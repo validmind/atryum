@@ -833,6 +833,9 @@ func (h *Handler) spaFileServer() http.Handler {
 		if path == "" || path == "/" {
 			path = "index.html"
 		}
+		if path == "index.html" || strings.HasPrefix(path, "assets/") {
+			w.Header().Set("Cache-Control", "no-store")
+		}
 		// Try to open the requested file; if it doesn't exist, serve index.html.
 		if _, err := fs.Stat(staticSub, path); err != nil {
 			r.URL.Path = "/"

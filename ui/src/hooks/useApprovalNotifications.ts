@@ -6,6 +6,7 @@ interface InvocationStreamPayload {
 }
 
 const NOTIFICATION_TITLE = 'Atryum approval needed';
+const NOTIFICATION_ICON = '/ui/atryum-notification-icon.svg';
 
 const buildNotificationBody = (invocation: Invocation): string => {
   const parts = [invocation.agent_id, invocation.server_name, invocation.tool_name]
@@ -14,10 +15,6 @@ const buildNotificationBody = (invocation: Invocation): string => {
   return parts.length > 0
     ? parts.join(' / ')
     : 'An agent is waiting for human approval.';
-};
-
-const notificationIcon = (): string | undefined => {
-  return '/ui/atryum-logo-favicon.svg';
 };
 
 const focusInvocations = (invocationId: string) => {
@@ -31,13 +28,25 @@ const focusInvocations = (invocationId: string) => {
   window.history.replaceState(null, '', targetUrl);
 };
 
-const ensurePermissionAfterUserGesture = () => {
+const showNotification = (invocation: Invocation) => {
+  const notification = new Notification(NOTIFICATION_TITLE, {
+    body: buildNotificationBody(invocation),
+    icon: NOTIFICATION_ICON,
+    tag: `atryum-approval-${invocation.invocation_id}`,
+  });
+  notification.onclick = () => focusInvocations(invocation.invocation_id);
+};
+
+const ensurePermissionAfterUserGesture = (onPermissionGranted: () => void) => {
   if (!('Notification' in window) || Notification.permission !== 'default') {
     return () => {};
   }
 
-  const requestPermission = () => {
-    void Notification.requestPermission();
+  const requestPermission = async () => {
+    const permission = await Notification.requestPermission();
+    if (permission === 'granted') {
+      onPermissionGranted();
+    }
     cleanup();
   };
   const cleanup = () => {
@@ -54,10 +63,26 @@ const ensurePermissionAfterUserGesture = () => {
 };
 
 export const useApprovalNotifications = () => {
-  const knownPendingIds = useRef<Set<string>>(new Set());
-  const hasSeenInitialPayload = useRef(false);
+  const pendingInvocations = useRef<Map<string, Invocation>>(new Map());
+  const notifiedIds = useRef<Set<string>>(new Set());
 
-  useEffect(() => ensurePermissionAfterUserGesture(), []);
+  const notifyPendingApprovals = () => {
+    if (!('Notification' in window) || Notification.permission !== 'granted') {
+      return;
+    }
+
+    for (const invocation of pendingInvocations.current.values()) {
+      if (notifiedIds.current.has(invocation.invocation_id)) continue;
+
+      showNotification(invocation);
+      notifiedIds.current.add(invocation.invocation_id);
+    }
+  };
+
+  useEffect(
+    () => ensurePermissionAfterUserGesture(notifyPendingApprovals),
+    [],
+  );
 
   useEffect(() => {
     if (!('EventSource' in window)) return;
@@ -71,33 +96,10 @@ export const useApprovalNotifications = () => {
       const pendingItems = (payload.items ?? []).filter(
         (item) => item.status === 'pending_approval',
       );
-      const nextPendingIds = new Set(
-        pendingItems.map((item) => item.invocation_id),
+      pendingInvocations.current = new Map(
+        pendingItems.map((item) => [item.invocation_id, item]),
       );
-
-      if (!hasSeenInitialPayload.current) {
-        knownPendingIds.current = nextPendingIds;
-        hasSeenInitialPayload.current = true;
-        return;
-      }
-
-      if (!('Notification' in window) || Notification.permission !== 'granted') {
-        knownPendingIds.current = nextPendingIds;
-        return;
-      }
-
-      for (const invocation of pendingItems) {
-        if (knownPendingIds.current.has(invocation.invocation_id)) continue;
-
-        const notification = new Notification(NOTIFICATION_TITLE, {
-          body: buildNotificationBody(invocation),
-          icon: notificationIcon(),
-          tag: `atryum-approval-${invocation.invocation_id}`,
-        });
-        notification.onclick = () => focusInvocations(invocation.invocation_id);
-      }
-
-      knownPendingIds.current = nextPendingIds;
+      notifyPendingApprovals();
     };
 
     source.addEventListener('invocations', handleInvocations as EventListener);
