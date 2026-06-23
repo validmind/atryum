@@ -612,7 +612,10 @@ func parseAgentIDs(raw string) []string {
 // MCP clients can surface it to the model as system-level guidance.
 const atryumInitializeInstructions = "This MCP server is gated by the Atryum harness. " +
 	"Atryum may approve, deny, or request human approval for tool calls according to configured rules. " +
-	"Those rules may change between conversation turns, so treat each tool call as subject to the current Atryum policy."
+	"Those rules may change between conversation turns, so treat each tool call as subject to the current Atryum policy. " +
+	"To see the static approval rules that currently apply to you, issue an HTTP GET to /api/v1/agent/rules " +
+	"(optionally with ?server={server}&tool={tool} to preview the disposition for a specific tool); " +
+	"the response is advisory only, as AI-evaluation and human-approval outcomes are decided during the actual gated call."
 
 type AgentRule struct {
 	ID             string   `json:"id"`
@@ -620,17 +623,21 @@ type AgentRule struct {
 	ServerPatterns []string `json:"server_patterns"`
 	ToolPatterns   []string `json:"tool_patterns"`
 	Description    string   `json:"description,omitempty"`
+	Guidance       string   `json:"guidance,omitempty"`
 	Order          int      `json:"order"`
 }
 
 type AgentRulesResponse struct {
-	AgentID       string      `json:"agent_id,omitempty"`
-	Server        string      `json:"server,omitempty"`
-	Tool          string      `json:"tool,omitempty"`
-	DefaultAction string      `json:"default_action"`
-	Action        string      `json:"action,omitempty"`
-	MatchedRuleID *string     `json:"matched_rule_id,omitempty"`
-	Items         []AgentRule `json:"items"`
+	AgentID        string      `json:"agent_id,omitempty"`
+	Server         string      `json:"server,omitempty"`
+	Tool           string      `json:"tool,omitempty"`
+	DefaultAction  string      `json:"default_action"`
+	Action         string      `json:"action,omitempty"`
+	MatchedRuleID  *string     `json:"matched_rule_id,omitempty"`
+	GeneratedAt    time.Time   `json:"generated_at"`
+	EvaluationMode string      `json:"evaluation_mode"`
+	Explanation    string      `json:"explanation"`
+	Items          []AgentRule `json:"items"`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -942,7 +949,7 @@ func (h *Handler) agentRules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.rulesRepo == nil {
-		writeJSON(w, http.StatusOK, AgentRulesResponse{DefaultAction: invocation.RuleActionHumanApproval, Items: []AgentRule{}})
+		writeJSON(w, http.StatusOK, newAgentRulesResponse("", "", ""))
 		return
 	}
 
@@ -968,13 +975,7 @@ func (h *Handler) agentRules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, tool string) (AgentRulesResponse, error) {
-	resp := AgentRulesResponse{
-		AgentID:       agentID,
-		Server:        server,
-		Tool:          tool,
-		DefaultAction: invocation.RuleActionHumanApproval,
-		Items:         []AgentRule{},
-	}
+	resp := newAgentRulesResponse(agentID, server, tool)
 	if h.rulesRepo == nil {
 		return resp, nil
 	}
@@ -986,7 +987,7 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 	agentCUID := h.resolveAgentRecordForRules(ctx, agentID)
 
 	for _, rule := range rules {
-		if !apiRuleMatches(rule, server, tool, agentCUID, false) {
+		if !apiRuleVisibleToAgent(rule, agentCUID) {
 			continue
 		}
 		resp.Items = append(resp.Items, AgentRule{
@@ -995,6 +996,7 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 			ServerPatterns: rule.ServerPatterns,
 			ToolPatterns:   rule.ToolPatterns,
 			Description:    rule.Description,
+			Guidance:       agentRuleGuidance(rule.Action),
 			Order:          rule.Order,
 		})
 		if resp.Action == "" && server != "" && tool != "" &&
@@ -1007,6 +1009,20 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 		}
 	}
 	return resp, nil
+}
+
+func newAgentRulesResponse(agentID, server, tool string) AgentRulesResponse {
+	return AgentRulesResponse{
+		AgentID:        agentID,
+		Server:         server,
+		Tool:           tool,
+		DefaultAction:  invocation.RuleActionHumanApproval,
+		GeneratedAt:    time.Now().UTC(),
+		EvaluationMode: "static_only",
+		Explanation: "This advisory response is based on the current static approval rules visible to the resolved Atryum agent. " +
+			"AI evaluation rules are decided only during the actual gated tool call.",
+		Items: []AgentRule{},
+	}
 }
 
 func (h *Handler) resolveAgentRecordForRules(ctx context.Context, agentID string) string {
@@ -1036,8 +1052,15 @@ func (h *Handler) resolveAgentRecordForRules(ctx context.Context, agentID string
 	return rec.ID
 }
 
-func apiRuleMatches(rule store.Rule, server, tool, agentCUID string, includeServerTool bool) bool {
+func apiRuleVisibleToAgent(rule store.Rule, agentCUID string) bool {
 	if !rule.Enabled {
+		return false
+	}
+	return apiMatchAgentCUIDs(rule.AgentCUIDs, agentCUID)
+}
+
+func apiRuleMatches(rule store.Rule, server, tool, agentCUID string, includeServerTool bool) bool {
+	if !apiRuleVisibleToAgent(rule, agentCUID) {
 		return false
 	}
 	if includeServerTool {
@@ -1048,7 +1071,7 @@ func apiRuleMatches(rule store.Rule, server, tool, agentCUID string, includeServ
 			return false
 		}
 	}
-	return apiMatchAgentCUIDs(rule.AgentCUIDs, agentCUID)
+	return true
 }
 
 func apiMatchAgentCUIDs(cuids []string, agentCUID string) bool {
@@ -1164,7 +1187,11 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		if len(resp.Error) > 0 {
 			result := normalizeToolCallResult(resp.Error, true)
 			if resp.Status == invocation.StatusDenied {
-				result = h.appendRulesContextToToolResult(r.Context(), result, server, params.Name)
+				agentID := auth.AgentIDFromContext(r.Context())
+				if agentID == "" && h.authValidator == nil {
+					agentID = normalizeNoAuthRequestAgentID(requestID)
+				}
+				result = h.appendRulesContextToToolResult(r.Context(), result, agentID, server, params.Name)
 			}
 			h.writeRPCResult(w, req.ID, result)
 			return
@@ -1383,6 +1410,21 @@ func apiMatchPatterns(patterns []string, value string) bool {
 	return false
 }
 
+func agentRuleGuidance(action string) string {
+	switch action {
+	case invocation.RuleActionAutoApprove:
+		return "Likely to pass if policy and rule inputs do not change."
+	case invocation.RuleActionAutoDeny:
+		return "Will be rejected by this matched rule."
+	case invocation.RuleActionHumanApproval:
+		return "Requires reviewer approval."
+	case invocation.RuleActionAIEvaluation:
+		return "Evaluated only during the real gated call; advisory cannot guarantee the outcome."
+	default:
+		return ""
+	}
+}
+
 // annotatedTool is the on-the-wire shape used for tools/list when atryum is
 // able to compute a per-tool policy disposition. It mirrors mcp.Tool but adds
 // an `annotations` block plus a description prefix so models that ignore
@@ -1462,11 +1504,11 @@ func effectiveActionForTool(rules []store.Rule, server, tool, agentCUID string) 
 
 // appendRulesContextToToolResult adds an extra text content block to a denied
 // tool call result describing the applicable rules and effective action.
-func (h *Handler) appendRulesContextToToolResult(ctx context.Context, result any, server, tool string) any {
+func (h *Handler) appendRulesContextToToolResult(ctx context.Context, result any, agentID, server, tool string) any {
 	if h.rulesRepo == nil {
 		return result
 	}
-	rulesResp, err := h.buildAgentRulesResponse(ctx, auth.AgentIDFromContext(ctx), server, tool)
+	rulesResp, err := h.buildAgentRulesResponse(ctx, agentID, server, tool)
 	if err != nil {
 		return result
 	}
@@ -3819,6 +3861,16 @@ func compactRequestID(id json.RawMessage) string {
 		return ""
 	}
 	return string(id)
+}
+
+func normalizeNoAuthRequestAgentID(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, `"`) {
+		if unquoted, err := strconv.Unquote(value); err == nil {
+			value = unquoted
+		}
+	}
+	return normalizeNoAuthAgentID(value)
 }
 
 func stringPtr(v string) *string { return &v }
