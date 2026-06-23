@@ -4085,6 +4085,16 @@ func compactRequestID(id json.RawMessage) string {
 	return string(id)
 }
 
+func normalizeNoAuthRequestAgentID(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, `"`) {
+		if unquoted, err := strconv.Unquote(value); err == nil {
+			value = unquoted
+		}
+	}
+	return normalizeNoAuthAgentID(value)
+}
+
 func stringPtr(v string) *string { return &v }
 
 func invocationSignature(items []invocation.InvocationResponse) string {
