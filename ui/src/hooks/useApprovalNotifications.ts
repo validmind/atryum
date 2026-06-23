@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import type { Invocation } from '../api/AtryumAPI';
 
 interface InvocationStreamPayload {
@@ -37,6 +37,16 @@ const showNotification = (invocation: Invocation) => {
   notification.onclick = () => focusInvocations(invocation.invocation_id);
 };
 
+const parseInvocationStreamPayload = (
+  data: string,
+): InvocationStreamPayload | null => {
+  try {
+    return JSON.parse(data) as InvocationStreamPayload;
+  } catch {
+    return null;
+  }
+};
+
 const ensurePermissionAfterUserGesture = (onPermissionGranted: () => void) => {
   if (!('Notification' in window) || Notification.permission !== 'default') {
     return () => {};
@@ -66,7 +76,7 @@ export const useApprovalNotifications = () => {
   const pendingInvocations = useRef<Map<string, Invocation>>(new Map());
   const notifiedIds = useRef<Set<string>>(new Set());
 
-  const notifyPendingApprovals = () => {
+  const notifyPendingApprovals = useCallback(() => {
     if (!('Notification' in window) || Notification.permission !== 'granted') {
       return;
     }
@@ -77,11 +87,11 @@ export const useApprovalNotifications = () => {
       showNotification(invocation);
       notifiedIds.current.add(invocation.invocation_id);
     }
-  };
+  }, []);
 
   useEffect(
     () => ensurePermissionAfterUserGesture(notifyPendingApprovals),
-    [],
+    [notifyPendingApprovals],
   );
 
   useEffect(() => {
@@ -92,7 +102,9 @@ export const useApprovalNotifications = () => {
     );
 
     const handleInvocations = (event: MessageEvent<string>) => {
-      const payload = JSON.parse(event.data) as InvocationStreamPayload;
+      const payload = parseInvocationStreamPayload(event.data);
+      if (!payload) return;
+
       const pendingItems = (payload.items ?? []).filter(
         (item) => item.status === 'pending_approval',
       );
@@ -111,5 +123,5 @@ export const useApprovalNotifications = () => {
       );
       source.close();
     };
-  }, []);
+  }, [notifyPendingApprovals]);
 };
