@@ -1,5 +1,5 @@
 /* eslint-disable react/jsx-no-bind */
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import ResizablePanels from "../components/ResizablePanels";
 import {
   Badge,
@@ -216,6 +216,20 @@ const Invocations: React.FC = () => {
     client_name: "",
   });
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // Select an invocation when deep-linked via URL hash (e.g. from a
+  // desktop approval notification: /ui/invocations#<invocation_id>).
+  useEffect(() => {
+    const selectFromHash = () => {
+      const hashId = window.location.hash.replace(/^#/, "");
+      if (!hashId) return;
+      setDetailClosed(false);
+      setSelectedId(hashId);
+    };
+    selectFromHash();
+    window.addEventListener("hashchange", selectFromHash);
+    return () => window.removeEventListener("hashchange", selectFromHash);
+  }, []);
   const [denyMessage, setDenyMessage] = useState("");
   const [showDenyInput, setShowDenyInput] = useState(false);
   const [detailClosed, setDetailClosed] = useState(false);

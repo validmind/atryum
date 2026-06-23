@@ -19,13 +19,15 @@ const buildNotificationBody = (invocation: Invocation): string => {
 
 const focusInvocations = (invocationId: string) => {
   const targetPath = `/ui/invocations`;
-  const targetUrl = `${targetPath}#${invocationId}`;
   window.focus();
   if (window.location.pathname !== targetPath) {
-    window.location.assign(targetUrl);
+    // Full navigation; the page reads the hash on mount.
+    window.location.assign(`${targetPath}#${invocationId}`);
     return;
   }
-  window.history.replaceState(null, '', targetUrl);
+  // Already on the page: assigning the hash fires a `hashchange` event that
+  // the page listens for. `history.replaceState` would not.
+  window.location.hash = invocationId;
 };
 
 const showNotification = (invocation: Invocation) => {
@@ -111,6 +113,15 @@ export const useApprovalNotifications = () => {
       pendingInvocations.current = new Map(
         pendingItems.map((item) => [item.invocation_id, item]),
       );
+
+      // Drop notified IDs that are no longer pending so the set doesn't grow
+      // unbounded over a long-lived session.
+      for (const id of notifiedIds.current) {
+        if (!pendingInvocations.current.has(id)) {
+          notifiedIds.current.delete(id);
+        }
+      }
+
       notifyPendingApprovals();
     };
 
