@@ -63,7 +63,7 @@ Use this path for agents that gate native tools (shell, file edits, in-process t
 
 1. Make sure Atryum is running and reachable ([Quickstart](../1_quickstart.md)).
 
-2. Set `ATRYUM_URL` (and optionally `ATRYUM_AGENT_ID`) in the same terminal session where you start the agent. ([Set environment variables](#set-environment-variables))
+2. Set `ATRYUM_URL` in the same terminal session where you start the agent. In no-auth mode, optionally set `ATRYUM_AGENT_ID`; in auth mode, set `ATRYUM_ACCESS_TOKEN`. ([Set environment variables](#set-environment-variables))
 
 3. Follow the setup steps in the example for your agent:
 
@@ -75,7 +75,7 @@ Use this path for agents that gate native tools (shell, file edits, in-process t
 
 #### Set environment variables
 
-Use these variables for hook and extension integrations. MCP proxy clients do not read `ATRYUM_AGENT_ID` — tag agent identity with `?agent_id=` on the proxy URL instead.
+Use these variables for hook and extension integrations. MCP proxy clients do not read `ATRYUM_AGENT_ID` — tag agent identity with `?agent_id=` on the proxy URL in no-auth mode, or configure the MCP client to send an OAuth bearer token in auth mode.
 
 1. Open the terminal session you will use to start your agent.
 
@@ -95,12 +95,20 @@ Use these variables for hook and extension integrations. MCP proxy clients do no
     export ATRYUM_AGENT_ID=amp-local
     ```
 
-4. (Optional) Export these variables to label the agent in Atryum:
+4. (Optional, auth mode) Export `ATRYUM_ACCESS_TOKEN` — an OAuth access token for Atryum's agent runtime APIs:
+
+    ```bash
+    export ATRYUM_ACCESS_TOKEN=<oauth-access-token>
+    ```
+
+    Use this when Atryum has one or more `[[auth]]` blocks configured. The integration sends it as an `Authorization: Bearer ...` header to the external invocation API. In auth mode, Atryum derives agent identity from the token and ignores `ATRYUM_AGENT_ID`.
+
+5. (Optional) Export these variables to label the agent in Atryum:
 
     - `ATRYUM_CLIENT_NAME` — Harness name shown in the **Agent** column on **Invocations**. Defaults to each integration's source label when unset.
     - `ATRYUM_CLIENT_VERSION` — Harness version shown in Atryum. Some integrations also read their native version variables, such as `AMP_VERSION` or `PI_VERSION`.
 
-5. Make sure Atryum is running and reachable at `ATRYUM_URL`, then start your agent from the same terminal session.
+6. Make sure Atryum is running and reachable at `ATRYUM_URL`, then start your agent from the same terminal session.
 
 ### Connect via MCP proxy
 
@@ -175,7 +183,7 @@ To apply agent-scoped rules, attach invocations to an agent record, or supply a 
     - Use the exact string you added in **Agent IDs** — matching is case-sensitive, so `amp-local` and `Amp-Local` are different IDs.
     - Export both variables in the **same shell session** you use to launch your agent. If you export them in one terminal and start the agent from another, the agent will not see the values.
     - `ATRYUM_URL` tells the integration where Atryum is running. It defaults to `http://localhost:8080` when unset; change the host or port if Atryum runs elsewhere. Refer to [Set environment variables](#set-environment-variables) for the full list of supported variables.
-    - In auth mode, put the token's JWT `sub` claim or OAuth `client_id` in **Agent IDs** instead of a self-declared string. ([Agent identity and authentication](#agent-identity-and-authentication))
+    - In auth mode, put the token's configured agent ID claim in **Agent IDs** instead of a self-declared string, and export `ATRYUM_ACCESS_TOKEN` before starting the agent. ([Agent identity and authentication](#agent-identity-and-authentication))
 
     b. **MCP proxy agents** — Append the same string to your MCP proxy URL as `?agent_id=<your_id>` (for example, `http://localhost:8080/mcp/calc?agent_id=amp-local`).
 
@@ -216,13 +224,13 @@ To refresh the shared hook script or re-apply hook entries after an Atryum upgra
 
 Restart Cursor, Claude Code, Amp, or Pi after changing hooks, plugins, or extensions. Amp must still be started with `PLUGINS=all`. Pi can reload extensions with `/reload` when already running.
 
-To change `ATRYUM_URL` or `ATRYUM_AGENT_ID`, export the new values in the terminal session where you start the agent, then restart the agent. The installed hook reads these at runtime — you do not need to reinstall hooks when only the values change.
+To change `ATRYUM_URL`, `ATRYUM_AGENT_ID`, or `ATRYUM_ACCESS_TOKEN`, export the new values in the terminal session where you start the agent, then restart the agent. The installed hook reads these at runtime — you do not need to reinstall hooks when only the values change.
 
 ### Edit hook and extension agents
 
 Manually configured Claude Code hooks and per-project plugin/extension installs follow the same pattern:
 
-1. Update `ATRYUM_URL`, `ATRYUM_AGENT_ID`, or optional label variables in the terminal session where you start the agent. ([Set environment variables](#set-environment-variables))
+1. Update `ATRYUM_URL`, `ATRYUM_AGENT_ID`, `ATRYUM_ACCESS_TOKEN`, or optional label variables in the terminal session where you start the agent. ([Set environment variables](#set-environment-variables))
 
 2. If you changed plugin or extension source files, copy the updated file from the repository example into your install path — for example `.amp/plugins/atryum.ts` or `.pi/extensions/atryum/index.ts`.
 
@@ -299,7 +307,9 @@ Synced ValidMind agent records cannot be deleted from Atryum — remove them by 
 
 ## Agent identity and authentication
 
-When coding agents connect to Atryum, they present an *agent identity* that Atryum uses to tag invocations and match rules ([Rules](../3_rules.md)) scoped to specific agents. Atryum supports two inbound authentication modes:
+When coding agents connect to Atryum, they present an *agent identity* that Atryum uses to tag invocations and match rules ([Rules](../3_rules.md)) scoped to specific agents. Atryum applies the same inbound auth behavior to agent runtime endpoints: `/mcp/<server_name>`, `/api/v1/invocations`, `/api/v1/external/invocations`, `/api/v1/external/invocations/<id>`, and `/api/v1/agent/rules`.
+
+Atryum supports two inbound authentication modes:
 
 1. **No-auth mode** — The default when no `[[auth]]` blocks are configured in `atryum.toml`. Agents self-declare an agent ID.
 2. **Auth mode** — Agents authenticate with OAuth bearer tokens. Atryum derives a verified agent ID from the token and ignores self-declared labels.
@@ -345,7 +355,7 @@ In auth mode, agents must authenticate to Atryum with an OAuth bearer token. Atr
         ./atryum run --init-servers
         ```
 
-3. Configure your agent to obtain an OAuth access token from the same authorization server and present it as a bearer token when connecting to Atryum.
+3. Configure your agent to obtain an OAuth access token from the same authorization server and present it as a bearer token when connecting to Atryum. For Amp, Pi, and the shared hook script used by installed hooks, set `ATRYUM_ACCESS_TOKEN` in the environment before starting the agent.
 
 For local development, a [Keycloak](https://www.keycloak.org/) container is included in the repository's [Docker Compose](https://docs.docker.com/compose/) setup:
 
@@ -358,5 +368,5 @@ Keycloak runs at [`localhost:8089`](http://localhost:8089). On first startup, th
 For deployments outside local development, use your organization's identity provider (IdP) instead of the bundled Keycloak instance.
 
 :::
-Most hook and extension integrations in the [GitHub `examples` directory](https://github.com/validmind/atryum/tree/main/examples) currently support no-auth mode only. When auth mode is enabled, configure your agent to send a bearer token rather than a query-parameter agent ID.
+When auth mode is enabled, configure your agent to send a bearer token rather than a query-parameter agent ID. Amp, Pi, and the shared hook script read `ATRYUM_ACCESS_TOKEN` and send it to Atryum's agent runtime APIs.
 :::

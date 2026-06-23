@@ -153,12 +153,9 @@ func TestInvokeWithoutAgentIDPersistsClientInfoFromRequest(t *testing.T) {
 	}
 }
 
-// External (non-MCP) callers like the amp-plugin example don't run behind
-// the auth middleware today, so there is no identity in context. They can
-// instead self-declare via the new `agent_id` field on ExternalSubmitRequest,
-// which Submit must promote onto the invocation row so the Agent column /
-// agents.agent_ids resolution / agent-scoped rule matching all light up.
-// A verified OAuth identity in context still wins when both are present.
+// External (non-MCP) callers can still self-declare via `agent_id` when
+// Atryum is running without auth. When OAuth middleware attaches a verified
+// identity to the context, that identity wins over the request body.
 func TestExternalSubmitUsesSelfDeclaredAgentIDWhenNoAuthIdentity(t *testing.T) {
 	db := newSQLiteTestDB(t)
 	svc := invocation.NewService(

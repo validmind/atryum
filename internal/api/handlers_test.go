@@ -35,6 +35,12 @@ type stubService struct {
 
 	invokedReq *invocation.CreateInvocationRequest
 	invokedCtx context.Context
+	submitReq  *invocation.ExternalSubmitRequest
+	submitCtx  context.Context
+	getCtx     context.Context
+	recordID   string
+	recordReq  *invocation.ExternalExecutionUpdate
+	recordCtx  context.Context
 }
 
 func (s *stubService) Invoke(ctx context.Context, req invocation.CreateInvocationRequest) (invocation.InvocationResponse, error) {
@@ -45,7 +51,8 @@ func (s *stubService) Invoke(ctx context.Context, req invocation.CreateInvocatio
 func (s *stubService) ListTools(context.Context, string) ([]mcp.Tool, error) {
 	return s.tools, s.listErr
 }
-func (s *stubService) Get(_ context.Context, _ string) (invocation.InvocationResponse, error) {
+func (s *stubService) Get(ctx context.Context, _ string) (invocation.InvocationResponse, error) {
+	s.getCtx = ctx
 	return s.invoke, s.getErr
 }
 func (s *stubService) List(context.Context, invocation.InvocationListFilter) (invocation.InvocationListResponse, error) {
@@ -59,8 +66,13 @@ func (s *stubService) Events(context.Context, string, invocation.EventListFilter
 }
 func (s *stubService) Approve(context.Context, string) error      { return nil }
 func (s *stubService) Deny(context.Context, string, string) error { return nil }
-func (s *stubService) Submit(context.Context, invocation.ExternalSubmitRequest) (invocation.InvocationResponse, error) {
-	return invocation.InvocationResponse{}, nil
+func (s *stubService) Submit(ctx context.Context, req invocation.ExternalSubmitRequest) (invocation.InvocationResponse, error) {
+	s.submitReq = &req
+	s.submitCtx = ctx
+	if s.invoke.InvocationID != "" {
+		return s.invoke, s.invErr
+	}
+	return invocation.InvocationResponse{InvocationID: "inv_submit", ToolName: req.Tool, Status: invocation.StatusPendingApproval}, s.invErr
 }
 func (s *stubService) SetSummary(_ context.Context, id string, summary string) (invocation.InvocationResponse, error) {
 	s.setID = id
@@ -72,8 +84,14 @@ func (s *stubService) SetSummary(_ context.Context, id string, summary string) (
 	resp.Summary = summary
 	return resp, nil
 }
-func (s *stubService) RecordExecution(context.Context, string, invocation.ExternalExecutionUpdate) (invocation.InvocationResponse, error) {
-	return invocation.InvocationResponse{}, nil
+func (s *stubService) RecordExecution(ctx context.Context, id string, req invocation.ExternalExecutionUpdate) (invocation.InvocationResponse, error) {
+	s.recordID = id
+	s.recordReq = &req
+	s.recordCtx = ctx
+	if s.invoke.InvocationID != "" {
+		return s.invoke, s.invErr
+	}
+	return invocation.InvocationResponse{InvocationID: id, Status: invocation.StatusSucceeded}, s.invErr
 }
 func (s *stubService) ForwardEnvelope(context.Context, mcp.Upstream, mcp.Envelope, string) (mcp.ForwardResult, error) {
 	return s.forward, s.fwdErr

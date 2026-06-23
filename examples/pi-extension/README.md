@@ -80,6 +80,7 @@ To remove the global extension later:
 | `ATRYUM_CLIENT_NAME` | `pi` | harness name shown in the Atryum Agent column |
 | `ATRYUM_CLIENT_VERSION` | `PI_VERSION` if set | harness version shown in Atryum |
 | `ATRYUM_AGENT_ID` | _(empty)_ | self-declared agent identifier; matched against Agent Record `agent_ids` |
+| `ATRYUM_ACCESS_TOKEN` | _(empty)_ | optional OAuth bearer token for Atryum agent runtime APIs |
 | `ATRYUM_CHAT_MESSAGES_LIMIT` | `100` | recent Pi session chat messages sent as LLM-as-judge context |
 
 ## LLM-as-judge chat context
@@ -112,8 +113,16 @@ agent-scoped approval rules apply:
    it up via `agents.agent_ids @> ["pi-local"]` and tags the row.
 
 This is a self-declared identity. Anyone with network access to the Atryum API
-can claim any agent id. For verified identity, run Atryum behind OAuth and
-authenticate the extension instead.
+can claim any agent id. For verified identity, run Atryum behind OAuth (one or
+more `[[auth]]` blocks) and export an OAuth access token instead:
+
+```sh
+export ATRYUM_ACCESS_TOKEN=<oauth-access-token>
+```
+
+The extension sends it as `Authorization: Bearer ...` on every agent runtime
+call. In auth mode Atryum derives the agent id from the token and ignores
+`ATRYUM_AGENT_ID`.
 
 ## API used
 

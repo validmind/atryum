@@ -44,6 +44,14 @@ const MAX_MESSAGE_CHARS = Number(process.env.ATRYUM_MAX_MESSAGE_CHARS || 2000);
 // (so agent-scoped approval rules apply). Not authenticated — for verified
 // identity use OAuth. Default: empty (no agent tagging).
 const AGENT_ID = process.env.ATRYUM_AGENT_ID || "";
+const ACCESS_TOKEN = process.env.ATRYUM_ACCESS_TOKEN || "";
+
+function atryumHeaders(contentType = false) {
+  const headers = {};
+  if (contentType) headers["Content-Type"] = "application/json";
+  if (ACCESS_TOKEN) headers.Authorization = `Bearer ${ACCESS_TOKEN}`;
+  return headers;
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -456,7 +464,7 @@ async function submit(event) {
   const chat = await chatContext(event);
   const res = await fetch(`${API}/api/v1/external/invocations`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: atryumHeaders(true),
     body: JSON.stringify({
       source: SOURCE,
       tool: name,
@@ -480,7 +488,9 @@ async function submit(event) {
 
 async function poll(invocationId) {
   while (true) {
-    const res = await fetch(`${API}/api/v1/external/invocations/${invocationId}`);
+    const res = await fetch(`${API}/api/v1/external/invocations/${invocationId}`, {
+      headers: atryumHeaders(),
+    });
     if (!res.ok) {
       throw new Error(`atryum poll failed: ${res.status}`);
     }
@@ -495,7 +505,7 @@ async function poll(invocationId) {
 async function patchExecution(invocationId, body) {
   const res = await fetch(`${API}/api/v1/external/invocations/${invocationId}`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers: atryumHeaders(true),
     body: JSON.stringify(body),
   });
   if (!res.ok) {

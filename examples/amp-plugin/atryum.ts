@@ -17,6 +17,8 @@
 //                    invocations from this plugin will be tagged to that
 //                    Agent Record (so agent-scoped approval rules apply).
 //                    Default: empty (no agent tagging).
+//   ATRYUM_ACCESS_TOKEN
+//                    optional OAuth bearer token for Atryum agent runtime APIs.
 //   ATRYUM_CHAT_MESSAGES_LIMIT
 //                    recent Amp thread messages sent as LLM-as-judge context,
 //                    default 100. Set to 0 to disable.
@@ -62,6 +64,14 @@ const CLIENT_VERSION =
 // Agent Record (e.g. "amp-local", "amp-alice", a service account id, etc.)
 // will work. Not authenticated — for verified identity use OAuth.
 const AGENT_ID = process.env.ATRYUM_AGENT_ID || "";
+const ACCESS_TOKEN = process.env.ATRYUM_ACCESS_TOKEN || "";
+
+function atryumHeaders(contentType = false): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (contentType) headers["Content-Type"] = "application/json";
+  if (ACCESS_TOKEN) headers.Authorization = `Bearer ${ACCESS_TOKEN}`;
+  return headers;
+}
 
 type InvocationStatus =
   | "received"
@@ -345,7 +355,7 @@ async function submit(
 ): Promise<InvocationResponse> {
   const res = await fetch(`${API}/api/v1/external/invocations`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: atryumHeaders(true),
     body: JSON.stringify({
       source: SOURCE,
       tool,
@@ -370,7 +380,8 @@ async function submit(
 async function poll(invocationID: string): Promise<InvocationResponse> {
   while (true) {
     const res = await fetch(
-      `${API}/api/v1/external/invocations/${invocationID}`
+      `${API}/api/v1/external/invocations/${invocationID}`,
+      { headers: atryumHeaders() }
     );
     if (!res.ok) {
       throw new Error(`atryum poll failed: ${res.status}`);
@@ -394,7 +405,7 @@ async function patchExecution(
 ): Promise<void> {
   await fetch(`${API}/api/v1/external/invocations/${invocationID}`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers: atryumHeaders(true),
     body: JSON.stringify(body),
   });
 }

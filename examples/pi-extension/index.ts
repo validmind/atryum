@@ -13,6 +13,14 @@ const CHAT_MESSAGES_LIMIT = Number(
 // Self-declared agent identity. Atryum resolves the Agent Record via the
 // agents.agent_ids array. Not authenticated; for verified identity use OAuth.
 const AGENT_ID = process.env.ATRYUM_AGENT_ID || "";
+const ACCESS_TOKEN = process.env.ATRYUM_ACCESS_TOKEN || "";
+
+function atryumHeaders(contentType = false): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (contentType) headers["Content-Type"] = "application/json";
+  if (ACCESS_TOKEN) headers.Authorization = `Bearer ${ACCESS_TOKEN}`;
+  return headers;
+}
 
 type InvocationStatus =
   | "received"
@@ -239,7 +247,7 @@ async function submit(
 ): Promise<InvocationResponse> {
   const res = await fetch(`${API}/api/v1/external/invocations`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: atryumHeaders(true),
     body: JSON.stringify({
       source: SOURCE,
       tool,
@@ -264,7 +272,8 @@ async function submit(
 async function poll(invocationID: string): Promise<InvocationResponse> {
   while (true) {
     const res = await fetch(
-      `${API}/api/v1/external/invocations/${invocationID}`
+      `${API}/api/v1/external/invocations/${invocationID}`,
+      { headers: atryumHeaders() }
     );
     if (!res.ok) {
       throw new Error(`atryum poll failed: ${res.status} ${await res.text()}`);
@@ -292,7 +301,7 @@ async function patchExecution(
 ): Promise<void> {
   const res = await fetch(`${API}/api/v1/external/invocations/${invocationID}`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers: atryumHeaders(true),
     body: JSON.stringify(body),
   });
   if (!res.ok) {
