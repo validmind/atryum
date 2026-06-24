@@ -1503,6 +1503,52 @@ func TestMCPToolsListAnnotationsUseDefaultAgentScopedRules(t *testing.T) {
 	}
 }
 
+func TestMCPToolsListAnnotationsIgnoreJSONRPCIDForNoAuthAgent(t *testing.T) {
+	agent := store.AgentRecord{ID: "agent-cuid-007", AgentIDs: `["agent-007"]`}
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "agent-auto", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Bash"}, AgentCUIDs: []string{agent.ID}, Enabled: true, Order: 0},
+	}}
+	svc := &stubService{tools: []mcp.Tool{{Name: "Bash", Description: "run a shell command"}}}
+	agents := &stubAgentsRepo{records: []store.AgentRecord{agent}}
+	h := NewHandler(svc, stubServerService{}, nil, rules, agents, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":"agent-007","method":"tools/list","params":{}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var rpcResp struct {
+		Result struct {
+			Tools []struct {
+				Annotations *struct {
+					Atryum struct {
+						EffectiveAction string `json:"effective_action"`
+						MatchedRuleID   string `json:"matched_rule_id"`
+					} `json:"atryum"`
+				} `json:"annotations"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &rpcResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(rpcResp.Result.Tools) != 1 {
+		t.Fatalf("expected one tool, got %#v", rpcResp.Result.Tools)
+	}
+	got := rpcResp.Result.Tools[0].Annotations
+	if got == nil {
+		t.Fatal("expected annotation")
+	}
+	if got.Atryum.EffectiveAction != invocation.RuleActionHumanApproval {
+		t.Fatalf("expected anonymous/default policy, got %#v", got.Atryum)
+	}
+	if got.Atryum.MatchedRuleID != "" {
+		t.Fatalf("json-rpc id should not match agent-scoped rule, got %q", got.Atryum.MatchedRuleID)
+	}
+}
+
 func TestMCPToolsCallDenialIncludesRulesContext(t *testing.T) {
 	now := time.Now().UTC()
 	rules := &stubRulesRepo{rules: []store.Rule{
@@ -1560,7 +1606,7 @@ func TestMCPToolsCallDenialRulesContextFiltersAgentScopedRules(t *testing.T) {
 	}}
 	agents := &stubAgentsRepo{records: []store.AgentRecord{agent, other}}
 	h := NewHandler(svc, stubServerService{}, nil, rules, agents, nil, nil, nil, nil, nil)
-	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":"agent-007","method":"tools/call","params":{"name":"Bash","arguments":{"cmd":"ls"}}}`))
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo?agent_id=agent-007", strings.NewReader(`{"jsonrpc":"2.0","id":"request-1","method":"tools/call","params":{"name":"Bash","arguments":{"cmd":"ls"}}}`))
 	w := httptest.NewRecorder()
 
 	h.Routes().ServeHTTP(w, req)
