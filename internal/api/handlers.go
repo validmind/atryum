@@ -157,6 +157,16 @@ type Handler struct {
 	clientInfoMu    sync.RWMutex
 	clientInfoCache map[string]clientInfoSnapshot
 
+	// rulesListMu / rulesListCache avoids redundant DB round-trips when
+	// multiple operations in the same request window need the full rule list.
+	// Entries expire after 10 s — rules are admin-configured and change rarely.
+	rulesListMu    sync.RWMutex
+	rulesListCache *rulesListCacheEntry
+
+	// agentCUIDCache avoids repeated DB lookups for agentID → CUID resolution
+	// on every tools/list. Entries expire after 30 s.
+	agentCUIDCache sync.Map
+
 	// managedAgents is the optional Claude Managed Agents events bridge.
 	// nil when not configured (no anthropic api key).
 	managedAgents managedAgentsAdmin
@@ -628,9 +638,13 @@ func parseAgentIDs(raw string) []string {
 const atryumInitializeInstructions = "This MCP server is gated by the Atryum harness. " +
 	"Atryum may approve, deny, or request human approval for tool calls according to configured rules. " +
 	"Those rules may change between conversation turns, so treat each tool call as subject to the current Atryum policy. " +
-	"To see the static approval rules that currently apply to you, issue an HTTP GET to /api/v1/agent/rules " +
+	"To see the static approval rules that currently apply to you, call the atryum_rules_get MCP tool or issue an HTTP GET to /api/v1/agent/rules " +
 	"(optionally with ?server={server}&tool={tool} to preview the disposition for a specific tool); " +
 	"the response is advisory only, as AI-evaluation and human-approval outcomes are decided during the actual gated call."
+
+// Dotted tool names are valid MCP names, but common harnesses have rejected
+// them in practice. Keep this synthetic helper underscore-only for compatibility.
+const atryumRulesToolName = "atryum_rules_get"
 
 type AgentRule struct {
 	ID             string   `json:"id"`
@@ -1017,11 +1031,6 @@ func (h *Handler) agentRules(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if h.rulesRepo == nil {
-		writeJSON(w, http.StatusOK, newAgentRulesResponse("", "", ""))
-		return
-	}
-
 	agentID := auth.AgentIDFromContext(r.Context())
 	if agentID == "" && h.authValidator == nil {
 		agentID = normalizeNoAuthAgentID(r.URL.Query().Get("agent_id"))
@@ -1034,6 +1043,11 @@ func (h *Handler) agentRules(w http.ResponseWriter, r *http.Request) {
 		server = strings.TrimSpace(r.URL.Query().Get("source"))
 	}
 	tool := strings.TrimSpace(r.URL.Query().Get("tool"))
+
+	if h.rulesRepo == nil {
+		writeJSON(w, http.StatusOK, newAgentRulesResponse(agentID, server, tool))
+		return
+	}
 
 	resp, err := h.buildAgentRulesResponse(r.Context(), agentID, server, tool)
 	if err != nil {
@@ -1049,7 +1063,7 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 		return resp, nil
 	}
 
-	rules, err := h.rulesRepo.List(ctx)
+	rules, err := h.cachedRulesList(ctx)
 	if err != nil {
 		return AgentRulesResponse{}, err
 	}
@@ -1080,6 +1094,56 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 	return resp, nil
 }
 
+func (h *Handler) handleAtryumRulesToolCall(w http.ResponseWriter, r *http.Request, id json.RawMessage, mcpServer string, arguments map[string]any) {
+	if arguments == nil {
+		arguments = map[string]any{}
+	}
+	agentID := auth.AgentIDFromContext(r.Context())
+	if agentID == "" && h.authValidator == nil {
+		agentID = normalizeNoAuthAgentID(stringArgument(arguments, "agent_id"))
+	}
+	if agentID == "" && h.authValidator == nil {
+		agentID = strings.TrimSpace(stringArgument(arguments, "request_id"))
+	}
+	server := strings.TrimSpace(stringArgument(arguments, "server"))
+	if server == "" {
+		server = strings.TrimSpace(stringArgument(arguments, "source"))
+	}
+	if server == "" {
+		server = mcpServer
+	}
+	tool := strings.TrimSpace(stringArgument(arguments, "tool"))
+
+	resp, err := h.buildAgentRulesResponse(r.Context(), agentID, server, tool)
+	if err != nil {
+		h.writeRPCError(w, id, -32000, err.Error())
+		return
+	}
+	body, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		h.writeRPCError(w, id, -32000, err.Error())
+		return
+	}
+	h.writeRPCResult(w, id, map[string]any{
+		"content": []map[string]any{{
+			"type": "text",
+			"text": string(body),
+		}},
+	})
+}
+
+func stringArgument(arguments map[string]any, key string) string {
+	v, ok := arguments[key]
+	if !ok {
+		return ""
+	}
+	s, ok := v.(string)
+	if !ok {
+		return ""
+	}
+	return s
+}
+
 func newAgentRulesResponse(agentID, server, tool string) AgentRulesResponse {
 	return AgentRulesResponse{
 		AgentID:        agentID,
@@ -1094,10 +1158,55 @@ func newAgentRulesResponse(agentID, server, tool string) AgentRulesResponse {
 	}
 }
 
+type rulesListCacheEntry struct {
+	rules     []store.Rule
+	expiresAt time.Time
+}
+
+func (h *Handler) cachedRulesList(ctx context.Context) ([]store.Rule, error) {
+	h.rulesListMu.RLock()
+	if h.rulesListCache != nil && time.Now().Before(h.rulesListCache.expiresAt) {
+		rules := h.rulesListCache.rules
+		h.rulesListMu.RUnlock()
+		return rules, nil
+	}
+	h.rulesListMu.RUnlock()
+
+	rules, err := h.rulesRepo.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	h.rulesListMu.Lock()
+	defer h.rulesListMu.Unlock()
+	h.rulesListCache = &rulesListCacheEntry{rules: rules, expiresAt: time.Now().Add(10 * time.Second)}
+	return rules, nil
+}
+
+type agentCUIDCacheEntry struct {
+	cuid      string
+	expiresAt time.Time
+}
+
 func (h *Handler) resolveAgentRecordForRules(ctx context.Context, agentID string) string {
 	if h.agentsRepo == nil {
 		return ""
 	}
+	cacheKey := agentID
+	if cacheKey == "" {
+		cacheKey = "\x00default"
+	}
+	if v, ok := h.agentCUIDCache.Load(cacheKey); ok {
+		if e := v.(agentCUIDCacheEntry); time.Now().Before(e.expiresAt) {
+			return e.cuid
+		}
+	}
+	cuid := h.resolveAgentCUIDUncached(ctx, agentID)
+	h.agentCUIDCache.Store(cacheKey, agentCUIDCacheEntry{cuid: cuid, expiresAt: time.Now().Add(30 * time.Second)})
+	return cuid
+}
+
+func (h *Handler) resolveAgentCUIDUncached(ctx context.Context, agentID string) string {
 	if agentID != "" {
 		if rec, err := h.agentsRepo.GetByAgentID(ctx, agentID); err == nil {
 			return rec.ID
@@ -1233,6 +1342,10 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		}
 		if err := json.Unmarshal(req.Params, &params); err != nil {
 			h.writeRPCError(w, req.ID, -32602, "invalid params")
+			return
+		}
+		if params.Name == atryumRulesToolName {
+			h.handleAtryumRulesToolCall(w, r, req.ID, server, params.Arguments)
 			return
 		}
 		toolReq := invocation.CreateInvocationRequest{Server: server, Tool: params.Name, Input: params.Arguments}
@@ -1478,9 +1591,9 @@ func apiMatchPatterns(patterns []string, value string) bool {
 func agentRuleGuidance(action string) string {
 	switch action {
 	case invocation.RuleActionAutoApprove:
-		return "Likely to pass if policy and rule inputs do not change."
+		return "Auto-approved by this rule."
 	case invocation.RuleActionAutoDeny:
-		return "Will be rejected by this matched rule."
+		return "Auto-denied by this rule."
 	case invocation.RuleActionHumanApproval:
 		return "Requires reviewer approval."
 	case invocation.RuleActionAIEvaluation:
@@ -1514,22 +1627,29 @@ type atryumToolPolicy struct {
 // disposition for the current agent so the model sees the policy at the moment
 // it picks a tool. Annotation requires both rulesRepo and a concrete server.
 func (h *Handler) annotateToolsWithPolicy(ctx context.Context, agentID, server string, tools []mcp.Tool) []any {
-	out := make([]any, len(tools))
+	out := make([]any, 0, len(tools)+1)
 	if h.rulesRepo == nil || strings.TrimSpace(server) == "" {
-		for i, t := range tools {
-			out[i] = t
+		for _, t := range tools {
+			if t.Name != atryumRulesToolName {
+				out = append(out, t)
+			}
 		}
-		return out
+		return append(out, atryumRulesTool)
 	}
-	rules, err := h.rulesRepo.List(ctx)
+	rules, err := h.cachedRulesList(ctx)
 	if err != nil {
-		for i, t := range tools {
-			out[i] = t
+		for _, t := range tools {
+			if t.Name != atryumRulesToolName {
+				out = append(out, t)
+			}
 		}
-		return out
+		return append(out, atryumRulesTool)
 	}
 	agentCUID := h.resolveAgentRecordForRules(ctx, agentID)
-	for i, t := range tools {
+	for _, t := range tools {
+		if t.Name == atryumRulesToolName {
+			continue
+		}
 		action, matched := effectiveActionForTool(rules, server, t.Name, agentCUID)
 		desc := t.Description
 		if action != "" {
@@ -1540,7 +1660,7 @@ func (h *Handler) annotateToolsWithPolicy(ctx context.Context, agentID, server s
 				desc = prefix + desc
 			}
 		}
-		out[i] = annotatedTool{
+		out = append(out, annotatedTool{
 			Name:        t.Name,
 			Description: desc,
 			InputSchema: t.InputSchema,
@@ -1548,9 +1668,15 @@ func (h *Handler) annotateToolsWithPolicy(ctx context.Context, agentID, server s
 				EffectiveAction: action,
 				MatchedRuleID:   matched,
 			}},
-		}
+		})
 	}
-	return out
+	return append(out, atryumRulesTool)
+}
+
+var atryumRulesTool = mcp.Tool{
+	Name:        atryumRulesToolName,
+	Description: "Return the current static Atryum approval rules visible to this agent. Optional arguments: server/source and tool preview a specific disposition. The response is advisory only; AI evaluation and human approval are decided during the actual gated tool call.",
+	InputSchema: json.RawMessage(`{"type":"object","properties":{"server":{"type":"string","description":"MCP server name to preview."},"source":{"type":"string","description":"Alias for server, useful for non-MCP harness terminology."},"tool":{"type":"string","description":"Tool name to preview."},"agent_id":{"type":"string","description":"Agent identity for no-auth local development only; ignored when inbound auth is enabled."}},"additionalProperties":false}`),
 }
 
 // effectiveActionForTool returns the action of the first enabled rule that

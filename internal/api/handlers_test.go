@@ -1117,7 +1117,10 @@ func TestMCPToolsList(t *testing.T) {
 		t.Fatalf("expected tools list, got %s", w.Body.String())
 	}
 	if strings.Contains(w.Body.String(), `"atryum.rules.get"`) {
-		t.Fatalf("did not expect synthetic rules tool, got %s", w.Body.String())
+		t.Fatalf("did not expect dotted synthetic rules tool, got %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"`+atryumRulesToolName+`"`) {
+		t.Fatalf("expected compatible synthetic rules tool, got %s", w.Body.String())
 	}
 }
 
@@ -1141,6 +1144,48 @@ func TestMCPToolsCallInterceptsInvocation(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), `"text":"ok"`) {
 		t.Fatalf("expected tool result, got %s", w.Body.String())
+	}
+}
+
+func TestMCPRulesToolReturnsAgentRulesWithoutInvocation(t *testing.T) {
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "read-auto", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Read"}, Enabled: true, Order: 0},
+	}}
+	svc := &stubService{}
+	h := NewHandler(svc, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"atryum_rules_get","arguments":{"tool":"Read"}}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if svc.invokedReq != nil {
+		t.Fatalf("rules helper should not create a gated invocation, got %#v", svc.invokedReq)
+	}
+	var rpcResp struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &rpcResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(rpcResp.Result.Content) != 1 {
+		t.Fatalf("expected one content block, got %#v", rpcResp.Result.Content)
+	}
+	var rulesResp AgentRulesResponse
+	if err := json.Unmarshal([]byte(rpcResp.Result.Content[0].Text), &rulesResp); err != nil {
+		t.Fatal(err)
+	}
+	if rulesResp.Server != "demo" || rulesResp.Tool != "Read" {
+		t.Fatalf("expected demo/Read preview, got %#v", rulesResp)
+	}
+	if rulesResp.Action != invocation.RuleActionAutoApprove {
+		t.Fatalf("expected auto approve disposition, got %q", rulesResp.Action)
+	}
+	if rulesResp.MatchedRuleID == nil || *rulesResp.MatchedRuleID != "read-auto" {
+		t.Fatalf("expected read-auto match, got %#v", rulesResp.MatchedRuleID)
 	}
 }
 
@@ -1382,8 +1427,8 @@ func TestAgentRulesGuidanceForEachAction(t *testing.T) {
 		byID[item.ID] = item.Guidance
 	}
 	for id, want := range map[string]string{
-		"auto-approve": "Likely to pass",
-		"auto-deny":    "Will be rejected",
+		"auto-approve": "Auto-approved",
+		"auto-deny":    "Auto-denied",
 		"human":        "Requires reviewer approval",
 		"ai":           "real gated call",
 	} {
@@ -1445,7 +1490,10 @@ func TestMCPToolsListAnnotatesEffectiveAction(t *testing.T) {
 		t.Fatalf("Other tool annotations: %#v", otherTool.Annotations)
 	}
 	if _, ok := byName["atryum.rules.get"]; ok {
-		t.Fatalf("did not expect synthetic rules tool in tools/list")
+		t.Fatalf("did not expect dotted synthetic rules tool in tools/list")
+	}
+	if _, ok := byName[atryumRulesToolName]; !ok {
+		t.Fatalf("expected compatible synthetic rules tool in tools/list")
 	}
 }
 
@@ -1522,6 +1570,7 @@ func TestMCPToolsListAnnotationsIgnoreJSONRPCIDForNoAuthAgent(t *testing.T) {
 	var rpcResp struct {
 		Result struct {
 			Tools []struct {
+				Name        string `json:"name"`
 				Annotations *struct {
 					Atryum struct {
 						EffectiveAction string `json:"effective_action"`
@@ -1534,10 +1583,25 @@ func TestMCPToolsListAnnotationsIgnoreJSONRPCIDForNoAuthAgent(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &rpcResp); err != nil {
 		t.Fatal(err)
 	}
-	if len(rpcResp.Result.Tools) != 1 {
-		t.Fatalf("expected one tool, got %#v", rpcResp.Result.Tools)
+	var bashTool *struct {
+		Name        string `json:"name"`
+		Annotations *struct {
+			Atryum struct {
+				EffectiveAction string `json:"effective_action"`
+				MatchedRuleID   string `json:"matched_rule_id"`
+			} `json:"atryum"`
+		} `json:"annotations"`
 	}
-	got := rpcResp.Result.Tools[0].Annotations
+	for i := range rpcResp.Result.Tools {
+		if rpcResp.Result.Tools[i].Name == "Bash" {
+			bashTool = &rpcResp.Result.Tools[i]
+			break
+		}
+	}
+	if bashTool == nil {
+		t.Fatalf("expected Bash tool, got %#v", rpcResp.Result.Tools)
+	}
+	got := bashTool.Annotations
 	if got == nil {
 		t.Fatal("expected annotation")
 	}
