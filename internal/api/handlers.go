@@ -154,16 +154,6 @@ type Handler struct {
 	clientInfoMu    sync.RWMutex
 	clientInfoCache map[string]clientInfoSnapshot
 
-	// rulesListMu / rulesListCache avoids redundant DB round-trips when
-	// multiple operations in the same request window need the full rule list.
-	// Entries expire after 10 s — rules are admin-configured and change rarely.
-	rulesListMu    sync.RWMutex
-	rulesListCache *rulesListCacheEntry
-
-	// agentCUIDCache avoids repeated DB lookups for agentID → CUID resolution
-	// on every tools/list. Entries expire after 30 s.
-	agentCUIDCache sync.Map
-
 	// managedAgents is the optional Claude Managed Agents events bridge.
 	// nil when not configured (no anthropic api key).
 	managedAgents managedAgentsAdmin
@@ -994,7 +984,7 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 		return resp, nil
 	}
 
-	rules, err := h.cachedRulesList(ctx)
+	rules, err := h.rulesRepo.List(ctx)
 	if err != nil {
 		return AgentRulesResponse{}, err
 	}
@@ -1089,55 +1079,10 @@ func newAgentRulesResponse(agentID, server, tool string) AgentRulesResponse {
 	}
 }
 
-type rulesListCacheEntry struct {
-	rules     []store.Rule
-	expiresAt time.Time
-}
-
-func (h *Handler) cachedRulesList(ctx context.Context) ([]store.Rule, error) {
-	h.rulesListMu.RLock()
-	if h.rulesListCache != nil && time.Now().Before(h.rulesListCache.expiresAt) {
-		rules := h.rulesListCache.rules
-		h.rulesListMu.RUnlock()
-		return rules, nil
-	}
-	h.rulesListMu.RUnlock()
-
-	rules, err := h.rulesRepo.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	h.rulesListMu.Lock()
-	defer h.rulesListMu.Unlock()
-	h.rulesListCache = &rulesListCacheEntry{rules: rules, expiresAt: time.Now().Add(10 * time.Second)}
-	return rules, nil
-}
-
-type agentCUIDCacheEntry struct {
-	cuid      string
-	expiresAt time.Time
-}
-
 func (h *Handler) resolveAgentRecordForRules(ctx context.Context, agentID string) string {
 	if h.agentsRepo == nil {
 		return ""
 	}
-	cacheKey := agentID
-	if cacheKey == "" {
-		cacheKey = "\x00default"
-	}
-	if v, ok := h.agentCUIDCache.Load(cacheKey); ok {
-		if e := v.(agentCUIDCacheEntry); time.Now().Before(e.expiresAt) {
-			return e.cuid
-		}
-	}
-	cuid := h.resolveAgentCUIDUncached(ctx, agentID)
-	h.agentCUIDCache.Store(cacheKey, agentCUIDCacheEntry{cuid: cuid, expiresAt: time.Now().Add(30 * time.Second)})
-	return cuid
-}
-
-func (h *Handler) resolveAgentCUIDUncached(ctx context.Context, agentID string) string {
 	if agentID != "" {
 		if rec, err := h.agentsRepo.GetByAgentID(ctx, agentID); err == nil {
 			return rec.ID
@@ -1567,7 +1512,7 @@ func (h *Handler) annotateToolsWithPolicy(ctx context.Context, agentID, server s
 		}
 		return append(out, atryumRulesTool)
 	}
-	rules, err := h.cachedRulesList(ctx)
+	rules, err := h.rulesRepo.List(ctx)
 	if err != nil {
 		for _, t := range tools {
 			if t.Name != atryumRulesToolName {
