@@ -1155,11 +1155,7 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			return
 		}
 		_ = h.emitTraceEvent(r.Context(), server, "mcp.tools.list", map[string]any{"tool_count": len(tools), "request_id": requestID})
-		listAgentID := auth.AgentIDFromContext(r.Context())
-		if listAgentID == "" && h.authValidator == nil {
-			listAgentID = normalizeNoAuthRequestAgentID(requestID)
-		}
-		annotated := h.annotateToolsWithPolicy(r.Context(), listAgentID, server, tools)
+		annotated := h.annotateToolsWithPolicy(r.Context(), auth.AgentIDFromContext(r.Context()), server, tools)
 		h.writeRPCResult(w, req.ID, map[string]any{"tools": annotated})
 	case "tools/call":
 		var params struct {
@@ -1191,11 +1187,7 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		if len(resp.Error) > 0 {
 			result := normalizeToolCallResult(resp.Error, true)
 			if resp.Status == invocation.StatusDenied {
-				agentID := auth.AgentIDFromContext(r.Context())
-				if agentID == "" && h.authValidator == nil {
-					agentID = normalizeNoAuthRequestAgentID(requestID)
-				}
-				result = h.appendRulesContextToToolResult(r.Context(), result, agentID, server, params.Name)
+				result = h.appendRulesContextToToolResult(r.Context(), result, auth.AgentIDFromContext(r.Context()), server, params.Name)
 			}
 			h.writeRPCResult(w, req.ID, result)
 			return
@@ -3864,16 +3856,6 @@ func compactRequestID(id json.RawMessage) string {
 		return ""
 	}
 	return string(id)
-}
-
-func normalizeNoAuthRequestAgentID(value string) string {
-	value = strings.TrimSpace(value)
-	if strings.HasPrefix(value, `"`) {
-		if unquoted, err := strconv.Unquote(value); err == nil {
-			value = unquoted
-		}
-	}
-	return normalizeNoAuthAgentID(value)
 }
 
 func stringPtr(v string) *string { return &v }
