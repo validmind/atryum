@@ -360,12 +360,63 @@ function describe(input: Record<string, unknown>): string {
   return parts.join(" | ") || "(no string params)";
 }
 
+const RULES_CACHE_TTL_MS = 5 * 60 * 1000;
+const rulesCache = new Map<string, { value: string; expiresAt: number }>();
+
+function formatRulesContext(rules: unknown): string {
+  if (!rules || typeof rules !== "object") return "";
+  const record = rules as Record<string, unknown>;
+  const lines = [
+    "Atryum advisory rules visible to this harness before the gated call:",
+    `- server: ${String(record.server || SOURCE)}`,
+    `- tool: ${String(record.tool || "unknown")}`,
+    `- effective action: ${String(record.action || record.default_action || "unknown")}`,
+  ];
+  if (record.matched_rule_id) lines.push(`- matched rule: ${String(record.matched_rule_id)}`);
+  if (record.generated_at) lines.push(`- as of: ${String(record.generated_at)}`);
+  if (Array.isArray(record.items) && record.items.length > 0) {
+    lines.push("- visible rules:");
+    for (const item of record.items.slice(0, 20)) {
+      const rule = item as Record<string, unknown>;
+      const guidance = rule.guidance ? ` (${String(rule.guidance)})` : "";
+      lines.push(`  - ${String(rule.id || "(unnamed)")}: ${String(rule.action)}${guidance}`);
+    }
+  }
+  lines.push("- advisory only; Atryum re-checks policy during the actual gated call.");
+  return lines.join("\n");
+}
+
+async function rulesContext(tool: string): Promise<string> {
+  const cacheKey = [SOURCE, tool, ACCESS_TOKEN ? "auth" : "no-auth", AGENT_ID].join("\x00");
+  const cached = rulesCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  if (cached) rulesCache.delete(cacheKey);
+  const url = new URL("/api/v1/agent/rules", API);
+  url.searchParams.set("server", SOURCE);
+  url.searchParams.set("tool", tool);
+  if (AGENT_ID && !ACCESS_TOKEN) url.searchParams.set("agent_id", AGENT_ID);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
+  try {
+    const res = await atryumFetch(url.toString(), { signal: controller.signal });
+    if (!res.ok) return "";
+    const value = formatRulesContext(await res.json());
+    rulesCache.set(cacheKey, { value, expiresAt: Date.now() + RULES_CACHE_TTL_MS });
+    return value;
+  } catch {
+    return "";
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function submit(
   tool: string,
   toolUseID: string,
   input: Record<string, unknown>,
   sessionID: string | undefined,
 ): Promise<InvocationResponse> {
+  const context = await rulesContext(tool);
   const res = await atryumFetch(`${API}/api/v1/external/invocations`, {
     method: "POST",
     contentType: true,
@@ -377,6 +428,8 @@ async function submit(
       request_id: toolUseID,
       thread_id: activeThreadID() || undefined,
       session_id: sessionID,
+      chat_context: context || undefined,
+      context: context || undefined,
       client_name: CLIENT_NAME,
       client_version: CLIENT_VERSION || undefined,
       agent_id: AGENT_ID || undefined,
