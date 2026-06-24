@@ -1224,7 +1224,11 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			return
 		}
 		_ = h.emitTraceEvent(r.Context(), server, "mcp.tools.list", map[string]any{"tool_count": len(tools), "request_id": requestID})
-		annotated := h.annotateToolsWithPolicy(r.Context(), server, tools)
+		listAgentID := auth.AgentIDFromContext(r.Context())
+		if listAgentID == "" && h.authValidator == nil {
+			listAgentID = normalizeNoAuthRequestAgentID(requestID)
+		}
+		annotated := h.annotateToolsWithPolicy(r.Context(), listAgentID, server, tools)
 		h.writeRPCResult(w, req.ID, map[string]any{"tools": annotated})
 	case "tools/call":
 		var params struct {
@@ -1517,7 +1521,7 @@ type atryumToolPolicy struct {
 // annotateToolsWithPolicy decorates each tool with its effective approval
 // disposition for the current agent so the model sees the policy at the moment
 // it picks a tool. Annotation requires both rulesRepo and a concrete server.
-func (h *Handler) annotateToolsWithPolicy(ctx context.Context, server string, tools []mcp.Tool) []any {
+func (h *Handler) annotateToolsWithPolicy(ctx context.Context, agentID, server string, tools []mcp.Tool) []any {
 	out := make([]any, len(tools))
 	if h.rulesRepo == nil || strings.TrimSpace(server) == "" {
 		for i, t := range tools {
@@ -1532,7 +1536,6 @@ func (h *Handler) annotateToolsWithPolicy(ctx context.Context, server string, to
 		}
 		return out
 	}
-	agentID := auth.AgentIDFromContext(ctx)
 	agentCUID := h.resolveAgentRecordForRules(ctx, agentID)
 	for i, t := range tools {
 		action, matched := effectiveActionForTool(rules, server, t.Name, agentCUID)
