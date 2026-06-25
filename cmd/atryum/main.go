@@ -226,6 +226,7 @@ func runServer(args []string) error {
 	if backendClient != nil {
 		service.SetInvocationSummarizer(&summaryAdapter{client: backendClient})
 	}
+	service.SetSessionStore(store.NewExternalSessionRepoWithDialect(db, dialect))
 	serverAdmin := api.NewServerAdminService(serverRepo, oauthRepo, client, 5*time.Second, cfg.Server.PublicBaseURL)
 	if *initServers {
 		if err := initEnabledServerStatuses(context.Background(), serverRepo, serverAdmin); err != nil {

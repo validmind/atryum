@@ -86,24 +86,25 @@ To remove the global plugin later:
 | `ATRYUM_CLIENT_NAME` | `amp` | harness name shown in the Atryum Agent column |
 | `ATRYUM_CLIENT_VERSION` | `AMP_VERSION` if set | harness version shown in Atryum |
 | `ATRYUM_AGENT_ID` | _(empty)_ | self-declared agent identifier; matched against Agent Record `agent_ids` (see below) |
-| `ATRYUM_CHAT_MESSAGES_LIMIT` | `100` | recent Amp thread messages sent as LLM-as-judge context |
-| `ATRYUM_AMP_THREADS_DIR` | `~/.local/share/amp/threads` | Amp thread JSON directory |
-| `ATRYUM_AMP_SESSION_FILE` | `~/.local/share/amp/session.json` | Amp session state file used to identify the active thread |
+| `ATRYUM_AMP_SESSION_FILE` | `~/.local/share/amp/session.json` | Amp session state file used to label the session with Amp's thread id |
 
-## LLM-as-judge chat context
+## LLM-as-judge session context
 
-Before each tool call, the plugin builds compact recent context and sends it
-to Atryum as `chat_context` and `chat_context_messages` (plus the deprecated
-`context` alias for compatibility). It first tries the live plugin context
-when available. If Amp has persisted the active thread under
-`ATRYUM_AMP_THREADS_DIR`, the plugin includes that archived chat text.
-For active sessions where Amp has not written a thread JSON file yet, it uses
-the active thread ID from `ATRYUM_AMP_SESSION_FILE`, reads Amp's current
-thread log, and includes fresh message/tool activity plus the tool calls and
-results observed by the plugin.
+The plugin does **not** send a free-form chat/context blob to Atryum. The
+harness is trusted to report _which_ session a tool call belongs to, but a
+runaway agent must not be able to hand the judge arbitrary text to poison it.
 
-Set `ATRYUM_CHAT_MESSAGES_LIMIT` to change how many recent messages are sent.
-Set it to `0` to disable Amp chat context.
+Instead, on the first tool call the plugin mints an Atryum session via
+`POST /api/v1/external/sessions` (passing `harness` and, for cross-referencing
+only, Amp's own thread id as `client_session_id`). It caches the returned
+`session_id` for the lifetime of the process and echoes it on every
+`POST /api/v1/external/invocations`. Atryum then reconstructs the judge's
+context from the prior tool calls it recorded for that session — trusting tool
+outputs more than tool inputs, and ignoring agent chat entirely.
+
+If session creation fails, the plugin falls back to submitting without a
+`session_id` (tool calls are still gated, just without prior-call context)
+rather than blocking the agent.
 
 ## Tagging invocations to an Agent Record
 

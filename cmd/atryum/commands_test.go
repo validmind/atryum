@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +30,39 @@ func TestRunUsageMentionsConfigFlag(t *testing.T) {
 	}
 	if !strings.Contains(usage, "--init-servers") {
 		t.Fatalf("run usage missing --init-servers: %s", usage)
+	}
+}
+
+func TestParseLogLevel(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  slog.Level
+	}{
+		{name: "empty", input: "", want: slog.LevelInfo},
+		{name: "info", input: "info", want: slog.LevelInfo},
+		{name: "debug", input: "debug", want: slog.LevelDebug},
+		{name: "warn", input: "warn", want: slog.LevelWarn},
+		{name: "warning", input: "warning", want: slog.LevelWarn},
+		{name: "error", input: "error", want: slog.LevelError},
+		{name: "trim and case", input: " DEBUG ", want: slog.LevelDebug},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseLogLevel(tt.input)
+			if err != nil {
+				t.Fatalf("parseLogLevel(%q): %v", tt.input, err)
+			}
+			if got != tt.want {
+				t.Fatalf("parseLogLevel(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseLogLevelRejectsInvalidLevel(t *testing.T) {
+	if _, err := parseLogLevel("verbose"); err == nil {
+		t.Fatal("expected invalid log level error")
 	}
 }
 

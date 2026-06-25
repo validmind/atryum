@@ -62,6 +62,9 @@ func (s *stubService) Deny(context.Context, string, string) error { return nil }
 func (s *stubService) Submit(context.Context, invocation.ExternalSubmitRequest) (invocation.InvocationResponse, error) {
 	return invocation.InvocationResponse{}, nil
 }
+func (s *stubService) CreateSession(context.Context, invocation.CreateSessionRequest, string) (invocation.SessionResponse, error) {
+	return invocation.SessionResponse{}, nil
+}
 func (s *stubService) SetSummary(_ context.Context, id string, summary string) (invocation.InvocationResponse, error) {
 	s.setID = id
 	s.setText = summary

@@ -386,8 +386,111 @@ func TestSubmitAIEvaluationUsesDefaultAgentRecordForUnmappedAgentID(t *testing.T
 	if req.ModelConfigCUID != "model-ai" {
 		t.Fatalf("ModelConfigCUID = %q", req.ModelConfigCUID)
 	}
-	if req.Context != "Recent chat thread:\n- user: please inspect the repo first" {
-		t.Fatalf("Context = %q", req.Context)
+	// Managed-agent history is passed through to the judge, prefixed with a
+	// trust annotation so the judge weighs it by source rather than treating it
+	// as authoritative.
+	if !strings.Contains(req.Context, "recent session history") {
+		t.Fatalf("Context missing trust annotation: %q", req.Context)
+	}
+	if !strings.Contains(req.Context, "Recent chat thread:\n- user: please inspect the repo first") {
+		t.Fatalf("Context missing chat history: %q", req.Context)
+	}
+}
+
+func TestSubmitWithSessionReconstructsContextFromPriorInvocations(t *testing.T) {
+	db := newSQLiteTestDB(t)
+	invRepo := store.NewInvocationRepo(db)
+	eventRepo := store.NewEventRepo(db)
+	evaluator := &evaluateClientStub{resp: invocation.EvaluateResponse{Verdict: "approved", Reason: "ok"}}
+	defaultAgent := invocation.AgentRecord{ID: "a", VMCUID: "vm-a", VMOrganizationCUID: "org", Charter: "c"}
+	service := invocation.NewService(
+		invRepo, eventRepo, nil, nil, nil, 5*time.Second,
+		rulesStoreStub{rules: []invocation.ApprovalRule{{
+			Action:          invocation.RuleActionAIEvaluation,
+			ModelConfigCUID: "model-ai",
+			Enabled:         true,
+		}}},
+		agentLookupStub{byVMCUID: map[string]invocation.AgentRecord{defaultAgent.VMCUID: defaultAgent}},
+		evaluator,
+		summarySettingsStub{charterFieldKey: "charter", defaultAgentVMCUID: defaultAgent.VMCUID},
+	)
+	service.SetSessionStore(store.NewExternalSessionRepo(db))
+
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "amp-1"})
+
+	sess, err := service.CreateSession(ctx, invocation.CreateSessionRequest{Harness: "amp", ClientSessionID: "amp-xyz"}, "amp-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.SessionID == "" {
+		t.Fatal("empty session id")
+	}
+
+	// First call has no prior history.
+	first, err := service.Submit(ctx, invocation.ExternalSubmitRequest{
+		Source: "amp", Tool: "bash", Input: map[string]any{"cmd": "ls"}, SessionID: sess.SessionID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := evaluator.request().Context; strings.Contains(c, "tool=bash") {
+		t.Fatalf("first call should have no prior history: %q", c)
+	}
+	// Harness reports the tool output so it can feed the next eval.
+	if _, err := service.RecordExecution(ctx, first.InvocationID, invocation.ExternalExecutionUpdate{
+		ExecutionStatus: "completed", Result: json.RawMessage(`{"stdout":"file.txt"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second call must see the first call (input + recorded output) as context.
+	if _, err := service.Submit(ctx, invocation.ExternalSubmitRequest{
+		Source: "amp", Tool: "cat", Input: map[string]any{"path": "file.txt"}, SessionID: sess.SessionID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	c := evaluator.request().Context
+	for _, want := range []string{
+		"recent session history",
+		`tool=bash input={"cmd":"ls"}`,
+		`output={"stdout":"file.txt"}`,
+	} {
+		if !strings.Contains(c, want) {
+			t.Fatalf("context missing %q:\n%s", want, c)
+		}
+	}
+	if strings.Contains(c, "tool=cat") {
+		t.Fatalf("current call leaked into its own context:\n%s", c)
+	}
+}
+
+func TestSubmitRejectsSessionOwnedByDifferentAgent(t *testing.T) {
+	db := newSQLiteTestDB(t)
+	service := invocation.NewService(
+		store.NewInvocationRepo(db), store.NewEventRepo(db), nil, nil, nil, 5*time.Second,
+		rulesStoreStub{}, agentLookupStub{}, &evaluateClientStub{}, summarySettingsStub{},
+	)
+	service.SetSessionStore(store.NewExternalSessionRepo(db))
+
+	owner := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "owner"})
+	sess, err := service.CreateSession(owner, invocation.CreateSessionRequest{}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	attacker := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "attacker"})
+	_, err = service.Submit(attacker, invocation.ExternalSubmitRequest{
+		Source: "amp", Tool: "bash", Input: map[string]any{"cmd": "ls"}, SessionID: sess.SessionID,
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not belong") {
+		t.Fatalf("expected ownership rejection, got %v", err)
+	}
+
+	_, err = service.Submit(owner, invocation.ExternalSubmitRequest{
+		Source: "amp", Tool: "bash", Input: map[string]any{"cmd": "ls"}, SessionID: "ses_does_not_exist",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unknown session_id") {
+		t.Fatalf("expected unknown-session rejection, got %v", err)
 	}
 }
 

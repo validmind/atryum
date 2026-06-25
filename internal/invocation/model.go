@@ -39,6 +39,10 @@ type Invocation struct {
 	Approval       *Approval `json:"approval"`
 	MatchedRuleID  *string   `json:"matched_rule_id,omitempty"`
 	AgentID        *string   `json:"agent_id,omitempty"`
+	// SessionID links this invocation to an external harness session (see
+	// ExternalSession). Set on the Invocations API path so the judge can be
+	// given the session's prior tool calls as context.
+	SessionID *string `json:"session_id,omitempty"`
 	// ClientName / ClientVersion mirror the MCP `initialize.clientInfo`
 	// the harness reported on the connection that issued this invocation.
 	// Captured even when auth is disabled (no agent_id) so the UI can still
@@ -68,6 +72,7 @@ type InvocationListFilter struct {
 	Tool       string
 	Status     string
 	AgentIDs   []string // filters to invocations whose agent_id is in this list
+	SessionID  string   // filters to invocations belonging to one external session
 	ClientName string
 	StartDate  *time.Time
 	EndDate    *time.Time
@@ -102,16 +107,30 @@ type CreateInvocationRequest struct {
 // call for human approval and record audit events. Atryum will NOT execute
 // the tool when this path is used.
 type ExternalSubmitRequest struct {
-	Source              string         `json:"source"`
-	Tool                string         `json:"tool"`
-	Description         string         `json:"description,omitempty"`
-	Input               map[string]any `json:"input"`
-	RequestID           *string        `json:"request_id,omitempty"`
-	IdempotencyKey      *string        `json:"idempotency_key,omitempty"`
-	ThreadID            string         `json:"thread_id,omitempty"`
-	ChatContext         string         `json:"chat_context,omitempty"`
-	ChatContextMessages int            `json:"chat_context_messages,omitempty"`
-	Context             string         `json:"context,omitempty"` // deprecated alias for ChatContext
+	Source         string         `json:"source"`
+	Tool           string         `json:"tool"`
+	Description    string         `json:"description,omitempty"`
+	Input          map[string]any `json:"input"`
+	RequestID      *string        `json:"request_id,omitempty"`
+	IdempotencyKey *string        `json:"idempotency_key,omitempty"`
+	ThreadID       string         `json:"thread_id,omitempty"`
+	// SessionID is an Atryum-minted session identifier (from POST
+	// /api/v1/external/sessions). When set, Atryum reconstructs the judge's
+	// session context from the prior invocations it recorded for this session,
+	// rather than trusting a harness-supplied context blob.
+	SessionID string `json:"session_id,omitempty"`
+	// SessionContext is the agent's recent session history (human messages and
+	// tool calls/results) passed to the LLM judge. It is populated in-process by
+	// the Claude managed-agents watcher. Harnesses on the Invocations API must
+	// use SessionID instead — they cannot supply their own context blob.
+	SessionContext         string `json:"session_context,omitempty"`
+	SessionContextMessages int    `json:"session_context_messages,omitempty"`
+	// Deprecated: use SessionContext / SessionContextMessages. Older harness
+	// plugins send chat_context / chat_context_messages / context; these are
+	// still accepted on input and treated as SessionContext.
+	ChatContext         string `json:"chat_context,omitempty"`
+	ChatContextMessages int    `json:"chat_context_messages,omitempty"`
+	Context             string `json:"context,omitempty"`
 	// ClientName / ClientVersion identify the harness making the call.
 	// Optional — when omitted, Source is used for ClientName. Prefer these
 	// when the caller knows its own identity (e.g. amp plugin sending
@@ -178,4 +197,44 @@ type EventListResponse struct {
 	Total  int             `json:"total"`
 	Offset uint64          `json:"offset"`
 	Limit  uint64          `json:"limit"`
+}
+
+// ExternalSession is a harness session minted by Atryum (POST
+// /api/v1/external/sessions). The harness calls once at startup, gets back an
+// ID, and echoes that ID on every subsequent tool-call submission. Each
+// invocation is then linked to (AgentID, ID) so the judge can be given the
+// session's prior tool calls as context.
+//
+// The ID is Atryum-minted (not self-asserted) and bound to AgentID at creation;
+// a Submit whose authenticated agent does not own the session is rejected. This
+// keeps the trust boundary at "trust the harness, not the LLM": the harness can
+// only ever read/poison its own session.
+type ExternalSession struct {
+	ID      string
+	AgentID string
+	// Harness identifies the calling harness (e.g. "amp", "claude"). Bookkeeping
+	// only; Atryum keys off ID.
+	Harness string
+	// ClientSessionID is the harness's own session identifier, kept for
+	// cross-referencing. Atryum does not key off it.
+	ClientSessionID string
+	CreatedAt       time.Time
+	LastSeenAt      time.Time
+}
+
+// CreateSessionRequest is the body for POST /api/v1/external/sessions.
+type CreateSessionRequest struct {
+	// AgentID is the self-declared agent id used only in no-auth mode; when an
+	// authenticated identity is present it wins.
+	AgentID         string `json:"agent_id,omitempty"`
+	Harness         string `json:"harness,omitempty"`
+	ClientSessionID string `json:"client_session_id,omitempty"`
+}
+
+// SessionResponse is returned from POST /api/v1/external/sessions.
+type SessionResponse struct {
+	SessionID       string `json:"session_id"`
+	AgentID         string `json:"agent_id,omitempty"`
+	Harness         string `json:"harness,omitempty"`
+	ClientSessionID string `json:"client_session_id,omitempty"`
 }

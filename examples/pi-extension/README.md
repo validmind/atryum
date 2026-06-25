@@ -80,19 +80,24 @@ To remove the global extension later:
 | `ATRYUM_CLIENT_NAME` | `pi` | harness name shown in the Atryum Agent column |
 | `ATRYUM_CLIENT_VERSION` | `PI_VERSION` if set | harness version shown in Atryum |
 | `ATRYUM_AGENT_ID` | _(empty)_ | self-declared agent identifier; matched against Agent Record `agent_ids` |
-| `ATRYUM_CHAT_MESSAGES_LIMIT` | `100` | recent Pi session chat messages sent as LLM-as-judge context |
 
-## LLM-as-judge chat context
+## LLM-as-judge session context
 
-Before each tool call, the extension first reads recent user/assistant
-messages from the live Pi session state (`ctx.sessionManager.getBranch()` when
-available), then falls back to parsing the session file on disk as a
-best-effort backup. It sends that chat log to Atryum as `chat_context`
-(and the deprecated `context` alias for compatibility). LLM-as-judge rules
-then receive that chat context along with the tool call and tool metadata.
+The extension does **not** send a free-form chat/context blob to Atryum. The
+harness is trusted to report _which_ session a tool call belongs to, but a
+runaway agent must not be able to hand the judge arbitrary text to poison it.
 
-Set `ATRYUM_CHAT_MESSAGES_LIMIT` to change how many recent messages are sent.
-Set it to `0` to disable Pi chat context.
+Instead, on the first tool call the extension mints an Atryum session via
+`POST /api/v1/external/sessions` (passing `harness` and, for cross-referencing
+only, Pi's own session id as `client_session_id`). It caches the returned
+`session_id` for the lifetime of the session and echoes it on every
+`POST /api/v1/external/invocations`. Atryum then reconstructs the judge's
+context from the prior tool calls it recorded for that session — trusting tool
+outputs more than tool inputs, and ignoring agent chat entirely.
+
+If session creation fails, the extension falls back to submitting without a
+`session_id` (tool calls are still gated, just without prior-call context)
+rather than blocking the agent.
 
 ## Tagging invocations to an Agent Record
 
