@@ -110,7 +110,7 @@ const AgentIcon: React.FC<AgentIconProps> = ({ name, kind, size = 18 }) => {
     >
       {showImage ? (
         <Image
-          src={`/atryum-agent-icons/${iconFile}`}
+          src={`/ui/atryum-agent-icons/${iconFile}`}
           alt={label}
           boxSize={`${size}px`}
           objectFit="contain"
