@@ -370,3 +370,45 @@ For deployments outside local development, use your organization's identity prov
 :::
 When auth mode is enabled, configure your agent to send a bearer token rather than a query-parameter agent ID. Amp, Pi, and the shared hook script read `ATRYUM_ACCESS_TOKEN` and send it to Atryum's agent runtime APIs.
 :::
+
+### Admin UI authentication
+
+Admin UI/API authentication is opt-in. If no configured `[[auth]]` block has `admin_enabled = true`, `/ui/` and the admin API remain open for local development. As soon as one or more blocks are admin-enabled, Atryum requires a valid browser OIDC access token for admin API calls. The upstream MCP OAuth callback at `/api/v1/mcp/oauth/callback` remains public so external identity providers can complete browser redirects.
+
+Admin auth reuses the same issuer, audience, expiry, signature, and JWKS validation as agent auth. After token verification, Atryum checks the admin claim from the matched `[[auth]]` block:
+
+```toml
+[[auth]]
+enabled = true
+issuer = "http://localhost:8089/realms/atryum"
+audience = "atryum"
+required_scope = "atryum:mcp"
+agent_id_claim = "client_id"
+
+admin_enabled = true
+admin_provider = "keycloak"
+admin_client_id = "atryum-admin"
+admin_scopes = "openid profile email atryum:mcp"
+admin_claim = "atryum_admin"
+admin_claim_value = true
+```
+
+Multiple admin-enabled IdPs can be configured at the same time. The frontend discovers them from `/api/v1/admin-auth/config`; with one provider it shows a sign-in screen without a provider selector, and with several it shows an identity-provider selector.
+
+For local Keycloak, run the setup script after Keycloak is available:
+
+```bash
+docker compose --profile dev up -d keycloak
+KC_URL=http://localhost:8089 ./keycloak/setup-realm.sh
+```
+
+The script provisions a public `atryum-admin` client for authorization code + PKCE, allows both local callback URLs (`http://localhost:5174/ui/auth/callback` for Vite and `http://localhost:8080/ui/auth/callback` for the embedded UI), and adds an `atryum_admin=true` access-token claim.
+
+For Auth0, use a dedicated **Single Page Application** client rather than a confidential backend app. Enable authorization code with PKCE, enable refresh tokens if requesting `offline_access`, add the local callback URLs above to Allowed Callback URLs, and add `http://localhost:5174` plus `http://localhost:8080` to Allowed Web Origins. Add the configured admin claim with a Post Login Action or your existing authorization pipeline.
+
+Admin auth responses use these status codes:
+
+- `401` — the request could not be authenticated: missing bearer token, malformed/expired token, wrong issuer or audience, invalid signature, or token from a non-admin-enabled block.
+- `403` — the token is valid, but it does not contain the configured admin claim/value.
+
+The frontend attaches bearer tokens to Axios calls and uses authenticated fetch-based SSE for the live invocation stream. It attempts silent token refresh before retrying an expiry-related `401` once. Browser console debug logs with the `[admin-auth]` prefix show refresh attempts and outcomes; token values are never logged.
