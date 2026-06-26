@@ -364,6 +364,19 @@ func TestClaimValueUnmarshalTOMLBool(t *testing.T) {
 	}
 }
 
+func TestClaimValueUnmarshalTOMLIntegerMatchesJSONNumberClaim(t *testing.T) {
+	var value ClaimValue
+	if err := value.UnmarshalTOML(int64(1)); err != nil {
+		t.Fatalf("UnmarshalTOML: %v", err)
+	}
+	if value != "1" {
+		t.Fatalf("value = %q", value)
+	}
+	if !adminClaimMatches(jwt.MapClaims{"atryum_admin": float64(1)}, "atryum_admin", string(value)) {
+		t.Fatal("expected JSON number token claim to match integer-derived config value")
+	}
+}
+
 func TestValidatorAgentIDFallbackToSub(t *testing.T) {
 	idp := newTestIdP(t)
 	v := newValidatorForIdP(t, idp, func(c *Config) { c.AgentIDClaim = "preferred_username" })

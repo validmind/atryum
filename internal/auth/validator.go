@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -368,6 +369,8 @@ func adminClaimMatches(claims jwt.MapClaims, claimName string, want string) bool
 		return strings.TrimSpace(v) == want
 	case bool:
 		return strings.EqualFold(want, fmt.Sprintf("%t", v))
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64) == want
 	case []any:
 		for _, item := range v {
 			if s, ok := item.(string); ok && strings.TrimSpace(s) == want {
