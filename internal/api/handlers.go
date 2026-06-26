@@ -36,6 +36,8 @@ import (
 //go:embed web/*
 var webFS embed.FS
 
+const upstreamMCPOAuthCallbackPath = "/api/v1/mcp/oauth/callback"
+
 type service interface {
 	Invoke(ctx context.Context, req invocation.CreateInvocationRequest) (invocation.InvocationResponse, error)
 	ListTools(ctx context.Context, server string) ([]mcp.Tool, error)
@@ -786,7 +788,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("/api/v1/admin/vm/organizations", admin(h.adminVMOrganizations))
 	mux.Handle("/api/v1/admin/vm/record-types", admin(h.adminVMRecordTypes))
 	mux.Handle("/api/v1/admin/vm/custom-fields", admin(h.adminVMCustomFields))
-	mux.HandleFunc("/api/v1/admin/oauth/callback", h.oauthCallback)
+	mux.HandleFunc(upstreamMCPOAuthCallbackPath, h.oauthCallback)
 	mux.Handle("/api/v1/admin/policy", admin(h.adminPolicy))
 	mux.Handle("/api/v1/admin/managed-agents/accounts", admin(h.adminManagedAgentAccounts))
 	mux.Handle("/api/v1/admin/managed-agents/agents", admin(h.adminManagedAgents))
@@ -3244,7 +3246,7 @@ func (s *ServerAdminService) StartConnect(ctx context.Context, name string, appB
 	if s.publicBaseURL != "" {
 		redirectBaseURL = s.publicBaseURL
 	}
-	redirectURI := redirectBaseURL + "/api/v1/admin/oauth/callback"
+	redirectURI := redirectBaseURL + upstreamMCPOAuthCallbackPath
 	connectReq, err := provider.BuildConnectRequest(ctx, upstream, redirectURI, stateToken)
 	if err != nil {
 		return OAuthConnectStartResponse{}, err

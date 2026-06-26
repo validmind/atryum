@@ -373,7 +373,7 @@ When auth mode is enabled, configure your agent to send a bearer token rather th
 
 ### Admin UI authentication
 
-Admin UI/API authentication is opt-in. If no configured `[[auth]]` block has `admin_enabled = true`, `/ui/` and the admin API remain open for local development. As soon as one or more blocks are admin-enabled, Atryum requires a valid browser OIDC access token for admin API calls. The upstream MCP OAuth callback at `/api/v1/admin/oauth/callback` remains public so external identity providers can complete browser redirects.
+Admin UI/API authentication is opt-in. If no configured `[[auth]]` block has `admin_enabled = true`, `/ui/` and the admin API remain open for local development. As soon as one or more blocks are admin-enabled, Atryum requires a valid browser OIDC access token for admin API calls. The upstream MCP OAuth callback at `/api/v1/mcp/oauth/callback` remains public so external identity providers can complete browser redirects.
 
 Admin auth reuses the same issuer, audience, expiry, signature, and JWKS validation as agent auth. After token verification, Atryum checks the admin claim from the matched `[[auth]]` block:
 
