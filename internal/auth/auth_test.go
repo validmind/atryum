@@ -271,6 +271,112 @@ func TestValidatorValidToken(t *testing.T) {
 	}
 }
 
+func TestValidatorValidateAdminUsesMatchedConfigClaim(t *testing.T) {
+	idp := newTestIdP(t)
+	configs := []Config{
+		{
+			Enabled:         true,
+			Issuer:          "https://idp-a.example/",
+			Audience:        "api-a",
+			JWKSURL:         idp.jwksURL(),
+			AdminEnabled:    true,
+			AdminClientID:   "admin-a",
+			AdminClaim:      "atryum_admin",
+			AdminClaimValue: "true",
+		},
+		{
+			Enabled:         true,
+			Issuer:          "https://idp-b.example/",
+			Audience:        "api-b",
+			JWKSURL:         idp.jwksURL(),
+			AdminEnabled:    true,
+			AdminClientID:   "admin-b",
+			AdminClaim:      "permissions",
+			AdminClaimValue: "atryum:admin",
+		},
+	}
+	v, err := NewValidator(configs, nil)
+	if err != nil {
+		t.Fatalf("NewValidator: %v", err)
+	}
+
+	claimsA := validClaims()
+	claimsA["iss"] = "https://idp-a.example/"
+	claimsA["aud"] = "api-a"
+	claimsA["atryum_admin"] = true
+	tokA := idp.sign(t, claimsA)
+	adminA, err := v.ValidateAdmin(context.Background(), tokA)
+	if err != nil {
+		t.Fatalf("ValidateAdmin issuer A: %v", err)
+	}
+	if adminA.Issuer != "https://idp-a.example" {
+		t.Fatalf("issuer A = %q", adminA.Issuer)
+	}
+
+	claimsB := validClaims()
+	claimsB["iss"] = "https://idp-b.example/"
+	claimsB["aud"] = "api-b"
+	claimsB["permissions"] = []any{"read:stuff", "atryum:admin"}
+	tokB := idp.sign(t, claimsB)
+	adminB, err := v.ValidateAdmin(context.Background(), tokB)
+	if err != nil {
+		t.Fatalf("ValidateAdmin issuer B: %v", err)
+	}
+	if adminB.Issuer != "https://idp-b.example" {
+		t.Fatalf("issuer B = %q", adminB.Issuer)
+	}
+
+	wrongClaim := validClaims()
+	wrongClaim["iss"] = "https://idp-b.example/"
+	wrongClaim["aud"] = "api-b"
+	wrongClaim["atryum_admin"] = true
+	tokWrong := idp.sign(t, wrongClaim)
+	_, err = v.ValidateAdmin(context.Background(), tokWrong)
+	var ve *ValidationError
+	if !errors.As(err, &ve) || ve.Result != ResultMissingAdminClaim {
+		t.Fatalf("expected ResultMissingAdminClaim from matched issuer B rules, got %v", err)
+	}
+}
+
+func TestValidatorValidateAdminRequiresAdminEnabledConfig(t *testing.T) {
+	idp := newTestIdP(t)
+	v := newValidatorForIdP(t, idp)
+	claims := validClaims()
+	claims["atryum_admin"] = true
+	tok := idp.sign(t, claims)
+	_, err := v.ValidateAdmin(context.Background(), tok)
+	var ve *ValidationError
+	if !errors.As(err, &ve) || ve.Result != ResultInvalid {
+		t.Fatalf("expected ResultInvalid for non-admin-enabled config, got %v", err)
+	}
+}
+
+func TestClaimValueUnmarshalTOMLBool(t *testing.T) {
+	var value ClaimValue
+	if err := value.UnmarshalTOML(true); err != nil {
+		t.Fatalf("UnmarshalTOML: %v", err)
+	}
+	if value != "true" {
+		t.Fatalf("value = %q", value)
+	}
+	if !adminClaimMatches(jwt.MapClaims{"atryum_admin": true}, "atryum_admin", string(value)) {
+		t.Fatal("expected boolean token claim to match boolean-derived config value")
+	}
+}
+
+func TestClaimValueUnmarshalTOMLIntegerMatchesJSONNumberClaim(t *testing.T) {
+	var value ClaimValue
+	if err := value.UnmarshalTOML(int64(1)); err != nil {
+		t.Fatalf("UnmarshalTOML: %v", err)
+	}
+	if value != "1" {
+		t.Fatalf("value = %q", value)
+	}
+	if !adminClaimMatches(jwt.MapClaims{"atryum_admin": float64(1)}, "atryum_admin", string(value)) {
+		t.Fatal("expected JSON number token claim to match integer-derived config value")
+	}
+}
+
 func TestValidatorAgentIDFallbackToSub(t *testing.T) {
 	idp := newTestIdP(t)
 	v := newValidatorForIdP(t, idp, func(c *Config) { c.AgentIDClaim = "preferred_username" })
@@ -603,6 +709,62 @@ func TestMiddlewareNilValidatorIsPassThrough(t *testing.T) {
 	}
 }
 
+func TestAdminMiddlewareLogsMissingToken(t *testing.T) {
+	idp := newTestIdP(t)
+	v := newValidatorForIdP(t, idp, func(c *Config) {
+		c.AdminEnabled = true
+		c.AdminClientID = "admin-client"
+	})
+	var logs bytes.Buffer
+	origWriter := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(origWriter) })
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	h := AdminMiddleware(v, MiddlewareOptions{})(next)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+	got := logs.String()
+	if !strings.Contains(got, "[auth] invalid_token") || !strings.Contains(got, `description="missing bearer token"`) {
+		t.Fatalf("expected missing token auth log, got %q", got)
+	}
+}
+
+func TestAdminMiddlewareLogsInvalidScheme(t *testing.T) {
+	idp := newTestIdP(t)
+	v := newValidatorForIdP(t, idp, func(c *Config) {
+		c.AdminEnabled = true
+		c.AdminClientID = "admin-client"
+	})
+	var logs bytes.Buffer
+	origWriter := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(origWriter) })
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	h := AdminMiddleware(v, MiddlewareOptions{})(next)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)
+	req.Header.Set("Authorization", "Basic abc")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+	got := logs.String()
+	if !strings.Contains(got, "[auth] invalid_request") || !strings.Contains(got, `description="invalid Authorization scheme"`) {
+		t.Fatalf("expected invalid scheme auth log, got %q", got)
+	}
+	if strings.Contains(got, "Basic abc") {
+		t.Fatal("auth log should not include Authorization header")
+	}
+}
+
 func TestProtectedResourceMetadata(t *testing.T) {
 	idp := newTestIdP(t)
 	v := newValidatorForIdP(t, idp)
@@ -633,6 +795,9 @@ func TestNewValidatorRejectsMissingFields(t *testing.T) {
 	}
 	if _, err := NewValidator([]Config{{Enabled: true, Issuer: "https://x"}}, nil); err == nil {
 		t.Fatal("expected error for missing audience")
+	}
+	if _, err := NewValidator([]Config{{Enabled: true, Issuer: "https://x", Audience: "api", AdminEnabled: true}}, nil); err == nil {
+		t.Fatal("expected error for missing admin_client_id")
 	}
 	v, err := NewValidator(nil, nil)
 	if err != nil || v != nil {

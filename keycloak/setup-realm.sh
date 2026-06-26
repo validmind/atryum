@@ -21,6 +21,9 @@
 #                                            when REALM already exists
 #   CLIENT_ID    (default atryum)         — the confidential client used by
 #                                            agents doing client_credentials
+#   ADMIN_CLIENT_ID
+#                (default atryum-admin)   — the public SPA client used by
+#                                            Atryum's admin UI
 #   SCOPE_NAME   (default atryum:mcp)     — resource scope, also the audience
 #   AUDIENCE     (default atryum)         — literal value placed in `aud` claim
 
@@ -32,9 +35,12 @@ KC_PASSWORD="${KC_PASSWORD:-admin}"
 REALM="${REALM:-atryum}"
 KC_SETUP_SKIP_IF_REALM_EXISTS="${KC_SETUP_SKIP_IF_REALM_EXISTS:-false}"
 CLIENT_ID="${CLIENT_ID:-atryum}"
+ADMIN_CLIENT_ID="${ADMIN_CLIENT_ID:-atryum-admin}"
 SCOPE_NAME="${SCOPE_NAME:-atryum:mcp}"
 AUDIENCE="${AUDIENCE:-atryum}"
 REDIRECT_URI="${REDIRECT_URI:-http://localhost:8080/*}"
+ADMIN_REDIRECT_URI_DEV="${ADMIN_REDIRECT_URI_DEV:-http://localhost:5174/ui/auth/callback}"
+ADMIN_REDIRECT_URI_EMBEDDED="${ADMIN_REDIRECT_URI_EMBEDDED:-http://localhost:8080/ui/auth/callback}"
 
 # Token lifespans (seconds). Demo-friendly defaults: 24h access tokens,
 # 30-day sessions. Stock Keycloak defaults (5min access / 30min idle /
@@ -214,6 +220,81 @@ fi
 # Fetch and display the client secret (needed for client_credentials grant)
 SECRET=$(api GET "/${REALM}/clients/${ATRYUM_UUID}/client-secret" | jq -r .value)
 
+# Step 4b — UI: Clients → Create client
+#   Client ID: atryum-admin
+#   Client authentication: OFF  (public SPA + PKCE)
+#   Authentication flow: Standard flow → ON
+#   Valid redirect URIs:
+#     http://localhost:5174/ui/auth/callback
+#     http://localhost:8080/ui/auth/callback
+#   Web origins:
+#     http://localhost:5174
+#     http://localhost:8080
+log "Ensuring public admin UI client '${ADMIN_CLIENT_ID}'..."
+ADMIN_UUID=$(api GET "/${REALM}/clients?clientId=${ADMIN_CLIENT_ID}" | jq -r '.[0].id // empty')
+
+ADMIN_CLIENT_BODY=$(cat <<EOF
+{
+  "clientId": "${ADMIN_CLIENT_ID}",
+  "enabled": true,
+  "protocol": "openid-connect",
+  "publicClient": true,
+  "serviceAccountsEnabled": false,
+  "standardFlowEnabled": true,
+  "implicitFlowEnabled": false,
+  "directAccessGrantsEnabled": false,
+  "redirectUris": ["${ADMIN_REDIRECT_URI_DEV}", "${ADMIN_REDIRECT_URI_EMBEDDED}"],
+  "webOrigins": ["http://localhost:5174", "http://localhost:8080"],
+  "attributes": {
+    "pkce.code.challenge.method": "S256",
+    "oauth2.device.authorization.grant.enabled": "false"
+  }
+}
+EOF
+)
+
+if [ -z "$ADMIN_UUID" ]; then
+  api POST "/${REALM}/clients" -d "$ADMIN_CLIENT_BODY" >/dev/null
+  ADMIN_UUID=$(api GET "/${REALM}/clients?clientId=${ADMIN_CLIENT_ID}" | jq -r '.[0].id')
+else
+  api PUT "/${REALM}/clients/${ADMIN_UUID}" \
+    -d "$(echo "$ADMIN_CLIENT_BODY" | jq --arg id "$ADMIN_UUID" '. + {id:$id}')" >/dev/null
+fi
+
+# Step 4c — UI: Clients → atryum-admin → Client scopes → Dedicated scope
+#              → Mappers → Add mapper → By configuration → Hardcoded claim
+#   Token claim name: atryum_admin
+#   Claim value: true
+#   Claim JSON type: boolean
+#   Add to access token: ON
+log "Ensuring admin claim mapper on '${ADMIN_CLIENT_ID}'..."
+ADMIN_MAPPER_ID=$(api GET "/${REALM}/clients/${ADMIN_UUID}/protocol-mappers/models" \
+  | jq -r '.[] | select(.name=="atryum-admin-claim") | .id' | head -1)
+
+ADMIN_MAPPER_BODY='{
+  "name": "atryum-admin-claim",
+  "protocol": "openid-connect",
+  "protocolMapper": "oidc-hardcoded-claim-mapper",
+  "consentRequired": false,
+  "config": {
+    "claim.name": "atryum_admin",
+    "claim.value": "true",
+    "jsonType.label": "boolean",
+    "access.token.claim": "true",
+    "id.token.claim": "false",
+    "userinfo.token.claim": "false",
+    "introspection.token.claim": "true"
+  }
+}'
+
+if [ -z "$ADMIN_MAPPER_ID" ]; then
+  api POST "/${REALM}/clients/${ADMIN_UUID}/protocol-mappers/models" \
+    -d "$ADMIN_MAPPER_BODY" >/dev/null
+else
+  api PUT "/${REALM}/clients/${ADMIN_UUID}/protocol-mappers/models/${ADMIN_MAPPER_ID}" \
+    -d "$(echo "$ADMIN_MAPPER_BODY" | jq --arg id "$ADMIN_MAPPER_ID" '. + {id:$id}')" >/dev/null
+fi
+
 # Step 5 — UI: Clients → Client Registration → Client Registration Policies
 #   Under "Anonymous" policies:
 #     - DELETE "Trusted Hosts"  (blocks DCR from non-listed hosts; too
@@ -316,6 +397,11 @@ cat <<EOF
     client_secret: ${SECRET}
     grant:         client_credentials  (scope=${SCOPE_NAME})
 
+  Admin UI public client:
+    client_id:     ${ADMIN_CLIENT_ID}
+    grant:         authorization_code + PKCE
+    claim:         atryum_admin=true
+
   MCP clients can also self-register via Dynamic Client Registration at:
     ${KC_URL}/realms/${REALM}/clients-registrations/openid-connect
 
@@ -329,5 +415,11 @@ cat <<EOF
     audience       = "${AUDIENCE}"
     required_scope = "${SCOPE_NAME}"
     agent_id_claim = "client_id"
+    admin_enabled  = true
+    admin_provider = "keycloak"
+    admin_client_id = "${ADMIN_CLIENT_ID}"
+    admin_scopes = "openid profile email ${SCOPE_NAME}"
+    admin_claim = "atryum_admin"
+    admin_claim_value = true
 
 EOF

@@ -73,6 +73,48 @@ func MiddlewareWithOptions(v *Validator, resourceMetadataPath string, opts Middl
 	}
 }
 
+func AdminMiddleware(v *Validator, opts MiddlewareOptions) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		if v == nil || !v.AdminEnabled() || opts.SkipVerify {
+			return next
+		}
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			header := strings.TrimSpace(r.Header.Get("Authorization"))
+			if header == "" {
+				logAuthFailure(r, "invalid_token", "missing bearer token", "")
+				writeChallenge(w, http.StatusUnauthorized, "missing bearer token", "", "", "")
+				return
+			}
+			if !strings.HasPrefix(strings.ToLower(header), "bearer ") {
+				logAuthFailure(r, "invalid_request", "invalid Authorization scheme", "")
+				writeChallenge(w, http.StatusUnauthorized, "invalid Authorization scheme", "invalid_request", "", "")
+				return
+			}
+			token := strings.TrimSpace(header[len("Bearer "):])
+			identity, err := v.ValidateAdmin(r.Context(), token)
+			if err != nil {
+				ve, _ := err.(*ValidationError)
+				switch {
+				case ve != nil && ve.Result == ResultMissingAdminClaim:
+					logAuthFailure(r, "insufficient_scope", ve.Description, "")
+					writeChallenge(w, http.StatusForbidden, ve.Description, "insufficient_scope", "", "")
+				case ve != nil:
+					logAuthFailure(r, "invalid_token", ve.Description, "")
+					writeChallenge(w, http.StatusUnauthorized, ve.Description, "invalid_token", "", "")
+				default:
+					logAuthFailure(r, "invalid_token", "invalid token", "")
+					writeChallenge(w, http.StatusUnauthorized, "invalid token", "invalid_token", "", "")
+				}
+				return
+			}
+			if opts.DebugLogIdentity {
+				log.Printf("[auth] valid_admin_token method=%s path=%s remote=%s issuer=%q subject=%q email=%q", r.Method, r.URL.Path, r.RemoteAddr, identity.Issuer, identity.Subject, identity.Email)
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 func logAuthFailure(r *http.Request, code string, description string, scope string) {
 	if scope != "" {
 		log.Printf("[auth] %s method=%s path=%s remote=%s scope=%q description=%q", code, r.Method, r.URL.Path, r.RemoteAddr, scope, description)
