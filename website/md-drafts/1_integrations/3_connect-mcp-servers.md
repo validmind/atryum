@@ -116,11 +116,17 @@ Use manual registration when the upstream server does not support Dynamic Client
         - Leave **Use default scopes** checked to use whatever scopes the OAuth app declared with the provider.
         - Uncheck **Use default scopes** to define custom scopes, then enter them in **Scopes (requested)**.
 
-3. Make sure that **Enabled** is checked.
+3. Register Atryum's redirect URI with your OAuth provider. Add `<your-atryum-base-url>/api/v1/mcp/oauth/callback` (for example, `https://atryum.example.com/api/v1/mcp/oauth/callback`) to the allowed redirect/callback URLs of the OAuth app. The provider rejects the **Connect** flow if this exact URL is not registered.
 
-4. Click **Create Server** (or **Save** when editing an existing server), then click **Connect** (or **Reconnect**) to complete authorization.
+4. Make sure that **Enabled** is checked.
+
+5. Click **Create Server** (or **Save** when editing an existing server), then click **Connect** (or **Reconnect**) to complete authorization.
 
 When a server needs re-authentication, the auth status shows that action is required and the **Reconnect** button appears in the server detail panel.
+
+:::
+The upstream MCP OAuth callback path changed from `/api/v1/admin/oauth/callback` to `/api/v1/mcp/oauth/callback`. If you registered the old path with an external provider, update the redirect/callback URL to the new path, or the **Connect** flow will fail.
+:::
 
 :::
 Leave **Bearer Token** blank when using the OAuth **Connect** flow. Atryum hides the bearer field once OAuth credentials are in place.

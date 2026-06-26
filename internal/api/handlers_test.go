@@ -3,11 +3,13 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +20,8 @@ import (
 	"atryum/internal/managedagents"
 	"atryum/internal/mcp"
 	"atryum/internal/store"
+
+	_ "modernc.org/sqlite"
 )
 
 type stubService struct {
@@ -121,6 +125,21 @@ func (stubServerService) GetConnectStatus(context.Context, string) (OAuthConnect
 }
 func (stubServerService) CompleteConnect(context.Context, string, string, string) (OAuthConnectStatusResponse, error) {
 	return OAuthConnectStatusResponse{}, nil
+}
+
+type callbackServerService struct {
+	stubServerService
+	state     string
+	code      string
+	errorText string
+}
+
+func (s *callbackServerService) CompleteConnect(_ context.Context, state string, code string, errorText string) (OAuthConnectStatusResponse, error) {
+	s.state = state
+	s.code = code
+	s.errorText = errorText
+	message := "connected"
+	return OAuthConnectStatusResponse{Status: "succeeded", Message: &message}, nil
 }
 
 type stubRulesRepo struct {
@@ -229,6 +248,86 @@ func (s *stubAgentSyncSettingsRepo) Get(context.Context) (store.AgentSyncSetting
 func (s *stubAgentSyncSettingsRepo) Save(_ context.Context, settings store.AgentSyncSettings) error {
 	s.settings = settings
 	return nil
+}
+
+func TestUpstreamMCPOAuthCallbackRouteIsPublicMCPPath(t *testing.T) {
+	t.Run("new path serves callback", func(t *testing.T) {
+		serverSvc := &callbackServerService{}
+		h := NewHandler(&stubService{}, serverSvc, nil, nil, nil, nil, nil, nil, nil, nil)
+		req := httptest.NewRequest(http.MethodGet, upstreamMCPOAuthCallbackPath+"?state=state-123&code=code-456", nil)
+		w := httptest.NewRecorder()
+
+		h.Routes().ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+		}
+		if serverSvc.state != "state-123" || serverSvc.code != "code-456" || serverSvc.errorText != "" {
+			t.Fatalf("callback args = state %q code %q error %q", serverSvc.state, serverSvc.code, serverSvc.errorText)
+		}
+	})
+
+	t.Run("old path is removed", func(t *testing.T) {
+		h := NewHandler(&stubService{}, &callbackServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/oauth/callback?state=old&code=old", nil)
+		w := httptest.NewRecorder()
+
+		h.Routes().ServeHTTP(w, req)
+
+		if w.Code == http.StatusOK {
+			t.Fatalf("expected old admin callback path not to succeed")
+		}
+	})
+}
+
+func TestStartConnectUsesUpstreamMCPOAuthCallbackRedirectURI(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := store.InitDB(db); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+
+	ctx := context.Background()
+	serverRepo := store.NewServerRepo(db)
+	oauthRepo := store.NewOAuthRepo(db)
+	if err := serverRepo.UpsertServer(ctx, mcp.Upstream{
+		Name:              "shortcut",
+		Mode:              mcp.UpstreamModeHTTP,
+		BaseURL:           "https://mcp.example.test",
+		Enabled:           true,
+		OAuthAuthorizeURL: "https://idp.example.test/authorize",
+		OAuthTokenURL:     "https://idp.example.test/token",
+		OAuthClientID:     "client-123",
+		OAuthScopes:       "read write",
+	}); err != nil {
+		t.Fatalf("UpsertServer: %v", err)
+	}
+
+	svc := NewServerAdminService(serverRepo, oauthRepo, nil, 5*time.Second, "")
+	resp, err := svc.StartConnect(ctx, "shortcut", "http://localhost:8080/")
+	if err != nil {
+		t.Fatalf("StartConnect: %v", err)
+	}
+
+	parsed, err := url.Parse(resp.ConnectURL)
+	if err != nil {
+		t.Fatalf("parse connect url: %v", err)
+	}
+	wantRedirectURI := "http://localhost:8080" + upstreamMCPOAuthCallbackPath
+	if got := parsed.Query().Get("redirect_uri"); got != wantRedirectURI {
+		t.Fatalf("redirect_uri = %q, want %q", got, wantRedirectURI)
+	}
+
+	session, err := oauthRepo.GetConnectSession(ctx, resp.State)
+	if err != nil {
+		t.Fatalf("GetConnectSession: %v", err)
+	}
+	if session.RedirectURI != wantRedirectURI {
+		t.Fatalf("saved redirect_uri = %q, want %q", session.RedirectURI, wantRedirectURI)
+	}
 }
 
 func TestAdminServerTestDebugLogsRequestContext(t *testing.T) {

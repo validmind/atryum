@@ -86,7 +86,7 @@ The Settings UI can also select a default ValidMind agent record. AI Evaluation 
 
 ## Admin authentication
 
-Admin UI and admin API authentication is optional. When no `[[auth]]` block has `admin_enabled = true`, the admin UI/API behave as before and remain open. When one or more blocks are admin-enabled, Atryum requires a browser OIDC access token for admin API calls and accepts tokens from any admin-enabled issuer. The upstream MCP OAuth callback at `/api/v1/admin/oauth/callback` remains public so external identity providers can complete browser redirects.
+Admin UI and admin API authentication is optional. When no `[[auth]]` block has `admin_enabled = true`, the admin UI/API behave as before and remain open. When one or more blocks are admin-enabled, Atryum requires a browser OIDC access token for admin API calls and accepts tokens from any admin-enabled issuer. The upstream MCP OAuth callback at `/api/v1/mcp/oauth/callback` remains public so external identity providers can complete browser redirects.
 
 Admin auth reuses the same issuer/audience/JWKS validation as agent auth, then checks the admin claim configured on the matched `[[auth]]` block. This means different IdPs can use different admin claims at the same time.
 
@@ -145,7 +145,7 @@ Admin (UI and operators):
 - `/api/v1/admin/settings`, `/api/v1/admin/policy`
 - `/api/v1/admin/managed-agents/accounts`, `/managed-agents/agents` — discover configured Anthropic accounts and Claude agents for UI linking
 - `/api/v1/admin/managed-agents/sessions` — manually register a Claude Managed Agents session for the events bridge to watch; kept as a debugging escape hatch
-- `/api/v1/admin/oauth/callback` — public OAuth callback for upstream MCP server connect flows
+- `/api/v1/mcp/oauth/callback` — public OAuth callback for upstream MCP server connect flows
 - `/api/v1/admin-auth/config` — public, non-secret OIDC metadata for the admin UI login screen
 
 ## Frontend
