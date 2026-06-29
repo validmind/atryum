@@ -101,7 +101,7 @@ Use these variables for hook and extension integrations. MCP proxy clients do no
     export ATRYUM_ACCESS_TOKEN=<oauth-access-token>
     ```
 
-    Use this when Atryum has one or more `[[auth]]` blocks configured. The integration sends it as an `Authorization: Bearer ...` header to the external invocation API. In auth mode, Atryum derives agent identity from the token and ignores `ATRYUM_AGENT_ID`.
+    Use this when Atryum has one or more `[[auth]]` blocks configured. The integration sends it as an `Authorization: Bearer ...` header to the external invocation API. In auth mode, Atryum derives agent identity from the token and ignores `ATRYUM_AGENT_ID`. For short-lived tokens, set `ATRYUM_TOKEN_COMMAND` to a command that prints a raw token or OAuth token JSON such as `{"access_token":"...","expires_in":3600}` (`expires_in` is relative seconds; `expires_at` as an absolute Unix timestamp in seconds or milliseconds is also accepted); the shared hook, Amp plugin, and Pi extension cache that token and retry once after a `401`.
 
 5. (Optional) Export these variables to label the agent in Atryum:
 
@@ -355,7 +355,7 @@ In auth mode, agents must authenticate to Atryum with an OAuth bearer token. Atr
         ./atryum run --init-servers
         ```
 
-3. Configure your agent to obtain an OAuth access token from the same authorization server and present it as a bearer token when connecting to Atryum. For Amp, Pi, and the shared hook script used by installed hooks, set `ATRYUM_ACCESS_TOKEN` in the environment before starting the agent.
+3. Configure your agent to obtain an OAuth access token from the same authorization server and present it as a bearer token when connecting to Atryum. For Amp, Pi, and the shared hook script used by installed hooks, set `ATRYUM_ACCESS_TOKEN` in the environment before starting the agent, or set `ATRYUM_TOKEN_COMMAND` to refresh short-lived tokens automatically.
 
 For local development, a [Keycloak](https://www.keycloak.org/) container is included in the repository's [Docker Compose](https://docs.docker.com/compose/) setup:
 

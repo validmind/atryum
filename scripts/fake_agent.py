@@ -56,7 +56,9 @@ import argparse
 import json
 import os
 import random
+import subprocess
 import sys
+import threading
 import time
 import uuid
 from typing import Any
@@ -71,6 +73,15 @@ DEFAULT_THREAD_ID = os.environ.get("THREAD_ID", "")
 # upstreams (shortcut, github, etc.) are world-impacting so we don't want a
 # bare `mcp` invocation to land there by accident.
 DEFAULT_MCP_SERVER = os.environ.get("ATRYUM_MCP_SERVER", "calc-mcp")
+ACCESS_TOKEN = os.environ.get("ATRYUM_ACCESS_TOKEN", "").strip()
+TOKEN_COMMAND = os.environ.get("ATRYUM_TOKEN_COMMAND", "").strip()
+TOKEN_REFRESH_SKEW_SECONDS = int(os.environ.get("ATRYUM_TOKEN_REFRESH_SKEW_SECONDS", "60"))
+TOKEN_COMMAND_TIMEOUT_SECONDS = float(
+    os.environ.get("ATRYUM_TOKEN_COMMAND_TIMEOUT_SECONDS", "10")
+)
+_cached_token = ACCESS_TOKEN
+_cached_token_expires_at = float("inf") if (ACCESS_TOKEN and not TOKEN_COMMAND) else 0.0
+_token_refresh_lock = threading.Lock()
 
 # Real-world agent/harness identities. Used as:
 #   - harness mode: --source (drives the Agent column via inv.client_name)
@@ -114,6 +125,64 @@ def _env_or_random_identity() -> tuple[str, str]:
 # ─── tiny HTTP helper (stdlib only, no requests dep) ────────────────────────
 
 
+def _parse_token_response(raw: str) -> tuple[str, float]:
+    text = raw.strip()
+    if not text:
+        raise RuntimeError("token command returned no token")
+    if not text.startswith("{"):
+        return text, time.time() + 55 * 60
+    parsed = json.loads(text)
+    token = parsed.get("access_token") or parsed.get("accessToken") or parsed.get("token")
+    if not token:
+        raise RuntimeError("token command response did not include access_token")
+    def _to_epoch_s(v: float) -> float:
+        return v / 1000 if v > 1e11 else v
+
+    if parsed.get("expires_at") is not None:
+        expires_at = _to_epoch_s(float(parsed["expires_at"]))
+    elif parsed.get("expiresAt") is not None:
+        expires_at = _to_epoch_s(float(parsed["expiresAt"]))
+    elif parsed.get("expires_in") is not None:
+        expires_at = time.time() + float(parsed["expires_in"])
+    else:
+        expires_at = time.time() + 55 * 60
+    return str(token), expires_at
+
+
+def _access_token(force_refresh: bool = False) -> str:
+    global _cached_token, _cached_token_expires_at
+    if not TOKEN_COMMAND:
+        return ACCESS_TOKEN
+    if (
+        not force_refresh
+        and _cached_token
+        and time.time() < _cached_token_expires_at - TOKEN_REFRESH_SKEW_SECONDS
+    ):
+        return _cached_token
+    with _token_refresh_lock:
+        if (
+            not force_refresh
+            and _cached_token
+            and time.time() < _cached_token_expires_at - TOKEN_REFRESH_SKEW_SECONDS
+        ):
+            return _cached_token
+        proc = subprocess.run(
+            TOKEN_COMMAND,
+            shell=True,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=TOKEN_COMMAND_TIMEOUT_SECONDS,
+        )
+        _cached_token, _cached_token_expires_at = _parse_token_response(proc.stdout)
+        return _cached_token
+
+
+def _authorization_headers(force_refresh: bool = False) -> dict[str, str]:
+    token = _access_token(force_refresh)
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 def _request(
     method: str,
     url: str,
@@ -121,8 +190,21 @@ def _request(
     headers: dict[str, str] | None = None,
     timeout: float = 30.0,
 ) -> tuple[int, dict[str, Any] | str]:
+    return _request_once(method, url, body, headers, timeout, False)
+
+
+def _request_once(
+    method: str,
+    url: str,
+    body: Any | None,
+    headers: dict[str, str] | None,
+    timeout: float,
+    force_refresh: bool,
+) -> tuple[int, dict[str, Any] | str]:
     data = None
     hdrs = dict(headers or {})
+    if "Authorization" not in hdrs:
+        hdrs.update(_authorization_headers(force_refresh))
     if body is not None:
         data = json.dumps(body).encode("utf-8")
         hdrs.setdefault("Content-Type", "application/json")
@@ -135,9 +217,12 @@ def _request(
         raw = e.read().decode("utf-8", errors="replace")
         status = e.code
     try:
-        return status, json.loads(raw) if raw else {}
+        payload: dict[str, Any] | str = json.loads(raw) if raw else {}
     except json.JSONDecodeError:
-        return status, raw
+        payload = raw
+    if status == 401 and TOKEN_COMMAND and not force_refresh:
+        return _request_once(method, url, body, headers, timeout, True)
+    return status, payload
 
 
 def _print_json(label: str, payload: Any) -> None:
