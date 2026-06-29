@@ -3216,6 +3216,9 @@ func (s *ServerAdminService) validateEndpointSlugAvailable(ctx context.Context, 
 		return err
 	}
 	if item.Name != serverName {
+		if strings.EqualFold(item.Name, serverName) {
+			return fmt.Errorf("server name %q already exists", item.Name)
+		}
 		return fmt.Errorf("server name %q would use endpoint slug %q, already used by %q", serverName, slug, item.Name)
 	}
 	return nil

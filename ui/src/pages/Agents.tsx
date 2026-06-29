@@ -48,7 +48,7 @@ import type {
   ClaudeManagedAgent,
   ClaudeManagedAgentBinding,
 } from '../api/AtryumAPI';
-import { agentsApi } from '../api/AtryumAPI';
+import { agentsApi, apiErrorMessage } from '../api/AtryumAPI';
 
 type SelectOption = { value: string; label: string };
 type ManagedAgentOption = {
@@ -70,21 +70,6 @@ const formatDate = (iso: string): string => {
   } catch {
     return iso;
   }
-};
-
-const errorMessage = (err: unknown, fallback: string): string => {
-	// Prefer the API response body: { error: { message: "..." } }
-	if (typeof err === 'object' && err !== null) {
-		const apiMsg = (err as { response?: { data?: { error?: { message?: unknown } } } }).response
-			?.data?.error?.message;
-		if (typeof apiMsg === 'string' && apiMsg) return apiMsg;
-	}
-  if (err instanceof Error) return err.message;
-  if (typeof err === 'object' && err !== null && 'message' in err) {
-    const msg = (err as { message: unknown }).message;
-    if (typeof msg === 'string') return msg;
-  }
-  return fallback;
 };
 
 const statusCode = (err: unknown): number | undefined => {
@@ -166,7 +151,7 @@ const CreateAgentModal: React.FC<CreateAgentModalProps> = ({ isOpen, onClose }) 
       await createMutation.mutateAsync(form);
       handleClose();
     } catch (err: unknown) {
-      setStatusMsg({ text: errorMessage(err, 'Create failed.'), isError: true });
+      setStatusMsg({ text: apiErrorMessage(err, 'Create failed.'), isError: true });
     }
   };
 
@@ -361,7 +346,7 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
       setStatusMsg(null);
       onClose();
     } catch (err: unknown) {
-      setStatusMsg({ text: errorMessage(err, 'Update failed.'), isError: true });
+      setStatusMsg({ text: apiErrorMessage(err, 'Update failed.'), isError: true });
     }
   };
 
@@ -371,7 +356,7 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
       await deleteMutation.mutateAsync(agent.cuid);
       onClose();
     } catch (err: unknown) {
-      setStatusMsg({ text: errorMessage(err, 'Delete failed.'), isError: true });
+      setStatusMsg({ text: apiErrorMessage(err, 'Delete failed.'), isError: true });
     }
   };
 
@@ -519,7 +504,7 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
                     <Alert status="warning" borderRadius="md" py={2}>
                       <AlertIcon />
                       <AlertDescription fontSize="sm">
-                        {errorMessage(managedAgentsQuery.error, 'Failed to load Claude Managed Agents.')}
+                        {apiErrorMessage(managedAgentsQuery.error, 'Failed to load Claude Managed Agents.')}
                       </AlertDescription>
                     </Alert>
                   )}

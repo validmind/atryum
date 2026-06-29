@@ -408,6 +408,39 @@ func TestServerAdminServiceRejectsDuplicateEndpointSlug(t *testing.T) {
 	}
 }
 
+func TestServerAdminServiceRejectsCaseOnlyDuplicateNameWithClearError(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := store.InitDB(db); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+
+	ctx := context.Background()
+	serverRepo := store.NewServerRepo(db)
+	oauthRepo := store.NewOAuthRepo(db)
+	svc := NewServerAdminService(serverRepo, oauthRepo, nil, 5*time.Second, "")
+
+	_, err = svc.Upsert(ctx, "", AdminServerUpsertRequest{
+		Name:    "slack local",
+		Mode:    string(mcp.UpstreamModeHTTP),
+		BaseURL: "https://mcp.slack.test/mcp",
+	})
+	if err != nil {
+		t.Fatalf("Upsert first server: %v", err)
+	}
+	_, err = svc.Upsert(ctx, "", AdminServerUpsertRequest{
+		Name:    "Slack Local",
+		Mode:    string(mcp.UpstreamModeHTTP),
+		BaseURL: "https://other.example/mcp",
+	})
+	if err == nil || !strings.Contains(err.Error(), `server name "slack local" already exists`) {
+		t.Fatalf("expected duplicate name error, got %v", err)
+	}
+}
+
 func TestServerAdminServiceUsesStoredEndpointSlug(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {

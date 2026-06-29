@@ -54,6 +54,7 @@ import {
   type Server,
   type ServerInput,
   type ServerMode,
+  apiErrorMessage,
 } from '../api/AtryumAPI';
 
 const CONNECTION_COLOR: Record<ConnectionStatus, string> = {
@@ -86,15 +87,6 @@ const EMPTY_FORM: ServerInput = {
   oauth_authorize_url: '',
   oauth_token_url: '',
   oauth_scopes: '',
-};
-
-const errorMessage = (err: unknown, fallback: string): string => {
-  if (err instanceof Error) return err.message;
-  if (typeof err === 'object' && err !== null && 'message' in err) {
-    const msg = (err as { message: unknown }).message;
-    if (typeof msg === 'string') return msg;
-  }
-  return fallback;
 };
 
 const serverToInput = (s: Server): ServerInput => ({
@@ -242,7 +234,7 @@ const Servers: React.FC = () => {
         });
       }
     } catch (err: unknown) {
-      setStatusMsg({ text: errorMessage(err, 'Save failed.'), isError: true });
+      setStatusMsg({ text: apiErrorMessage(err, 'Save failed.'), isError: true });
     }
   };
 
@@ -252,7 +244,7 @@ const Servers: React.FC = () => {
       const result = await testServer.mutateAsync(selectedName);
       setStatusMsg({ text: result.message, isError: !result.ok });
     } catch (err: unknown) {
-      setStatusMsg({ text: errorMessage(err, 'Test failed.'), isError: true });
+      setStatusMsg({ text: apiErrorMessage(err, 'Test failed.'), isError: true });
     }
   };
 
@@ -271,7 +263,7 @@ const Servers: React.FC = () => {
         setForm((f) => ({ ...f, enabled: true }));
       }
     } catch (err: unknown) {
-      setStatusMsg({ text: errorMessage(err, 'Toggle failed.'), isError: true });
+      setStatusMsg({ text: apiErrorMessage(err, 'Toggle failed.'), isError: true });
     }
   };
 
@@ -283,7 +275,7 @@ const Servers: React.FC = () => {
       setConnectPolling(true);
       setStatusMsg({ text: 'OAuth flow opened — waiting for completion…', isError: false });
     } catch (err: unknown) {
-      setStatusMsg({ text: errorMessage(err, 'Connect failed.'), isError: true });
+      setStatusMsg({ text: apiErrorMessage(err, 'Connect failed.'), isError: true });
     }
   };
 
@@ -296,7 +288,7 @@ const Servers: React.FC = () => {
       setSelectedName(null);
       setIsCreating(false);
     } catch (err: unknown) {
-      setStatusMsg({ text: errorMessage(err, 'Delete failed.'), isError: true });
+      setStatusMsg({ text: apiErrorMessage(err, 'Delete failed.'), isError: true });
     }
   };
 
