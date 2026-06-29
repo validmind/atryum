@@ -70,6 +70,8 @@ func TestEndpointSlug(t *testing.T) {
 		"  GitHub MCP  ": "github-mcp",
 		"Foo_Bar.v1~dev": "foo_bar.v1~dev",
 		"!!!":            "",
+		".":              "",
+		"...":            "",
 	}
 	for input, want := range tests {
 		if got := EndpointSlug(input); got != want {

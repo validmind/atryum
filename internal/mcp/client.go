@@ -206,7 +206,11 @@ var endpointSlugInvalidChars = regexp.MustCompile(`[^a-z0-9._~-]+`)
 func EndpointSlug(name string) string {
 	slug := strings.ToLower(strings.TrimSpace(name))
 	slug = endpointSlugInvalidChars.ReplaceAllString(slug, "-")
-	return strings.Trim(slug, "-")
+	slug = strings.Trim(slug, "-")
+	if strings.Trim(slug, ".") == "" {
+		return ""
+	}
+	return slug
 }
 
 // CredentialStore returns the OAuth access token currently stored for a
