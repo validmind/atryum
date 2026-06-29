@@ -80,7 +80,7 @@ Auth is OIDC-based and supports multiple authorization servers concurrently (Key
 
 For local no-auth runtime calls, when no `[[auth]]` blocks are configured, callers may provide a best-effort agent identity with `?agent_id=` on `/mcp/{server}`, `/api/v1/invocations`, and `/api/v1/agent/rules`, or with `agent_id` in external invocation API payloads. For example: `http://localhost:8080/mcp/shortcut?agent_id=hunners-codex`. This ID is ignored as soon as inbound auth is configured.
 
-When inbound auth is configured, all agent runtime surfaces require OAuth bearer tokens: `/mcp/{server}`, `/api/v1/invocations`, `/api/v1/external/invocations`, `/api/v1/external/invocations/{id}`, and `/api/v1/agent/rules`. The Amp and Pi examples, plus the shared hook script installed for agent hooks, read `ATRYUM_ACCESS_TOKEN` and send it as `Authorization: Bearer ...`.
+When inbound auth is configured, all agent runtime surfaces require OAuth bearer tokens: `/mcp/{server}`, `/api/v1/invocations`, `/api/v1/external/invocations`, `/api/v1/external/invocations/{id}`, and `/api/v1/agent/rules`. The Amp and Pi examples, plus the shared hook script installed for agent hooks, read `ATRYUM_ACCESS_TOKEN` and send it as `Authorization: Bearer ...`. They can also run `ATRYUM_TOKEN_COMMAND` to obtain fresh token JSON (`access_token` plus optional `expires_in`) and retry once after an expiry-related `401`.
 
 The Settings UI can also select a default ValidMind agent record. AI Evaluation uses that record when an incoming runtime agent ID is missing or does not map to a synced agent, allowing local no-auth runs to evaluate against a known charter without adding TOML.
 
