@@ -180,6 +180,8 @@ export interface AuthHeader {
 
 export interface Server {
   name: string;
+  endpoint_slug: string;
+  endpoint_url?: string;
   mode: ServerMode;
   connection_status: ConnectionStatus;
   auth_status: AuthStatus;

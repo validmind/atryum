@@ -16,6 +16,7 @@ import (
 
 	"atryum/internal/auth"
 	backendclient "atryum/internal/backend"
+	"atryum/internal/config"
 	"atryum/internal/invocation"
 	"atryum/internal/managedagents"
 	"atryum/internal/mcp"
@@ -327,6 +328,119 @@ func TestStartConnectUsesUpstreamMCPOAuthCallbackRedirectURI(t *testing.T) {
 	}
 	if session.RedirectURI != wantRedirectURI {
 		t.Fatalf("saved redirect_uri = %q, want %q", session.RedirectURI, wantRedirectURI)
+	}
+}
+
+func TestServerAdminServiceSurfacesEndpointURLForSluggedServerName(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := store.InitDB(db); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+
+	ctx := context.Background()
+	serverRepo := store.NewServerRepo(db)
+	oauthRepo := store.NewOAuthRepo(db)
+	svc := NewServerAdminService(serverRepo, oauthRepo, nil, 5*time.Second, "https://atryum.example")
+
+	server, err := svc.Upsert(ctx, "", AdminServerUpsertRequest{
+		Name:           "Slack Local",
+		Mode:           string(mcp.UpstreamModeHTTP),
+		BaseURL:        "https://mcp.slack.test/mcp",
+		TimeoutSeconds: 10,
+	})
+	if err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if server.Name != "Slack Local" {
+		t.Fatalf("name = %q, want Slack Local", server.Name)
+	}
+	if server.EndpointSlug != "slack-local" {
+		t.Fatalf("endpoint_slug = %q, want slack-local", server.EndpointSlug)
+	}
+	if server.EndpointURL != "https://atryum.example/mcp/slack-local" {
+		t.Fatalf("endpoint_url = %q", server.EndpointURL)
+	}
+
+	resolver := mcp.NewResolver(serverRepo, config.Config{})
+	upstream, err := resolver.ResolveContext(ctx, "slack-local")
+	if err != nil {
+		t.Fatalf("ResolveContext: %v", err)
+	}
+	if upstream.Name != "Slack Local" {
+		t.Fatalf("resolved name = %q, want Slack Local", upstream.Name)
+	}
+}
+
+func TestServerAdminServiceRejectsDuplicateEndpointSlug(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := store.InitDB(db); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+
+	ctx := context.Background()
+	serverRepo := store.NewServerRepo(db)
+	oauthRepo := store.NewOAuthRepo(db)
+	svc := NewServerAdminService(serverRepo, oauthRepo, nil, 5*time.Second, "")
+
+	_, err = svc.Upsert(ctx, "", AdminServerUpsertRequest{
+		Name:    "Slack Local",
+		Mode:    string(mcp.UpstreamModeHTTP),
+		BaseURL: "https://mcp.slack.test/mcp",
+	})
+	if err != nil {
+		t.Fatalf("Upsert first server: %v", err)
+	}
+	_, err = svc.Upsert(ctx, "", AdminServerUpsertRequest{
+		Name:    "slack-local",
+		Mode:    string(mcp.UpstreamModeHTTP),
+		BaseURL: "https://other.example/mcp",
+	})
+	if err == nil || !strings.Contains(err.Error(), `endpoint slug "slack-local"`) {
+		t.Fatalf("expected duplicate endpoint slug error, got %v", err)
+	}
+}
+
+func TestServerAdminServiceUsesStoredEndpointSlug(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := store.InitDB(db); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+
+	ctx := context.Background()
+	serverRepo := store.NewServerRepo(db)
+	oauthRepo := store.NewOAuthRepo(db)
+	if err := serverRepo.UpsertServer(ctx, mcp.Upstream{
+		Name:         "Slack Local",
+		EndpointSlug: "slack-local-2",
+		Mode:         mcp.UpstreamModeHTTP,
+		BaseURL:      "https://mcp.slack.test/mcp",
+		Enabled:      true,
+	}); err != nil {
+		t.Fatalf("UpsertServer: %v", err)
+	}
+
+	svc := NewServerAdminService(serverRepo, oauthRepo, nil, 5*time.Second, "https://atryum.example")
+	server, err := svc.Get(ctx, "Slack Local")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if server.EndpointSlug != "slack-local-2" {
+		t.Fatalf("endpoint_slug = %q, want slack-local-2", server.EndpointSlug)
+	}
+	if server.EndpointURL != "https://atryum.example/mcp/slack-local-2" {
+		t.Fatalf("endpoint_url = %q", server.EndpointURL)
 	}
 }
 

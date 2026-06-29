@@ -115,6 +115,14 @@ const serverToInput = (s: Server): ServerInput => ({
   oauth_scopes: s.oauth_scopes ?? '',
 });
 
+const endpointLabel = (server: Server): string => {
+  const endpoint = server.endpoint_url || (server.endpoint_slug ? `/mcp/${server.endpoint_slug}` : '');
+  if (endpoint.startsWith('/') && typeof window !== 'undefined') {
+    return `${window.location.origin}${endpoint}`;
+  }
+  return endpoint;
+};
+
 const Servers: React.FC = () => {
   const [showDisabled, setShowDisabled] = useState(true);
   const [selectedName, setSelectedName] = useState<string | null>(null);
@@ -216,10 +224,22 @@ const Servers: React.FC = () => {
         const saved = await createServer.mutateAsync(payload);
         setSelectedName(saved.name);
         setIsCreating(false);
-        setStatusMsg({ text: `Created server "${saved.name}".`, isError: false });
+        const endpoint = endpointLabel(saved);
+        setStatusMsg({
+          text: endpoint
+            ? `Created server "${saved.name}". MCP endpoint: ${endpoint}`
+            : `Created server "${saved.name}".`,
+          isError: false,
+        });
       } else {
         const saved = await updateServer.mutateAsync({ name: selectedName!, input: payload });
-        setStatusMsg({ text: `Saved server "${saved.name}".`, isError: false });
+        const endpoint = endpointLabel(saved);
+        setStatusMsg({
+          text: endpoint
+            ? `Saved server "${saved.name}". MCP endpoint: ${endpoint}`
+            : `Saved server "${saved.name}".`,
+          isError: false,
+        });
       }
     } catch (err: unknown) {
       setStatusMsg({ text: errorMessage(err, 'Save failed.'), isError: true });
@@ -458,6 +478,18 @@ const Servers: React.FC = () => {
                       onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
                     />
                   </FormControl>
+
+                  {currentServer && endpointLabel(currentServer) && (
+                    <FormControl>
+                      <FormLabel fontSize="sm">MCP Endpoint</FormLabel>
+                      <Input
+                        size="sm"
+                        fontFamily="mono"
+                        value={endpointLabel(currentServer)}
+                        isReadOnly
+                      />
+                    </FormControl>
+                  )}
 
                   <FormControl isRequired>
                     <FormLabel fontSize="sm">Mode</FormLabel>

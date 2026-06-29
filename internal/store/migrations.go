@@ -1,9 +1,10 @@
 package store
 
 import (
-	storemigrations "atryum/internal/store/migrations"
 	"database/sql"
 	"fmt"
+
+	storemigrations "atryum/internal/store/migrations"
 )
 
 // migrationRecord tracks applied migrations.
@@ -21,6 +22,7 @@ type migration struct {
 type migrationStep struct {
 	Description string
 	Build       func(dialect Dialect) (string, []any, error)
+	Run         func(tx *sql.Tx, dialect Dialect) error
 }
 
 var migrations = loadMigrations()
@@ -32,12 +34,21 @@ func loadMigrations() []migration {
 		steps := make([]migrationStep, 0, len(definition.Steps))
 		for _, step := range definition.Steps {
 			build := step.Build
-			steps = append(steps, migrationStep{
+			run := step.Run
+			loadedStep := migrationStep{
 				Description: step.Description,
-				Build: func(dialect Dialect) (string, []any, error) {
+			}
+			if build != nil {
+				loadedStep.Build = func(dialect Dialect) (string, []any, error) {
 					return build(dialect == DialectPostgres)
-				},
-			})
+				}
+			}
+			if run != nil {
+				loadedStep.Run = func(tx *sql.Tx, dialect Dialect) error {
+					return run(tx, dialect == DialectPostgres)
+				}
+			}
+			steps = append(steps, loadedStep)
 		}
 		loaded = append(loaded, migration{
 			Version: definition.Version,
@@ -133,6 +144,12 @@ func applyMigration(db *sql.DB, m migration, dialect Dialect) error {
 	defer tx.Rollback()
 
 	for _, step := range m.Steps {
+		if step.Run != nil {
+			if err := step.Run(tx, dialect); err != nil {
+				return fmt.Errorf("run step %q: %w", step.Description, err)
+			}
+			continue
+		}
 		query, args, err := step.Build(dialect)
 		if err != nil {
 			return fmt.Errorf("build step %q: %w", step.Description, err)

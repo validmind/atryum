@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -95,6 +96,7 @@ type AuthHeader struct {
 
 type Upstream struct {
 	Name               string
+	EndpointSlug       string
 	Mode               UpstreamMode
 	BaseURL            string
 	AuthToken          string
@@ -187,6 +189,7 @@ func DecodeAuthHeaders(env map[string]string) []AuthHeader {
 
 type ServerStore interface {
 	GetServer(ctx context.Context, name string) (Upstream, error)
+	GetServerByEndpointSlug(ctx context.Context, slug string) (Upstream, error)
 	ListServers(ctx context.Context, filter ServerFilter) ([]Upstream, int, error)
 	CountServers(ctx context.Context) (int, error)
 	CreateServer(ctx context.Context, upstream Upstream) error
@@ -196,6 +199,14 @@ type ServerFilter struct {
 	Offset  uint64
 	Limit   uint64
 	Enabled *bool
+}
+
+var endpointSlugInvalidChars = regexp.MustCompile(`[^a-z0-9._~-]+`)
+
+func EndpointSlug(name string) string {
+	slug := strings.ToLower(strings.TrimSpace(name))
+	slug = endpointSlugInvalidChars.ReplaceAllString(slug, "-")
+	return strings.Trim(slug, "-")
 }
 
 // CredentialStore returns the OAuth access token currently stored for a
@@ -310,9 +321,24 @@ func (r *Resolver) ResolveContext(ctx context.Context, name string) (Upstream, e
 		if err != nil && err != sql.ErrNoRows {
 			return Upstream{}, err
 		}
+		if slug := EndpointSlug(name); slug != "" {
+			upstream, err := r.store.GetServerByEndpointSlug(ctx, slug)
+			if err == nil {
+				return r.overlayCredential(ctx, upstream), nil
+			}
+			if err != nil && err != sql.ErrNoRows {
+				return Upstream{}, err
+			}
+		}
 	}
 	upstream, ok := r.bootstrap[name]
 	if !ok || !upstream.Enabled {
+		slug := EndpointSlug(name)
+		for _, candidate := range r.bootstrap {
+			if candidate.Enabled && EndpointSlug(candidate.Name) == slug {
+				return r.overlayCredential(ctx, candidate), nil
+			}
+		}
 		return Upstream{}, fmt.Errorf("upstream %q not configured or disabled", name)
 	}
 	return r.overlayCredential(ctx, upstream), nil

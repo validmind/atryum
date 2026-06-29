@@ -1,5 +1,7 @@
 package migrations
 
+import "database/sql"
+
 type Definition struct {
 	Version int
 	Name    string
@@ -9,6 +11,7 @@ type Definition struct {
 type Step struct {
 	Description string
 	Build       func(usePostgres bool) (string, []any, error)
+	Run         func(tx *sql.Tx, usePostgres bool) error
 }
 
 func Raw(description, query string) Step {
@@ -29,6 +32,13 @@ func RawDialect(description, sqliteQuery, postgresQuery string) Step {
 			}
 			return sqliteQuery, nil, nil
 		},
+	}
+}
+
+func Custom(description string, run func(tx *sql.Tx, usePostgres bool) error) Step {
+	return Step{
+		Description: description,
+		Run:         run,
 	}
 }
 
@@ -57,5 +67,6 @@ func All() []Definition {
 		migration021(),
 		migration022(),
 		migration023(),
+		migration024(),
 	}
 }

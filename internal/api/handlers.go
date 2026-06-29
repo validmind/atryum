@@ -200,6 +200,8 @@ type DenyRequest struct {
 
 type AdminServer struct {
 	Name                    string            `json:"name"`
+	EndpointSlug            string            `json:"endpoint_slug"`
+	EndpointURL             string            `json:"endpoint_url,omitempty"`
 	Mode                    string            `json:"mode"`
 	BaseURL                 string            `json:"base_url,omitempty"`
 	AuthToken               string            `json:"auth_token,omitempty"`
@@ -3074,6 +3076,7 @@ type ServerAdminService struct {
 type serverRepo interface {
 	ListServers(ctx context.Context, filter mcp.ServerFilter) ([]mcp.Upstream, int, error)
 	GetServerAny(ctx context.Context, name string) (mcp.Upstream, error)
+	GetServerByEndpointSlugAny(ctx context.Context, slug string) (mcp.Upstream, error)
 	UpsertServer(ctx context.Context, upstream mcp.Upstream) error
 	UpdateServerStatus(ctx context.Context, name string, status mcp.ServerStatus) error
 	DeleteServer(ctx context.Context, name string) error
@@ -3110,6 +3113,7 @@ func (s *ServerAdminService) Get(ctx context.Context, name string) (AdminServer,
 // what we requested and what's actually live.
 func (s *ServerAdminService) adminViewWithGrantedScopes(ctx context.Context, upstream mcp.Upstream) AdminServer {
 	view := toAdminServer(upstream)
+	view.EndpointURL = s.endpointURL(view.EndpointSlug)
 	if cred, err := s.oauthRepo.GetCredential(ctx, upstream.Name); err == nil {
 		view.OAuthGrantedScopes = cred.Scope
 	}
@@ -3128,6 +3132,9 @@ func (s *ServerAdminService) Upsert(ctx context.Context, name string, req AdminS
 	if serverName == "" {
 		return AdminServer{}, fmt.Errorf("name is required")
 	}
+	if mcp.EndpointSlug(serverName) == "" {
+		return AdminServer{}, fmt.Errorf("name must include at least one letter or number")
+	}
 	mode := strings.TrimSpace(req.Mode)
 	if mode == "" {
 		return AdminServer{}, fmt.Errorf("mode is required")
@@ -3140,18 +3147,26 @@ func (s *ServerAdminService) Upsert(ctx context.Context, name string, req AdminS
 	// chose not to re-send (notably client_secret, which is never echoed
 	// back to the browser).
 	existing, _ := s.repo.GetServerAny(ctx, serverName)
+	endpointSlug := existing.EndpointSlug
+	if endpointSlug == "" {
+		endpointSlug = mcp.EndpointSlug(serverName)
+		if err := s.validateEndpointSlugAvailable(ctx, serverName, endpointSlug); err != nil {
+			return AdminServer{}, err
+		}
+	}
 
 	upstream := mcp.Upstream{
-		Name:        serverName,
-		Mode:        mcp.UpstreamMode(mode),
-		BaseURL:     strings.TrimRight(strings.TrimSpace(req.BaseURL), "/"),
-		AuthToken:   req.AuthToken,
-		AuthHeaders: append([]mcp.AuthHeader(nil), req.AuthHeaders...),
-		Timeout:     time.Duration(defaultIfZero(req.TimeoutSeconds, 30)) * time.Second,
-		Command:     strings.TrimSpace(req.Command),
-		Args:        append([]string(nil), req.Args...),
-		Env:         cloneEnv(req.Env),
-		Enabled:     enabled,
+		Name:         serverName,
+		EndpointSlug: endpointSlug,
+		Mode:         mcp.UpstreamMode(mode),
+		BaseURL:      strings.TrimRight(strings.TrimSpace(req.BaseURL), "/"),
+		AuthToken:    req.AuthToken,
+		AuthHeaders:  append([]mcp.AuthHeader(nil), req.AuthHeaders...),
+		Timeout:      time.Duration(defaultIfZero(req.TimeoutSeconds, 30)) * time.Second,
+		Command:      strings.TrimSpace(req.Command),
+		Args:         append([]string(nil), req.Args...),
+		Env:          cloneEnv(req.Env),
+		Enabled:      enabled,
 	}
 
 	// OAuth fields from the request body win, except client_secret which
@@ -3190,6 +3205,30 @@ func (s *ServerAdminService) Upsert(ctx context.Context, name string, req AdminS
 		return AdminServer{}, err
 	}
 	return s.adminViewWithGrantedScopes(ctx, upstream), nil
+}
+
+func (s *ServerAdminService) validateEndpointSlugAvailable(ctx context.Context, serverName string, slug string) error {
+	item, err := s.repo.GetServerByEndpointSlugAny(ctx, slug)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if item.Name != serverName {
+		return fmt.Errorf("server name %q would use endpoint slug %q, already used by %q", serverName, slug, item.Name)
+	}
+	return nil
+}
+
+func (s *ServerAdminService) endpointURL(slug string) string {
+	if slug == "" {
+		return ""
+	}
+	if s.publicBaseURL == "" {
+		return "/mcp/" + slug
+	}
+	return s.publicBaseURL + "/mcp/" + slug
 }
 
 func (s *ServerAdminService) Delete(ctx context.Context, name string, disable bool) error {
@@ -3544,7 +3583,11 @@ func (h *Handler) externalInvocationDetail(w http.ResponseWriter, r *http.Reques
 }
 
 func toAdminServer(upstream mcp.Upstream) AdminServer {
-	return AdminServer{Name: upstream.Name, Mode: string(upstream.Mode), BaseURL: upstream.BaseURL, AuthToken: upstream.AuthToken, AuthHeaders: append([]mcp.AuthHeader(nil), upstream.AuthHeaders...), TimeoutSeconds: int(upstream.Timeout / time.Second), Command: upstream.Command, Args: append([]string(nil), upstream.Args...), Env: cloneEnv(upstream.Env), Enabled: upstream.Enabled, AuthType: string(upstream.Status.AuthType), ConnectionStatus: string(upstream.Status.ConnectionStatus), AuthStatus: string(upstream.Status.AuthStatus), ReauthNeeded: upstream.Status.ReauthNeeded, LastCheckedAt: upstream.Status.LastCheckedAt, LastCheckOK: upstream.Status.LastCheckOK, LastErrorSummary: upstream.Status.LastErrorSummary, ActionRequired: upstream.Status.ActionRequired, OAuthProviderID: upstream.OAuthProviderID, OAuthProviderLabel: upstream.OAuthProviderLabel, OAuthClientRegistration: string(upstream.OAuthClientRegistration), OAuthClientID: upstream.OAuthClientID, OAuthAuthorizeURL: upstream.OAuthAuthorizeURL, OAuthTokenURL: upstream.OAuthTokenURL, OAuthScopes: upstream.OAuthScopes, HasOAuthClientSecret: strings.TrimSpace(upstream.OAuthClientSecret) != ""}
+	endpointSlug := upstream.EndpointSlug
+	if endpointSlug == "" {
+		endpointSlug = mcp.EndpointSlug(upstream.Name)
+	}
+	return AdminServer{Name: upstream.Name, EndpointSlug: endpointSlug, Mode: string(upstream.Mode), BaseURL: upstream.BaseURL, AuthToken: upstream.AuthToken, AuthHeaders: append([]mcp.AuthHeader(nil), upstream.AuthHeaders...), TimeoutSeconds: int(upstream.Timeout / time.Second), Command: upstream.Command, Args: append([]string(nil), upstream.Args...), Env: cloneEnv(upstream.Env), Enabled: upstream.Enabled, AuthType: string(upstream.Status.AuthType), ConnectionStatus: string(upstream.Status.ConnectionStatus), AuthStatus: string(upstream.Status.AuthStatus), ReauthNeeded: upstream.Status.ReauthNeeded, LastCheckedAt: upstream.Status.LastCheckedAt, LastCheckOK: upstream.Status.LastCheckOK, LastErrorSummary: upstream.Status.LastErrorSummary, ActionRequired: upstream.Status.ActionRequired, OAuthProviderID: upstream.OAuthProviderID, OAuthProviderLabel: upstream.OAuthProviderLabel, OAuthClientRegistration: string(upstream.OAuthClientRegistration), OAuthClientID: upstream.OAuthClientID, OAuthAuthorizeURL: upstream.OAuthAuthorizeURL, OAuthTokenURL: upstream.OAuthTokenURL, OAuthScopes: upstream.OAuthScopes, HasOAuthClientSecret: strings.TrimSpace(upstream.OAuthClientSecret) != ""}
 }
 
 func validateUpstream(upstream mcp.Upstream) error {
