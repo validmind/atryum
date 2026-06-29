@@ -100,7 +100,10 @@ async function writeTokenCache(token, expiresAt) {
   if (!TOKEN_CACHE_FILE) return;
   try {
     await mkdir(path.dirname(TOKEN_CACHE_FILE), { recursive: true });
-    await writeFile(TOKEN_CACHE_FILE, JSON.stringify({ token, expiresAt }), "utf8");
+    await writeFile(TOKEN_CACHE_FILE, JSON.stringify({ token, expiresAt }), {
+      encoding: "utf8",
+      mode: 0o600,
+    });
   } catch {
     // ignore — in-memory cache still works
   }
@@ -678,7 +681,8 @@ async function handlePreToolUse(event) {
   let decided = submitted;
   if (
     submitted.status === "pending_approval" ||
-    submitted.status === "received"
+    submitted.status === "received" ||
+    submitted.status === "executing"
   ) {
     decided = await poll(submitted.invocation_id);
   }
