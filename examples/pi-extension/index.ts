@@ -61,6 +61,79 @@ function describe(input: ToolInput): string {
   return parts.join(" | ") || "(no string params)";
 }
 
+const RULES_CACHE_TTL_MS = 5 * 60 * 1000;
+const rulesCache = new Map<string, { value: string; expiresAt: number }>();
+
+function formatRulesContext(rules: unknown): string {
+  if (!rules || typeof rules !== "object") return "";
+  const record = rules as Record<string, unknown>;
+  const lines = [
+    "Atryum advisory rules visible to this harness before the gated call:",
+    `- server: ${String(record.server || SOURCE)}`,
+    `- tool: ${String(record.tool || "unknown")}`,
+    `- effective action: ${String(record.action || record.default_action || "unknown")}`,
+  ];
+  if (record.matched_rule_id) {
+    lines.push(`- matched rule: ${String(record.matched_rule_id)}`);
+  }
+  if (record.generated_at) {
+    lines.push(`- as of: ${String(record.generated_at)}`);
+  }
+  if (Array.isArray(record.items) && record.items.length > 0) {
+    lines.push("- visible rules:");
+    for (const item of record.items.slice(0, 20)) {
+      const rule = item as Record<string, unknown>;
+      const guidance = rule.guidance ? ` (${String(rule.guidance)})` : "";
+      lines.push(
+        `  - ${String(rule.id || "(unnamed)")}: ${String(rule.action)}${guidance}`
+      );
+    }
+    if (record.items.length > 20) {
+      lines.push(`  - ...${record.items.length - 20} more`);
+    }
+  }
+  lines.push("- advisory only; Atryum re-checks policy during the actual gated call.");
+  return lines.join("\n");
+}
+
+async function rulesContext(tool: string): Promise<string> {
+  const cacheKey = [SOURCE, tool, ACCESS_TOKEN ? "auth" : "no-auth", AGENT_ID].join("\x00");
+  const cached = rulesCache.get(cacheKey);
+  if (cached !== undefined && cached.expiresAt > Date.now()) return cached.value;
+  if (cached !== undefined) rulesCache.delete(cacheKey);
+  const url = new URL("/api/v1/agent/rules", API);
+  url.searchParams.set("server", SOURCE);
+  url.searchParams.set("tool", tool);
+  if (AGENT_ID && !ACCESS_TOKEN) {
+    url.searchParams.set("agent_id", AGENT_ID);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
+  try {
+    const res = await fetch(url, { headers: atryumHeaders(), signal: controller.signal });
+    if (!res.ok) return "";
+    const result = formatRulesContext(await res.json());
+    rulesCache.set(cacheKey, {
+      value: result,
+      expiresAt: Date.now() + RULES_CACHE_TTL_MS,
+    });
+    return result;
+  } catch {
+    return "";
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function combineContext(
+  rules: string,
+  chat: { context: string; count: number } | undefined
+): { context: string; count: number | undefined } | undefined {
+  const context = [rules, chat?.context].filter(Boolean).join("\n\n");
+  if (!context) return undefined;
+  return { context, count: chat?.count };
+}
+
 function sessionID(ctx: unknown): string | undefined {
   const manager = (ctx as { sessionManager?: unknown }).sessionManager as
     | { getSessionFile?: () => string; sessionId?: string; id?: string }
@@ -245,6 +318,7 @@ async function submit(
   threadID: string | undefined,
   chat: { context: string; count: number } | undefined
 ): Promise<InvocationResponse> {
+  const context = combineContext(await rulesContext(tool), chat);
   const res = await fetch(`${API}/api/v1/external/invocations`, {
     method: "POST",
     headers: atryumHeaders(true),
@@ -255,9 +329,9 @@ async function submit(
       input,
       request_id: toolCallID,
       thread_id: threadID,
-      chat_context: chat?.context,
-      chat_context_messages: chat?.count,
-      context: chat?.context,
+      chat_context: context?.context,
+      chat_context_messages: context?.count,
+      context: context?.context,
       agent_id: AGENT_ID || undefined,
       client_name: CLIENT_NAME,
       client_version: CLIENT_VERSION || undefined,

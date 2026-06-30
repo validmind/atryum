@@ -118,6 +118,72 @@ function describe(input) {
   return parts.join(" | ") || "(no string params)";
 }
 
+const RULES_CACHE_TTL_MS = 5 * 60 * 1000;
+const rulesCache = new Map();
+
+function formatRulesContext(rules) {
+  if (!rules || typeof rules !== "object") return "";
+  const lines = [
+    "Atryum advisory rules visible to this harness before the gated call:",
+    `- server: ${rules.server || SOURCE}`,
+    `- tool: ${rules.tool || "unknown"}`,
+    `- effective action: ${rules.action || rules.default_action || "unknown"}`,
+  ];
+  if (rules.matched_rule_id) {
+    lines.push(`- matched rule: ${rules.matched_rule_id}`);
+  }
+  if (rules.generated_at) {
+    lines.push(`- as of: ${rules.generated_at}`);
+  }
+  if (Array.isArray(rules.items) && rules.items.length > 0) {
+    lines.push("- visible rules:");
+    for (const rule of rules.items.slice(0, 20)) {
+      const guidance = rule.guidance ? ` (${rule.guidance})` : "";
+      lines.push(`  - ${rule.id || "(unnamed)"}: ${rule.action}${guidance}`);
+    }
+    if (rules.items.length > 20) {
+      lines.push(`  - ...${rules.items.length - 20} more`);
+    }
+  }
+  lines.push("- advisory only; Atryum re-checks policy during the actual gated call.");
+  return lines.join("\n");
+}
+
+async function rulesContext(tool) {
+  const cacheKey = [SOURCE, tool, ACCESS_TOKEN ? "auth" : "no-auth", AGENT_ID].join("\x00");
+  const cached = rulesCache.get(cacheKey);
+  if (cached !== undefined && cached.expiresAt > Date.now()) return cached.value;
+  if (cached !== undefined) rulesCache.delete(cacheKey);
+  const url = new URL("/api/v1/agent/rules", API);
+  url.searchParams.set("server", SOURCE);
+  url.searchParams.set("tool", tool);
+  if (AGENT_ID && !ACCESS_TOKEN) {
+    url.searchParams.set("agent_id", AGENT_ID);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
+  try {
+    const res = await fetch(url, { headers: atryumHeaders(), signal: controller.signal });
+    if (!res.ok) return "";
+    const result = formatRulesContext(await res.json());
+    rulesCache.set(cacheKey, {
+      value: result,
+      expiresAt: Date.now() + RULES_CACHE_TTL_MS,
+    });
+    return result;
+  } catch {
+    return "";
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function combineContext(rules, chat) {
+  const context = [rules, chat?.context].filter(Boolean).join("\n\n");
+  if (!context) return undefined;
+  return { context, count: chat?.count };
+}
+
 function normalizeRole(value) {
   const role = String(value || "").toLowerCase();
   if (role === "human") return "user";
@@ -462,6 +528,7 @@ async function submit(event) {
   const input = toolInput(event);
   const id = toolUseID(event);
   const chat = await chatContext(event);
+  const context = combineContext(await rulesContext(name), chat);
   const res = await fetch(`${API}/api/v1/external/invocations`, {
     method: "POST",
     headers: atryumHeaders(true),
@@ -472,9 +539,9 @@ async function submit(event) {
       input,
       request_id: id,
       thread_id: sessionId(event) || undefined,
-      chat_context: chat?.context,
-      chat_context_messages: chat?.count,
-      context: chat?.context,
+      chat_context: context?.context,
+      chat_context_messages: context?.count,
+      context: context?.context,
       client_name: CLIENT_NAME,
       client_version: CLIENT_VERSION || undefined,
       agent_id: AGENT_ID || undefined,

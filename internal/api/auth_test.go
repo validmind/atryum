@@ -185,10 +185,14 @@ func TestMCPAcceptsValidTokenAndPlumbsAgentID(t *testing.T) {
 
 func TestAgentRulesRequiresAuthAndUsesTokenAgentID(t *testing.T) {
 	rig := newAuthTestRig(t)
+	tokenAgent := store.AgentRecord{ID: "agent-cuid-007", AgentIDs: `["agent-007"]`}
+	otherAgent := store.AgentRecord{ID: "agent-cuid-other", AgentIDs: `["other"]`}
 	rules := &stubRulesRepo{rules: []store.Rule{
-		{ID: "auto-rule", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, Enabled: true, Order: 0},
+		{ID: "other-deny", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentCUIDs: []string{otherAgent.ID}, Enabled: true, Order: 0},
+		{ID: "auto-rule", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentCUIDs: []string{tokenAgent.ID}, Enabled: true, Order: 1},
 	}}
-	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
+	agents := &stubAgentsRepo{records: []store.AgentRecord{tokenAgent, otherAgent}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, agents, nil, nil, nil, nil, nil)
 	h.SetAuthValidator(rig.v)
 	handler := h.Routes()
 
@@ -216,6 +220,9 @@ func TestAgentRulesRequiresAuthAndUsesTokenAgentID(t *testing.T) {
 	}
 	if resp.Action != invocation.RuleActionAutoApprove {
 		t.Fatalf("expected auto_approve action, got %q", resp.Action)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].ID != "auto-rule" {
+		t.Fatalf("expected only token agent rule to be visible, got %#v", resp.Items)
 	}
 }
 
