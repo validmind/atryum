@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -73,12 +74,51 @@ func MiddlewareWithOptions(v *Validator, resourceMetadataPath string, opts Middl
 	}
 }
 
-func AdminMiddleware(v *Validator, opts MiddlewareOptions) func(http.Handler) http.Handler {
+// AdminMiddleware returns an http middleware that authenticates admin API
+// requests. It accepts two credential paths:
+//
+//  1. Machine-key path: when the request carries matching X-API-Key and
+//     X-API-Secret headers (checked against apiKeyCfg), the request is
+//     admitted immediately as a trusted machine caller without requiring a
+//     JWT. This allows server-to-server callers (e.g. the ValidMind backend
+//     proxy) to use the same static credentials they already have rather than
+//     obtaining a Keycloak token.
+//
+//  2. Bearer-token path: when no API-key headers are present the middleware
+//     falls through to the existing OAuth JWT validation via ValidateAdmin.
+//
+// When v is nil, AdminEnabled() is false, or SkipVerify is set, the
+// middleware is a no-op (auth disabled).
+func AdminMiddleware(v *Validator, apiKeyCfg APIKeyConfig, opts MiddlewareOptions) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		if v == nil || !v.AdminEnabled() || opts.SkipVerify {
 			return next
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Machine-key fast path: if the caller sends matching API key/secret
+			// headers, admit as a trusted admin without requiring a JWT.
+			if apiKeyCfg.Enabled() {
+				gotKey := strings.TrimSpace(r.Header.Get(apiKeyHeader))
+				gotSecret := strings.TrimSpace(r.Header.Get(apiSecretHeader))
+				if gotKey != "" || gotSecret != "" {
+					keyOK := subtle.ConstantTimeCompare([]byte(gotKey), []byte(apiKeyCfg.Key)) == 1
+					secretOK := subtle.ConstantTimeCompare([]byte(gotSecret), []byte(apiKeyCfg.Secret)) == 1
+					if keyOK && secretOK {
+						if opts.DebugLogIdentity {
+							log.Printf("[auth] valid_admin_machine_key method=%s path=%s remote=%s", r.Method, r.URL.Path, r.RemoteAddr)
+						}
+						next.ServeHTTP(w, r)
+						return
+					}
+					// Keys were present but wrong — reject immediately; don't
+					// fall through to Bearer so we don't leak which path failed.
+					logAuthFailure(r, "invalid_token", "invalid api key credentials", "")
+					writeAPIKeyError(w, http.StatusUnauthorized, "invalid api key credentials")
+					return
+				}
+			}
+
+			// Bearer-token path for human admin UI logins.
 			header := strings.TrimSpace(r.Header.Get("Authorization"))
 			if header == "" {
 				logAuthFailure(r, "invalid_token", "missing bearer token", "")
