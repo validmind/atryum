@@ -301,6 +301,48 @@ func (r *AgentsRepo) DeleteSynced(ctx context.Context) error {
 	return err
 }
 
+// ListVMCUIDsWithBindings returns the vm_cuid of every agent that has at least
+// one managed_agent_binding row. These agents must not be pruned during sync:
+// deleting them would cascade-delete their binding configuration.
+func (r *AgentsRepo) ListVMCUIDsWithBindings(ctx context.Context) ([]string, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT vm_cuid FROM agents WHERE id IN (SELECT DISTINCT agent_cuid FROM managed_agent_bindings)`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list agents with bindings: %w", err)
+	}
+	defer rows.Close()
+	var cuids []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return nil, err
+		}
+		cuids = append(cuids, c)
+	}
+	return cuids, rows.Err()
+}
+
+// DeleteSyncedStaleForOrg removes synced agent records for the given org whose
+// vm_cuid is not in keepCUIDs. Called after each sync to prune agents that were
+// archived or deleted in ValidMind. Manually-created agents (empty
+// vm_organization_cuid) are never touched.
+//
+// If keepCUIDs is empty, all synced agents for the org are removed (the org has
+// no active records of the configured record type).
+func (r *AgentsRepo) DeleteSyncedStaleForOrg(ctx context.Context, orgCUID string, keepCUIDs []string) error {
+	q := r.sb.Delete("agents").Where(sq.Eq{"vm_organization_cuid": orgCUID})
+	if len(keepCUIDs) > 0 {
+		q = q.Where(sq.NotEq{"vm_cuid": keepCUIDs})
+	}
+	query, args, err := q.ToSql()
+	if err != nil {
+		return fmt.Errorf("build stale agent delete: %w", err)
+	}
+	_, err = r.db.ExecContext(ctx, query, args...)
+	return err
+}
+
 // List returns all agent records ordered by vm_name.
 func (r *AgentsRepo) List(ctx context.Context) ([]AgentRecord, error) {
 	return r.list(ctx, r.sb.Select(agentColumns...).From("agents").OrderBy("vm_name ASC"))
