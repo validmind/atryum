@@ -79,6 +79,10 @@ TOKEN_REFRESH_SKEW_SECONDS = int(os.environ.get("ATRYUM_TOKEN_REFRESH_SKEW_SECON
 TOKEN_COMMAND_TIMEOUT_SECONDS = float(
     os.environ.get("ATRYUM_TOKEN_COMMAND_TIMEOUT_SECONDS", "10")
 )
+STATE_DIR = os.environ.get("ATRYUM_STATE_DIR", "") or os.path.join(
+    os.path.expanduser("~"), ".atryum", "fake-agent-state"
+)
+TOKEN_CACHE_FILE = os.path.join(STATE_DIR, "token-cache.json") if TOKEN_COMMAND else ""
 _cached_token = ACCESS_TOKEN
 _cached_token_expires_at = float("inf") if (ACCESS_TOKEN and not TOKEN_COMMAND) else 0.0
 _token_refresh_lock = threading.Lock()
@@ -149,6 +153,33 @@ def _parse_token_response(raw: str) -> tuple[str, float]:
     return str(token), expires_at
 
 
+def _read_token_cache() -> tuple[str, float] | None:
+    if not TOKEN_CACHE_FILE:
+        return None
+    try:
+        with open(TOKEN_CACHE_FILE, encoding="utf-8") as f:
+            cached = json.load(f)
+        token = cached.get("token")
+        expires_at = float(cached.get("expiresAt")) / 1000  # ms, shared with Node caches
+        if token and time.time() < expires_at - TOKEN_REFRESH_SKEW_SECONDS:
+            return str(token), expires_at
+    except (OSError, ValueError, TypeError):
+        pass  # cache miss or unreadable
+    return None
+
+
+def _write_token_cache(token: str, expires_at: float) -> None:
+    if not TOKEN_CACHE_FILE:
+        return
+    try:
+        os.makedirs(os.path.dirname(TOKEN_CACHE_FILE), exist_ok=True)
+        fd = os.open(TOKEN_CACHE_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"token": token, "expiresAt": int(expires_at * 1000)}, f)
+    except OSError:
+        pass  # ignore — in-memory cache still works
+
+
 def _access_token(force_refresh: bool = False) -> str:
     global _cached_token, _cached_token_expires_at
     if not TOKEN_COMMAND:
@@ -166,6 +197,11 @@ def _access_token(force_refresh: bool = False) -> str:
             and time.time() < _cached_token_expires_at - TOKEN_REFRESH_SKEW_SECONDS
         ):
             return _cached_token
+        if not force_refresh:
+            file_cache = _read_token_cache()
+            if file_cache:
+                _cached_token, _cached_token_expires_at = file_cache
+                return _cached_token
         proc = subprocess.run(
             TOKEN_COMMAND,
             shell=True,
@@ -175,6 +211,7 @@ def _access_token(force_refresh: bool = False) -> str:
             timeout=TOKEN_COMMAND_TIMEOUT_SECONDS,
         )
         _cached_token, _cached_token_expires_at = _parse_token_response(proc.stdout)
+        _write_token_cache(_cached_token, _cached_token_expires_at)
         return _cached_token
 
 
