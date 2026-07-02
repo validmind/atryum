@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"log"
@@ -14,7 +15,88 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"atryum/internal/config"
 )
+
+type fakeServerStore struct {
+	upstreams []Upstream
+}
+
+func (s fakeServerStore) GetServer(_ context.Context, name string) (Upstream, error) {
+	for _, upstream := range s.upstreams {
+		if upstream.Name == name && upstream.Enabled {
+			return upstream, nil
+		}
+	}
+	return Upstream{}, sql.ErrNoRows
+}
+
+func (s fakeServerStore) GetServerByEndpointSlug(_ context.Context, slug string) (Upstream, error) {
+	for _, upstream := range s.upstreams {
+		endpointSlug := upstream.EndpointSlug
+		if endpointSlug == "" {
+			endpointSlug = EndpointSlug(upstream.Name)
+		}
+		if endpointSlug == slug && upstream.Enabled {
+			return upstream, nil
+		}
+	}
+	return Upstream{}, sql.ErrNoRows
+}
+
+func (s fakeServerStore) ListServers(_ context.Context, filter ServerFilter) ([]Upstream, int, error) {
+	var out []Upstream
+	for _, upstream := range s.upstreams {
+		if filter.Enabled != nil && upstream.Enabled != *filter.Enabled {
+			continue
+		}
+		out = append(out, upstream)
+	}
+	return out, len(out), nil
+}
+
+func (s fakeServerStore) CountServers(context.Context) (int, error) {
+	return len(s.upstreams), nil
+}
+
+func (s fakeServerStore) CreateServer(context.Context, Upstream) error {
+	return nil
+}
+
+func TestEndpointSlug(t *testing.T) {
+	tests := map[string]string{
+		"Slack Local":    "slack-local",
+		"  GitHub MCP  ": "github-mcp",
+		"Foo_Bar.v1~dev": "foo_bar.v1~dev",
+		"!!!":            "",
+		".":              "",
+		"...":            "",
+	}
+	for input, want := range tests {
+		if got := EndpointSlug(input); got != want {
+			t.Fatalf("EndpointSlug(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestResolverResolvesServerByEndpointSlug(t *testing.T) {
+	resolver := NewResolver(fakeServerStore{upstreams: []Upstream{{
+		Name:         "Slack Local",
+		EndpointSlug: "slack-local-2",
+		Mode:         UpstreamModeHTTP,
+		BaseURL:      "https://mcp.slack.test",
+		Enabled:      true,
+	}}}, config.Config{})
+
+	upstream, err := resolver.ResolveContext(context.Background(), "slack-local-2")
+	if err != nil {
+		t.Fatalf("ResolveContext: %v", err)
+	}
+	if upstream.Name != "Slack Local" {
+		t.Fatalf("resolved name = %q, want Slack Local", upstream.Name)
+	}
+}
 
 func TestConnectionDebugLogsHTTPProbeWithoutSecrets(t *testing.T) {
 	var logs bytes.Buffer

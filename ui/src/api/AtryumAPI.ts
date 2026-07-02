@@ -6,6 +6,30 @@ export const atryumApi = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
+export const apiErrorMessage = (err: unknown, fallback: string): string => {
+  if (typeof err === 'object' && err !== null && 'response' in err) {
+    const data = (err as {
+      response?: { data?: { error?: string | { message?: unknown } } };
+    }).response?.data;
+    const apiError = data?.error;
+    if (typeof apiError === 'string' && apiError) return apiError;
+    if (
+      typeof apiError === 'object' &&
+      apiError !== null &&
+      typeof apiError.message === 'string' &&
+      apiError.message
+    ) {
+      return apiError.message;
+    }
+  }
+  if (err instanceof Error && err.message) return err.message;
+  if (typeof err === 'object' && err !== null && 'message' in err) {
+    const msg = (err as { message: unknown }).message;
+    if (typeof msg === 'string' && msg) return msg;
+  }
+  return fallback;
+};
+
 type RetryableRequestConfig = InternalAxiosRequestConfig & {
   _atryumAuthRetried?: boolean;
 };
@@ -180,6 +204,8 @@ export interface AuthHeader {
 
 export interface Server {
   name: string;
+  endpoint_slug: string;
+  endpoint_url?: string;
   mode: ServerMode;
   connection_status: ConnectionStatus;
   auth_status: AuthStatus;

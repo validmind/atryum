@@ -50,7 +50,7 @@ import { useServers } from '../hooks/useServers';
 import { useAgents } from '../hooks/useAgents';
 import { useSettings } from '../hooks/useSettings';
 import { useLLMConfigs } from '../hooks/useLLMConfigs';
-import { type Agent, type LLMConfig, type Rule, type RuleAction, type RuleInput, modelConfigsApi } from '../api/AtryumAPI';
+import { type Agent, type LLMConfig, type Rule, type RuleAction, type RuleInput, apiErrorMessage, modelConfigsApi } from '../api/AtryumAPI';
 
 const ACTION_COLOR: Record<RuleAction, string> = {
   auto_approve: 'green',
@@ -108,15 +108,6 @@ const fromOptions = (opts: readonly SelectOption[]): string[] =>
 const formatCreateLabel = (input: string): string => `Add "${input}"`;
 const patternLabel = (patterns: string[]): string =>
   patterns.length === 0 ? 'all' : patterns.join(', ');
-
-const errorMessage = (err: unknown, fallback: string): string => {
-  if (err instanceof Error) return err.message;
-  if (typeof err === 'object' && err !== null && 'message' in err) {
-    const msg = (err as { message: unknown }).message;
-    if (typeof msg === 'string') return msg;
-  }
-  return fallback;
-};
 
 const stopPropagation = (e: React.MouseEvent): void => e.stopPropagation();
 
@@ -329,7 +320,7 @@ const Rules: React.FC = () => {
         handleClose();
       }
     } catch (err: unknown) {
-      setStatusMsg({ text: errorMessage(err, 'Save failed.'), isError: true });
+      setStatusMsg({ text: apiErrorMessage(err, 'Save failed.'), isError: true });
     }
   }, [createRule, form, handleClose, isCreating, selectedId, updateRule]);
 
@@ -340,7 +331,7 @@ const Rules: React.FC = () => {
       await removeRule.mutateAsync(selectedId);
       handleClose();
     } catch (err: unknown) {
-      setStatusMsg({ text: errorMessage(err, 'Delete failed.'), isError: true });
+      setStatusMsg({ text: apiErrorMessage(err, 'Delete failed.'), isError: true });
     }
   }, [handleClose, removeRule, selectedId]);
 

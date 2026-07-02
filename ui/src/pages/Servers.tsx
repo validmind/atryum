@@ -54,6 +54,7 @@ import {
   type Server,
   type ServerInput,
   type ServerMode,
+  apiErrorMessage,
 } from '../api/AtryumAPI';
 
 const CONNECTION_COLOR: Record<ConnectionStatus, string> = {
@@ -88,15 +89,6 @@ const EMPTY_FORM: ServerInput = {
   oauth_scopes: '',
 };
 
-const errorMessage = (err: unknown, fallback: string): string => {
-  if (err instanceof Error) return err.message;
-  if (typeof err === 'object' && err !== null && 'message' in err) {
-    const msg = (err as { message: unknown }).message;
-    if (typeof msg === 'string') return msg;
-  }
-  return fallback;
-};
-
 const serverToInput = (s: Server): ServerInput => ({
   name: s.name,
   mode: s.mode,
@@ -114,6 +106,14 @@ const serverToInput = (s: Server): ServerInput => ({
   oauth_token_url: s.oauth_token_url ?? '',
   oauth_scopes: s.oauth_scopes ?? '',
 });
+
+const endpointLabel = (server: Server): string => {
+  const endpoint = server.endpoint_url || (server.endpoint_slug ? `/mcp/${server.endpoint_slug}` : '');
+  if (endpoint.startsWith('/') && typeof window !== 'undefined') {
+    return `${window.location.origin}${endpoint}`;
+  }
+  return endpoint;
+};
 
 const Servers: React.FC = () => {
   const [showDisabled, setShowDisabled] = useState(true);
@@ -216,13 +216,25 @@ const Servers: React.FC = () => {
         const saved = await createServer.mutateAsync(payload);
         setSelectedName(saved.name);
         setIsCreating(false);
-        setStatusMsg({ text: `Created server "${saved.name}".`, isError: false });
+        const endpoint = endpointLabel(saved);
+        setStatusMsg({
+          text: endpoint
+            ? `Created server "${saved.name}". MCP endpoint: ${endpoint}`
+            : `Created server "${saved.name}".`,
+          isError: false,
+        });
       } else {
         const saved = await updateServer.mutateAsync({ name: selectedName!, input: payload });
-        setStatusMsg({ text: `Saved server "${saved.name}".`, isError: false });
+        const endpoint = endpointLabel(saved);
+        setStatusMsg({
+          text: endpoint
+            ? `Saved server "${saved.name}". MCP endpoint: ${endpoint}`
+            : `Saved server "${saved.name}".`,
+          isError: false,
+        });
       }
     } catch (err: unknown) {
-      setStatusMsg({ text: errorMessage(err, 'Save failed.'), isError: true });
+      setStatusMsg({ text: apiErrorMessage(err, 'Save failed.'), isError: true });
     }
   };
 
@@ -232,7 +244,7 @@ const Servers: React.FC = () => {
       const result = await testServer.mutateAsync(selectedName);
       setStatusMsg({ text: result.message, isError: !result.ok });
     } catch (err: unknown) {
-      setStatusMsg({ text: errorMessage(err, 'Test failed.'), isError: true });
+      setStatusMsg({ text: apiErrorMessage(err, 'Test failed.'), isError: true });
     }
   };
 
@@ -251,7 +263,7 @@ const Servers: React.FC = () => {
         setForm((f) => ({ ...f, enabled: true }));
       }
     } catch (err: unknown) {
-      setStatusMsg({ text: errorMessage(err, 'Toggle failed.'), isError: true });
+      setStatusMsg({ text: apiErrorMessage(err, 'Toggle failed.'), isError: true });
     }
   };
 
@@ -263,7 +275,7 @@ const Servers: React.FC = () => {
       setConnectPolling(true);
       setStatusMsg({ text: 'OAuth flow opened — waiting for completion…', isError: false });
     } catch (err: unknown) {
-      setStatusMsg({ text: errorMessage(err, 'Connect failed.'), isError: true });
+      setStatusMsg({ text: apiErrorMessage(err, 'Connect failed.'), isError: true });
     }
   };
 
@@ -276,7 +288,7 @@ const Servers: React.FC = () => {
       setSelectedName(null);
       setIsCreating(false);
     } catch (err: unknown) {
-      setStatusMsg({ text: errorMessage(err, 'Delete failed.'), isError: true });
+      setStatusMsg({ text: apiErrorMessage(err, 'Delete failed.'), isError: true });
     }
   };
 
@@ -458,6 +470,18 @@ const Servers: React.FC = () => {
                       onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
                     />
                   </FormControl>
+
+                  {currentServer && endpointLabel(currentServer) && (
+                    <FormControl>
+                      <FormLabel fontSize="sm">MCP Endpoint</FormLabel>
+                      <Input
+                        size="sm"
+                        fontFamily="mono"
+                        value={endpointLabel(currentServer)}
+                        isReadOnly
+                      />
+                    </FormControl>
+                  )}
 
                   <FormControl isRequired>
                     <FormLabel fontSize="sm">Mode</FormLabel>
