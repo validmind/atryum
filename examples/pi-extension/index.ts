@@ -1,5 +1,13 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { exec } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import { promisify } from "node:util";
+
+const execAsync = promisify(exec);
 
 const API = process.env.ATRYUM_URL || "http://localhost:8080";
 const SOURCE = process.env.ATRYUM_SOURCE || "pi";
@@ -8,18 +16,173 @@ const CLIENT_NAME = process.env.ATRYUM_CLIENT_NAME || SOURCE;
 const CLIENT_VERSION =
   process.env.ATRYUM_CLIENT_VERSION || process.env.PI_VERSION || "";
 const CHAT_MESSAGES_LIMIT = Number(
-  process.env.ATRYUM_CHAT_MESSAGES_LIMIT || 100
+  process.env.ATRYUM_CHAT_MESSAGES_LIMIT || 100,
 );
 // Self-declared agent identity. Atryum resolves the Agent Record via the
 // agents.agent_ids array. Not authenticated; for verified identity use OAuth.
 const AGENT_ID = process.env.ATRYUM_AGENT_ID || "";
 const ACCESS_TOKEN = process.env.ATRYUM_ACCESS_TOKEN || "";
+const TOKEN_COMMAND = process.env.ATRYUM_TOKEN_COMMAND || "";
+const TOKEN_REFRESH_SKEW_MS = Number(
+  process.env.ATRYUM_TOKEN_REFRESH_SKEW_MS || 60000,
+);
+const STATE_DIR =
+  process.env.ATRYUM_STATE_DIR ||
+  join(homedir(), ".atryum", "pi-extension-state");
+const TOKEN_CACHE_FILE = TOKEN_COMMAND
+  ? join(STATE_DIR, "token-cache.json")
+  : "";
+// Ties the cached token to the command and server that produced it, so
+// switching ATRYUM_TOKEN_COMMAND or ATRYUM_URL invalidates the cache instead
+// of sending a token minted for a different identity or target.
+const TOKEN_CACHE_KEY = TOKEN_COMMAND
+  ? createHash("sha256").update(`${TOKEN_COMMAND}\n${API}`).digest("hex")
+  : "";
+let cachedToken = ACCESS_TOKEN;
+let cachedTokenExpiresAt = ACCESS_TOKEN && !TOKEN_COMMAND ? Number.POSITIVE_INFINITY : 0;
+let refreshPromise: Promise<string> | null = null;
 
-function atryumHeaders(contentType = false): Record<string, string> {
+function parseTokenResponse(raw: string): {
+  accessToken: string;
+  expiresAt: number;
+} {
+  const text = raw.trim();
+  if (!text) throw new Error("token command returned no token");
+  if (!text.startsWith("{")) {
+    return { accessToken: text, expiresAt: Date.now() + 55 * 60 * 1000 };
+  }
+  const parsed = JSON.parse(text) as Record<string, unknown>;
+  const accessToken = firstString(parsed, [
+    "access_token",
+    "accessToken",
+    "token",
+  ]);
+  if (!accessToken) {
+    throw new Error("token command response did not include access_token");
+  }
+  const toMs = (s: number) => (s > 1e11 ? s : s * 1000);
+  const expiresAt =
+    typeof parsed.expires_at === "number"
+      ? toMs(parsed.expires_at)
+      : typeof parsed.expiresAt === "number"
+        ? toMs(parsed.expiresAt)
+        : typeof parsed.expires_in === "number"
+          ? Date.now() + parsed.expires_in * 1000
+          : Date.now() + 55 * 60 * 1000;
+  return { accessToken, expiresAt };
+}
+
+async function readTokenCache(): Promise<{
+  token: string;
+  expiresAt: number;
+} | null> {
+  if (!TOKEN_CACHE_FILE) return null;
+  try {
+    const raw = await readFile(TOKEN_CACHE_FILE, "utf8");
+    const { token, expiresAt, key } = JSON.parse(raw) as {
+      token?: unknown;
+      expiresAt?: unknown;
+      key?: unknown;
+    };
+    if (
+      typeof token === "string" &&
+      token &&
+      typeof expiresAt === "number" &&
+      key === TOKEN_CACHE_KEY &&
+      Date.now() < expiresAt - TOKEN_REFRESH_SKEW_MS
+    ) {
+      return { token, expiresAt };
+    }
+  } catch {
+    // cache miss or unreadable
+  }
+  return null;
+}
+
+async function writeTokenCache(token: string, expiresAt: number) {
+  if (!TOKEN_CACHE_FILE) return;
+  try {
+    await mkdir(dirname(TOKEN_CACHE_FILE), { recursive: true });
+    // Write to a fresh temp file so mode 0o600 applies (it is ignored on
+    // existing files), then rename into place atomically.
+    const tmp = `${TOKEN_CACHE_FILE}.${process.pid}.tmp`;
+    await writeFile(
+      tmp,
+      JSON.stringify({ token, expiresAt, key: TOKEN_CACHE_KEY }),
+      { encoding: "utf8", mode: 0o600 },
+    );
+    await rename(tmp, TOKEN_CACHE_FILE);
+  } catch {
+    // ignore — in-memory cache still works
+  }
+}
+
+async function refreshAccessToken(useFileCache: boolean): Promise<string> {
+  if (useFileCache) {
+    const fileCache = await readTokenCache();
+    if (fileCache) {
+      cachedToken = fileCache.token;
+      cachedTokenExpiresAt = fileCache.expiresAt;
+      return cachedToken;
+    }
+  }
+  const { stdout } = await execAsync(TOKEN_COMMAND, {
+    timeout: Number(process.env.ATRYUM_TOKEN_COMMAND_TIMEOUT_MS || 10000),
+    maxBuffer: 1024 * 1024,
+  });
+  const token = parseTokenResponse(stdout);
+  cachedToken = token.accessToken;
+  cachedTokenExpiresAt = token.expiresAt;
+  await writeTokenCache(cachedToken, cachedTokenExpiresAt);
+  return cachedToken;
+}
+
+async function accessToken(forceRefresh = false): Promise<string> {
+  if (!TOKEN_COMMAND) return ACCESS_TOKEN;
+  if (
+    !forceRefresh &&
+    cachedToken &&
+    Date.now() < cachedTokenExpiresAt - TOKEN_REFRESH_SKEW_MS
+  ) {
+    return cachedToken;
+  }
+  if (!forceRefresh && refreshPromise) return refreshPromise;
+  const p = refreshAccessToken(!forceRefresh).finally(() => {
+    if (refreshPromise === p) refreshPromise = null;
+  });
+  if (!forceRefresh) refreshPromise = p;
+  return p;
+}
+
+async function atryumHeaders(
+  contentType = false,
+  forceRefresh = false,
+): Promise<Record<string, string>> {
   const headers: Record<string, string> = {};
   if (contentType) headers["Content-Type"] = "application/json";
-  if (ACCESS_TOKEN) headers.Authorization = `Bearer ${ACCESS_TOKEN}`;
+  const token = await accessToken(forceRefresh);
+  if (token) headers.Authorization = `Bearer ${token}`;
   return headers;
+}
+
+async function atryumFetch(
+  url: string,
+  options: RequestInit & { contentType?: boolean } = {},
+): Promise<Response> {
+  const { contentType = false, ...init } = options;
+  init.headers = {
+    ...(await atryumHeaders(contentType)),
+    ...((options.headers as Record<string, string> | undefined) || {}),
+  };
+  let res = await fetch(url, init);
+  if (res.status === 401 && TOKEN_COMMAND) {
+    init.headers = {
+      ...(await atryumHeaders(contentType, true)),
+      ...((options.headers as Record<string, string> | undefined) || {}),
+    };
+    res = await fetch(url, init);
+  }
+  return res;
 }
 
 type InvocationStatus =
@@ -76,8 +239,7 @@ function sessionID(ctx: unknown): string | undefined {
 
 function sessionFile(ctx: unknown): string | undefined {
   const manager = (ctx as { sessionManager?: unknown }).sessionManager as
-    | { getSessionFile?: () => string }
-    | undefined;
+    { getSessionFile?: () => string } | undefined;
   if (!manager || typeof manager.getSessionFile !== "function") {
     return undefined;
   }
@@ -89,7 +251,7 @@ function sessionFile(ctx: unknown): string | undefined {
 }
 
 function chatContext(
-  ctx: unknown
+  ctx: unknown,
 ): { context: string; count: number } | undefined {
   if (CHAT_MESSAGES_LIMIT <= 0) return undefined;
   const messages = recentChatMessages(ctx, CHAT_MESSAGES_LIMIT);
@@ -114,7 +276,7 @@ function recentChatMessages(ctx: unknown, limit: number): ChatMessage[] {
 
 function recentChatMessagesFromSessionManager(
   ctx: unknown,
-  limit: number
+  limit: number,
 ): ChatMessage[] {
   const manager = (ctx as { sessionManager?: unknown }).sessionManager as
     | {
@@ -135,7 +297,9 @@ function recentChatMessagesFromSessionManager(
         ? (record.message as Record<string, unknown>)
         : undefined;
     if (!message) continue;
-    const role = normalizeRole(firstString(message, ["role", "sender", "author"]));
+    const role = normalizeRole(
+      firstString(message, ["role", "sender", "author"]),
+    );
     const text = extractText(message);
     if (role && text) {
       messages.push({ role, text });
@@ -145,7 +309,10 @@ function recentChatMessagesFromSessionManager(
   return messages.slice(-limit);
 }
 
-function recentChatMessagesFromFile(file: string, limit: number): ChatMessage[] {
+function recentChatMessagesFromFile(
+  file: string,
+  limit: number,
+): ChatMessage[] {
   try {
     const raw = readFileSync(file, "utf8");
     const messages: ChatMessage[] = [];
@@ -230,7 +397,7 @@ function textFromValue(value: unknown): string | undefined {
 
 function firstString(
   record: Record<string, unknown>,
-  keys: string[]
+  keys: string[],
 ): string | undefined {
   for (const key of keys) {
     if (typeof record[key] === "string") return record[key] as string;
@@ -243,11 +410,11 @@ async function submit(
   toolCallID: string,
   input: ToolInput,
   threadID: string | undefined,
-  chat: { context: string; count: number } | undefined
+  chat: { context: string; count: number } | undefined,
 ): Promise<InvocationResponse> {
-  const res = await fetch(`${API}/api/v1/external/invocations`, {
+  const res = await atryumFetch(`${API}/api/v1/external/invocations`, {
     method: "POST",
-    headers: atryumHeaders(true),
+    contentType: true,
     body: JSON.stringify({
       source: SOURCE,
       tool,
@@ -271,9 +438,9 @@ async function submit(
 
 async function poll(invocationID: string): Promise<InvocationResponse> {
   while (true) {
-    const res = await fetch(
+    const res = await atryumFetch(
       `${API}/api/v1/external/invocations/${invocationID}`,
-      { headers: atryumHeaders() }
+      {},
     );
     if (!res.ok) {
       throw new Error(`atryum poll failed: ${res.status} ${await res.text()}`);
@@ -297,13 +464,16 @@ async function patchExecution(
     result?: unknown;
     error?: unknown;
     message?: string;
-  }
+  },
 ): Promise<void> {
-  const res = await fetch(`${API}/api/v1/external/invocations/${invocationID}`, {
-    method: "PATCH",
-    headers: atryumHeaders(true),
-    body: JSON.stringify(body),
-  });
+  const res = await atryumFetch(
+    `${API}/api/v1/external/invocations/${invocationID}`,
+    {
+      method: "PATCH",
+      contentType: true,
+      body: JSON.stringify(body),
+    },
+  );
   if (!res.ok) {
     throw new Error(`atryum patch failed: ${res.status} ${await res.text()}`);
   }
@@ -319,7 +489,7 @@ export default function (pi: ExtensionAPI) {
         event.toolCallId,
         input,
         sessionID(ctx),
-        chat
+        chat,
       );
       invocationMap.set(event.toolCallId, submitted.invocation_id);
 
