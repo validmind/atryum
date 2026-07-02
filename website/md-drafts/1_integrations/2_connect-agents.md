@@ -101,7 +101,7 @@ Use these variables for hook and extension integrations. MCP proxy clients do no
     export ATRYUM_ACCESS_TOKEN=<oauth-access-token>
     ```
 
-    Use this when Atryum has one or more `[[auth]]` blocks configured. The integration sends it as an `Authorization: Bearer ...` header to the external invocation API. In auth mode, Atryum derives agent identity from the token and ignores `ATRYUM_AGENT_ID`. For short-lived tokens, set `ATRYUM_TOKEN_COMMAND` to a command that prints a raw token or OAuth token JSON such as `{"access_token":"...","expires_in":3600}` (`expires_in` is relative seconds; `expires_at` as an absolute Unix timestamp in seconds or milliseconds is also accepted); the shared hook, Amp plugin, and Pi extension cache that token in memory and on disk (`token-cache.json` under their state directory, `ATRYUM_STATE_DIR`, written with mode 0600) and retry once after a `401`.
+    Use this when Atryum has one or more `[[auth]]` blocks configured. The integration sends it as an `Authorization: Bearer ...` header to the external invocation API. In auth mode, Atryum derives agent identity from the token and ignores `ATRYUM_AGENT_ID`. For short-lived tokens, set `ATRYUM_TOKEN_COMMAND` to a command that prints a raw token or OAuth token JSON such as `{"access_token":"...","expires_in":3600}` (`expires_in` is relative seconds; `expires_at` as an absolute Unix timestamp in seconds or milliseconds is also accepted); the shared hook, Amp plugin, and Pi extension cache that token in memory and on disk (`token-cache.json` under their state directory, `ATRYUM_STATE_DIR`, written with mode 0600 and keyed to the token command and server URL) and retry once after a `401`.
 
 5. (Optional) Export these variables to label the agent in Atryum:
 

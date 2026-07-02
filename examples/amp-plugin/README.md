@@ -147,7 +147,8 @@ The `expires_in` field is relative seconds; `expires_at` (absolute Unix
 timestamp in seconds or milliseconds) is also accepted.
 The plugin caches the token until near expiry — in memory and on disk at
 `$ATRYUM_STATE_DIR/token-cache.json` (mode 0600) so restarts reuse it — and
-retries once with a fresh token after a `401`.
+retries once with a fresh token after a `401`. The disk cache is keyed to
+`ATRYUM_TOKEN_COMMAND` and `ATRYUM_URL`, so changing either invalidates it.
 
 ## API used
 

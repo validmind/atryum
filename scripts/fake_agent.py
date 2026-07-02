@@ -53,6 +53,7 @@ Config (env or flags):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import random
@@ -83,6 +84,14 @@ STATE_DIR = os.environ.get("ATRYUM_STATE_DIR", "") or os.path.join(
     os.path.expanduser("~"), ".atryum", "fake-agent-state"
 )
 TOKEN_CACHE_FILE = os.path.join(STATE_DIR, "token-cache.json") if TOKEN_COMMAND else ""
+# Ties the cached token to the command and server that produced it, so
+# switching ATRYUM_TOKEN_COMMAND or ATRYUM_URL invalidates the cache instead
+# of sending a token minted for a different identity or target.
+TOKEN_CACHE_KEY = (
+    hashlib.sha256(f"{TOKEN_COMMAND}\n{DEFAULT_URL}".encode()).hexdigest()
+    if TOKEN_COMMAND
+    else ""
+)
 _cached_token = ACCESS_TOKEN
 _cached_token_expires_at = float("inf") if (ACCESS_TOKEN and not TOKEN_COMMAND) else 0.0
 _token_refresh_lock = threading.Lock()
@@ -161,7 +170,11 @@ def _read_token_cache() -> tuple[str, float] | None:
             cached = json.load(f)
         token = cached.get("token")
         expires_at = float(cached.get("expiresAt")) / 1000  # ms, shared with Node caches
-        if token and time.time() < expires_at - TOKEN_REFRESH_SKEW_SECONDS:
+        if (
+            token
+            and cached.get("key") == TOKEN_CACHE_KEY
+            and time.time() < expires_at - TOKEN_REFRESH_SKEW_SECONDS
+        ):
             return str(token), expires_at
     except (OSError, ValueError, TypeError):
         pass  # cache miss or unreadable
@@ -173,9 +186,16 @@ def _write_token_cache(token: str, expires_at: float) -> None:
         return
     try:
         os.makedirs(os.path.dirname(TOKEN_CACHE_FILE), exist_ok=True)
-        fd = os.open(TOKEN_CACHE_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        # Write to a fresh temp file so 0o600 applies (an existing file keeps
+        # its old mode), then rename into place atomically.
+        tmp = f"{TOKEN_CACHE_FILE}.{os.getpid()}.tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"token": token, "expiresAt": int(expires_at * 1000)}, f)
+            json.dump(
+                {"token": token, "expiresAt": int(expires_at * 1000), "key": TOKEN_CACHE_KEY},
+                f,
+            )
+        os.replace(tmp, TOKEN_CACHE_FILE)
     except OSError:
         pass  # ignore — in-memory cache still works
 
