@@ -16,7 +16,7 @@
 
 import { createHash } from "node:crypto";
 import { exec } from "node:child_process";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -58,6 +58,12 @@ const TOKEN_REFRESH_SKEW_MS = Number(
 const TOKEN_CACHE_FILE = TOKEN_COMMAND
   ? path.join(STATE_DIR, "token-cache.json")
   : "";
+// Ties the cached token to the command and server that produced it, so
+// switching ATRYUM_TOKEN_COMMAND or ATRYUM_URL invalidates the cache instead
+// of sending a token minted for a different identity or target.
+const TOKEN_CACHE_KEY = TOKEN_COMMAND
+  ? createHash("sha256").update(`${TOKEN_COMMAND}\n${API}`).digest("hex")
+  : "";
 let cachedToken = ACCESS_TOKEN;
 let cachedTokenExpiresAt = ACCESS_TOKEN && !TOKEN_COMMAND ? Number.POSITIVE_INFINITY : 0;
 
@@ -86,8 +92,13 @@ async function readTokenCache() {
   if (!TOKEN_CACHE_FILE) return null;
   try {
     const raw = await readFile(TOKEN_CACHE_FILE, "utf8");
-    const { token, expiresAt } = JSON.parse(raw);
-    if (token && typeof expiresAt === "number" && Date.now() < expiresAt - TOKEN_REFRESH_SKEW_MS) {
+    const { token, expiresAt, key } = JSON.parse(raw);
+    if (
+      token &&
+      typeof expiresAt === "number" &&
+      key === TOKEN_CACHE_KEY &&
+      Date.now() < expiresAt - TOKEN_REFRESH_SKEW_MS
+    ) {
       return { token, expiresAt };
     }
   } catch {
@@ -100,10 +111,15 @@ async function writeTokenCache(token, expiresAt) {
   if (!TOKEN_CACHE_FILE) return;
   try {
     await mkdir(path.dirname(TOKEN_CACHE_FILE), { recursive: true });
-    await writeFile(TOKEN_CACHE_FILE, JSON.stringify({ token, expiresAt }), {
-      encoding: "utf8",
-      mode: 0o600,
-    });
+    // Write to a fresh temp file so mode 0o600 applies (it is ignored on
+    // existing files), then rename into place atomically.
+    const tmp = `${TOKEN_CACHE_FILE}.${process.pid}.tmp`;
+    await writeFile(
+      tmp,
+      JSON.stringify({ token, expiresAt, key: TOKEN_CACHE_KEY }),
+      { encoding: "utf8", mode: 0o600 },
+    );
+    await rename(tmp, TOKEN_CACHE_FILE);
   } catch {
     // ignore — in-memory cache still works
   }
