@@ -84,6 +84,7 @@ To remove the global extension later:
 | `ATRYUM_TOKEN_COMMAND`            | _(empty)_ | optional command that prints a fresh token or OAuth token JSON with `access_token` |
 | `ATRYUM_TOKEN_REFRESH_SKEW_MS`   | `60000`   | refresh command cache skew before token expiry                                     |
 | `ATRYUM_TOKEN_COMMAND_TIMEOUT_MS` | `10000`   | timeout for the token command subprocess                                           |
+| `ATRYUM_STATE_DIR`             | `~/.atryum/pi-extension-state` | directory for the on-disk token cache (`token-cache.json`, mode 0600)       |
 | `ATRYUM_CHAT_MESSAGES_LIMIT`   | `100`                   | recent Pi session chat messages sent as LLM-as-judge context                       |
 
 ## LLM-as-judge chat context
@@ -131,8 +132,9 @@ For short-lived tokens, set `ATRYUM_TOKEN_COMMAND` instead. The command may
 print a raw token or JSON such as `{"access_token":"...","expires_in":3600}`.
 The `expires_in` field is relative seconds; `expires_at` (absolute Unix
 timestamp in seconds or milliseconds) is also accepted.
-The extension caches the token until near expiry and retries once with a fresh
-token after a `401`.
+The extension caches the token until near expiry — in memory and on disk at
+`$ATRYUM_STATE_DIR/token-cache.json` (mode 0600) so restarts reuse it — and
+retries once with a fresh token after a `401`.
 
 ## API used
 
