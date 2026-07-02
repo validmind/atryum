@@ -32,8 +32,9 @@
 import type { PluginAPI } from "@ampcode/plugin";
 import { exec } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
@@ -75,6 +76,12 @@ const TOKEN_COMMAND = process.env.ATRYUM_TOKEN_COMMAND || "";
 const TOKEN_REFRESH_SKEW_MS = Number(
   process.env.ATRYUM_TOKEN_REFRESH_SKEW_MS || 60000,
 );
+const STATE_DIR =
+  process.env.ATRYUM_STATE_DIR ||
+  join(homedir(), ".atryum", "amp-plugin-state");
+const TOKEN_CACHE_FILE = TOKEN_COMMAND
+  ? join(STATE_DIR, "token-cache.json")
+  : "";
 let cachedToken = ACCESS_TOKEN;
 let cachedTokenExpiresAt = ACCESS_TOKEN && !TOKEN_COMMAND ? Number.POSITIVE_INFINITY : 0;
 let refreshPromise: Promise<string> | null = null;
@@ -112,6 +119,64 @@ function parseTokenResponse(raw: string): {
   return { accessToken, expiresAt };
 }
 
+async function readTokenCache(): Promise<{
+  token: string;
+  expiresAt: number;
+} | null> {
+  if (!TOKEN_CACHE_FILE) return null;
+  try {
+    const raw = await readFile(TOKEN_CACHE_FILE, "utf8");
+    const { token, expiresAt } = JSON.parse(raw) as {
+      token?: unknown;
+      expiresAt?: unknown;
+    };
+    if (
+      typeof token === "string" &&
+      token &&
+      typeof expiresAt === "number" &&
+      Date.now() < expiresAt - TOKEN_REFRESH_SKEW_MS
+    ) {
+      return { token, expiresAt };
+    }
+  } catch {
+    // cache miss or unreadable
+  }
+  return null;
+}
+
+async function writeTokenCache(token: string, expiresAt: number) {
+  if (!TOKEN_CACHE_FILE) return;
+  try {
+    await mkdir(dirname(TOKEN_CACHE_FILE), { recursive: true });
+    await writeFile(TOKEN_CACHE_FILE, JSON.stringify({ token, expiresAt }), {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+  } catch {
+    // ignore — in-memory cache still works
+  }
+}
+
+async function refreshAccessToken(useFileCache: boolean): Promise<string> {
+  if (useFileCache) {
+    const fileCache = await readTokenCache();
+    if (fileCache) {
+      cachedToken = fileCache.token;
+      cachedTokenExpiresAt = fileCache.expiresAt;
+      return cachedToken;
+    }
+  }
+  const { stdout } = await execAsync(TOKEN_COMMAND, {
+    timeout: Number(process.env.ATRYUM_TOKEN_COMMAND_TIMEOUT_MS || 10000),
+    maxBuffer: 1024 * 1024,
+  });
+  const token = parseTokenResponse(stdout);
+  cachedToken = token.accessToken;
+  cachedTokenExpiresAt = token.expiresAt;
+  await writeTokenCache(cachedToken, cachedTokenExpiresAt);
+  return cachedToken;
+}
+
 async function accessToken(forceRefresh = false): Promise<string> {
   if (!TOKEN_COMMAND) return ACCESS_TOKEN;
   if (
@@ -122,19 +187,9 @@ async function accessToken(forceRefresh = false): Promise<string> {
     return cachedToken;
   }
   if (!forceRefresh && refreshPromise) return refreshPromise;
-  const p = execAsync(TOKEN_COMMAND, {
-    timeout: Number(process.env.ATRYUM_TOKEN_COMMAND_TIMEOUT_MS || 10000),
-    maxBuffer: 1024 * 1024,
-  })
-    .then(({ stdout }) => {
-      const token = parseTokenResponse(stdout);
-      cachedToken = token.accessToken;
-      cachedTokenExpiresAt = token.expiresAt;
-      return cachedToken;
-    })
-    .finally(() => {
-      if (refreshPromise === p) refreshPromise = null;
-    });
+  const p = refreshAccessToken(!forceRefresh).finally(() => {
+    if (refreshPromise === p) refreshPromise = null;
+  });
   if (!forceRefresh) refreshPromise = p;
   return p;
 }

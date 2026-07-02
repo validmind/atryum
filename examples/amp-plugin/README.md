@@ -90,6 +90,7 @@ To remove the global plugin later:
 | `ATRYUM_TOKEN_COMMAND`            | _(empty)_ | optional command that prints a fresh token or OAuth token JSON with `access_token`   |
 | `ATRYUM_TOKEN_REFRESH_SKEW_MS`   | `60000`   | refresh command cache skew before token expiry                                       |
 | `ATRYUM_TOKEN_COMMAND_TIMEOUT_MS` | `10000`   | timeout for the token command subprocess                                             |
+| `ATRYUM_STATE_DIR`             | `~/.atryum/amp-plugin-state`      | directory for the on-disk token cache (`token-cache.json`, mode 0600)                |
 | `ATRYUM_CHAT_MESSAGES_LIMIT`   | `100`                             | recent Amp thread messages sent as LLM-as-judge context                              |
 | `ATRYUM_AMP_THREADS_DIR`       | `~/.local/share/amp/threads`      | Amp thread JSON directory                                                            |
 | `ATRYUM_AMP_SESSION_FILE`      | `~/.local/share/amp/session.json` | Amp session state file used to identify the active thread                            |
@@ -144,8 +145,9 @@ For short-lived tokens, set `ATRYUM_TOKEN_COMMAND` instead. The command may
 print a raw token or JSON such as `{"access_token":"...","expires_in":3600}`.
 The `expires_in` field is relative seconds; `expires_at` (absolute Unix
 timestamp in seconds or milliseconds) is also accepted.
-The plugin caches the token until near expiry and retries once with a fresh
-token after a `401`.
+The plugin caches the token until near expiry — in memory and on disk at
+`$ATRYUM_STATE_DIR/token-cache.json` (mode 0600) so restarts reuse it — and
+retries once with a fresh token after a `401`.
 
 ## API used
 
