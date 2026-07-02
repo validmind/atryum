@@ -766,7 +766,7 @@ func (h *Handler) Routes() http.Handler {
 		mux.Handle("/.well-known/oauth-protected-resource", h.protectedResourceMetadata())
 	}
 	mcpHandler := h.agentRuntimeHandler(http.HandlerFunc(h.invokeUpstream))
-	adminAuthMW := auth.AdminMiddleware(h.authValidator, auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})
+	adminAuthMW := auth.AdminMiddleware(h.authValidator, h.apiKeyAuth, auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})
 	admin := func(fn http.HandlerFunc) http.Handler {
 		return adminAuthMW(fn)
 	}

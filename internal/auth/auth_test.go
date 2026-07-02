@@ -721,7 +721,7 @@ func TestAdminMiddlewareLogsMissingToken(t *testing.T) {
 	t.Cleanup(func() { log.SetOutput(origWriter) })
 
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
-	h := AdminMiddleware(v, MiddlewareOptions{})(next)
+	h := AdminMiddleware(v, APIKeyConfig{}, MiddlewareOptions{})(next)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -747,7 +747,7 @@ func TestAdminMiddlewareLogsInvalidScheme(t *testing.T) {
 	t.Cleanup(func() { log.SetOutput(origWriter) })
 
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
-	h := AdminMiddleware(v, MiddlewareOptions{})(next)
+	h := AdminMiddleware(v, APIKeyConfig{}, MiddlewareOptions{})(next)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)
 	req.Header.Set("Authorization", "Basic abc")
 	w := httptest.NewRecorder()
@@ -762,6 +762,40 @@ func TestAdminMiddlewareLogsInvalidScheme(t *testing.T) {
 	}
 	if strings.Contains(got, "Basic abc") {
 		t.Fatal("auth log should not include Authorization header")
+	}
+}
+
+func TestAdminMiddlewareMachineKeyBypassesBearer(t *testing.T) {
+	idp := newTestIdP(t)
+	v := newValidatorForIdP(t, idp, func(c *Config) {
+		c.AdminEnabled = true
+		c.AdminClientID = "admin-client"
+	})
+	apiKeyCfg := APIKeyConfig{Key: "vm-key", Secret: "vm-secret"}
+
+	admitted := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { admitted = true })
+	h := AdminMiddleware(v, apiKeyCfg, MiddlewareOptions{})(next)
+
+	// Correct machine key/secret — should be admitted without a Bearer token.
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)
+	req.Header.Set("X-API-Key", "vm-key")
+	req.Header.Set("X-API-Secret", "vm-secret")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !admitted {
+		t.Fatalf("expected 200 with valid machine keys, got %d admitted=%v", w.Code, admitted)
+	}
+
+	// Wrong secret — should be rejected.
+	admitted = false
+	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)
+	req2.Header.Set("X-API-Key", "vm-key")
+	req2.Header.Set("X-API-Secret", "wrong-secret")
+	w2 := httptest.NewRecorder()
+	h.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with wrong machine secret, got %d", w2.Code)
 	}
 }
 
