@@ -46,6 +46,9 @@ type stubService struct {
 	recordID   string
 	recordReq  *invocation.ExternalExecutionUpdate
 	recordCtx  context.Context
+
+	createSessionReq     *invocation.CreateSessionRequest
+	createSessionAgentID string
 }
 
 func (s *stubService) Invoke(ctx context.Context, req invocation.CreateInvocationRequest) (invocation.InvocationResponse, error) {
@@ -79,8 +82,10 @@ func (s *stubService) Submit(ctx context.Context, req invocation.ExternalSubmitR
 	}
 	return invocation.InvocationResponse{InvocationID: "inv_submit", ToolName: req.Tool, Status: invocation.StatusPendingApproval}, s.invErr
 }
-func (s *stubService) CreateSession(context.Context, invocation.CreateSessionRequest, string) (invocation.SessionResponse, error) {
-	return invocation.SessionResponse{}, nil
+func (s *stubService) CreateSession(_ context.Context, req invocation.CreateSessionRequest, agentID string) (invocation.SessionResponse, error) {
+	s.createSessionReq = &req
+	s.createSessionAgentID = agentID
+	return invocation.SessionResponse{SessionID: "ses_test", AgentID: agentID, Harness: req.Harness, ClientSessionID: req.ClientSessionID}, nil
 }
 func (s *stubService) SetSummary(_ context.Context, id string, summary string) (invocation.InvocationResponse, error) {
 	s.setID = id
@@ -564,6 +569,35 @@ func TestManagedAgentSessionRegistrationDebugLogsFailure(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected logs to contain %q, got:\n%s", want, got)
 		}
+	}
+}
+
+func TestExternalSessionUsesAuthenticatedIdentityOverClaimedAgentID(t *testing.T) {
+	svc := &stubService{}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	body := strings.NewReader(`{
+		"agent_id": "claimed-by-harness",
+		"harness": "amp",
+		"client_session_id": "amp-thread-1"
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/external/sessions", body)
+	req.Header.Set("content-type", "application/json")
+	req = req.WithContext(auth.WithIdentity(req.Context(), auth.Identity{AgentID: "authenticated-agent"}))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%s", w.Code, w.Body.String())
+	}
+	if svc.createSessionAgentID != "authenticated-agent" {
+		t.Fatalf("CreateSession agentID = %q, want authenticated-agent", svc.createSessionAgentID)
+	}
+	if svc.createSessionReq == nil || svc.createSessionReq.AgentID != "claimed-by-harness" {
+		t.Fatalf("CreateSession request not captured correctly: %+v", svc.createSessionReq)
+	}
+	if strings.Contains(w.Body.String(), "claimed-by-harness") {
+		t.Fatalf("response should not echo claimed agent over authenticated identity: %s", w.Body.String())
 	}
 }
 

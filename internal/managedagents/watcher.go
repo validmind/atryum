@@ -26,6 +26,12 @@ const toolUseKindEvent = "managed_agents.tool_use"
 
 const maxToolContextJSONChars = 4000
 
+// maxSessionContextChars bounds the managed-agent session context by runes. This
+// is a separate cap from the invocation service's maxSessionContextBytes (which
+// bounds a different, reconstructed context by bytes); they happen to share the
+// value 24_000 but measure different units on different paths, so don't unify them.
+const maxSessionContextChars = 24_000
+
 type toolContextEvent struct {
 	Phase     string
 	Kind      string
@@ -148,7 +154,15 @@ func (w *watcher) recentSessionContext() string {
 			b.WriteString(formatToolContextEvent(evt))
 		}
 	}
-	return b.String()
+	return trimSessionContextToRecentTail(b.String())
+}
+
+func trimSessionContextToRecentTail(text string) string {
+	runes := []rune(text)
+	if len(runes) <= maxSessionContextChars {
+		return text
+	}
+	return "[older session context omitted: exceeded context-size limit]\n" + string(runes[len(runes)-maxSessionContextChars:])
 }
 
 func formatToolContextEvent(evt toolContextEvent) string {

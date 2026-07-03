@@ -220,6 +220,10 @@ type ExternalSession struct {
 	ClientSessionID string
 	CreatedAt       time.Time
 	LastSeenAt      time.Time
+	// ExpiresAt is a soft lifecycle boundary. Expired sessions are rejected so
+	// stale leaked IDs do not remain usable forever; invocation audit rows remain
+	// governed by the broader invocation retention policy.
+	ExpiresAt time.Time
 }
 
 // CreateSessionRequest is the body for POST /api/v1/external/sessions.
@@ -233,8 +237,9 @@ type CreateSessionRequest struct {
 
 // SessionResponse is returned from POST /api/v1/external/sessions.
 type SessionResponse struct {
-	SessionID       string `json:"session_id"`
-	AgentID         string `json:"agent_id,omitempty"`
-	Harness         string `json:"harness,omitempty"`
-	ClientSessionID string `json:"client_session_id,omitempty"`
+	SessionID       string    `json:"session_id"`
+	AgentID         string    `json:"agent_id,omitempty"`
+	Harness         string    `json:"harness,omitempty"`
+	ClientSessionID string    `json:"client_session_id,omitempty"`
+	ExpiresAt       time.Time `json:"expires_at"`
 }
