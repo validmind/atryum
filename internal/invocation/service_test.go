@@ -703,6 +703,56 @@ func TestSubmitRejectsSessionOwnedByDifferentAgent(t *testing.T) {
 	}
 }
 
+// TestRecordExecutionRejectsMismatchedAuthenticatedCaller pins that once the
+// PATCH /api/v1/external/invocations/{id} route runs under the agent-runtime
+// OAuth middleware, an authenticated agent cannot write another agent's
+// execution result (which is fed to the judge as trusted evidence). No-auth
+// mode is unchanged.
+func TestRecordExecutionRejectsMismatchedAuthenticatedCaller(t *testing.T) {
+	db := newSQLiteTestDB(t)
+	service := invocation.NewService(
+		store.NewInvocationRepo(db), store.NewEventRepo(db), nil, nil, nil, 5*time.Second,
+		rulesStoreStub{}, agentLookupStub{}, &evaluateClientStub{}, summarySettingsStub{},
+	)
+
+	owner := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "owner"})
+	inv, err := service.Submit(owner, invocation.ExternalSubmitRequest{
+		Source: "amp", Tool: "bash", Input: map[string]any{"cmd": "ls"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A different authenticated agent must be rejected.
+	attacker := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "attacker"})
+	if _, err := service.RecordExecution(attacker, inv.InvocationID, invocation.ExternalExecutionUpdate{
+		ExecutionStatus: "completed", Result: json.RawMessage(`{"stdout":"pwned"}`),
+	}); err == nil || !strings.Contains(err.Error(), "does not belong") {
+		t.Fatalf("expected ownership rejection, got %v", err)
+	}
+
+	// The owning agent succeeds.
+	if _, err := service.RecordExecution(owner, inv.InvocationID, invocation.ExternalExecutionUpdate{
+		ExecutionStatus: "completed", Result: json.RawMessage(`{"stdout":"file.txt"}`),
+	}); err != nil {
+		t.Fatalf("owner RecordExecution: %v", err)
+	}
+
+	// No-auth mode (no identity in context) preserves prior behavior: the call
+	// is accepted without an ownership check.
+	noauth, err := service.Submit(context.Background(), invocation.ExternalSubmitRequest{
+		Source: "amp", Tool: "bash", Input: map[string]any{"cmd": "ls"}, AgentID: "self-declared",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RecordExecution(context.Background(), noauth.InvocationID, invocation.ExternalExecutionUpdate{
+		ExecutionStatus: "completed", Result: json.RawMessage(`{"stdout":"ok"}`),
+	}); err != nil {
+		t.Fatalf("no-auth RecordExecution should be unchanged: %v", err)
+	}
+}
+
 func TestSubmitRejectsExpiredSession(t *testing.T) {
 	db := newSQLiteTestDB(t)
 	service := invocation.NewService(

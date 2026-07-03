@@ -1443,15 +1443,26 @@ func (s *Service) RecordExecution(ctx context.Context, invocationID string, upda
 	if err != nil {
 		return InvocationResponse{}, err
 	}
-	// KNOWN GAP: no ownership check. update.Result/Error are now surfaced to the
-	// judge as trusted evidence, so a caller who knows another agent's
-	// invocation_id could poison that agent's session context. We do NOT verify
-	// the caller owns inv here because on this branch there is no identity to
-	// check against: the PATCH /api/v1/external/invocations/{id} route carries no
-	// OAuth middleware and no no-auth agent-id hint, and ExternalExecutionUpdate
-	// has no agent_id field. A self-declared agent_id in the body would be
-	// trivially spoofable and add no real protection. Enforce ownership here
-	// (compare against inv.AgentID) once this path gains an authenticated subject.
+	// Ownership: update.Result/Error are surfaced to the judge as trusted
+	// evidence, so a caller who knows another agent's invocation_id could
+	// poison that agent's session context. The PATCH
+	// /api/v1/external/invocations/{id} route now runs under the agent-runtime
+	// OAuth middleware, so in auth mode ctx carries the authenticated caller.
+	// When an identity is present, reject any attempt to write an invocation
+	// this agent does not own (inv.AgentID is set from the authenticated
+	// identity at Submit time, so a match proves ownership). In no-auth mode
+	// there is no identity to check against — behavior is unchanged, and the
+	// in-process managed-agents watcher (which calls RecordExecution directly
+	// with no auth identity) is likewise unaffected.
+	if callerID := strings.TrimSpace(auth.AgentIDFromContext(ctx)); callerID != "" {
+		owner := ""
+		if inv.AgentID != nil {
+			owner = strings.TrimSpace(*inv.AgentID)
+		}
+		if owner != callerID {
+			return InvocationResponse{}, fmt.Errorf("invocation does not belong to this agent")
+		}
+	}
 	now := time.Now().UTC()
 	switch update.ExecutionStatus {
 	case "running":

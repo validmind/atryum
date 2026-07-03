@@ -807,7 +807,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("/api/v1/agent/rules", agentRulesHandler)
 	mux.Handle("/api/v1/external/invocations", h.agentRuntimeHandler(http.HandlerFunc(h.externalInvocations)))
 	mux.Handle("/api/v1/external/invocations/", h.agentRuntimeHandler(http.HandlerFunc(h.externalInvocationDetail)))
-	mux.HandleFunc("/api/v1/external/sessions", h.externalSessions)
+	mux.Handle("/api/v1/external/sessions", h.agentRuntimeHandler(http.HandlerFunc(h.externalSessions)))
 	apiKeyMW := auth.APIKeyMiddleware(h.apiKeyAuth)
 	mux.Handle("/agent_ids", apiKeyMW(http.HandlerFunc(h.agentIDs)))
 	mux.Handle("/invocations/", apiKeyMW(http.HandlerFunc(h.invocationsByAgentID)))
