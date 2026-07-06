@@ -663,7 +663,7 @@ func approveNextInvocation(t *testing.T, service *invocation.Service, delay time
 	if pending.Status != invocation.StatusPendingApproval {
 		return
 	}
-	if err := service.Approve(context.Background(), pending.InvocationID); err != nil {
+	if err := service.Approve(context.Background(), pending.InvocationID, ""); err != nil {
 		t.Errorf("approve invocation: %v", err)
 	}
 }

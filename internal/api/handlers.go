@@ -45,8 +45,8 @@ type service interface {
 	List(ctx context.Context, filter invocation.InvocationListFilter) (invocation.InvocationListResponse, error)
 	ListAgentIDs(ctx context.Context) ([]string, error)
 	Events(ctx context.Context, invocationID string, filter invocation.EventListFilter) (invocation.EventListResponse, error)
-	Approve(ctx context.Context, invocationID string) error
-	Deny(ctx context.Context, invocationID string, message string) error
+	Approve(ctx context.Context, invocationID string, actorID string) error
+	Deny(ctx context.Context, invocationID string, message string, actorID string) error
 	Submit(ctx context.Context, req invocation.ExternalSubmitRequest) (invocation.InvocationResponse, error)
 	RecordExecution(ctx context.Context, invocationID string, update invocation.ExternalExecutionUpdate) (invocation.InvocationResponse, error)
 	SetSummary(ctx context.Context, invocationID string, summary string) (invocation.InvocationResponse, error)
@@ -191,11 +191,17 @@ type PolicyUpdateRequest struct {
 
 type ApproveRequest struct {
 	CreateRule *AdminRuleInput `json:"create_rule,omitempty"`
+	// ActorID identifies the human reviewer who made the decision. Optional —
+	// when omitted no attribution is stored. The VM backend proxy injects this
+	// field from the authenticated user's identity before forwarding.
+	ActorID string `json:"actor_id,omitempty"`
 }
 
 type DenyRequest struct {
 	Message    string          `json:"message,omitempty"`
 	CreateRule *AdminRuleInput `json:"create_rule,omitempty"`
+	// ActorID identifies the human reviewer who made the decision. Optional.
+	ActorID string `json:"actor_id,omitempty"`
 }
 
 type AdminServer struct {
@@ -1673,7 +1679,7 @@ func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) 
 				return
 			}
 		}
-		if err := h.svc.Approve(r.Context(), id); err != nil {
+		if err := h.svc.Approve(r.Context(), id, req.ActorID); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -1732,7 +1738,7 @@ func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) 
 				return
 			}
 		}
-		if err := h.svc.Deny(r.Context(), id, req.Message); err != nil {
+		if err := h.svc.Deny(r.Context(), id, req.Message, req.ActorID); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}

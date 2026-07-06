@@ -1,4 +1,4 @@
-import type { Invocation } from '../api/AtryumAPI';
+import type { Invocation, Rule, InvocationEvent } from '../api/AtryumAPI';
 
 export const STATUS_COLOR: Record<string, string> = {
   pending_approval: 'orange',
@@ -90,3 +90,266 @@ export const formatDate = (dateStr: string | null | undefined): string => {
     timeStyle: 'short',
   });
 };
+
+// ─── Invocation Audit ─────────────────────────────────────────────────────────
+
+export type AuditStepVariant =
+  | 'approve'
+  | 'deny'
+  | 'defer'
+  | 'pending'
+  | 'info';
+
+export type AuditStep = {
+  text: string;
+  variant: AuditStepVariant;
+  /** ISO timestamp for this step, if known */
+  timestamp?: string;
+  /** Raw actor identifier for human decision steps */
+  actor?: string;
+};
+
+export type AuditEntry = {
+  /** null means no rule matched */
+  ruleName: string | null;
+  isAIEvaluation: boolean;
+  confidence?: number;
+  steps: AuditStep[];
+};
+
+type InvocationAuditInput = {
+  status: string;
+  approval?: {
+    status: string;
+    reason?: string | null;
+    confidence_score?: number | null;
+    actor_id?: string | null;
+  } | null;
+  matched_rule_id?: string | null;
+};
+
+type RuleEvaluatedEventData = {
+  rule_id?: string;
+  action?: string;
+  disposition?: string;
+  confidence?: number;
+  reason?: string;
+  skipped?: boolean;
+};
+
+type DecisionEventData = {
+  actor_id?: string;
+};
+
+/**
+ * Derives structured audit entries from an invocation + rules list + events.
+ *
+ * When `invocation.rule_evaluated` events are present the full evaluation
+ * chain — including skipped rules — is reconstructed from those events.
+ * Otherwise falls back to deriving a single entry from the invocation's
+ * final approval fields.
+ */
+export function buildInvocationAudit(
+  inv: InvocationAuditInput,
+  rules: Rule[],
+  events: InvocationEvent[] = [],
+): AuditEntry[] {
+  const ruleEvalEvents = events.filter(
+    (e) => e.type === 'invocation.rule_evaluated',
+  );
+
+  if (ruleEvalEvents.length > 0) {
+    return buildAuditFromEvents(inv, rules, events, ruleEvalEvents);
+  }
+
+  return buildAuditFromApproval(inv, rules);
+}
+
+function buildAuditFromEvents(
+  inv: InvocationAuditInput,
+  rules: Rule[],
+  allEvents: InvocationEvent[],
+  ruleEvalEvents: InvocationEvent[],
+): AuditEntry[] {
+  const decisionEvent = allEvents.find(
+    (e) =>
+      e.type === 'invocation.approved' ||
+      e.type === 'invocation.denied' ||
+      e.type === 'invocation.executing',
+  );
+  const actor = (decisionEvent?.data as DecisionEventData | undefined)
+    ?.actor_id;
+  const decisionTimestamp = decisionEvent?.timestamp;
+
+  return ruleEvalEvents.map((evt) => {
+    const d = (evt.data ?? {}) as RuleEvaluatedEventData;
+    const rule = d.rule_id
+      ? (rules.find((r) => r.id === d.rule_id) ?? null)
+      : null;
+    const ruleName =
+      rule?.description ?? (d.rule_id ? `Rule ${d.rule_id}` : null);
+    const isAIEval = d.action === 'ai_evaluation';
+    const confidence = d.confidence;
+
+    const steps: AuditStep[] = [];
+
+    if (d.skipped) {
+      steps.push({
+        text: 'Skipped this rule as per charter',
+        variant: 'info',
+        timestamp: evt.timestamp,
+      });
+    } else {
+      const resolved = resolveDecisionSteps(
+        d.disposition ?? '',
+        inv,
+        actor,
+        isAIEval,
+      );
+      steps.push(
+        ...resolved.map((step) => ({
+          ...step,
+          timestamp:
+            step.variant === 'approve' || step.variant === 'deny'
+              ? decisionTimestamp
+              : evt.timestamp,
+        })),
+      );
+    }
+
+    return { ruleName, isAIEvaluation: isAIEval, confidence, steps };
+  });
+}
+
+function buildAuditFromApproval(
+  inv: InvocationAuditInput,
+  rules: Rule[],
+): AuditEntry[] {
+  const ruleId = inv.matched_rule_id ?? null;
+  const rule = ruleId ? (rules.find((r) => r.id === ruleId) ?? null) : null;
+  const ruleName = rule?.description ?? (ruleId ? `Rule ${ruleId}` : null);
+
+  const approvalStatus = inv.approval?.status ?? null;
+  const reason = inv.approval?.reason ?? '';
+  const confidence = inv.approval?.confidence_score ?? undefined;
+  const actor = inv.approval?.actor_id ?? undefined;
+
+  const isAIEval =
+    (reason ?? '').startsWith('ai_evaluation') ||
+    approvalStatus === 'ai_escalated' ||
+    approvalStatus === 'ai_escalated_approved' ||
+    approvalStatus === 'ai_escalated_denied';
+
+  const steps = resolveDecisionSteps(
+    approvalStatus ?? '',
+    inv,
+    actor ?? undefined,
+  );
+
+  return [{ ruleName, isAIEvaluation: isAIEval, confidence, steps }];
+}
+
+function resolveDecisionSteps(
+  disposition: string,
+  inv: InvocationAuditInput,
+  actor?: string,
+  isAIEval?: boolean,
+): AuditStep[] {
+  const approvalStatus = inv.approval?.status ?? null;
+  const reason = inv.approval?.reason ?? '';
+
+  if (disposition === 'auto' || disposition === 'auto_approved') {
+    const byAI =
+      isAIEval ??
+      ((reason ?? '').startsWith('ai_evaluation') ||
+        approvalStatus === 'auto_approved');
+    return [
+      {
+        text: byAI
+          ? 'Invocation approved by AI'
+          : 'Invocation approved by rule',
+        variant: 'approve',
+      },
+    ];
+  }
+  if (disposition === 'never' || disposition === 'auto_denied') {
+    const byAI =
+      isAIEval ??
+      ((reason ?? '').startsWith('ai_evaluation') ||
+        approvalStatus === 'auto_denied');
+    return [
+      {
+        text: byAI ? 'Invocation denied by AI' : 'Invocation denied by rule',
+        variant: 'deny',
+      },
+    ];
+  }
+  if (
+    disposition === 'ai_escalated' ||
+    disposition === 'ai_escalated_approved' ||
+    disposition === 'ai_escalated_denied'
+  ) {
+    if (
+      approvalStatus === 'ai_escalated_approved' ||
+      approvalStatus === 'approved'
+    ) {
+      return [
+        { text: 'Deferring to human approval as per charter', variant: 'defer' },
+        { text: 'Invocation approved by human', variant: 'approve', actor },
+      ];
+    }
+    if (
+      approvalStatus === 'ai_escalated_denied' ||
+      approvalStatus === 'denied'
+    ) {
+      return [
+        { text: 'Deferring to human approval as per charter', variant: 'defer' },
+        { text: 'Invocation denied by human', variant: 'deny', actor },
+      ];
+    }
+    return [
+      { text: 'Deferring to human approval as per charter', variant: 'defer' },
+      { text: 'Awaiting human', variant: 'pending' },
+    ];
+  }
+  if (disposition === 'human_approval') {
+    if (
+      approvalStatus === 'approved' ||
+      approvalStatus === 'ai_escalated_approved'
+    ) {
+      return [
+        { text: 'Deferring to human approval as per charter', variant: 'defer' },
+        { text: 'Approved by human', variant: 'approve', actor },
+      ];
+    }
+    if (
+      approvalStatus === 'denied' ||
+      approvalStatus === 'ai_escalated_denied'
+    ) {
+      return [
+        { text: 'Deferring to human approval as per charter', variant: 'defer' },
+        { text: 'Denied by human', variant: 'deny', actor },
+      ];
+    }
+    return [
+      { text: 'Deferring to human approval as per charter', variant: 'defer' },
+      { text: 'Awaiting human', variant: 'pending' },
+    ];
+  }
+  if (disposition === 'approved') {
+    return [{ text: 'Approved by human', variant: 'approve', actor }];
+  }
+  if (disposition === 'denied') {
+    return [{ text: 'Denied by human', variant: 'deny', actor }];
+  }
+  if (inv.status === 'pending_approval') {
+    return [{ text: 'Awaiting human approval', variant: 'pending' }];
+  }
+  if (inv.status === 'expired') {
+    return [{ text: 'Expired without decision', variant: 'info' }];
+  }
+  if (inv.status === 'cancelled') {
+    return [{ text: 'Cancelled', variant: 'info' }];
+  }
+  return [];
+}
