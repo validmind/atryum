@@ -56,6 +56,7 @@ import {
   type VmCustomField,
   type VmOrg,
   type VmRecordType,
+  apiErrorMessage,
 } from '../api/AtryumAPI';
 
 const PROVIDER_LABELS: Record<LLMProvider, string> = {
@@ -69,14 +70,6 @@ const managedSessionsKey = ['claude-managed-agent-sessions'];
 const statusCode = (err: unknown): number | undefined => {
   if (typeof err !== 'object' || err === null || !('response' in err)) return undefined;
   return (err as { response?: { status?: number } }).response?.status;
-};
-
-const errorMessage = (err: unknown, fallback: string): string => {
-  if (typeof err === 'object' && err !== null && 'response' in err) {
-    const data = (err as { response?: { data?: { error?: string } } }).response?.data;
-    if (data?.error) return data.error;
-  }
-  return err instanceof Error ? err.message : fallback;
 };
 
 const formatDateTime = (value?: string): string => {
@@ -486,7 +479,7 @@ const Settings: React.FC = () => {
     } catch (err: unknown) {
       toast({
         title: 'Failed to delete watcher',
-        description: errorMessage(err, 'Delete failed.'),
+        description: apiErrorMessage(err, 'Delete failed.'),
         status: 'error',
         duration: 5000,
         isClosable: true,
@@ -509,7 +502,7 @@ const Settings: React.FC = () => {
     } catch (err: unknown) {
       toast({
         title: 'Failed to clear watchers',
-        description: errorMessage(err, 'Clear failed.'),
+        description: apiErrorMessage(err, 'Clear failed.'),
         status: 'error',
         duration: 5000,
         isClosable: true,
@@ -613,7 +606,7 @@ const Settings: React.FC = () => {
             <Alert status="warning" borderRadius="md" py={2}>
               <AlertIcon />
               <AlertDescription fontSize="sm">
-                {errorMessage(managedSessionsQuery.error, 'Failed to load Claude Managed Agents watchers.')}
+                {apiErrorMessage(managedSessionsQuery.error, 'Failed to load Claude Managed Agents watchers.')}
               </AlertDescription>
             </Alert>
           ) : managedSessionsQuery.isLoading ? (
