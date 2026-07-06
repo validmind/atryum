@@ -87,7 +87,7 @@ To remove the global plugin later:
 | `ATRYUM_CLIENT_VERSION`        | `AMP_VERSION` if set              | harness version shown in Atryum                                                      |
 | `ATRYUM_AGENT_ID`              | _(empty)_                         | self-declared agent identifier; matched against Agent Record `agent_ids` (see below) |
 | `ATRYUM_ACCESS_TOKEN`          | _(empty)_                         | optional OAuth bearer token for Atryum agent runtime APIs                            |
-| `ATRYUM_TOKEN_COMMAND`            | _(empty)_ | optional command that prints a fresh token or OAuth token JSON with `access_token`   |
+| `ATRYUM_TOKEN_COMMAND`            | _(empty)_ | optional command run to mint each new token; prints a raw token or OAuth token JSON with `access_token`   |
 | `ATRYUM_TOKEN_REFRESH_SKEW_MS`   | `60000`   | refresh command cache skew before token expiry                                       |
 | `ATRYUM_TOKEN_COMMAND_TIMEOUT_MS` | `10000`   | timeout for the token command subprocess                                             |
 | `ATRYUM_STATE_DIR`             | `~/.atryum/amp-plugin-state`      | directory for the on-disk token cache (`token-cache.json`, mode 0600)                |
@@ -143,14 +143,36 @@ call. In auth mode Atryum derives the agent id from the token and ignores
 expires, requests fail with `401`.
 
 For short-lived tokens, set `ATRYUM_TOKEN_COMMAND` instead (if both are set,
-`ATRYUM_TOKEN_COMMAND` wins and `ATRYUM_ACCESS_TOKEN` is ignored). The command may
-print a raw token or JSON such as `{"access_token":"...","expires_in":3600}`.
-The `expires_in` field is relative seconds; `expires_at` (absolute Unix
-timestamp in seconds or milliseconds) is also accepted.
-The plugin caches the token until near expiry — in memory and on disk at
+`ATRYUM_TOKEN_COMMAND` wins and `ATRYUM_ACCESS_TOKEN` is ignored). This is a
+shell command the plugin runs whenever it needs to mint a new token —
+typically a client credentials request against your identity provider's token
+endpoint, or a CLI that prints one:
+
+```sh
+export ATRYUM_TOKEN_COMMAND='curl -fsS -X POST "$OIDC_TOKEN_URL" \
+  -d grant_type=client_credentials \
+  -d client_id="$CLIENT_ID" \
+  -d client_secret="$CLIENT_SECRET" \
+  -d scope=atryum:mcp'
+```
+
+The command may print a raw token or JSON such as
+`{"access_token":"...","expires_in":3600}`. The `expires_in` field is relative
+seconds; `expires_at` (absolute Unix timestamp in seconds or milliseconds) is
+also accepted. A raw token, or JSON without an expiry field, is assumed valid
+for 55 minutes.
+
+Token lifecycle: the plugin runs the command on the first request, then
+caches the token — in memory and on disk at
 `$ATRYUM_STATE_DIR/token-cache.json` (mode 0600) so restarts reuse it — and
-retries once with a fresh token after a `401`. The disk cache is keyed to
-`ATRYUM_TOKEN_COMMAND` and `ATRYUM_URL`, so changing either invalidates it.
+reuses it until `ATRYUM_TOKEN_REFRESH_SKEW_MS` (default 60s) before expiry,
+when it runs the command again to mint a replacement. If a request still gets
+a `401`, the plugin bypasses the cache, mints a fresh token, and retries
+the request once. The disk cache is keyed to `ATRYUM_TOKEN_COMMAND` and
+`ATRYUM_URL`, so changing either invalidates it. If the command fails
+(non-zero exit, timeout after `ATRYUM_TOKEN_COMMAND_TIMEOUT_MS`, or empty
+output), the runtime call fails — run the command by hand in a shell to debug
+it.
 
 ## API used
 
