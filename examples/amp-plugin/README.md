@@ -156,6 +156,9 @@ export ATRYUM_TOKEN_COMMAND='curl -fsS -X POST "$OIDC_TOKEN_URL" \
   -d scope=atryum:mcp'
 ```
 
+(`$OIDC_TOKEN_URL`, `$CLIENT_ID`, and `$CLIENT_SECRET` are placeholders for
+your identity provider's values — export them alongside the command.)
+
 The command may print a raw token or JSON such as
 `{"access_token":"...","expires_in":3600}`. The `expires_in` field is relative
 seconds; `expires_at` (absolute Unix timestamp in seconds or milliseconds) is

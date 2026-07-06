@@ -63,7 +63,7 @@ Use this path for agents that gate native tools (shell, file edits, in-process t
 
 1. Make sure Atryum is running and reachable ([Quickstart](../1_quickstart.md)).
 
-2. Set `ATRYUM_URL` in the same terminal session where you start the agent. In no-auth mode, optionally set `ATRYUM_AGENT_ID`; in auth mode, set `ATRYUM_ACCESS_TOKEN`. ([Set environment variables](#set-environment-variables))
+2. Set `ATRYUM_URL` in the same terminal session where you start the agent. In no-auth mode, optionally set `ATRYUM_AGENT_ID`; in auth mode, configure a bearer token — `ATRYUM_ACCESS_TOKEN` for a static token, or `ATRYUM_TOKEN_COMMAND` for automatic refresh. ([Set environment variables](#set-environment-variables))
 
 3. Follow the setup steps in the example for your agent:
 
@@ -95,13 +95,26 @@ Use these variables for hook and extension integrations. MCP proxy clients do no
     export ATRYUM_AGENT_ID=amp-local
     ```
 
-4. (Optional, auth mode) Export `ATRYUM_ACCESS_TOKEN` — an OAuth access token for Atryum's agent runtime APIs:
+4. (Optional, auth mode) Configure a bearer token. Use this when Atryum has one or more `[[auth]]` blocks configured. In auth mode, Atryum derives agent identity from the token and ignores `ATRYUM_AGENT_ID`. Pick one of two paths — if both variables are set, `ATRYUM_TOKEN_COMMAND` wins and `ATRYUM_ACCESS_TOKEN` is ignored.
+
+    **Static token — `ATRYUM_ACCESS_TOKEN`.** For long-lived tokens. Export an OAuth access token for Atryum's agent runtime APIs:
 
     ```bash
     export ATRYUM_ACCESS_TOKEN=<oauth-access-token>
     ```
 
-    Use this when Atryum has one or more `[[auth]]` blocks configured. The integration sends it as an `Authorization: Bearer ...` header to the external invocation API. In auth mode, Atryum derives agent identity from the token and ignores `ATRYUM_AGENT_ID`. The token is used as-is and never refreshed — if it expires, requests fail with `401`. For short-lived tokens, set `ATRYUM_TOKEN_COMMAND` instead (if both are set, `ATRYUM_TOKEN_COMMAND` wins and `ATRYUM_ACCESS_TOKEN` is ignored). This is a shell command the integration runs whenever it needs to mint a new token — typically a client credentials request against your identity provider's token endpoint, such as `curl -fsS -X POST "$OIDC_TOKEN_URL" -d grant_type=client_credentials -d client_id="$CLIENT_ID" -d client_secret="$CLIENT_SECRET"`. The command may print a raw token or OAuth token JSON such as `{"access_token":"...","expires_in":3600}` (`expires_in` is relative seconds; `expires_at` as an absolute Unix timestamp in seconds or milliseconds is also accepted; without an expiry field the token is assumed valid for 55 minutes). The shared hook, Amp plugin, and Pi extension run the command on the first request, cache the token in memory and on disk (`token-cache.json` under their state directory, `ATRYUM_STATE_DIR`, written with mode 0600 and keyed to the token command and server URL), run it again to mint a replacement shortly before the token expires (`ATRYUM_TOKEN_REFRESH_SKEW_MS`, default 60 seconds), and after a `401` mint a fresh token and retry the request once.
+    The integration sends it as an `Authorization: Bearer ...` header to the external invocation API. The token is used as-is and never refreshed — if it expires, requests fail with `401`.
+
+    **Refreshable token — `ATRYUM_TOKEN_COMMAND`.** For short-lived tokens. Export a shell command the integration runs whenever it needs to mint a new token — typically a client credentials request against your identity provider's token endpoint:
+
+    ```bash
+    export ATRYUM_TOKEN_COMMAND='curl -fsS -X POST "$OIDC_TOKEN_URL" \
+      -d grant_type=client_credentials \
+      -d client_id="$CLIENT_ID" \
+      -d client_secret="$CLIENT_SECRET"'
+    ```
+
+    The command may print a raw token or OAuth token JSON such as `{"access_token":"...","expires_in":3600}` (`expires_in` is relative seconds; `expires_at` as an absolute Unix timestamp in seconds or milliseconds is also accepted; without an expiry field the token is assumed valid for 55 minutes). The shared hook, Amp plugin, and Pi extension run the command on the first request, cache the token in memory and on disk (`token-cache.json` under their state directory, `ATRYUM_STATE_DIR`, written with mode 0600 and keyed to the token command and server URL), run it again to mint a replacement shortly before the token expires (`ATRYUM_TOKEN_REFRESH_SKEW_MS`, default 60 seconds), and after a `401` mint a fresh token and retry the request once.
 
 5. (Optional) Export these variables to label the agent in Atryum:
 
@@ -183,7 +196,7 @@ To apply agent-scoped rules, attach invocations to an agent record, or supply a 
     - Use the exact string you added in **Agent IDs** — matching is case-sensitive, so `amp-local` and `Amp-Local` are different IDs.
     - Export both variables in the **same shell session** you use to launch your agent. If you export them in one terminal and start the agent from another, the agent will not see the values.
     - `ATRYUM_URL` tells the integration where Atryum is running. It defaults to `http://localhost:8080` when unset; change the host or port if Atryum runs elsewhere. Refer to [Set environment variables](#set-environment-variables) for the full list of supported variables.
-    - In auth mode, put the token's configured agent ID claim in **Agent IDs** instead of a self-declared string, and export `ATRYUM_ACCESS_TOKEN` before starting the agent. ([Agent identity and authentication](#agent-identity-and-authentication))
+    - In auth mode, put the token's configured agent ID claim in **Agent IDs** instead of a self-declared string, and export `ATRYUM_ACCESS_TOKEN` (static token) or `ATRYUM_TOKEN_COMMAND` (automatic refresh) before starting the agent. ([Agent identity and authentication](#agent-identity-and-authentication))
 
     b. **MCP proxy agents** — Append the same string to your MCP proxy URL as `?agent_id=<your_id>` (for example, `http://localhost:8080/mcp/calc?agent_id=amp-local`).
 
@@ -224,13 +237,13 @@ To refresh the shared hook script or re-apply hook entries after an Atryum upgra
 
 Restart Cursor, Claude Code, Amp, or Pi after changing hooks, plugins, or extensions. Amp must still be started with `PLUGINS=all`. Pi can reload extensions with `/reload` when already running.
 
-To change `ATRYUM_URL`, `ATRYUM_AGENT_ID`, or `ATRYUM_ACCESS_TOKEN`, export the new values in the terminal session where you start the agent, then restart the agent. The installed hook reads these at runtime — you do not need to reinstall hooks when only the values change.
+To change `ATRYUM_URL`, `ATRYUM_AGENT_ID`, `ATRYUM_ACCESS_TOKEN`, or `ATRYUM_TOKEN_COMMAND`, export the new values in the terminal session where you start the agent, then restart the agent. The installed hook reads these at runtime — you do not need to reinstall hooks when only the values change.
 
 ### Edit hook and extension agents
 
 Manually configured Claude Code hooks and per-project plugin/extension installs follow the same pattern:
 
-1. Update `ATRYUM_URL`, `ATRYUM_AGENT_ID`, `ATRYUM_ACCESS_TOKEN`, or optional label variables in the terminal session where you start the agent. ([Set environment variables](#set-environment-variables))
+1. Update `ATRYUM_URL`, `ATRYUM_AGENT_ID`, `ATRYUM_ACCESS_TOKEN`, `ATRYUM_TOKEN_COMMAND`, or optional label variables in the terminal session where you start the agent. ([Set environment variables](#set-environment-variables))
 
 2. If you changed plugin or extension source files, copy the updated file from the repository example into your install path — for example `.amp/plugins/atryum.ts` or `.pi/extensions/atryum/index.ts`.
 
@@ -368,7 +381,7 @@ Keycloak runs at [`localhost:8089`](http://localhost:8089). On first startup, th
 For deployments outside local development, use your organization's identity provider (IdP) instead of the bundled Keycloak instance.
 
 :::
-When auth mode is enabled, configure your agent to send a bearer token rather than a query-parameter agent ID. Amp, Pi, and the shared hook script read `ATRYUM_ACCESS_TOKEN` and send it to Atryum's agent runtime APIs.
+When auth mode is enabled, configure your agent to send a bearer token rather than a query-parameter agent ID. Amp, Pi, and the shared hook script read `ATRYUM_ACCESS_TOKEN`, or mint tokens with `ATRYUM_TOKEN_COMMAND`, and send the token to Atryum's agent runtime APIs.
 :::
 
 ### Admin UI authentication
