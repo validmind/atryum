@@ -44,8 +44,8 @@ func TestInitDB_FreshDatabase(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 23 {
-		t.Fatalf("expected 23 migrations, got %d", count)
+	if count != 24 {
+		t.Fatalf("expected 24 migrations, got %d", count)
 	}
 
 	// Verify all tables exist
@@ -73,8 +73,8 @@ func TestInitDB_Idempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 23 {
-		t.Fatalf("expected 23 migrations after double init, got %d", count)
+	if count != 24 {
+		t.Fatalf("expected 24 migrations after double init, got %d", count)
 	}
 }
 
@@ -384,6 +384,9 @@ func TestServerRepo_CRUD(t *testing.T) {
 	if got.Name != "test-server" || got.Mode != mcp.UpstreamModeHTTP {
 		t.Errorf("GetServer mismatch: %+v", got)
 	}
+	if got.EndpointSlug != "test-server" {
+		t.Errorf("endpoint slug: %s", got.EndpointSlug)
+	}
 
 	// GetServerAny
 	got2, err := repo.GetServerAny(ctx, "test-server")
@@ -392,6 +395,14 @@ func TestServerRepo_CRUD(t *testing.T) {
 	}
 	if got2.Name != "test-server" {
 		t.Errorf("GetServerAny: %s", got2.Name)
+	}
+
+	gotBySlug, err := repo.GetServerByEndpointSlug(ctx, "test-server")
+	if err != nil {
+		t.Fatalf("GetServerByEndpointSlug: %v", err)
+	}
+	if gotBySlug.Name != "test-server" {
+		t.Errorf("GetServerByEndpointSlug: %s", gotBySlug.Name)
 	}
 
 	// List
@@ -454,6 +465,128 @@ func TestServerRepo_CRUD(t *testing.T) {
 	count, _ = repo.CountServers(ctx)
 	if count != 0 {
 		t.Errorf("count after delete: %d", count)
+	}
+}
+
+func TestServerRepoEndpointSlugIsUnique(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+	if err := InitDB(db); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+
+	repo := NewServerRepo(db)
+	ctx := context.Background()
+	base := mcp.Upstream{
+		Name:    "Slack Local",
+		Mode:    mcp.UpstreamModeHTTP,
+		BaseURL: "http://localhost:8080",
+		Timeout: 30 * time.Second,
+		Enabled: true,
+	}
+	if err := repo.CreateServer(ctx, base); err != nil {
+		t.Fatalf("CreateServer first: %v", err)
+	}
+	duplicate := base
+	duplicate.Name = "slack-local"
+	if err := repo.CreateServer(ctx, duplicate); err == nil {
+		t.Fatalf("expected duplicate endpoint slug error")
+	}
+}
+
+func TestServerRepoUpsertKeepsEndpointSlugImmutable(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+	if err := InitDB(db); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+
+	repo := NewServerRepo(db)
+	ctx := context.Background()
+	upstream := mcp.Upstream{
+		Name:         "Slack Local",
+		EndpointSlug: "slack-local-2",
+		Mode:         mcp.UpstreamModeHTTP,
+		BaseURL:      "http://localhost:8080",
+		Timeout:      30 * time.Second,
+		Enabled:      true,
+	}
+	if err := repo.UpsertServer(ctx, upstream); err != nil {
+		t.Fatalf("UpsertServer insert: %v", err)
+	}
+	upstream.BaseURL = "http://localhost:9090"
+	upstream.EndpointSlug = "slack-local"
+	if err := repo.UpsertServer(ctx, upstream); err != nil {
+		t.Fatalf("UpsertServer update: %v", err)
+	}
+	got, err := repo.GetServerAny(ctx, "Slack Local")
+	if err != nil {
+		t.Fatalf("GetServerAny: %v", err)
+	}
+	if got.EndpointSlug != "slack-local-2" {
+		t.Fatalf("endpoint slug = %q, want immutable slack-local-2", got.EndpointSlug)
+	}
+	if got.BaseURL != "http://localhost:9090" {
+		t.Fatalf("base_url = %q, want updated URL", got.BaseURL)
+	}
+}
+
+func TestInitDBBackfillsEndpointSlugCollisionsDeterministically(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	if _, err := db.Exec(`
+		CREATE TABLE schema_migrations (
+			version INTEGER PRIMARY KEY,
+			name    TEXT NOT NULL,
+			applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE mcp_servers (
+			name TEXT PRIMARY KEY
+		);
+		INSERT INTO mcp_servers(name) VALUES ('Slack Local'), ('slack-local'), ('!!!');
+	`); err != nil {
+		t.Fatalf("seed old schema: %v", err)
+	}
+	for _, m := range migrations {
+		if m.Version >= 24 {
+			continue
+		}
+		if _, err := db.Exec(`INSERT INTO schema_migrations(version, name) VALUES (?, ?)`, m.Version, m.Name); err != nil {
+			t.Fatalf("seed migration %d: %v", m.Version, err)
+		}
+	}
+
+	if err := InitDB(db); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+
+	got := map[string]string{}
+	rows, err := db.Query(`SELECT name, endpoint_slug FROM mcp_servers`)
+	if err != nil {
+		t.Fatalf("query slugs: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name, slug string
+		if err := rows.Scan(&name, &slug); err != nil {
+			t.Fatalf("scan slug: %v", err)
+		}
+		got[name] = slug
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+
+	want := map[string]string{
+		"!!!":         "server",
+		"Slack Local": "slack-local",
+		"slack-local": "slack-local-2",
+	}
+	for name, wantSlug := range want {
+		if got[name] != wantSlug {
+			t.Fatalf("slug for %q = %q, want %q (all slugs: %+v)", name, got[name], wantSlug, got)
+		}
 	}
 }
 
