@@ -1621,7 +1621,7 @@ func (h *Handler) annotateToolsWithPolicy(ctx context.Context, agentID, server s
 var atryumRulesTool = mcp.Tool{
 	Name:        atryumRulesToolName,
 	Description: "Return the current static Atryum approval rules visible to this agent. Optional arguments: server/source and tool preview a specific disposition. The response is advisory only; AI evaluation and human approval are decided during the actual gated tool call.",
-	InputSchema: json.RawMessage(`{"type":"object","properties":{"server":{"type":"string","description":"MCP server name to preview."},"source":{"type":"string","description":"Alias for server, useful for non-MCP harness terminology."},"tool":{"type":"string","description":"Tool name to preview."},"agent_id":{"type":"string","description":"Agent identity for no-auth local development only; ignored when inbound auth is enabled."}},"additionalProperties":false}`),
+	InputSchema: json.RawMessage(`{"type":"object","properties":{"server":{"type":"string","description":"MCP server name to preview."},"source":{"type":"string","description":"Alias for server, useful for non-MCP harness terminology."},"tool":{"type":"string","description":"Tool name to preview."},"agent_id":{"type":"string","description":"Agent identity for no-auth local development only; ignored when inbound auth is enabled."},"request_id":{"type":"string","description":"Deprecated compatibility alias for agent_id in no-auth local development only; ignored when inbound auth is enabled."}},"additionalProperties":false}`),
 }
 
 // effectiveActionForTool returns the action of the first enabled rule that

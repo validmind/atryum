@@ -1124,6 +1124,38 @@ func TestMCPToolsList(t *testing.T) {
 	}
 }
 
+func TestMCPRulesToolSchemaIncludesRequestIDFallback(t *testing.T) {
+	h := NewHandler(&stubService{tools: []mcp.Tool{{Name: "demo_tool"}}}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	var rpcResp struct {
+		Result struct {
+			Tools []struct {
+				Name        string `json:"name"`
+				InputSchema struct {
+					Properties map[string]json.RawMessage `json:"properties"`
+				} `json:"inputSchema"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &rpcResp); err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range rpcResp.Result.Tools {
+		if tool.Name != atryumRulesToolName {
+			continue
+		}
+		if _, ok := tool.InputSchema.Properties["request_id"]; !ok {
+			t.Fatalf("expected request_id in %s schema properties, got %#v", atryumRulesToolName, tool.InputSchema.Properties)
+		}
+		return
+	}
+	t.Fatalf("expected %s in tools/list, got %#v", atryumRulesToolName, rpcResp.Result.Tools)
+}
+
 func TestMCPToolsCallInterceptsInvocation(t *testing.T) {
 	now := time.Now().UTC()
 	svc := &stubService{invoke: invocation.InvocationResponse{InvocationID: "inv_123", ServerName: "demo", ToolName: "demo_tool", Status: invocation.StatusSucceeded, Input: json.RawMessage(`{"a":1}`), SubmittedAt: now, CompletedAt: &now, Result: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`)}}
