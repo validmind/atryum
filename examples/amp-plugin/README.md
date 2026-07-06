@@ -139,9 +139,11 @@ export ATRYUM_ACCESS_TOKEN=<oauth-access-token>
 
 The plugin sends it as `Authorization: Bearer ...` on every agent runtime
 call. In auth mode Atryum derives the agent id from the token and ignores
-`ATRYUM_AGENT_ID`.
+`ATRYUM_AGENT_ID`. The token is used as-is and never refreshed — if it
+expires, requests fail with `401`.
 
-For short-lived tokens, set `ATRYUM_TOKEN_COMMAND` instead. The command may
+For short-lived tokens, set `ATRYUM_TOKEN_COMMAND` instead (if both are set,
+`ATRYUM_TOKEN_COMMAND` wins and `ATRYUM_ACCESS_TOKEN` is ignored). The command may
 print a raw token or JSON such as `{"access_token":"...","expires_in":3600}`.
 The `expires_in` field is relative seconds; `expires_at` (absolute Unix
 timestamp in seconds or milliseconds) is also accepted.

@@ -119,9 +119,13 @@ harnesses:
   - id: pi
     display_name: Pi Coding Agent
     cli: pi
-    invoke: 'pi -p "$PROMPT"'
+    invoke: 'pi -e "$PI_EXTENSION_PATH" -p "$PROMPT"'
     api_key_env: OPENAI_API_KEY
-    hook: null
+    api_key_env_optional: true
+    hook:
+      type: plugin
+      source: pi
+      script: pi-extension/index.ts
     mcp_transport: mcp-remote-stdio
     mcp_config_path: "mcp-pi.json"
     mcp_config_template: |
@@ -133,8 +137,8 @@ harnesses:
           }
         }
       }
-    skip_reason: "placeholder — Pi MCP wiring not yet validated in examples/"
-    tags: [placeholder, mcp-only]
+    skip_reason: ""
+    tags: [hook, mcp]
 
   - id: agentforce
     display_name: Salesforce Agentforce

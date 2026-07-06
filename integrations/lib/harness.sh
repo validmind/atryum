@@ -133,12 +133,26 @@ EOF
         warn "skipping amp plugin hook (INTEGRATION_AMP_MCP_ONLY=1)"
         return 0
       fi
-      local script
+      local script source
       script="$(echo "$hook_json" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["script"])')"
-      mkdir -p "$HARNESS_CONFIG_DIR/amp/plugins"
-      cp "$REPO_ROOT/examples/$script" "$HARNESS_CONFIG_DIR/amp/plugins/atryum.ts"
-      export PLUGINS=all
-      export AMP_PLUGIN_DIR="$HARNESS_CONFIG_DIR/amp/plugins"
+      source="$(echo "$hook_json" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["source"])')"
+      case "$source" in
+        amp)
+          mkdir -p "$HARNESS_CONFIG_DIR/amp/plugins"
+          cp "$REPO_ROOT/examples/$script" "$HARNESS_CONFIG_DIR/amp/plugins/atryum.ts"
+          export PLUGINS=all
+          export AMP_PLUGIN_DIR="$HARNESS_CONFIG_DIR/amp/plugins"
+          ;;
+        pi)
+          mkdir -p "$HARNESS_CONFIG_DIR/pi/extensions/atryum"
+          cp "$REPO_ROOT/examples/$script" "$HARNESS_CONFIG_DIR/pi/extensions/atryum/index.ts"
+          export PI_EXTENSION_PATH="$HARNESS_CONFIG_DIR/pi/extensions/atryum/index.ts"
+          ;;
+        *)
+          warn "unsupported plugin hook source: $source"
+          return 1
+          ;;
+      esac
       export ATRYUM_AGENT_ID="$harness_id"
       export ATRYUM_URL
       ;;
@@ -314,7 +328,9 @@ PY
   export GROK_TEST_HOME="$HARNESS_CONFIG_DIR/grok-home"
   export AMP_SETTINGS_FILE="$HARNESS_CONFIG_DIR/amp/settings.json"
   unset CLAUDE_MCP_CONFIG CLAUDE_CONFIG_DIR CURSOR_MCP_CONFIG CURSOR_RUN_DIR || true
+  unset PI_EXTENSION_PATH || true
 
+  harness_token_command_env "$auth_id"
   install_hook "$harness_id"
   configure_harness_mcp "$harness_id" "$auth_id" "$target_id"
 
