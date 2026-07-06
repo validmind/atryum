@@ -48,6 +48,16 @@ Config (env or flags):
                     realistic harness names (amp, cursor, claude-code, …)
   ATRYUM_POLL_MS    poll interval ms while awaiting approval, default 1000
   THREAD_ID         thread id surfaced in harness submissions
+
+Auth (env; both unset = no-auth mode):
+  ATRYUM_ACCESS_TOKEN   static OAuth bearer token, used as-is and never refreshed
+  ATRYUM_TOKEN_COMMAND  shell command that mints a token (raw, or OAuth token
+                        JSON with access_token); wins over ATRYUM_ACCESS_TOKEN
+                        when both are set
+  ATRYUM_TOKEN_REFRESH_SKEW_MS     re-mint this long before expiry, default 60000
+  ATRYUM_TOKEN_COMMAND_TIMEOUT_MS  token command timeout, default 10000
+  ATRYUM_STATE_DIR      token-cache.json location,
+                        default ~/.atryum/fake-agent-state
 """
 
 from __future__ import annotations
@@ -76,9 +86,11 @@ DEFAULT_THREAD_ID = os.environ.get("THREAD_ID", "")
 DEFAULT_MCP_SERVER = os.environ.get("ATRYUM_MCP_SERVER", "calc-mcp")
 ACCESS_TOKEN = os.environ.get("ATRYUM_ACCESS_TOKEN", "").strip()
 TOKEN_COMMAND = os.environ.get("ATRYUM_TOKEN_COMMAND", "").strip()
-TOKEN_REFRESH_SKEW_SECONDS = int(os.environ.get("ATRYUM_TOKEN_REFRESH_SKEW_SECONDS", "60"))
-TOKEN_COMMAND_TIMEOUT_SECONDS = float(
-    os.environ.get("ATRYUM_TOKEN_COMMAND_TIMEOUT_SECONDS", "10")
+TOKEN_REFRESH_SKEW_SECONDS = (
+    float(os.environ.get("ATRYUM_TOKEN_REFRESH_SKEW_MS", "60000")) / 1000
+)
+TOKEN_COMMAND_TIMEOUT_SECONDS = (
+    float(os.environ.get("ATRYUM_TOKEN_COMMAND_TIMEOUT_MS", "10000")) / 1000
 )
 STATE_DIR = os.environ.get("ATRYUM_STATE_DIR", "") or os.path.join(
     os.path.expanduser("~"), ".atryum", "fake-agent-state"
