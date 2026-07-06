@@ -305,9 +305,15 @@ func (r *AgentsRepo) DeleteSynced(ctx context.Context) error {
 // one managed_agent_binding row. These agents must not be pruned during sync:
 // deleting them would cascade-delete their binding configuration.
 func (r *AgentsRepo) ListVMCUIDsWithBindings(ctx context.Context) ([]string, error) {
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT vm_cuid FROM agents WHERE id IN (SELECT DISTINCT agent_cuid FROM managed_agent_bindings)`,
-	)
+	query, args, err := r.sb.
+		Select("DISTINCT a.vm_cuid").
+		From("agents a").
+		Join("managed_agent_bindings mab ON mab.agent_cuid = a.id").
+		ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("build list agents with bindings: %w", err)
+	}
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list agents with bindings: %w", err)
 	}
