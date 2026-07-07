@@ -299,18 +299,13 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 					matchedRuleID = &id
 				}
 				var ruleConf *float64
-				switch r.Action {
-				case RuleActionAutoDeny:
-					decision = policy.Decision{Disposition: policy.DispositionNever, Reason: "matched approval rule (auto_deny)"}
-				case RuleActionAutoApprove:
-					decision = policy.Decision{Disposition: policy.DispositionAuto, Reason: "matched approval rule (auto_approve)"}
-				case RuleActionAIEvaluation:
+				if r.Action == RuleActionAIEvaluation {
 					decision, ruleConf = s.runAIEvaluation(ctx, &r, upstream.Name, req.Tool, req.Input, agentID, agentRec, "", 0)
 					if decision.Disposition != dispositionContinue {
 						aiConfidence = ruleConf
 					}
-				default:
-					decision = policy.Decision{Disposition: policy.DispositionHuman, Reason: "matched approval rule (human_approval)"}
+				} else {
+					decision = decisionForRuleAction(r.Action)
 				}
 				s.emitRuleEvaluatedEvent(ctx, inv.InvocationID, r.ID, r.Action, decision, ruleConf)
 				if decision.Disposition != dispositionContinue {
@@ -322,8 +317,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 			}
 			// If every matching ai_evaluation rule deferred, treat as human approval.
 			if ruleMatched && decision.Disposition == dispositionContinue {
-				decision = policy.Decision{Disposition: policy.DispositionHuman, Reason: "ai_evaluation: all matching rules deferred; falling back to human_approval"}
-				s.emitRuleEvaluatedEvent(ctx, inv.InvocationID, "", RuleActionAIEvaluation, decision, nil)
+				decision = s.emitAllDeferredFallback(ctx, inv.InvocationID)
 			}
 		}
 	}
@@ -1026,21 +1020,14 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 					resolvedAIConfidence = conf
 					break
 				}
-				nonAIDecision := policy.Decision{Disposition: policy.DispositionAuto, Reason: "matched approval rule (" + r.Action + ")"}
-				if r.Action == RuleActionAutoDeny {
-					nonAIDecision = policy.Decision{Disposition: policy.DispositionNever, Reason: "matched approval rule (auto_deny)"}
-				} else if r.Action == RuleActionHumanApproval {
-					nonAIDecision = policy.Decision{Disposition: policy.DispositionHuman, Reason: "matched approval rule (human_approval)"}
-				}
-				s.emitRuleEvaluatedEvent(ctx, inv.InvocationID, r.ID, r.Action, nonAIDecision, nil)
+				s.emitRuleEvaluatedEvent(ctx, inv.InvocationID, r.ID, r.Action, decisionForRuleAction(r.Action), nil)
 				ruleAction = r.Action
 				break
 			}
 			// If every matching ai_evaluation rule deferred, the invocation falls
 			// back to human approval below; record that in the audit trail.
 			if ruleDeferred && ruleAction == "" {
-				fallback := policy.Decision{Disposition: policy.DispositionHuman, Reason: "ai_evaluation: all matching rules deferred; falling back to human_approval"}
-				s.emitRuleEvaluatedEvent(ctx, inv.InvocationID, "", RuleActionAIEvaluation, fallback, nil)
+				s.emitAllDeferredFallback(ctx, inv.InvocationID)
 			}
 		}
 	}
@@ -1353,6 +1340,29 @@ func (s *Service) toResponse(inv Invocation) InvocationResponse {
 		resp.Error = json.RawMessage(inv.Error)
 	}
 	return resp
+}
+
+// decisionForRuleAction maps a non-AI approval rule action to the decision it
+// enforces. Unknown actions gate to human approval, matching the dispatch
+// behavior of both the Invoke and Submit flows.
+func decisionForRuleAction(action string) policy.Decision {
+	switch action {
+	case RuleActionAutoDeny:
+		return policy.Decision{Disposition: policy.DispositionNever, Reason: "matched approval rule (auto_deny)"}
+	case RuleActionAutoApprove:
+		return policy.Decision{Disposition: policy.DispositionAuto, Reason: "matched approval rule (auto_approve)"}
+	default:
+		return policy.Decision{Disposition: policy.DispositionHuman, Reason: "matched approval rule (human_approval)"}
+	}
+}
+
+// emitAllDeferredFallback records the audit event for an invocation whose
+// matching ai_evaluation rules all deferred, and returns the human-approval
+// decision that rule iteration falls back to.
+func (s *Service) emitAllDeferredFallback(ctx context.Context, invocationID string) policy.Decision {
+	d := policy.Decision{Disposition: policy.DispositionHuman, Reason: "ai_evaluation: all matching rules deferred; falling back to human_approval"}
+	s.emitRuleEvaluatedEvent(ctx, invocationID, "", RuleActionAIEvaluation, d, nil)
+	return d
 }
 
 // emitRuleEvaluatedEvent records one entry in the per-invocation audit trail for
