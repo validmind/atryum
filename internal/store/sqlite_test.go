@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1011,4 +1012,90 @@ func TestAgentSyncSettingsRepo_UpsertOnEmptyTable(t *testing.T) {
 	if s.DefaultAgentVMCUID != "agent-vm-abc" {
 		t.Fatalf("expected DefaultAgentVMCUID=agent-vm-abc, got %q", s.DefaultAgentVMCUID)
 	}
+}
+
+// TestInitDBToleratesRenumberedMigrationStamps pins the failure mode a
+// rebase actually produced: main's 024_server_endpoint_slug landed ahead of
+// this branch's session migrations, shifting them from 024/025 to 025/026.
+// A long-lived dev DB stamped under the old numbering re-runs whichever
+// migrations now occupy versions >= 24 under the new numbering, even though
+// their ADD COLUMN steps already executed once under the old version
+// numbers. Simulate that by wiping the schema_migrations rows for versions
+// >= 24 (as if the DB had been stamped by an earlier numbering) and
+// re-running InitDB: it must succeed, not fail with a "column already
+// exists" style error, and the schema must remain intact.
+func TestInitDBToleratesRenumberedMigrationStamps(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+
+	if err := InitDB(db); err != nil {
+		t.Fatalf("InitDB (first run): %v", err)
+	}
+
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version >= 24`); err != nil {
+		t.Fatalf("simulate stale stamps: %v", err)
+	}
+
+	if err := InitDB(db); err != nil {
+		t.Fatalf("InitDB (re-run against renumbered stamps): %v", err)
+	}
+
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
+		t.Fatalf("count migrations: %v", err)
+	}
+	if count != 26 {
+		t.Fatalf("expected 26 migrations recorded, got %d", count)
+	}
+
+	// The columns/tables the renumbered migrations add must still be
+	// present and singular, not duplicated or missing.
+	for _, table := range []string{"mcp_servers", "invocations", "external_sessions"} {
+		if !sqliteTableHasColumn(t, db, table, tableColumnUnderTest[table]) {
+			t.Fatalf("table %s missing column %s after renumbered re-run", table, tableColumnUnderTest[table])
+		}
+	}
+
+	var indexCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_mcp_servers_endpoint_slug'`).Scan(&indexCount); err != nil {
+		t.Fatalf("count index: %v", err)
+	}
+	if indexCount != 1 {
+		t.Fatalf("expected exactly one idx_mcp_servers_endpoint_slug index, got %d", indexCount)
+	}
+}
+
+var tableColumnUnderTest = map[string]string{
+	"mcp_servers":       "endpoint_slug",
+	"invocations":       "session_id",
+	"external_sessions": "expires_at",
+}
+
+func sqliteTableHasColumn(t *testing.T, db *sql.DB, table, column string) bool {
+	t.Helper()
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		t.Fatalf("PRAGMA table_info(%s): %v", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			colType    string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultVal, &pk); err != nil {
+			t.Fatalf("scan table_info(%s): %v", table, err)
+		}
+		if name == column {
+			return true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows.Err table_info(%s): %v", table, err)
+	}
+	return false
 }

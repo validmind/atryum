@@ -5,7 +5,12 @@ func migration025() Definition {
 		Version: 25,
 		Name:    "025_external_sessions",
 		Steps: []Step{
-			Raw("add session_id to invocations", `ALTER TABLE invocations ADD COLUMN session_id TEXT`),
+			// AddColumnIfMissing rather than a bare ADD COLUMN: migration
+			// numbering can shift across a rebase (see 026's comment and
+			// AddColumnIfMissing's doc comment), so a database already
+			// stamped past this version under a different numbering must
+			// not crash re-running this ALTER.
+			AddColumnIfMissing("invocations", "session_id", "TEXT", "TEXT"),
 			RawDialect("create external_sessions table", `
 				CREATE TABLE IF NOT EXISTS external_sessions (
 					id                TEXT      PRIMARY KEY,

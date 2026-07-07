@@ -10,10 +10,17 @@ func migration026() Definition {
 			// an in-place change. Existing rows backfill to NULL, which
 			// lookupSessionForAgent treats as non-expiring (IsZero guard); the
 			// service sets a concrete expires_at on every new/touched session.
-			RawDialect("add expires_at to external_sessions",
-				`ALTER TABLE external_sessions ADD COLUMN expires_at TIMESTAMP`,
-				`ALTER TABLE external_sessions ADD COLUMN expires_at TIMESTAMPTZ`,
-			),
+			//
+			// AddColumnIfMissing rather than a bare ADD COLUMN: this project has
+			// a live example of why. A rebase inserted main's
+			// 024_server_endpoint_slug ahead of this branch's session
+			// migrations, shifting them from 024/025 to 025/026. A dev database
+			// stamped under the old numbering had already run this ALTER as
+			// part of what was then "025", then re-ran it as "026" under the
+			// new numbering and hit "column already exists" (Postgres
+			// SQLSTATE 42701). Guarding on the column's actual presence makes
+			// the step safe regardless of which version number it runs under.
+			AddColumnIfMissing("external_sessions", "expires_at", "TIMESTAMP", "TIMESTAMPTZ"),
 		},
 	}
 }

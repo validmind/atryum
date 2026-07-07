@@ -13,9 +13,16 @@ func migration024() Definition {
 		Version: 24,
 		Name:    "024_server_endpoint_slug",
 		Steps: []Step{
-			Raw("add server endpoint_slug", `
-				ALTER TABLE mcp_servers ADD COLUMN endpoint_slug TEXT NOT NULL DEFAULT ''
-			`),
+			// AddColumnIfMissing (not a bare ADD COLUMN): this migration has
+			// already been renumbered once by a rebase (main inserted it
+			// ahead of this branch's session migrations), so a database
+			// stamped under the old version number can hit this ALTER a
+			// second time. See AddColumnIfMissing's doc comment for why
+			// idempotency is now a project-wide requirement for these steps.
+			AddColumnIfMissing("mcp_servers", "endpoint_slug",
+				"TEXT NOT NULL DEFAULT ''",
+				"TEXT NOT NULL DEFAULT ''",
+			),
 			Custom("backfill server endpoint_slug", backfillServerEndpointSlugs),
 			Raw("create unique server endpoint_slug index", `
 				CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_servers_endpoint_slug ON mcp_servers(endpoint_slug)
