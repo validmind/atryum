@@ -166,8 +166,9 @@ export function buildInvocationAudit(
       ? buildAuditFromEvents(inv, rules, events, ruleEvalEvents)
       : buildAuditFromApproval(inv, rules);
 
-  // If execution failed after approval, append a failure step to the last
-  // entry so it appears regardless of which rule/approval branch ran first.
+  // If the invocation failed, append a terminal failure step to the last entry
+  // so it appears regardless of whether failure happened during approval wait
+  // or after approval during execution.
   if (inv.status === 'failed') {
     const failStep: AuditStep = {
       text: 'Invocation failed',
@@ -330,7 +331,7 @@ function resolveDecisionSteps(
     }
     return [
       { text: 'Deferring to human approval as per charter', variant: 'defer' },
-      { text: 'Awaiting human', variant: 'pending' },
+      ...undecidedSteps(inv),
     ];
   }
   if (disposition === 'human' || disposition === 'workflow') {
@@ -360,7 +361,7 @@ function resolveDecisionSteps(
     }
     return [
       { text: deferText, variant: 'defer' },
-      { text: 'Awaiting human', variant: 'pending' },
+      ...undecidedSteps(inv),
     ];
   }
   if (disposition === 'approved') {
@@ -384,4 +385,23 @@ function resolveDecisionSteps(
     return [{ text: `Decision: ${disposition}`, variant: 'info' }];
   }
   return [];
+}
+
+/**
+ * Steps for an invocation that reached a human/workflow gate but has no
+ * recorded decision. Only render "Awaiting human" while a decision is still
+ * possible; on a terminal status show what actually ended the wait ('failed'
+ * returns nothing — buildInvocationAudit appends the failure step).
+ */
+function undecidedSteps(inv: InvocationAuditInput): AuditStep[] {
+  if (inv.status === 'failed') {
+    return [];
+  }
+  if (inv.status === 'expired') {
+    return [{ text: 'Expired without decision', variant: 'info' }];
+  }
+  if (inv.status === 'cancelled') {
+    return [{ text: 'Cancelled', variant: 'info' }];
+  }
+  return [{ text: 'Awaiting human', variant: 'pending' }];
 }
