@@ -98,7 +98,8 @@ export type AuditStepVariant =
   | 'deny'
   | 'defer'
   | 'pending'
-  | 'info';
+  | 'info'
+  | 'error';
 
 export type AuditStep = {
   text: string;
@@ -120,6 +121,7 @@ export type AuditEntry = {
 
 type InvocationAuditInput = {
   status: string;
+  completed_at?: string | null;
   approval?: {
     status: string;
     reason?: string | null;
@@ -159,11 +161,35 @@ export function buildInvocationAudit(
     (e) => e.type === 'invocation.rule_evaluated',
   );
 
-  if (ruleEvalEvents.length > 0) {
-    return buildAuditFromEvents(inv, rules, events, ruleEvalEvents);
+  const entries =
+    ruleEvalEvents.length > 0
+      ? buildAuditFromEvents(inv, rules, events, ruleEvalEvents)
+      : buildAuditFromApproval(inv, rules);
+
+  // If execution failed after approval, append a failure step to the last
+  // entry so it appears regardless of which rule/approval branch ran first.
+  if (inv.status === 'failed') {
+    const failStep: AuditStep = {
+      text: 'Invocation failed',
+      variant: 'error',
+      timestamp: inv.completed_at ?? undefined,
+    };
+    if (entries.length > 0) {
+      const last = entries[entries.length - 1];
+      if (!last.steps.some((s) => s.variant === 'error')) {
+        last.steps.push(failStep);
+      }
+    } else {
+      entries.push({
+        ruleName: null,
+        ruleId: null,
+        isAIEvaluation: false,
+        steps: [failStep],
+      });
+    }
   }
 
-  return buildAuditFromApproval(inv, rules);
+  return entries;
 }
 
 function buildAuditFromEvents(

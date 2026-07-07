@@ -150,6 +150,7 @@ const AUDIT_STEP_ICON: Record<AuditStep["variant"], string> = {
   defer: "→",
   pending: "…",
   info: "→",
+  error: "✗",
 };
 
 const AuditEntryRow: React.FC<{ entry: AuditEntry }> = ({ entry }) => {
