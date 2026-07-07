@@ -999,6 +999,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		return InvocationResponse{}, err
 	}
 	ruleAction := ""
+	ruleDeferred := false
 	var matchedRuleID *string
 	var resolvedAIDecision *policy.Decision
 	var resolvedAIConfidence *float64
@@ -1015,6 +1016,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 					s.emitRuleEvaluatedEvent(ctx, inv.InvocationID, r.ID, r.Action, d, conf)
 					if d.Disposition == dispositionContinue {
 						matchedRuleID = nil
+						ruleDeferred = true
 						slog.Info("ai_evaluation: LLM deferred to next rule; continuing rule iteration",
 							"rule_id", r.ID, "server", source, "tool", req.Tool)
 						continue
@@ -1033,6 +1035,12 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 				s.emitRuleEvaluatedEvent(ctx, inv.InvocationID, r.ID, r.Action, nonAIDecision, nil)
 				ruleAction = r.Action
 				break
+			}
+			// If every matching ai_evaluation rule deferred, the invocation falls
+			// back to human approval below; record that in the audit trail.
+			if ruleDeferred && ruleAction == "" {
+				fallback := policy.Decision{Disposition: policy.DispositionHuman, Reason: "ai_evaluation: all matching rules deferred; falling back to human_approval"}
+				s.emitRuleEvaluatedEvent(ctx, inv.InvocationID, "", RuleActionAIEvaluation, fallback, nil)
 			}
 		}
 	}
