@@ -121,7 +121,7 @@ export interface InvocationFilters {
 export const invocationsApi = {
   list: async (
     filters: InvocationFilters = {},
-  ): Promise<{ items: Invocation[] }> => {
+  ): Promise<{ items: Invocation[]; total: number; offset: number; limit: number }> => {
     const params = new URLSearchParams();
     if (filters.server) params.set('server', filters.server);
     if (filters.tool) params.set('tool', filters.tool);
