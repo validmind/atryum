@@ -1348,7 +1348,7 @@ func (s *Service) toResponse(inv Invocation) InvocationResponse {
 
 // emitRuleEvaluatedEvent records one entry in the per-invocation audit trail for
 // each rule that was evaluated during rule-iteration. disposition is the raw
-// policy disposition ("auto", "never", "human_approval", "continue", etc.).
+// policy disposition ("auto", "never", "human", "continue", etc.).
 // When skipped is true the rule returned "next_rule" / dispositionContinue and
 // rule iteration continued to the next candidate.
 func (s *Service) emitRuleEvaluatedEvent(ctx context.Context, invocationID, ruleID, action string, d policy.Decision, conf *float64) {

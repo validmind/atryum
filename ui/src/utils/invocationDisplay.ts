@@ -312,7 +312,7 @@ function resolveDecisionSteps(
       { text: 'Awaiting human', variant: 'pending' },
     ];
   }
-  if (disposition === 'human_approval') {
+  if (disposition === 'human') {
     if (
       approvalStatus === 'approved' ||
       approvalStatus === 'ai_escalated_approved'
