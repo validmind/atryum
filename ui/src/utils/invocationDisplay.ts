@@ -244,6 +244,7 @@ function buildAuditFromApproval(
     approvalStatus ?? '',
     inv,
     actor ?? undefined,
+    isAIEval,
   );
 
   return [{ ruleName, ruleId, isAIEvaluation: isAIEval, confidence, steps }];
@@ -259,10 +260,7 @@ function resolveDecisionSteps(
   const reason = inv.approval?.reason ?? '';
 
   if (disposition === 'auto' || disposition === 'auto_approved') {
-    const byAI =
-      isAIEval ??
-      ((reason ?? '').startsWith('ai_evaluation') ||
-        approvalStatus === 'auto_approved');
+    const byAI = isAIEval ?? reason.startsWith('ai_evaluation');
     return [
       {
         text: byAI
@@ -273,10 +271,7 @@ function resolveDecisionSteps(
     ];
   }
   if (disposition === 'never' || disposition === 'auto_denied') {
-    const byAI =
-      isAIEval ??
-      ((reason ?? '').startsWith('ai_evaluation') ||
-        approvalStatus === 'auto_denied');
+    const byAI = isAIEval ?? reason.startsWith('ai_evaluation');
     return [
       {
         text: byAI ? 'Invocation denied by AI' : 'Invocation denied by rule',
