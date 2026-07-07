@@ -301,6 +301,60 @@ func (r *AgentsRepo) DeleteSynced(ctx context.Context) error {
 	return err
 }
 
+// ListVMCUIDsWithBindings returns the vm_cuid of every agent that has at least
+// one managed_agent_binding row. These agents must not be pruned during sync:
+// deleting them would cascade-delete their binding configuration.
+func (r *AgentsRepo) ListVMCUIDsWithBindings(ctx context.Context) ([]string, error) {
+	query, args, err := r.sb.
+		Select("DISTINCT a.vm_cuid").
+		From("agents a").
+		Join("managed_agent_bindings mab ON mab.agent_cuid = a.id").
+		ToSql()
+	if err != nil {
+		return nil, fmt.Errorf("build list agents with bindings: %w", err)
+	}
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list agents with bindings: %w", err)
+	}
+	defer rows.Close()
+	var cuids []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return nil, err
+		}
+		cuids = append(cuids, c)
+	}
+	return cuids, rows.Err()
+}
+
+// DeleteSyncedStaleForOrg removes synced agent records for the given org whose
+// vm_cuid is not in keepCUIDs. Called after each sync to prune agents that were
+// archived or deleted in ValidMind. Manually-created agents (empty
+// vm_organization_cuid) are never touched.
+//
+// If keepCUIDs is empty, all synced agents for the org are removed (the org has
+// no active records of the configured record type).
+//
+// Returns an error if orgCUID is empty: an empty orgCUID would match all
+// manually-created agents (which also store "" in vm_organization_cuid).
+func (r *AgentsRepo) DeleteSyncedStaleForOrg(ctx context.Context, orgCUID string, keepCUIDs []string) error {
+	if orgCUID == "" {
+		return fmt.Errorf("DeleteSyncedStaleForOrg: orgCUID must not be empty")
+	}
+	q := r.sb.Delete("agents").Where(sq.Eq{"vm_organization_cuid": orgCUID})
+	if len(keepCUIDs) > 0 {
+		q = q.Where(sq.NotEq{"vm_cuid": keepCUIDs})
+	}
+	query, args, err := q.ToSql()
+	if err != nil {
+		return fmt.Errorf("build stale agent delete: %w", err)
+	}
+	_, err = r.db.ExecContext(ctx, query, args...)
+	return err
+}
+
 // List returns all agent records ordered by vm_name.
 func (r *AgentsRepo) List(ctx context.Context) ([]AgentRecord, error) {
 	return r.list(ctx, r.sb.Select(agentColumns...).From("agents").OrderBy("vm_name ASC"))

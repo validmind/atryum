@@ -137,6 +137,7 @@ func runServer(args []string) error {
 		log.Printf("agent sync: fetched %d agent(s) for org=%s (%s) record_type=%s", agentsResp.Total, agentsResp.OrgCUID, agentsResp.OrgName, settings.AgentRecordTypeSlug)
 		syncedAt := time.Now().UTC()
 		charterKey := settings.CharterFieldKey
+		activeCUIDs := make([]string, 0, len(agentsResp.Results))
 		for _, a := range agentsResp.Results {
 			description, _ := a.CustomFields["description"].(string)
 			// Pull the charter from the configured custom field. Tolerate both a
@@ -162,6 +163,20 @@ func runServer(args []string) error {
 				SyncedAt:           syncedAt,
 			}); upsertErr != nil {
 				log.Printf("  agent sync upsert failed for cuid=%s: %v", a.CUID, upsertErr)
+			} else {
+				activeCUIDs = append(activeCUIDs, a.CUID)
+			}
+		}
+		// Prune agents that are no longer present in ValidMind (archived or deleted).
+		// Agents with managed agent bindings are never pruned: deleting them would
+		// cascade-delete their binding configuration (ON DELETE CASCADE FK).
+		boundCUIDs, err := agentsRepo.ListVMCUIDsWithBindings(ctx)
+		if err != nil {
+			log.Printf("agent sync: could not list agents with bindings, skipping stale prune: %v", err)
+		} else {
+			keepCUIDs := append(activeCUIDs, boundCUIDs...)
+			if err := agentsRepo.DeleteSyncedStaleForOrg(ctx, agentsResp.OrgCUID, keepCUIDs); err != nil {
+				log.Printf("agent sync: failed to prune stale agents for org=%s: %v", agentsResp.OrgCUID, err)
 			}
 		}
 		return nil
