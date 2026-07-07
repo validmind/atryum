@@ -209,6 +209,15 @@ type EventListResponse struct {
 // a Submit whose authenticated agent does not own the session is rejected. This
 // keeps the trust boundary at "trust the harness, not the LLM": the harness can
 // only ever read/poison its own session.
+//
+// AgentID must be non-empty: session history is an identity-keyed feature, and
+// an empty binding is not a valid identity, just the absence of one. Two
+// anonymous callers both bound to "" would satisfy a naive equality check and
+// read/append to each other's history, so Atryum requires a non-empty binding
+// at mint time (CreateSession) and re-checks it at use time
+// (lookupSessionForAgent) in case older, pre-enforcement rows exist. Harnesses
+// with no stable identity claim fall back to the no-session_id path, which
+// evaluates each call without cross-call history instead.
 type ExternalSession struct {
 	ID      string
 	AgentID string

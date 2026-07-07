@@ -85,6 +85,9 @@ func (s *stubService) Submit(ctx context.Context, req invocation.ExternalSubmitR
 func (s *stubService) CreateSession(_ context.Context, req invocation.CreateSessionRequest, agentID string) (invocation.SessionResponse, error) {
 	s.createSessionReq = &req
 	s.createSessionAgentID = agentID
+	if s.invErr != nil {
+		return invocation.SessionResponse{}, s.invErr
+	}
 	return invocation.SessionResponse{SessionID: "ses_test", AgentID: agentID, Harness: req.Harness, ClientSessionID: req.ClientSessionID}, nil
 }
 func (s *stubService) SetSummary(_ context.Context, id string, summary string) (invocation.InvocationResponse, error) {
@@ -598,6 +601,28 @@ func TestExternalSessionUsesAuthenticatedIdentityOverClaimedAgentID(t *testing.T
 	}
 	if strings.Contains(w.Body.String(), "claimed-by-harness") {
 		t.Fatalf("response should not echo claimed agent over authenticated identity: %s", w.Body.String())
+	}
+}
+
+// TestExternalSessionMintRejectionReturns400 pins that when Service.CreateSession
+// rejects a session (e.g. an empty agent binding), the handler surfaces it as a
+// 400-class response rather than a 500 — externalSessions maps any CreateSession
+// error to http.StatusBadRequest, so a validation failure must not be mistaken
+// for a server error.
+func TestExternalSessionMintRejectionReturns400(t *testing.T) {
+	svc := &stubService{invErr: fmt.Errorf("session requires an agent binding")}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/external/sessions", strings.NewReader(`{}`))
+	req.Header.Set("content-type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "requires an agent binding") {
+		t.Fatalf("expected error message in body, got %s", w.Body.String())
 	}
 }
 

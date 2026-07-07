@@ -780,6 +780,101 @@ func TestSubmitRejectsExpiredSession(t *testing.T) {
 	}
 }
 
+// TestCreateSessionRejectsEmptyAgentBinding pins that a session can never be
+// minted without a non-empty agent binding, whether the caller is fully
+// anonymous (no authenticated identity, no self-declared agent_id) or only
+// whitespace. Session history is identity-keyed; an empty binding would let
+// any other anonymous caller attach to the same history via a trivial ""=="".
+// equality, so this is rejected at mint time rather than left to the
+// use-time ownership check.
+func TestCreateSessionRejectsEmptyAgentBinding(t *testing.T) {
+	db := newSQLiteTestDB(t)
+	service := invocation.NewService(
+		store.NewInvocationRepo(db), store.NewEventRepo(db), nil, nil, nil, 5*time.Second,
+		rulesStoreStub{}, agentLookupStub{}, &evaluateClientStub{}, summarySettingsStub{},
+	)
+	service.SetSessionStore(store.NewExternalSessionRepo(db))
+
+	if _, err := service.CreateSession(context.Background(), invocation.CreateSessionRequest{}, ""); err == nil || !strings.Contains(err.Error(), "requires an agent binding") {
+		t.Fatalf("expected empty-binding rejection, got %v", err)
+	}
+	if _, err := service.CreateSession(context.Background(), invocation.CreateSessionRequest{}, "   "); err == nil || !strings.Contains(err.Error(), "requires an agent binding") {
+		t.Fatalf("expected whitespace-only binding to be rejected, got %v", err)
+	}
+}
+
+// TestSubmitRejectsLegacyEmptyBoundSession simulates a session row that
+// predates the mint-time enforcement (or was otherwise written with an empty
+// AgentID) by inserting it directly through the session store, bypassing
+// Service.CreateSession's validation. lookupSessionForAgent must still reject
+// it at use time — both when the caller declares an agent_id and when the
+// caller is itself anonymous, since the equality check alone (""== "") would
+// otherwise let two anonymous callers share the same history.
+func TestSubmitRejectsLegacyEmptyBoundSession(t *testing.T) {
+	db := newSQLiteTestDB(t)
+	service := invocation.NewService(
+		store.NewInvocationRepo(db), store.NewEventRepo(db), nil, nil, nil, 5*time.Second,
+		rulesStoreStub{}, agentLookupStub{}, &evaluateClientStub{}, summarySettingsStub{},
+	)
+	sessions := store.NewExternalSessionRepo(db)
+	service.SetSessionStore(sessions)
+
+	legacy := invocation.ExternalSession{
+		ID:         "ses_legacy_unbound",
+		AgentID:    "",
+		CreatedAt:  time.Now().UTC(),
+		LastSeenAt: time.Now().UTC(),
+		ExpiresAt:  time.Now().UTC().Add(time.Hour),
+	}
+	if err := sessions.CreateSession(context.Background(), legacy); err != nil {
+		t.Fatal(err)
+	}
+
+	// Caller declares an agent_id but the stored row is unbound.
+	declared := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "caller"})
+	_, err := service.Submit(declared, invocation.ExternalSubmitRequest{
+		Source: "amp", Tool: "bash", Input: map[string]any{"cmd": "ls"}, SessionID: legacy.ID,
+	})
+	if err == nil || !strings.Contains(err.Error(), "not bound to an agent") {
+		t.Fatalf("expected unbound-session rejection for declared caller, got %v", err)
+	}
+
+	// Caller is also anonymous: the equality check alone (""=="") must not pass.
+	_, err = service.Submit(context.Background(), invocation.ExternalSubmitRequest{
+		Source: "amp", Tool: "bash", Input: map[string]any{"cmd": "ls"}, SessionID: legacy.ID,
+	})
+	if err == nil || !strings.Contains(err.Error(), "not bound to an agent") {
+		t.Fatalf("expected unbound-session rejection for anonymous caller, got %v", err)
+	}
+}
+
+// TestSubmitSucceedsWithProperlyBoundSession is the positive-path counterpart
+// to the two rejection tests above: a session minted with a real agent
+// binding must keep working end to end (CreateSession, then Submit against
+// it as the owning agent).
+func TestSubmitSucceedsWithProperlyBoundSession(t *testing.T) {
+	db := newSQLiteTestDB(t)
+	service := invocation.NewService(
+		store.NewInvocationRepo(db), store.NewEventRepo(db), nil, nil, nil, 5*time.Second,
+		rulesStoreStub{}, agentLookupStub{}, &evaluateClientStub{}, summarySettingsStub{},
+	)
+	service.SetSessionStore(store.NewExternalSessionRepo(db))
+
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "owner"})
+	sess, err := service.CreateSession(ctx, invocation.CreateSessionRequest{Harness: "amp"}, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.AgentID != "owner" {
+		t.Fatalf("expected session bound to owner, got %q", sess.AgentID)
+	}
+	if _, err := service.Submit(ctx, invocation.ExternalSubmitRequest{
+		Source: "amp", Tool: "bash", Input: map[string]any{"cmd": "ls"}, SessionID: sess.SessionID,
+	}); err != nil {
+		t.Fatalf("expected properly bound session to succeed, got %v", err)
+	}
+}
+
 func TestInvokeAIEvaluationIncludesToolDescriptionInContext(t *testing.T) {
 	toolDescription := "Attach an external URL reference to a Shortcut story. Non-destructive."
 	toolSchema := `{"type":"object","properties":{"story_public_id":{"type":"integer"},"url":{"type":"string"}}}`

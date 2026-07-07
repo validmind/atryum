@@ -245,13 +245,20 @@ func (s *Service) SetSessionStore(store sessionStore) {
 
 // CreateSession mints a new harness session bound to agentID and persists it.
 // agentID is the authenticated identity when present, else the self-declared id
-// (no-auth mode).
+// (no-auth mode). A non-empty binding is required: session history is
+// identity-keyed, and an anonymous caller has no stable identity for ownership
+// to mean anything, so there is no safe way to mint a usable anonymous
+// session. Harnesses without an identity get history-free evaluation via the
+// no-session_id path instead.
 func (s *Service) CreateSession(ctx context.Context, req CreateSessionRequest, agentID string) (SessionResponse, error) {
 	if s.sessions == nil {
 		return SessionResponse{}, fmt.Errorf("sessions not enabled")
 	}
 	now := time.Now().UTC()
 	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return SessionResponse{}, fmt.Errorf("session requires an agent binding")
+	}
 	if len([]rune(agentID)) > maxExternalSessionAgentIDChars {
 		return SessionResponse{}, fmt.Errorf("agent_id is too long")
 	}
@@ -725,8 +732,9 @@ const (
 )
 
 // lookupSessionForAgent fetches a session and verifies it belongs to agentID.
-// Returns an error if sessions are disabled, the session is unknown, or it is
-// owned by a different agent — never silently dropping the context.
+// Returns an error if sessions are disabled, the session is unknown, it has no
+// agent binding, or it is owned by a different agent — never silently
+// dropping the context.
 func (s *Service) lookupSessionForAgent(ctx context.Context, sessionID, agentID string) (ExternalSession, error) {
 	if s.sessions == nil {
 		return ExternalSession{}, fmt.Errorf("sessions not enabled")
@@ -738,7 +746,18 @@ func (s *Service) lookupSessionForAgent(ctx context.Context, sessionID, agentID 
 	if err != nil {
 		return ExternalSession{}, err
 	}
-	if strings.TrimSpace(sess.AgentID) != strings.TrimSpace(agentID) {
+	// CreateSession has rejected empty bindings since enforcement was added, but
+	// rows minted before that (or written directly) may still carry AgentID ==
+	// "". Reject those explicitly: without this check, two anonymous callers
+	// both trimming to "" would satisfy the equality check below and share one
+	// another's session history, which is exactly the ownership bypass this
+	// function exists to prevent. Rows are left in place for audit; a future
+	// reaper can clean them up.
+	storedAgentID := strings.TrimSpace(sess.AgentID)
+	if storedAgentID == "" {
+		return ExternalSession{}, fmt.Errorf("session is not bound to an agent")
+	}
+	if storedAgentID != strings.TrimSpace(agentID) {
 		return ExternalSession{}, fmt.Errorf("session_id does not belong to this agent")
 	}
 	if !sess.ExpiresAt.IsZero() && time.Now().UTC().After(sess.ExpiresAt) {
