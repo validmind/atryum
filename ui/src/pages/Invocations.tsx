@@ -227,7 +227,7 @@ const InvocationAuditSection: React.FC<{ entries: AuditEntry[] }> = ({
       </Text>
       <VStack align="stretch" gap={2}>
         {entries.map((entry, i) => (
-          <AuditEntryRow key={entry.ruleName ?? i} entry={entry} />
+          <AuditEntryRow key={entry.ruleId ?? 'unmatched'} entry={entry} />
         ))}
       </VStack>
     </Box>

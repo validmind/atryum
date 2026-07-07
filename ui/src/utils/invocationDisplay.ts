@@ -112,6 +112,7 @@ export type AuditStep = {
 export type AuditEntry = {
   /** null means no rule matched */
   ruleName: string | null;
+  ruleId: string | null;
   isAIEvaluation: boolean;
   confidence?: number;
   steps: AuditStep[];
@@ -183,11 +184,10 @@ function buildAuditFromEvents(
 
   return ruleEvalEvents.map((evt) => {
     const d = (evt.data ?? {}) as RuleEvaluatedEventData;
-    const rule = d.rule_id
-      ? (rules.find((r) => r.id === d.rule_id) ?? null)
-      : null;
+    const ruleId = d.rule_id ?? null;
+    const rule = ruleId ? (rules.find((r) => r.id === ruleId) ?? null) : null;
     const ruleName =
-      rule?.description ?? (d.rule_id ? `Rule ${d.rule_id}` : null);
+      rule?.description ?? (ruleId ? `Rule ${ruleId}` : null);
     const isAIEval = d.action === 'ai_evaluation';
     const confidence = d.confidence;
 
@@ -217,7 +217,7 @@ function buildAuditFromEvents(
       );
     }
 
-    return { ruleName, isAIEvaluation: isAIEval, confidence, steps };
+    return { ruleName, ruleId, isAIEvaluation: isAIEval, confidence, steps };
   });
 }
 
@@ -246,7 +246,7 @@ function buildAuditFromApproval(
     actor ?? undefined,
   );
 
-  return [{ ruleName, isAIEvaluation: isAIEval, confidence, steps }];
+  return [{ ruleName, ruleId, isAIEvaluation: isAIEval, confidence, steps }];
 }
 
 function resolveDecisionSteps(
