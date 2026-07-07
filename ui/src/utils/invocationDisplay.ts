@@ -333,10 +333,13 @@ function resolveDecisionSteps(
       { text: 'Awaiting human', variant: 'pending' },
     ];
   }
-  if (disposition === 'human') {
-    const deferText = isAIEval
-      ? 'Deferring to human approval as per charter'
-      : 'Human approval required as per rule';
+  if (disposition === 'human' || disposition === 'workflow') {
+    const deferText =
+      disposition === 'workflow'
+        ? 'Deferring to approval workflow'
+        : isAIEval
+          ? 'Deferring to human approval as per charter'
+          : 'Human approval required as per rule';
     if (
       approvalStatus === 'approved' ||
       approvalStatus === 'ai_escalated_approved'
@@ -374,6 +377,11 @@ function resolveDecisionSteps(
   }
   if (inv.status === 'cancelled') {
     return [{ text: 'Cancelled', variant: 'info' }];
+  }
+  // Unknown disposition (e.g. a value added on the backend before this UI
+  // learns about it): render it raw rather than an empty step list.
+  if (disposition !== '') {
+    return [{ text: `Decision: ${disposition}`, variant: 'info' }];
   }
   return [];
 }
