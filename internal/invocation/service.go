@@ -323,7 +323,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		// If every matching ai_evaluation rule deferred, treat as human approval.
 		if ruleMatched && decision.Disposition == dispositionContinue {
 			decision = policy.Decision{Disposition: policy.DispositionHuman, Reason: "ai_evaluation: all matching rules deferred; falling back to human_approval"}
-			s.emitRuleEvaluatedEvent(ctx, inv.InvocationID, "", string(policy.DispositionHuman), decision, nil)
+			s.emitRuleEvaluatedEvent(ctx, inv.InvocationID, "", RuleActionAIEvaluation, decision, nil)
 		}
 		}
 	}

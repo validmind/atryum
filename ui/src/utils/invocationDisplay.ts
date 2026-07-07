@@ -313,12 +313,15 @@ function resolveDecisionSteps(
     ];
   }
   if (disposition === 'human') {
+    const deferText = isAIEval
+      ? 'Deferring to human approval as per charter'
+      : 'Human approval required as per rule';
     if (
       approvalStatus === 'approved' ||
       approvalStatus === 'ai_escalated_approved'
     ) {
       return [
-        { text: 'Deferring to human approval as per charter', variant: 'defer' },
+        { text: deferText, variant: 'defer' },
         { text: 'Approved by human', variant: 'approve', actor },
       ];
     }
@@ -327,12 +330,12 @@ function resolveDecisionSteps(
       approvalStatus === 'ai_escalated_denied'
     ) {
       return [
-        { text: 'Deferring to human approval as per charter', variant: 'defer' },
+        { text: deferText, variant: 'defer' },
         { text: 'Denied by human', variant: 'deny', actor },
       ];
     }
     return [
-      { text: 'Deferring to human approval as per charter', variant: 'defer' },
+      { text: deferText, variant: 'defer' },
       { text: 'Awaiting human', variant: 'pending' },
     ];
   }
