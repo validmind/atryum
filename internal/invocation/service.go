@@ -320,11 +320,11 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 					"rule_id", r.ID, "server", upstream.Name, "tool", req.Tool)
 				matchedRuleID = nil
 			}
-		// If every matching ai_evaluation rule deferred, treat as human approval.
-		if ruleMatched && decision.Disposition == dispositionContinue {
-			decision = policy.Decision{Disposition: policy.DispositionHuman, Reason: "ai_evaluation: all matching rules deferred; falling back to human_approval"}
-			s.emitRuleEvaluatedEvent(ctx, inv.InvocationID, "", RuleActionAIEvaluation, decision, nil)
-		}
+			// If every matching ai_evaluation rule deferred, treat as human approval.
+			if ruleMatched && decision.Disposition == dispositionContinue {
+				decision = policy.Decision{Disposition: policy.DispositionHuman, Reason: "ai_evaluation: all matching rules deferred; falling back to human_approval"}
+				s.emitRuleEvaluatedEvent(ctx, inv.InvocationID, "", RuleActionAIEvaluation, decision, nil)
+			}
 		}
 	}
 	if !ruleMatched && s.policy != nil {
