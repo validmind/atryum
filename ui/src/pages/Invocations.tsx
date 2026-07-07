@@ -88,6 +88,8 @@ import {
   formatConfidence,
 } from "../utils/invocationDisplay";
 
+const PAGE_SIZE = 50;
+
 const STATUSES: InvocationStatus[] = [
   "pending_approval",
   "approved",
@@ -235,6 +237,7 @@ const Invocations: React.FC = () => {
   const [detailClosed, setDetailClosed] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
   const [showArgsJson, setShowArgsJson] = useState(false);
+  const [page, setPage] = useState(1);
   const [clearedInvocationIds, setClearedInvocationIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -266,10 +269,16 @@ const Invocations: React.FC = () => {
     [appliedFilters],
   );
 
-  const { data, isLoading, isError } = useInvocations(filters);
+  const { data, isLoading, isError } = useInvocations({
+    ...filters,
+    offset: (page - 1) * PAGE_SIZE,
+    limit: PAGE_SIZE,
+  });
   const { data: agentsData } = useAgents();
 
   const rawItems = useMemo(() => data?.items ?? [], [data?.items]);
+  const total = data?.total ?? 0;
+  const totalPages = Math.ceil(total / PAGE_SIZE);
   const items = useMemo(
     () =>
       rawItems.filter((item) => !clearedInvocationIds.has(item.invocation_id)),
@@ -387,7 +396,10 @@ const Invocations: React.FC = () => {
     setShowCreateRule(false);
   };
 
-  const handleApply = () => setAppliedFilters({ ...draftFilters });
+  const handleApply = () => {
+    setAppliedFilters({ ...draftFilters });
+    setPage(1);
+  };
 
   const handleCloseDetail = () => {
     setDetailClosed(true);
@@ -873,6 +885,40 @@ const Invocations: React.FC = () => {
                   </Table>
                 )}
               </Box>
+              {totalPages > 1 && (
+                <Box
+                  px={3}
+                  py={2}
+                  borderTopWidth={1}
+                  borderColor="border.base"
+                  flexShrink={0}>
+                  <HStack justify="space-between" align="center">
+                    <Text fontSize="xs" color="text.subtle">
+                      Showing {(page - 1) * PAGE_SIZE + 1}–
+                      {Math.min(page * PAGE_SIZE, total)} of {total}
+                    </Text>
+                    <HStack gap={1}>
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        isDisabled={page <= 1 || isLoading}
+                        onClick={() => setPage((p) => p - 1)}>
+                        Prev
+                      </Button>
+                      <Text fontSize="xs" color="text.subtle">
+                        {page} / {totalPages}
+                      </Text>
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        isDisabled={page >= totalPages || isLoading}
+                        onClick={() => setPage((p) => p + 1)}>
+                        Next
+                      </Button>
+                    </HStack>
+                  </HStack>
+                </Box>
+              )}
             </Box>
           }
           right={
