@@ -142,6 +142,8 @@ func runServer(args []string, o options) error {
 	managedAgentBindingRepo := store.NewManagedAgentBindingRepoWithDialect(db, dialect)
 	agentSyncSettingsRepo := store.NewAgentSyncSettingsRepoWithDialect(db, dialect)
 	llmConfigsRepo := store.NewLLMConfigsRepoWithDialect(db, dialect)
+	plansRepo := store.NewPlansRepoWithDialect(db, dialect)
+	planEventsRepo := store.NewPlanEventsRepoWithDialect(db, dialect)
 
 	// syncAgents is the shared sync function used both at startup and via the
 	// admin API POST /api/v1/admin/agents/sync endpoint.
@@ -258,6 +260,7 @@ func runServer(args []string, o options) error {
 	}
 
 	service := invocation.NewService(invRepo, eventRepo, resolver, client, policyRegistry, time.Duration(cfg.Defaults.RequestTimeoutSeconds)*time.Second, rulesRepo, invAgents, invEvaluator, &syncSettingsAdapter{repo: agentSyncSettingsRepo})
+	service.SetPlanStore(plansRepo, planEventsRepo, localEvaluator)
 	if backendClient != nil {
 		service.SetInvocationSummarizer(&summaryAdapter{client: backendClient})
 	}

@@ -38,7 +38,10 @@ type Invocation struct {
 	Status         Status    `json:"status"`
 	Approval       *Approval `json:"approval"`
 	MatchedRuleID  *string   `json:"matched_rule_id,omitempty"`
-	AgentID        *string   `json:"agent_id,omitempty"`
+	// PlanID links this invocation to the approved plan whose pass
+	// auto-approved it, when applicable.
+	PlanID  *string `json:"plan_id,omitempty"`
+	AgentID *string `json:"agent_id,omitempty"`
 	// SessionID links this invocation to an external harness session (see
 	// ExternalSession). Set on the Invocations API path so the judge can be
 	// given the session's prior tool calls as context.
@@ -176,6 +179,7 @@ type InvocationResponse struct {
 	Status        Status    `json:"status"`
 	Approval      *Approval `json:"approval"`
 	MatchedRuleID *string   `json:"matched_rule_id,omitempty"`
+	PlanID        *string   `json:"plan_id,omitempty"`
 	AgentID       *string   `json:"agent_id,omitempty"`
 	// SessionID is the internal Atryum session (ses_...) this invocation was
 	// linked to, if any. Exposed for observability/debugging — clients never

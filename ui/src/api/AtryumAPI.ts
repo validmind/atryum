@@ -90,6 +90,8 @@ export interface Invocation {
   approval?: InvocationApproval | null;
   request_id?: string | null;
   matched_rule_id?: string | null;
+  /** Set when an approved plan's pass auto-approved this invocation. */
+  plan_id?: string | null;
   agent_id?: string | null;
   summary?: string;
   agent_client_name?: string | null;
@@ -337,9 +339,13 @@ export const serversApi = {
 
 export type RuleAction = 'auto_approve' | 'auto_deny' | 'human_approval' | 'ai_evaluation';
 
+export type RuleScope = 'invocation' | 'plan';
+
 export interface Rule {
   id: string;
   action: RuleAction;
+  /** Whether the rule gates per-call invocations (default) or submitted plans. */
+  applies_to?: RuleScope;
   server_patterns: string[];
   tool_patterns: string[];
   /** Agent CUIDs this rule applies to; empty means all agents. */
@@ -355,6 +361,7 @@ export interface Rule {
 
 export interface RuleInput {
   action: RuleAction;
+  applies_to?: RuleScope;
   server_patterns: string[];
   tool_patterns: string[];
   agent_cuids?: string[];
@@ -401,6 +408,112 @@ export const rulesApi = {
     const { data } = await atryumApi.put(
       `/api/v1/admin/rules/${encodeURIComponent(id)}/move`,
       { direction },
+    );
+    return data;
+  },
+};
+
+// ─── Plans ────────────────────────────────────────────────────────────────────
+
+export type PlanStatus =
+  | 'received'
+  | 'pending_approval'
+  | 'approved'
+  | 'denied'
+  | 'needs_revision'
+  | 'superseded'
+  | 'expired'
+  | 'cancelled';
+
+export interface PlanAction {
+  tool: string;
+  server?: string;
+  description?: string;
+  input_summary?: string;
+}
+
+export interface Plan {
+  plan_id: string;
+  agent_id: string;
+  source?: string;
+  thread_id?: string;
+  goal: string;
+  rationale?: string;
+  actions: PlanAction[];
+  status: PlanStatus;
+  approval?: InvocationApproval | null;
+  matched_rule_id?: string | null;
+  feedback?: string;
+  parent_plan_id?: string | null;
+  revision: number;
+  ttl_seconds: number;
+  client_name?: string | null;
+  client_version?: string | null;
+  expires_at?: string | null;
+  submitted_at: string;
+  decided_at?: string | null;
+}
+
+export interface PlanDetail extends Plan {
+  revisions: Plan[];
+}
+
+export interface PlanFilters {
+  status?: string;
+  agent_id?: string;
+  offset?: number;
+  limit?: number;
+}
+
+export const plansApi = {
+  list: async (
+    filters: PlanFilters = {},
+  ): Promise<{ items: Plan[]; total: number; offset: number; limit: number }> => {
+    const params = new URLSearchParams();
+    if (filters.status) params.set('status', filters.status);
+    if (filters.agent_id) params.set('agent_id', filters.agent_id);
+    if (filters.offset != null) params.set('offset', String(filters.offset));
+    params.set('limit', String(filters.limit ?? 50));
+    const { data } = await atryumApi.get(`/api/v1/admin/plans?${params.toString()}`);
+    return data;
+  },
+
+  detail: async (id: string): Promise<PlanDetail> => {
+    const { data } = await atryumApi.get(
+      `/api/v1/admin/plans/${encodeURIComponent(id)}`,
+    );
+    return data;
+  },
+
+  events: async (id: string): Promise<{ items: InvocationEvent[] }> => {
+    const { data } = await atryumApi.get(
+      `/api/v1/admin/plans/${encodeURIComponent(id)}/events?limit=200`,
+    );
+    return data;
+  },
+
+  approve: async (id: string, ttlSeconds?: number): Promise<Plan> => {
+    const body = ttlSeconds ? { ttl_seconds: ttlSeconds } : {};
+    const { data } = await atryumApi.post(
+      `/api/v1/admin/plans/${encodeURIComponent(id)}/approve`,
+      body,
+    );
+    return data;
+  },
+
+  deny: async (id: string, message?: string): Promise<Plan> => {
+    const body = message ? { message } : {};
+    const { data } = await atryumApi.post(
+      `/api/v1/admin/plans/${encodeURIComponent(id)}/deny`,
+      body,
+    );
+    return data;
+  },
+
+  revise: async (id: string, feedback: string): Promise<Plan> => {
+    const { data } = await atryumApi.post(
+      `/api/v1/admin/plans/${encodeURIComponent(id)}/revise`,
+      { feedback },
     );
     return data;
   },

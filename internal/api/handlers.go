@@ -53,6 +53,15 @@ type service interface {
 	CreateSession(ctx context.Context, req invocation.CreateSessionRequest, agentID string) (invocation.SessionResponse, error)
 	RecordExecution(ctx context.Context, invocationID string, update invocation.ExternalExecutionUpdate) (invocation.InvocationResponse, error)
 	SetSummary(ctx context.Context, invocationID string, summary string) (invocation.InvocationResponse, error)
+	SubmitPlan(ctx context.Context, req invocation.PlanSubmitRequest) (invocation.Plan, error)
+	GetPlan(ctx context.Context, id string) (invocation.Plan, error)
+	ListPlans(ctx context.Context, filter invocation.PlanListFilter) (invocation.PlanListResponse, error)
+	ListPlanRevisions(ctx context.Context, id string) ([]invocation.Plan, error)
+	ApprovePlan(ctx context.Context, id string, ttlSeconds int) (invocation.Plan, error)
+	DenyPlan(ctx context.Context, id string, message string) (invocation.Plan, error)
+	RequestPlanRevision(ctx context.Context, id string, feedback string) (invocation.Plan, error)
+	CancelPlan(ctx context.Context, id string) (invocation.Plan, error)
+	PlanEvents(ctx context.Context, id string, filter invocation.EventListFilter) (invocation.EventListResponse, error)
 }
 
 type mcpEnvelopeForwarder interface {
@@ -209,17 +218,13 @@ type PolicyUpdateRequest struct {
 
 type ApproveRequest struct {
 	CreateRule *AdminRuleInput `json:"create_rule,omitempty"`
-	// ActorID identifies the human reviewer who made the decision. Optional —
-	// when omitted no attribution is stored. The VM backend proxy injects this
-	// field from the authenticated user's identity before forwarding.
-	ActorID string `json:"actor_id,omitempty"`
+	ActorID    string          `json:"actor_id,omitempty"`
 }
 
 type DenyRequest struct {
 	Message    string          `json:"message,omitempty"`
 	CreateRule *AdminRuleInput `json:"create_rule,omitempty"`
-	// ActorID identifies the human reviewer who made the decision. Optional.
-	ActorID string `json:"actor_id,omitempty"`
+	ActorID    string          `json:"actor_id,omitempty"`
 }
 
 type AdminServer struct {
@@ -313,6 +318,7 @@ type OAuthConnectStatusResponse struct {
 type AdminRule struct {
 	ID                string    `json:"id"`
 	Action            string    `json:"action"`
+	AppliesTo         string    `json:"applies_to"`
 	ServerPatterns    []string  `json:"server_patterns"`
 	ToolPatterns      []string  `json:"tool_patterns"`
 	ModelConfigCUID   string    `json:"model_config_cuid,omitempty"`
@@ -327,6 +333,7 @@ type AdminRule struct {
 
 type AdminRuleInput struct {
 	Action            string   `json:"action"`
+	AppliesTo         string   `json:"applies_to,omitempty"`
 	ServerPatterns    []string `json:"server_patterns"`
 	ToolPatterns      []string `json:"tool_patterns"`
 	ModelConfigCUID   string   `json:"model_config_cuid,omitempty"`
@@ -840,6 +847,10 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("/api/v1/external/invocations", h.agentRuntimeHandler(http.HandlerFunc(h.externalInvocations)))
 	mux.Handle("/api/v1/external/invocations/", h.agentRuntimeHandler(http.HandlerFunc(h.externalInvocationDetail)))
 	mux.Handle("/api/v1/external/sessions", h.agentRuntimeHandler(http.HandlerFunc(h.externalSessions)))
+	mux.Handle("/api/v1/external/plans", h.agentRuntimeHandler(http.HandlerFunc(h.externalPlans)))
+	mux.Handle("/api/v1/external/plans/", h.agentRuntimeHandler(http.HandlerFunc(h.externalPlanDetail)))
+	mux.Handle("/api/v1/admin/plans", admin(h.adminPlans))
+	mux.Handle("/api/v1/admin/plans/", admin(h.adminPlanDetail))
 	apiKeyMW := auth.APIKeyMiddleware(h.apiKeyAuth)
 	mux.Handle("/agent_ids", apiKeyMW(http.HandlerFunc(h.agentIDs)))
 	mux.Handle("/invocations/", apiKeyMW(http.HandlerFunc(h.invocationsByAgentID)))
@@ -2280,6 +2291,7 @@ func (h *Handler) adminRules(w http.ResponseWriter, r *http.Request) {
 		rule := store.Rule{
 			ID:                "rule_" + newUUID(),
 			Action:            req.Action,
+			AppliesTo:         req.AppliesTo,
 			ServerPatterns:    normalizePatternSlice(req.ServerPatterns),
 			ToolPatterns:      normalizePatternSlice(req.ToolPatterns),
 			ModelConfigCUID:   req.ModelConfigCUID,
@@ -2393,6 +2405,9 @@ func (h *Handler) adminRuleDetail(w http.ResponseWriter, r *http.Request) {
 			enabled = *req.Enabled
 		}
 		existing.Action = req.Action
+		if req.AppliesTo != "" {
+			existing.AppliesTo = req.AppliesTo
+		}
 		existing.ServerPatterns = normalizePatternSlice(req.ServerPatterns)
 		existing.ToolPatterns = normalizePatternSlice(req.ToolPatterns)
 		existing.ModelConfigCUID = req.ModelConfigCUID
@@ -2879,9 +2894,14 @@ func toAdminRule(r store.Rule) AdminRule {
 	if ac == nil {
 		ac = []string{}
 	}
+	appliesTo := r.AppliesTo
+	if appliesTo == "" {
+		appliesTo = invocation.RuleScopeInvocation
+	}
 	return AdminRule{
 		ID:                r.ID,
 		Action:            r.Action,
+		AppliesTo:         appliesTo,
 		ServerPatterns:    sp,
 		ToolPatterns:      tp,
 		ModelConfigCUID:   r.ModelConfigCUID,
@@ -3187,6 +3207,11 @@ func validateRuleInput(req AdminRuleInput) error {
 		}
 	default:
 		return fmt.Errorf("action must be one of: auto_approve, auto_deny, human_approval, ai_evaluation")
+	}
+	switch req.AppliesTo {
+	case "", invocation.RuleScopeInvocation, invocation.RuleScopePlan:
+	default:
+		return fmt.Errorf("applies_to must be one of: invocation, plan")
 	}
 	return nil
 }
@@ -3587,6 +3612,8 @@ func (h *Handler) externalInvocations(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// ─── Plan handlers ────────────────────────────────────────────────────────────
+
 // externalSessions mints a harness session (POST /api/v1/external/sessions).
 //
 // Deprecated: harnesses should instead send client_session_id on every
@@ -3608,8 +3635,6 @@ func (h *Handler) externalSessions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	// Authenticated identity wins; otherwise bind to the self-declared agent_id
-	// (no-auth mode), mirroring Submit.
 	agentID := auth.AgentIDFromContext(r.Context())
 	if agentID == "" {
 		agentID = strings.TrimSpace(req.AgentID)
@@ -3620,6 +3645,215 @@ func (h *Handler) externalSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, resp)
+}
+
+// PlanApproveRequest optionally overrides the pass TTL the agent requested.
+type PlanApproveRequest struct {
+	TTLSeconds int `json:"ttl_seconds,omitempty"`
+}
+
+type PlanDenyRequest struct {
+	Message string `json:"message,omitempty"`
+}
+
+type PlanReviseRequest struct {
+	Feedback string `json:"feedback"`
+}
+
+// PlanDetailResponse is the admin detail view: the plan plus its direct revisions.
+type PlanDetailResponse struct {
+	invocation.Plan
+	Revisions []invocation.Plan `json:"revisions"`
+}
+
+// externalPlans handles POST /api/v1/external/plans — an agent proposing a
+// plan for review before executing any tools.
+func (h *Handler) externalPlans(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req invocation.PlanSubmitRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	// Header fallbacks for callers that can't (or don't) put their
+	// harness identity in the JSON body. Body fields win.
+	if req.ClientName == "" {
+		if v := strings.TrimSpace(r.Header.Get("X-Atryum-Client-Name")); v != "" {
+			req.ClientName = v
+		}
+	}
+	if req.ClientVersion == "" {
+		if v := strings.TrimSpace(r.Header.Get("X-Atryum-Client-Version")); v != "" {
+			req.ClientVersion = v
+		}
+	}
+	plan, err := h.svc.SubmitPlan(r.Context(), req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, plan)
+}
+
+// externalPlanDetail handles GET /api/v1/external/plans/{id} (decision polling)
+// and POST /api/v1/external/plans/{id}/cancel.
+func (h *Handler) externalPlanDetail(w http.ResponseWriter, r *http.Request) {
+	trimmed := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/external/plans/"), "/")
+	if trimmed == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if strings.HasSuffix(trimmed, "/cancel") {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimSuffix(trimmed, "/cancel"), "/")
+		plan, err := h.svc.CancelPlan(r.Context(), id)
+		if err != nil {
+			status := http.StatusBadRequest
+			if err == sql.ErrNoRows {
+				status = http.StatusNotFound
+			}
+			writeError(w, status, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, plan)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	plan, err := h.svc.GetPlan(r.Context(), trimmed)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if err == sql.ErrNoRows {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, plan)
+}
+
+// adminPlans handles GET /api/v1/admin/plans.
+func (h *Handler) adminPlans(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	filter := invocation.PlanListFilter{
+		Offset:  readUintQuery(r, "offset", 0),
+		Limit:   readUintQuery(r, "limit", 50),
+		Status:  strings.TrimSpace(r.URL.Query().Get("status")),
+		AgentID: strings.TrimSpace(r.URL.Query().Get("agent_id")),
+	}
+	resp, err := h.svc.ListPlans(r.Context(), filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// adminPlanDetail handles GET /api/v1/admin/plans/{id}, GET .../{id}/events,
+// and POST .../{id}/approve|deny|revise.
+func (h *Handler) adminPlanDetail(w http.ResponseWriter, r *http.Request) {
+	trimmed := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/admin/plans/"), "/")
+	if trimmed == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if strings.HasSuffix(trimmed, "/events") {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimSuffix(trimmed, "/events"), "/")
+		filter := invocation.EventListFilter{Offset: readUintQuery(r, "offset", 0), Limit: readUintQuery(r, "limit", 200)}
+		events, err := h.svc.PlanEvents(r.Context(), id, filter)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, events)
+		return
+	}
+	if strings.HasSuffix(trimmed, "/approve") {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimSuffix(trimmed, "/approve"), "/")
+		var req PlanApproveRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		plan, err := h.svc.ApprovePlan(r.Context(), id, req.TTLSeconds)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, plan)
+		return
+	}
+	if strings.HasSuffix(trimmed, "/deny") {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimSuffix(trimmed, "/deny"), "/")
+		var req PlanDenyRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		plan, err := h.svc.DenyPlan(r.Context(), id, req.Message)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, plan)
+		return
+	}
+	if strings.HasSuffix(trimmed, "/revise") {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimSuffix(trimmed, "/revise"), "/")
+		var req PlanReviseRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if strings.TrimSpace(req.Feedback) == "" {
+			writeError(w, http.StatusBadRequest, "feedback is required")
+			return
+		}
+		plan, err := h.svc.RequestPlanRevision(r.Context(), id, req.Feedback)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, plan)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	plan, err := h.svc.GetPlan(r.Context(), trimmed)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if err == sql.ErrNoRows {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	revisions, err := h.svc.ListPlanRevisions(r.Context(), trimmed)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, PlanDetailResponse{Plan: plan, Revisions: revisions})
 }
 
 // adminManagedAgentSessions registers a Claude Managed Agents session for

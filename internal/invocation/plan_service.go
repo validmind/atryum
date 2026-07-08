@@ -1,0 +1,507 @@
+package invocation
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+
+	"atryum/internal/auth"
+)
+
+const (
+	planDefaultTTLSeconds = 3600
+	planMaxTTLSeconds     = 86400
+)
+
+type planRepo interface {
+	Create(ctx context.Context, p Plan) error
+	Update(ctx context.Context, p Plan) error
+	Get(ctx context.Context, id string) (Plan, error)
+	List(ctx context.Context, filter PlanListFilter) ([]Plan, int, error)
+	ListActiveByAgent(ctx context.Context, agentID string) ([]Plan, error)
+	ListRevisions(ctx context.Context, parentID string) ([]Plan, error)
+}
+
+type planEventRepo interface {
+	Create(ctx context.Context, evt PlanEvent) error
+	ListByPlan(ctx context.Context, planID string, filter EventListFilter) ([]PlanEvent, int, error)
+}
+
+// SetPlanStore installs the optional plan-submission feature. When it is not
+// called the service behaves exactly as before: plan endpoints error and
+// matchApprovedPlan never grants a pass.
+func (s *Service) SetPlanStore(plans planRepo, events planEventRepo, judge PlanEvaluator) {
+	s.plans = plans
+	s.planEvents = events
+	s.planJudge = judge
+}
+
+func (s *Service) plansEnabled() bool { return s.plans != nil }
+
+func (s *Service) recordPlanEvent(ctx context.Context, planID, eventType string, payload map[string]any) {
+	if s.planEvents == nil {
+		return
+	}
+	_ = s.planEvents.Create(ctx, PlanEvent{
+		PlanID:    planID,
+		EventType: eventType,
+		Payload:   mustJSON(payload),
+		CreatedAt: time.Now().UTC(),
+	})
+}
+
+func clampPlanTTL(seconds int) int {
+	if seconds <= 0 {
+		return planDefaultTTLSeconds
+	}
+	if seconds > planMaxTTLSeconds {
+		return planMaxTTLSeconds
+	}
+	return seconds
+}
+
+// SubmitPlan records a proposed plan and evaluates it against plan-scoped
+// approval rules. Callers poll GetPlan until the status leaves
+// received/pending_approval; the returned Plan reflects the immediate outcome
+// for auto_approve/auto_deny/ai_evaluation rules.
+func (s *Service) SubmitPlan(ctx context.Context, req PlanSubmitRequest) (Plan, error) {
+	if !s.plansEnabled() {
+		return Plan{}, fmt.Errorf("plan submission is not enabled")
+	}
+	// A verified OAuth identity always wins over the self-declared agent_id.
+	// A plan pass is scoped to its agent, so an unidentifiable submitter
+	// would grant a pass to every other anonymous caller — reject it.
+	agentID := auth.AgentIDFromContext(ctx)
+	if agentID == "" {
+		agentID = strings.TrimSpace(req.AgentID)
+	}
+	if agentID == "" {
+		return Plan{}, fmt.Errorf("agent identity is required to submit a plan (authenticate or set agent_id)")
+	}
+	if strings.TrimSpace(req.Goal) == "" {
+		return Plan{}, fmt.Errorf("goal is required")
+	}
+	if len(req.Actions) == 0 {
+		return Plan{}, fmt.Errorf("at least one action is required")
+	}
+	for i, a := range req.Actions {
+		if strings.TrimSpace(a.Tool) == "" {
+			return Plan{}, fmt.Errorf("actions[%d].tool is required", i)
+		}
+	}
+	source := req.Source
+	if source == "" {
+		source = "external"
+	}
+
+	var parent *Plan
+	if req.RevisionOf != "" {
+		p, err := s.plans.Get(ctx, req.RevisionOf)
+		if err != nil {
+			return Plan{}, fmt.Errorf("revision_of plan %s not found", req.RevisionOf)
+		}
+		if p.AgentID != agentID {
+			return Plan{}, fmt.Errorf("revision_of plan %s belongs to a different agent", req.RevisionOf)
+		}
+		switch p.Status {
+		case PlanStatusNeedsRevision, PlanStatusPendingApproval, PlanStatusApproved:
+			// revisable
+		default:
+			return Plan{}, fmt.Errorf("plan %s cannot be revised from status %s", p.PlanID, p.Status)
+		}
+		parent = &p
+	}
+
+	now := time.Now().UTC()
+	plan := Plan{
+		PlanID:      "plan_" + uuid.NewString(),
+		AgentID:     agentID,
+		Source:      source,
+		ThreadID:    req.ThreadID,
+		Goal:        req.Goal,
+		Rationale:   req.Rationale,
+		Actions:     req.Actions,
+		Status:      PlanStatusReceived,
+		Revision:    1,
+		TTLSeconds:  clampPlanTTL(req.TTLSeconds),
+		SubmittedAt: now,
+	}
+	if parent != nil {
+		id := parent.PlanID
+		plan.ParentPlanID = &id
+		plan.Revision = parent.Revision + 1
+	}
+	if req.ClientName != "" {
+		v := req.ClientName
+		plan.ClientName = &v
+	}
+	if req.ClientVersion != "" {
+		v := req.ClientVersion
+		plan.ClientVersion = &v
+	}
+	if err := s.plans.Create(ctx, plan); err != nil {
+		return Plan{}, err
+	}
+	receivedPayload := map[string]any{
+		"goal": plan.Goal, "source": source, "agent_id": agentID,
+		"actions": plan.Actions, "revision": plan.Revision,
+	}
+	if plan.ParentPlanID != nil {
+		receivedPayload["parent_plan_id"] = *plan.ParentPlanID
+	}
+	s.recordPlanEvent(ctx, plan.PlanID, "plan.received", receivedPayload)
+
+	// Supersede the parent only after the revision exists: submitting a
+	// revision of an approved plan revokes the old pass.
+	if parent != nil {
+		parent.Status = PlanStatusSuperseded
+		if err := s.plans.Update(ctx, *parent); err != nil {
+			slog.Warn("plan revision: could not supersede parent plan", "parent_plan_id", parent.PlanID, "error", err)
+		} else {
+			s.recordPlanEvent(ctx, parent.PlanID, "plan.superseded", map[string]any{"superseded_by": plan.PlanID})
+		}
+	}
+
+	return s.evaluatePlanRules(ctx, plan, req.ChatContext)
+}
+
+// evaluatePlanRules runs plan-scoped approval rules in priority order and
+// persists the resulting status. Plans never silently auto-approve: with no
+// matching rule the plan waits for a human.
+func (s *Service) evaluatePlanRules(ctx context.Context, plan Plan, chatContext string) (Plan, error) {
+	agentRec := s.resolveAgentRecord(ctx, plan.AgentID)
+
+	if s.rules != nil {
+		if approvalRules, err := s.rules.ListApprovalRules(ctx); err == nil {
+			for _, rule := range matchPlanRules(approvalRules, plan.Source, plan.Actions, agentRec.ID) {
+				r := rule
+				if r.ID != "" {
+					id := r.ID
+					plan.MatchedRuleID = &id
+				}
+				switch r.Action {
+				case RuleActionAutoApprove:
+					return s.finalizePlanDecision(ctx, plan, PlanStatusApproved,
+						newApproval("auto_approved", "matched approval rule (auto_approve)", nil), "")
+				case RuleActionAutoDeny:
+					return s.finalizePlanDecision(ctx, plan, PlanStatusDenied,
+						newApproval("auto_denied", "matched approval rule (auto_deny)", nil), "")
+				case RuleActionAIEvaluation:
+					verdict, done := s.runPlanAIEvaluation(ctx, &r, &plan, agentRec, chatContext)
+					if !done {
+						plan.MatchedRuleID = nil
+						continue // next_rule: keep iterating
+					}
+					return verdict, nil
+				default: // human_approval
+					return s.finalizePlanDecision(ctx, plan, PlanStatusPendingApproval, nil, "")
+				}
+			}
+		}
+	}
+	// No matching rule: default to human review.
+	plan.MatchedRuleID = nil
+	return s.finalizePlanDecision(ctx, plan, PlanStatusPendingApproval, nil, "")
+}
+
+// runPlanAIEvaluation judges the plan with the locally-configured LLM.
+// Returns done=false when the verdict defers to the next rule.
+func (s *Service) runPlanAIEvaluation(ctx context.Context, rule *ApprovalRule, plan *Plan, agentRec AgentRecord, chatContext string) (Plan, bool) {
+	if rule.AtryumLLMConfigID == "" || s.planJudge == nil {
+		// VM-backend plan judging is not supported yet; fail open to a human.
+		slog.Warn("plan ai_evaluation: no local LLM config on rule (VM backend not supported for plans); falling back to human_approval",
+			"rule_id", rule.ID, "plan_id", plan.PlanID)
+		p, _ := s.finalizePlanDecision(ctx, *plan, PlanStatusPendingApproval,
+			newApproval("ai_escalated", "plan ai_evaluation unavailable (falling back to human_approval)", nil), "")
+		return p, true
+	}
+	if agentRec.Charter == "" {
+		slog.Error("plan ai_evaluation: agent has no charter configured; denying plan",
+			"rule_id", rule.ID, "plan_id", plan.PlanID, "agent_id", plan.AgentID)
+		p, _ := s.finalizePlanDecision(ctx, *plan, PlanStatusDenied,
+			newApproval("auto_denied", "plan ai_evaluation denied: no charter configured for this agent", nil), "")
+		return p, true
+	}
+
+	evalCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	resp, err := s.planJudge.EvaluatePlan(evalCtx, PlanEvaluateRequest{
+		AtryumLLMConfigID: rule.AtryumLLMConfigID,
+		Charter:           agentRec.Charter,
+		Source:            plan.Source,
+		Goal:              plan.Goal,
+		Rationale:         plan.Rationale,
+		Context:           chatContext,
+		Actions:           plan.Actions,
+	})
+	if err != nil {
+		slog.Error("plan ai_evaluation: LLM call failed; falling back to human_approval",
+			"rule_id", rule.ID, "plan_id", plan.PlanID, "error", err)
+		p, _ := s.finalizePlanDecision(ctx, *plan, PlanStatusPendingApproval,
+			newApproval("ai_escalated", "plan ai_evaluation: LLM call failed (falling back to human_approval)", nil), "")
+		return p, true
+	}
+
+	switch resp.Verdict {
+	case "approved":
+		p, _ := s.finalizePlanDecision(ctx, *plan, PlanStatusApproved,
+			newApproval("auto_approved", "plan ai_evaluation approved: "+resp.Reason, resp.Confidence), "")
+		return p, true
+	case "denied":
+		p, _ := s.finalizePlanDecision(ctx, *plan, PlanStatusDenied,
+			newApproval("auto_denied", "plan ai_evaluation denied: "+resp.Reason, resp.Confidence), "")
+		return p, true
+	case "revise":
+		feedback := resp.Feedback
+		if feedback == "" {
+			feedback = resp.Reason
+		}
+		p, _ := s.finalizePlanDecision(ctx, *plan, PlanStatusNeedsRevision,
+			newApproval("ai_revise", "plan ai_evaluation requested revision: "+resp.Reason, resp.Confidence), feedback)
+		return p, true
+	case "human_approval":
+		p, _ := s.finalizePlanDecision(ctx, *plan, PlanStatusPendingApproval,
+			newApproval("ai_escalated", "plan ai_evaluation requires human approval: "+resp.Reason, resp.Confidence), "")
+		return p, true
+	default: // "next_rule"
+		slog.Info("plan ai_evaluation: LLM deferred to next rule", "rule_id", rule.ID, "plan_id", plan.PlanID)
+		return Plan{}, false
+	}
+}
+
+// finalizePlanDecision persists a plan's evaluated status and emits the
+// matching lifecycle event.
+func (s *Service) finalizePlanDecision(ctx context.Context, plan Plan, status PlanStatus, approval *Approval, feedback string) (Plan, error) {
+	now := time.Now().UTC()
+	plan.Status = status
+	plan.Approval = approval
+	plan.Feedback = feedback
+	switch status {
+	case PlanStatusApproved:
+		exp := now.Add(time.Duration(plan.TTLSeconds) * time.Second)
+		plan.ExpiresAt = &exp
+		plan.DecidedAt = &now
+	case PlanStatusDenied, PlanStatusNeedsRevision, PlanStatusCancelled:
+		plan.DecidedAt = &now
+	}
+	if err := s.plans.Update(ctx, plan); err != nil {
+		return Plan{}, err
+	}
+	payload := map[string]any{"status": string(status)}
+	if approval != nil {
+		payload["approval_status"] = approval.Status
+		if approval.Reason != nil {
+			payload["reason"] = *approval.Reason
+		}
+	}
+	if feedback != "" {
+		payload["feedback"] = feedback
+	}
+	if plan.MatchedRuleID != nil {
+		payload["matched_rule_id"] = *plan.MatchedRuleID
+	}
+	if plan.ExpiresAt != nil {
+		payload["expires_at"] = plan.ExpiresAt.Format(time.RFC3339)
+	}
+	s.recordPlanEvent(ctx, plan.PlanID, "plan."+planEventSuffix(status), payload)
+	return plan, nil
+}
+
+func planEventSuffix(status PlanStatus) string {
+	switch status {
+	case PlanStatusPendingApproval:
+		return "pending_approval"
+	default:
+		return string(status)
+	}
+}
+
+// GetPlan returns a plan by ID, lazily expiring an approved plan whose TTL
+// has elapsed.
+func (s *Service) GetPlan(ctx context.Context, id string) (Plan, error) {
+	if !s.plansEnabled() {
+		return Plan{}, fmt.Errorf("plan submission is not enabled")
+	}
+	plan, err := s.plans.Get(ctx, id)
+	if err != nil {
+		return Plan{}, err
+	}
+	return s.expireIfStale(ctx, plan), nil
+}
+
+func (s *Service) expireIfStale(ctx context.Context, plan Plan) Plan {
+	if plan.Status != PlanStatusApproved || plan.ExpiresAt == nil || time.Now().UTC().Before(*plan.ExpiresAt) {
+		return plan
+	}
+	plan.Status = PlanStatusExpired
+	if err := s.plans.Update(ctx, plan); err != nil {
+		slog.Warn("could not mark plan expired", "plan_id", plan.PlanID, "error", err)
+		return plan
+	}
+	s.recordPlanEvent(ctx, plan.PlanID, "plan.expired", map[string]any{"expired_at": plan.ExpiresAt.Format(time.RFC3339)})
+	return plan
+}
+
+func (s *Service) ListPlans(ctx context.Context, filter PlanListFilter) (PlanListResponse, error) {
+	if !s.plansEnabled() {
+		return PlanListResponse{Items: []Plan{}}, nil
+	}
+	if filter.Limit == 0 {
+		filter.Limit = 50
+	}
+	items, total, err := s.plans.List(ctx, filter)
+	if err != nil {
+		return PlanListResponse{}, err
+	}
+	for i := range items {
+		items[i] = s.expireIfStale(ctx, items[i])
+	}
+	if items == nil {
+		items = []Plan{}
+	}
+	return PlanListResponse{Items: items, Total: total, Offset: filter.Offset, Limit: filter.Limit}, nil
+}
+
+// ListPlanRevisions returns the direct revisions of a plan, oldest first.
+func (s *Service) ListPlanRevisions(ctx context.Context, id string) ([]Plan, error) {
+	if !s.plansEnabled() {
+		return []Plan{}, nil
+	}
+	revs, err := s.plans.ListRevisions(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if revs == nil {
+		revs = []Plan{}
+	}
+	return revs, nil
+}
+
+// ApprovePlan records a human approval. ttlSeconds of 0 keeps the TTL the
+// agent requested at submission.
+func (s *Service) ApprovePlan(ctx context.Context, id string, ttlSeconds int) (Plan, error) {
+	if !s.plansEnabled() {
+		return Plan{}, fmt.Errorf("plan submission is not enabled")
+	}
+	plan, err := s.plans.Get(ctx, id)
+	if err != nil {
+		return Plan{}, err
+	}
+	if plan.Status != PlanStatusPendingApproval {
+		return Plan{}, fmt.Errorf("plan %s is not pending approval (status=%s)", id, plan.Status)
+	}
+	if ttlSeconds > 0 {
+		plan.TTLSeconds = clampPlanTTL(ttlSeconds)
+	}
+	approval := &Approval{Status: humanDecisionStatus(plan.Approval, true), Reason: stringPtr("human")}
+	return s.finalizePlanDecision(ctx, plan, PlanStatusApproved, approval, "")
+}
+
+// DenyPlan records a human denial with an optional message.
+func (s *Service) DenyPlan(ctx context.Context, id string, message string) (Plan, error) {
+	if !s.plansEnabled() {
+		return Plan{}, fmt.Errorf("plan submission is not enabled")
+	}
+	plan, err := s.plans.Get(ctx, id)
+	if err != nil {
+		return Plan{}, err
+	}
+	if plan.Status != PlanStatusPendingApproval {
+		return Plan{}, fmt.Errorf("plan %s is not pending approval (status=%s)", id, plan.Status)
+	}
+	reason := "human"
+	if message != "" {
+		reason = message
+	}
+	approval := &Approval{Status: humanDecisionStatus(plan.Approval, false), Reason: stringPtr(reason)}
+	return s.finalizePlanDecision(ctx, plan, PlanStatusDenied, approval, "")
+}
+
+// RequestPlanRevision returns the plan to the agent with reviewer feedback.
+// The agent is expected to submit a new plan with revision_of set.
+func (s *Service) RequestPlanRevision(ctx context.Context, id string, feedback string) (Plan, error) {
+	if !s.plansEnabled() {
+		return Plan{}, fmt.Errorf("plan submission is not enabled")
+	}
+	if strings.TrimSpace(feedback) == "" {
+		return Plan{}, fmt.Errorf("feedback is required to request a revision")
+	}
+	plan, err := s.plans.Get(ctx, id)
+	if err != nil {
+		return Plan{}, err
+	}
+	if plan.Status != PlanStatusPendingApproval {
+		return Plan{}, fmt.Errorf("plan %s is not pending approval (status=%s)", id, plan.Status)
+	}
+	approval := &Approval{Status: "revise_requested", Reason: stringPtr("human")}
+	return s.finalizePlanDecision(ctx, plan, PlanStatusNeedsRevision, approval, feedback)
+}
+
+// CancelPlan lets the submitting agent withdraw a plan. Cancelling an
+// approved plan revokes its pass.
+func (s *Service) CancelPlan(ctx context.Context, id string) (Plan, error) {
+	if !s.plansEnabled() {
+		return Plan{}, fmt.Errorf("plan submission is not enabled")
+	}
+	plan, err := s.plans.Get(ctx, id)
+	if err != nil {
+		return Plan{}, err
+	}
+	switch plan.Status {
+	case PlanStatusReceived, PlanStatusPendingApproval, PlanStatusNeedsRevision, PlanStatusApproved:
+		// cancellable
+	default:
+		return Plan{}, fmt.Errorf("plan %s cannot be cancelled from status %s", id, plan.Status)
+	}
+	return s.finalizePlanDecision(ctx, plan, PlanStatusCancelled, plan.Approval, plan.Feedback)
+}
+
+// PlanEvents lists a plan's lifecycle events.
+func (s *Service) PlanEvents(ctx context.Context, id string, filter EventListFilter) (EventListResponse, error) {
+	if !s.plansEnabled() || s.planEvents == nil {
+		return EventListResponse{Items: []EventResponse{}}, nil
+	}
+	if filter.Limit == 0 {
+		filter.Limit = 200
+	}
+	events, total, err := s.planEvents.ListByPlan(ctx, id, filter)
+	if err != nil {
+		return EventListResponse{}, err
+	}
+	items := make([]EventResponse, 0, len(events))
+	for _, evt := range events {
+		items = append(items, EventResponse{Type: evt.EventType, Timestamp: evt.CreatedAt, Data: evt.Payload})
+	}
+	return EventListResponse{Items: items, Total: total, Offset: filter.Offset, Limit: filter.Limit}, nil
+}
+
+// matchApprovedPlan returns the newest approved, unexpired plan of the agent
+// with a declared action matching (server, tool). It is the plan-pass check
+// run before rule matching in Invoke/Submit; it never matches when the plan
+// feature is unused or the caller is anonymous.
+func (s *Service) matchApprovedPlan(ctx context.Context, agentID, server, tool string) (string, bool) {
+	if !s.plansEnabled() || agentID == "" || tool == "" {
+		return "", false
+	}
+	plans, err := s.plans.ListActiveByAgent(ctx, agentID)
+	if err != nil {
+		slog.Warn("plan pass lookup failed; falling back to normal gating", "agent_id", agentID, "error", err)
+		return "", false
+	}
+	for _, plan := range plans {
+		plan = s.expireIfStale(ctx, plan)
+		if plan.Status != PlanStatusApproved {
+			continue
+		}
+		for _, a := range plan.Actions {
+			if a.Tool == tool && (a.Server == "" || a.Server == server) {
+				return plan.PlanID, true
+			}
+		}
+	}
+	return "", false
+}

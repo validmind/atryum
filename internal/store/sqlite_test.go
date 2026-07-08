@@ -50,7 +50,7 @@ func TestInitDB_FreshDatabase(t *testing.T) {
 	}
 
 	// Verify all tables exist
-	tables := []string{"invocations", "invocation_events", "mcp_servers", "oauth_credentials", "oauth_connect_sessions", "approval_rules", "managed_agent_sessions", "managed_agent_bindings", "external_sessions"}
+	tables := []string{"invocations", "invocation_events", "mcp_servers", "oauth_credentials", "oauth_connect_sessions", "approval_rules", "managed_agent_sessions", "managed_agent_bindings", "external_sessions", "plans", "plan_events"}
 	for _, table := range tables {
 		var name string
 		if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&name); err != nil {
@@ -554,6 +554,8 @@ func TestInitDBBackfillsEndpointSlugCollisionsDeterministically(t *testing.T) {
 	// seed. Later migrations (025 external_sessions + expires_at) touch tables
 	// this fixture never creates, so they must stay marked-applied here.
 	for _, m := range migrations {
+		// Leave only migration 024 pending — it's the one under test; the
+		// seeded schema is too minimal for later migrations to apply.
 		if m.Version == 24 {
 			continue
 		}

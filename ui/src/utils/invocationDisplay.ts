@@ -35,6 +35,8 @@ export const getDisposition = (
 ): DispositionInfo[] => {
   const approvalStatus = inv.approval?.status;
   const reason = inv.approval?.reason ?? '';
+  if (approvalStatus === 'plan_approved')
+    return [{ label: 'Plan', color: 'cyan' }];
   if (reason.startsWith('ai_evaluation'))
     return [{ label: 'AI Evaluation', color: 'purple' }];
   if (approvalStatus === 'auto_approved')

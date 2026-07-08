@@ -49,6 +49,16 @@ type stubService struct {
 
 	createSessionReq     *invocation.CreateSessionRequest
 	createSessionAgentID string
+	plan                 invocation.Plan
+	planErr              error
+	planSubmitReq        *invocation.PlanSubmitRequest
+	planApproveID        string
+	planTTL              int
+	planDenyID           string
+	planDenyMsg          string
+	planReviseID         string
+	planFeedback         string
+	planCancelID         string
 }
 
 func (s *stubService) Invoke(ctx context.Context, req invocation.CreateInvocationRequest) (invocation.InvocationResponse, error) {
@@ -108,6 +118,41 @@ func (s *stubService) RecordExecution(ctx context.Context, id string, req invoca
 		return s.invoke, s.invErr
 	}
 	return invocation.InvocationResponse{InvocationID: id, Status: invocation.StatusSucceeded}, s.invErr
+}
+func (s *stubService) SubmitPlan(_ context.Context, req invocation.PlanSubmitRequest) (invocation.Plan, error) {
+	s.planSubmitReq = &req
+	return s.plan, s.planErr
+}
+func (s *stubService) GetPlan(context.Context, string) (invocation.Plan, error) {
+	return s.plan, s.planErr
+}
+func (s *stubService) ListPlans(_ context.Context, filter invocation.PlanListFilter) (invocation.PlanListResponse, error) {
+	return invocation.PlanListResponse{Items: []invocation.Plan{s.plan}, Total: 1, Limit: filter.Limit}, s.planErr
+}
+func (s *stubService) ListPlanRevisions(context.Context, string) ([]invocation.Plan, error) {
+	return []invocation.Plan{}, nil
+}
+func (s *stubService) ApprovePlan(_ context.Context, id string, ttlSeconds int) (invocation.Plan, error) {
+	s.planApproveID = id
+	s.planTTL = ttlSeconds
+	return s.plan, s.planErr
+}
+func (s *stubService) DenyPlan(_ context.Context, id string, message string) (invocation.Plan, error) {
+	s.planDenyID = id
+	s.planDenyMsg = message
+	return s.plan, s.planErr
+}
+func (s *stubService) RequestPlanRevision(_ context.Context, id string, feedback string) (invocation.Plan, error) {
+	s.planReviseID = id
+	s.planFeedback = feedback
+	return s.plan, s.planErr
+}
+func (s *stubService) CancelPlan(_ context.Context, id string) (invocation.Plan, error) {
+	s.planCancelID = id
+	return s.plan, s.planErr
+}
+func (s *stubService) PlanEvents(context.Context, string, invocation.EventListFilter) (invocation.EventListResponse, error) {
+	return invocation.EventListResponse{}, nil
 }
 func (s *stubService) ForwardEnvelope(context.Context, mcp.Upstream, mcp.Envelope, string) (mcp.ForwardResult, error) {
 	return s.forward, s.fwdErr

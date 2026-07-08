@@ -38,6 +38,7 @@ import {
   type Rule,
   type RuleAction,
   type RuleInput,
+  type RuleScope,
   apiErrorMessage,
   modelConfigsApi,
 } from '../api/AtryumAPI';
@@ -46,6 +47,7 @@ import {
 
 export const EMPTY_RULE_FORM: RuleInput = {
   action: 'human_approval',
+  applies_to: 'invocation',
   server_patterns: [],
   tool_patterns: [],
   agent_cuids: [],
@@ -66,6 +68,11 @@ const AI_EVAL_OPTION: { value: RuleAction; label: string } = {
   label: 'AI Evaluation',
 };
 
+const SCOPE_OPTIONS: { value: RuleScope; label: string }[] = [
+  { value: 'invocation', label: 'Invocations (per tool call)' },
+  { value: 'plan', label: 'Plans (batch intent review)' },
+];
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 type SelectOption = { value: string; label: string };
@@ -78,6 +85,7 @@ const formatCreateLabel = (input: string): string => `Add "${input}"`;
 
 export const ruleToInput = (r: Rule): RuleInput => ({
   action: r.action,
+  applies_to: r.applies_to ?? 'invocation',
   server_patterns: r.server_patterns,
   tool_patterns: r.tool_patterns,
   agent_cuids: r.agent_cuids ?? [],
@@ -295,6 +303,33 @@ export const CreateRuleModal: React.FC<CreateRuleModalProps> = ({
                 }}
                 classNamePrefix="chakra-react-select"
               />
+            </FormControl>
+
+            {/* Scope */}
+            <FormControl>
+              <FormLabel fontSize="sm">Applies To</FormLabel>
+              <Select
+                size="sm"
+                options={SCOPE_OPTIONS}
+                value={
+                  SCOPE_OPTIONS.find(
+                    (option) => option.value === (form.applies_to ?? 'invocation'),
+                  ) ?? SCOPE_OPTIONS[0]
+                }
+                onChange={(option) => {
+                  if (!option) return;
+                  setForm((current) => ({
+                    ...current,
+                    applies_to: option.value as RuleScope,
+                  }));
+                }}
+                classNamePrefix="chakra-react-select"
+              />
+              <FormHelperText fontSize="xs">
+                Plan rules gate agent-submitted action plans instead of individual
+                tool calls. A plan rule only matches when every declared action's
+                tool matches its tool patterns.
+              </FormHelperText>
             </FormControl>
 
             {/* Evaluation model */}

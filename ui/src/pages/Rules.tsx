@@ -110,13 +110,20 @@ const RuleRow: React.FC<RuleRowProps> = ({
         </HStack>
       </Td>
       <Td>
-        <Badge
-          colorScheme={ACTION_COLOR[rule.action]}
-          fontSize="2xs"
-          whiteSpace="nowrap"
-        >
-          {ACTION_LABEL[rule.action]}
-        </Badge>
+        <HStack gap={1}>
+          <Badge
+            colorScheme={ACTION_COLOR[rule.action]}
+            fontSize="2xs"
+            whiteSpace="nowrap"
+          >
+            {ACTION_LABEL[rule.action]}
+          </Badge>
+          {rule.applies_to === 'plan' && (
+            <Badge colorScheme="cyan" fontSize="2xs" variant="subtle" whiteSpace="nowrap">
+              Plans
+            </Badge>
+          )}
+        </HStack>
       </Td>
       <Td>
         <Text fontSize="sm">{rule.description || '—'}</Text>
