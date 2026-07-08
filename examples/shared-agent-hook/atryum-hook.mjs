@@ -97,6 +97,7 @@ const TOKEN_CACHE_KEY = TOKEN_COMMAND
 let cachedToken = TOKEN_COMMAND ? "" : ACCESS_TOKEN;
 let cachedTokenExpiresAt =
   ACCESS_TOKEN && !TOKEN_COMMAND ? Number.POSITIVE_INFINITY : 0;
+let planSupport;
 
 function parseTokenResponse(raw) {
   const text = String(raw || "").trim();
@@ -308,6 +309,204 @@ function rulesEndpointHint(tool) {
   return `atryum: to see the approval rules that apply to this call, GET ${url.toString()} (advisory only; Atryum re-checks policy during the actual gated call).`;
 }
 
+function agentRulesURL(tool) {
+  const url = new URL("/api/v1/agent/rules", API);
+  url.searchParams.set("source", SOURCE);
+  if (tool) url.searchParams.set("tool", tool);
+  if (AGENT_ID) url.searchParams.set("agent_id", AGENT_ID);
+  return url.toString();
+}
+
+async function loadAgentRules(tool) {
+  const res = await fetch(agentRulesURL(tool), { headers: await atryumHeaders() });
+  if (!res.ok) return undefined;
+  return res.json();
+}
+
+async function planHint(tool) {
+  planSupport ||= loadAgentRules(tool).catch(() => undefined);
+  const rules = await planSupport;
+  if (!rules?.plan_submission?.enabled) return "";
+  const endpoint = rules.plan_submission.endpoint || "/api/v1/external/plans";
+  return ` Atryum also supports preapproval plans for this agent: submit a batch plan to ${endpoint} before running tools, then wait for approval.`;
+}
+
+function normalizeRole(value) {
+  const role = String(value || "").toLowerCase();
+  if (role === "human") return "user";
+  if (role === "ai") return "assistant";
+  if (role === "user" || role === "assistant" || role === "system") return role;
+  return "";
+}
+
+function trimMessage(text) {
+  const compact = String(text || "")
+    .replace(/\s+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (compact.length <= MAX_MESSAGE_CHARS) return compact;
+  return `${compact.slice(0, MAX_MESSAGE_CHARS)}...`;
+}
+
+function extractText(value) {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return "";
+
+  if (Array.isArray(value)) {
+    return value.map(extractText).filter(Boolean).join("\n");
+  }
+
+  const record = value;
+  if (typeof record.text === "string") return record.text;
+
+  const type = typeof record.type === "string" ? record.type : "";
+  if (type === "tool_use" || type === "tool-call") {
+    const name = typeof record.name === "string" ? record.name : "tool";
+    return `[tool call: ${name}]`;
+  }
+  if (type === "tool_result" || type === "tool-result") {
+    const status = typeof record.status === "string" ? record.status : "completed";
+    return `[tool result: ${status}]`;
+  }
+  if (record.content !== undefined) return extractText(record.content);
+  if (record.message !== undefined) return extractText(record.message);
+  return "";
+}
+
+function messageFromRecord(record) {
+  if (!record || typeof record !== "object") return undefined;
+
+  const codex = messageFromCodexRecord(record);
+  if (codex) return codex;
+
+  const nested =
+    record.message && typeof record.message === "object" ? record.message : undefined;
+  const role = normalizeRole(
+    nested?.role ||
+      record.role ||
+      record.type ||
+      record.sender ||
+      record.author
+  );
+  if (!role) return undefined;
+
+  const text = trimMessage(
+    extractText(nested?.content ?? record.content ?? nested ?? record)
+  );
+  if (!text) return undefined;
+  return { role, text };
+}
+
+function messageFromCodexRecord(record) {
+  if (record.type === "response_item" && record.payload?.type === "message") {
+    const role = normalizeRole(record.payload.role);
+    const text = trimMessage(extractText(record.payload.content));
+    return role && text ? { role, text } : undefined;
+  }
+
+  if (record.type === "event_msg" && record.payload?.type === "user_message") {
+    const text = trimMessage(record.payload.message);
+    return text ? { role: "user", text } : undefined;
+  }
+
+  if (record.type === "event_msg" && record.payload?.type === "agent_message") {
+    const text = trimMessage(record.payload.message);
+    return text ? { role: "assistant", text } : undefined;
+  }
+
+  if (record.type === "event_msg" && record.payload?.type === "task_complete") {
+    const text = trimMessage(record.payload.last_agent_message);
+    return text ? { role: "assistant", text } : undefined;
+  }
+
+  return undefined;
+}
+
+function parseChatMessages(raw) {
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+
+  if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      const source = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed.messages)
+          ? parsed.messages
+          : Array.isArray(parsed.entries)
+            ? parsed.entries
+            : [];
+      if (source.length > 0) {
+        return source.map(messageFromRecord).filter(Boolean);
+      }
+      const message = messageFromRecord(parsed);
+      return message ? [message] : [];
+    } catch {
+      // Fall through to JSONL parsing below.
+    }
+  }
+
+  const messages = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmedLine = line.trim();
+    if (!trimmedLine) continue;
+    try {
+      const message = messageFromRecord(JSON.parse(trimmedLine));
+      if (message) messages.push(message);
+    } catch {
+      // Ignore malformed or non-message transcript lines.
+    }
+  }
+  return messages;
+}
+
+function chatMessagesFromValue(value) {
+  if (typeof value === "string") return parseChatMessages(value);
+  if (!value || typeof value !== "object") return [];
+  if (Array.isArray(value)) return value.map(messageFromRecord).filter(Boolean);
+
+  const source = Array.isArray(value.messages)
+    ? value.messages
+    : Array.isArray(value.entries)
+      ? value.entries
+      : [];
+  if (source.length > 0) return source.map(messageFromRecord).filter(Boolean);
+
+  const message = messageFromRecord(value);
+  return message ? [message] : [];
+}
+
+function chatMessagesFromEvent(event) {
+  for (const value of [
+    event.chat_messages,
+    event.chatMessages,
+    event.messages,
+    event.conversation,
+    event.transcript,
+    event.chat_history,
+    event.chatHistory,
+    event.history,
+  ]) {
+    const messages = chatMessagesFromValue(value);
+    if (messages.length > 0) return messages;
+  }
+  return [];
+}
+
+function chatHistoryPath(event) {
+  return (
+    process.env.ATRYUM_CHAT_HISTORY_PATH ||
+    process.env.ATRYUM_CLAUDE_TRANSCRIPT_PATH ||
+    process.env.ATRYUM_CURSOR_TRANSCRIPT_PATH ||
+    process.env.ATRYUM_CODEX_TRANSCRIPT_PATH ||
+    event.transcript_path ||
+    event.transcriptPath ||
+    event.conversation_path ||
+    event.conversationPath ||
+    ""
+  );
+}
+
 // A host-native subagent instance id (e.g. Claude Code's Task-tool workers),
 // present on hook events fired from inside a subagent run. This is NOT
 // Atryum's `agent_id` agent-binding concept (see AGENT_ID above) — it does not
@@ -511,7 +710,7 @@ async function handlePreToolUse(event) {
   await deleteInvocation(id);
   jsonOut(
     denyOutput(
-      `atryum: tool call '${toolName(event)}' was ${decided.status} by reviewer. ${rulesEndpointHint(toolName(event))}`,
+      `atryum: tool call '${toolName(event)}' was ${decided.status} by reviewer. ${rulesEndpointHint(toolName(event))}${await planHint(toolName(event))}`,
     ),
   );
 }

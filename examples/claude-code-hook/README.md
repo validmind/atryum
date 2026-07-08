@@ -156,6 +156,14 @@ them sharing — and cross-contaminating — one judge context. Main-session hoo
 calls are unaffected: `client_session_id` is just the session id, exactly as
 before.
 
+## Preapproval plans
+
+When plan-scoped rules apply to the current agent, the shared hook discovers
+that via `GET /api/v1/agent/rules` and includes a hint in the agent-visible
+blocked tool message. The agent can submit a batch plan to
+`POST /api/v1/external/plans`, wait for approval, and then continue with normal
+tool calls. Matching calls are preapproved until the plan expires.
+
 ## Notes
 
 Claude Code hook support is documented around `PreToolUse` and `PostToolUse`.

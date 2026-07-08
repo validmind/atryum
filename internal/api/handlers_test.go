@@ -1297,6 +1297,63 @@ func TestMCPRulesToolReturnsAgentRulesWithoutInvocation(t *testing.T) {
 	}
 }
 
+func TestMCPPlanSubmitToolSubmitsPlan(t *testing.T) {
+	now := time.Now().UTC()
+	svc := &stubService{plan: invocation.Plan{
+		PlanID:      "plan_123",
+		AgentID:     "agent-1",
+		Source:      "demo",
+		Goal:        "Read files before editing",
+		Actions:     []invocation.PlanAction{{Tool: "Read"}},
+		Status:      invocation.PlanStatusPendingApproval,
+		Revision:    1,
+		TTLSeconds:  3600,
+		SubmittedAt: now,
+	}}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"atryum.plan.submit","arguments":{"goal":"Read files before editing","actions":[{"tool":"Read"}],"ttl_seconds":600}}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if svc.planSubmitReq == nil {
+		t.Fatal("expected plan submission request")
+	}
+	if svc.planSubmitReq.Source != "demo" {
+		t.Fatalf("source = %q, want demo", svc.planSubmitReq.Source)
+	}
+	if svc.planSubmitReq.Goal != "Read files before editing" || len(svc.planSubmitReq.Actions) != 1 || svc.planSubmitReq.Actions[0].Tool != "Read" {
+		t.Fatalf("unexpected plan request: %#v", svc.planSubmitReq)
+	}
+	if !strings.Contains(w.Body.String(), `"plan_123"`) {
+		t.Fatalf("expected plan response, got %s", w.Body.String())
+	}
+}
+
+func TestMCPPlanGetToolGetsPlan(t *testing.T) {
+	now := time.Now().UTC()
+	svc := &stubService{plan: invocation.Plan{
+		PlanID:      "plan_123",
+		AgentID:     "agent-1",
+		Source:      "demo",
+		Goal:        "Read files before editing",
+		Actions:     []invocation.PlanAction{{Tool: "Read"}},
+		Status:      invocation.PlanStatusApproved,
+		Revision:    1,
+		TTLSeconds:  3600,
+		SubmittedAt: now,
+	}}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"atryum.plan.get","arguments":{"plan_id":"plan_123"}}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if !strings.Contains(w.Body.String(), `"approved"`) || !strings.Contains(w.Body.String(), `"plan_123"`) {
+		t.Fatalf("expected plan status response, got %s", w.Body.String())
+	}
+}
+
 func TestMCPNoAuthAgentIDQueryHintSetsIdentity(t *testing.T) {
 	now := time.Now().UTC()
 	svc := &stubService{invoke: invocation.InvocationResponse{InvocationID: "inv_123", ServerName: "demo", ToolName: "demo_tool", Status: invocation.StatusSucceeded, SubmittedAt: now, CompletedAt: &now, Result: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`)}}
@@ -1364,6 +1421,7 @@ func TestAgentRulesListsApplicableRulesAndDisposition(t *testing.T) {
 		{ID: "bash-deny", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Bash"}, Enabled: true, Order: 0},
 		{ID: "read-auto", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, Description: "Read is safe", Enabled: true, Order: 1},
 		{ID: "fallback-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 2},
+		{ID: "plan-human", Action: invocation.RuleActionHumanApproval, AppliesTo: invocation.RuleScopePlan, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, Enabled: true, Order: 3},
 		{ID: "disabled", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, Enabled: false, Order: 3},
 	}}
 	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
@@ -1397,14 +1455,20 @@ func TestAgentRulesListsApplicableRulesAndDisposition(t *testing.T) {
 	if !strings.Contains(resp.Explanation, "advisory") {
 		t.Fatalf("expected advisory explanation, got %q", resp.Explanation)
 	}
-	if len(resp.Items) != 3 {
-		t.Fatalf("expected three applicable rules, got %#v", resp.Items)
+	if resp.PlanSubmission == nil || !resp.PlanSubmission.Enabled {
+		t.Fatalf("expected plan submission capability, got %#v", resp.PlanSubmission)
 	}
-	if resp.Items[0].ID != "bash-deny" || resp.Items[1].ID != "read-auto" || resp.Items[2].ID != "fallback-human" {
+	if len(resp.Items) != 4 {
+		t.Fatalf("expected four applicable rules, got %#v", resp.Items)
+	}
+	if resp.Items[0].ID != "bash-deny" || resp.Items[1].ID != "read-auto" || resp.Items[2].ID != "fallback-human" || resp.Items[3].ID != "plan-human" {
 		t.Fatalf("unexpected applicable rules order: %#v", resp.Items)
 	}
 	if resp.Items[1].Guidance == "" {
 		t.Fatalf("expected rule guidance, got %#v", resp.Items[1])
+	}
+	if resp.Items[3].AppliesTo != invocation.RuleScopePlan {
+		t.Fatalf("expected plan applies_to, got %#v", resp.Items[3])
 	}
 }
 

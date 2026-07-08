@@ -286,8 +286,111 @@ type InvocationResponse = {
   error?: unknown;
 };
 
+type AgentRulesResponse = {
+  plan_submission?: {
+    enabled?: boolean;
+    endpoint?: string;
+    message?: string;
+  };
+};
+
+type ChatMessage = {
+  role: string;
+  text: string;
+};
 // toolUseID -> atryum invocation id, so tool.result can patch the right row.
 const invocationMap = new Map<string, string>();
+const activityContext: ChatMessage[] = [];
+let planSupport: Promise<AgentRulesResponse | undefined> | undefined;
+
+function normalizeRole(role: unknown): string | undefined {
+  if (role !== "user" && role !== "assistant" && role !== "system") {
+    return undefined;
+  }
+  return role;
+}
+
+function trimMessage(text: string): string {
+  const compact = text.replace(/\s+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (compact.length <= MAX_MESSAGE_CHARS) return compact;
+  return `${compact.slice(0, MAX_MESSAGE_CHARS)}...`;
+}
+
+function extractText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return "";
+
+  if (Array.isArray(value)) {
+    return value.map(extractText).filter(Boolean).join("\n");
+  }
+
+  const record = value as Record<string, unknown>;
+  if (typeof record.text === "string") return record.text;
+
+  const type = typeof record.type === "string" ? record.type : "";
+  if (type === "tool_use" || type === "tool-call") {
+    const name = typeof record.name === "string" ? record.name : "tool";
+    return `[tool call: ${name}]`;
+  }
+  if (type === "tool_result" || type === "tool-result") {
+    const run = record.run as Record<string, unknown> | undefined;
+    const status =
+      typeof record.status === "string"
+        ? record.status
+        : typeof run?.status === "string"
+          ? run.status
+          : "completed";
+    return `[tool result: ${status}]`;
+  }
+  if (record.content !== undefined) return extractText(record.content);
+  if (record.message !== undefined) return extractText(record.message);
+  return "";
+}
+
+function chatMessagesFromValue(value: unknown): ChatMessage[] {
+  if (!value || typeof value !== "object") return [];
+
+  const root = value as Record<string, unknown>;
+  const source = Array.isArray(root.messages) ? root.messages : value;
+  if (!Array.isArray(source)) return [];
+
+  const messages: ChatMessage[] = [];
+  for (const item of source) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const role = normalizeRole(record.role);
+    if (!role) continue;
+    const text = trimMessage(extractText(record.content ?? record.message));
+    if (text) messages.push({ role, text });
+  }
+  return messages;
+}
+
+function chatMessagesFromContext(ctx: unknown): ChatMessage[] {
+  const manager = (ctx as { sessionManager?: unknown } | undefined)
+    ?.sessionManager as
+    | {
+        getBranch?: () => unknown;
+        getThread?: () => unknown;
+        getMessages?: () => unknown;
+      }
+    | undefined;
+
+  for (const getter of [
+    manager?.getBranch,
+    manager?.getThread,
+    manager?.getMessages,
+  ]) {
+    if (typeof getter !== "function") continue;
+    try {
+      const messages = chatMessagesFromValue(getter.call(manager));
+      if (messages.length > 0) return messages;
+    } catch {
+      // Amp plugin internals are not stable; fall through to thread file.
+    }
+  }
+  return [];
+}
 
 function activeThreadID(): string {
   if (ENV_THREAD_ID) return ENV_THREAD_ID;
@@ -334,6 +437,28 @@ function rulesEndpointHint(tool: string): string {
   url.searchParams.set("tool", tool);
   if (AGENT_ID && !ACCESS_TOKEN) url.searchParams.set("agent_id", AGENT_ID);
   return `atryum: to see the approval rules that apply to this call, GET ${url.toString()} (advisory only; Atryum re-checks policy during the actual gated call).`;
+}
+
+function agentRulesURL(tool?: string): string {
+  const url = new URL("/api/v1/agent/rules", API);
+  url.searchParams.set("source", SOURCE);
+  if (tool) url.searchParams.set("tool", tool);
+  if (AGENT_ID) url.searchParams.set("agent_id", AGENT_ID);
+  return url.toString();
+}
+
+async function loadAgentRules(tool?: string): Promise<AgentRulesResponse | undefined> {
+  const res = await fetch(agentRulesURL(tool), { headers: await atryumHeaders() });
+  if (!res.ok) return undefined;
+  return (await res.json()) as AgentRulesResponse;
+}
+
+async function planHint(tool?: string): Promise<string> {
+  planSupport ||= loadAgentRules(tool).catch(() => undefined);
+  const rules = await planSupport;
+  if (!rules?.plan_submission?.enabled) return "";
+  const endpoint = rules.plan_submission.endpoint || "/api/v1/external/plans";
+  return ` Atryum also supports preapproval plans for this agent: submit a batch plan to ${endpoint} before running tools, then wait for approval.`;
 }
 
 async function submit(
@@ -448,7 +573,7 @@ export default function (amp: PluginAPI) {
       invocationMap.delete(event.toolUseID);
       return {
         action: "reject-and-continue",
-        message: `atryum: tool call '${event.tool}' was ${decided.status} by reviewer. ${rulesEndpointHint(event.tool)}`,
+        message: `atryum: tool call '${event.tool}' was ${decided.status} by reviewer. ${rulesEndpointHint(event.tool)}${await planHint(event.tool)}`,
       };
     } catch (err) {
       ctx.logger.log(`atryum error: ${err}`);

@@ -224,9 +224,17 @@ type InvocationResponse = {
   error?: unknown;
 };
 
+type AgentRulesResponse = {
+  plan_submission?: {
+    enabled?: boolean;
+    endpoint?: string;
+    message?: string;
+  };
+};
 type ToolInput = Record<string, unknown>;
 
 const invocationMap = new Map<string, string>();
+let planSupport: Promise<AgentRulesResponse | undefined> | undefined;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -250,6 +258,28 @@ function rulesEndpointHint(tool: string): string {
   url.searchParams.set("tool", tool);
   if (AGENT_ID && !ACCESS_TOKEN) url.searchParams.set("agent_id", AGENT_ID);
   return `atryum: to see the approval rules that apply to this call, GET ${url.toString()} (advisory only; Atryum re-checks policy during the actual gated call).`;
+}
+
+function agentRulesURL(tool?: string): string {
+  const url = new URL("/api/v1/agent/rules", API);
+  url.searchParams.set("source", SOURCE);
+  if (tool) url.searchParams.set("tool", tool);
+  if (AGENT_ID) url.searchParams.set("agent_id", AGENT_ID);
+  return url.toString();
+}
+
+async function loadAgentRules(tool?: string): Promise<AgentRulesResponse | undefined> {
+  const res = await fetch(agentRulesURL(tool), { headers: await atryumHeaders() });
+  if (!res.ok) return undefined;
+  return (await res.json()) as AgentRulesResponse;
+}
+
+async function planHint(tool?: string): Promise<string> {
+  planSupport ||= loadAgentRules(tool).catch(() => undefined);
+  const rules = await planSupport;
+  if (!rules?.plan_submission?.enabled) return "";
+  const endpoint = rules.plan_submission.endpoint || "/api/v1/external/plans";
+  return ` Atryum also supports preapproval plans for this agent: submit a batch plan to ${endpoint} before running tools, then wait for approval.`;
 }
 
 // Pi's own session identifier, sent as client_session_id (and thread_id) on
@@ -379,7 +409,7 @@ export default function (pi: ExtensionAPI) {
         : "";
       return {
         block: true,
-        reason: `atryum: tool call '${event.toolName}' was ${decided.status} by reviewer.${reviewerReason} ${rulesEndpointHint(event.toolName)}`,
+        reason: `atryum: tool call '${event.toolName}' was ${decided.status} by reviewer.${reviewerReason} ${rulesEndpointHint(event.toolName)}${await planHint(event.toolName)}`,
       };
     } catch (err) {
       ctx.ui.setStatus("atryum", "gate failed");

@@ -111,6 +111,14 @@ If the caller has no agent binding, Atryum simply resolves no session and
 evaluates the call history-free (tool calls are still gated, just without
 prior-call context) rather than blocking the agent.
 
+## Preapproval plans
+
+When plan-scoped rules apply to the current agent, the plugin discovers that
+via `GET /api/v1/agent/rules` and includes a hint in the agent-visible blocked
+tool message. The agent can submit a batch plan to
+`POST /api/v1/external/plans`, wait for approval, and then continue with normal
+tool calls. Matching calls are preapproved until the plan expires.
+
 ## Tagging invocations to an Agent Record
 
 By default the plugin sends no agent identity, so invocations show up in

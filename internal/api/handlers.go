@@ -654,7 +654,8 @@ const atryumInitializeInstructions = "This MCP server is gated by the Atryum har
 	"Those rules may change between conversation turns, so treat each tool call as subject to the current Atryum policy. " +
 	"To see the static approval rules that currently apply to you, call the atryum_rules_get MCP tool or issue an HTTP GET to /api/v1/agent/rules " +
 	"(optionally with ?server={server}&tool={tool} to preview the disposition for a specific tool); " +
-	"the response is advisory only, as AI-evaluation and human-approval outcomes are decided during the actual gated call."
+	"the response is advisory only, as AI-evaluation and human-approval outcomes are decided during the actual gated call. " +
+	"When the atryum.plan.submit tool is listed, you may submit a batch plan before running tools; an approved plan can preapprove matching later tool calls until it expires."
 
 // Dotted tool names are valid MCP names, but common harnesses have rejected
 // them in practice. Keep this synthetic helper underscore-only for compatibility.
@@ -663,6 +664,7 @@ const atryumRulesToolName = "atryum_rules_get"
 type AgentRule struct {
 	ID             string   `json:"id"`
 	Action         string   `json:"action"`
+	AppliesTo      string   `json:"applies_to"`
 	ServerPatterns []string `json:"server_patterns"`
 	ToolPatterns   []string `json:"tool_patterns"`
 	Description    string   `json:"description,omitempty"`
@@ -670,17 +672,24 @@ type AgentRule struct {
 	Order          int      `json:"order"`
 }
 
+type AgentPlanSubmission struct {
+	Enabled  bool   `json:"enabled"`
+	Endpoint string `json:"endpoint,omitempty"`
+	Message  string `json:"message,omitempty"`
+}
+
 type AgentRulesResponse struct {
-	AgentID        string      `json:"agent_id,omitempty"`
-	Server         string      `json:"server,omitempty"`
-	Tool           string      `json:"tool,omitempty"`
-	DefaultAction  string      `json:"default_action"`
-	Action         string      `json:"action,omitempty"`
-	MatchedRuleID  *string     `json:"matched_rule_id,omitempty"`
-	GeneratedAt    time.Time   `json:"generated_at"`
-	EvaluationMode string      `json:"evaluation_mode"`
-	Explanation    string      `json:"explanation"`
-	Items          []AgentRule `json:"items"`
+	AgentID        string               `json:"agent_id,omitempty"`
+	Server         string               `json:"server,omitempty"`
+	Tool           string               `json:"tool,omitempty"`
+	DefaultAction  string               `json:"default_action"`
+	Action         string               `json:"action,omitempty"`
+	MatchedRuleID  *string              `json:"matched_rule_id,omitempty"`
+	PlanSubmission *AgentPlanSubmission `json:"plan_submission,omitempty"`
+	GeneratedAt    time.Time            `json:"generated_at"`
+	EvaluationMode string               `json:"evaluation_mode"`
+	Explanation    string               `json:"explanation"`
+	Items          []AgentRule          `json:"items"`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1094,9 +1103,18 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 		if !apiRuleVisibleToAgent(rule, agentCUID) {
 			continue
 		}
+		appliesTo := normalizeRuleScope(rule.AppliesTo)
+		if appliesTo == invocation.RuleScopePlan && resp.PlanSubmission == nil {
+			resp.PlanSubmission = &AgentPlanSubmission{
+				Enabled:  true,
+				Endpoint: "/api/v1/external/plans",
+				Message:  "Plan-scoped rules apply to this agent. Submit a plan before running a batch of tools; an approved plan can preapprove matching later tool calls until it expires.",
+			}
+		}
 		resp.Items = append(resp.Items, AgentRule{
 			ID:             rule.ID,
 			Action:         rule.Action,
+			AppliesTo:      appliesTo,
 			ServerPatterns: rule.ServerPatterns,
 			ToolPatterns:   rule.ToolPatterns,
 			Description:    rule.Description,
@@ -1104,6 +1122,7 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 			Order:          rule.Order,
 		})
 		if resp.Action == "" && server != "" && tool != "" &&
+			appliesTo == invocation.RuleScopeInvocation &&
 			apiRuleMatches(rule, server, tool, agentCUID, true) {
 			resp.Action = rule.Action
 			if rule.ID != "" {
@@ -1177,6 +1196,13 @@ func newAgentRulesResponse(agentID, server, tool string) AgentRulesResponse {
 			"AI evaluation rules are decided only during the actual gated tool call.",
 		Items: []AgentRule{},
 	}
+}
+
+func normalizeRuleScope(scope string) string {
+	if scope == invocation.RuleScopePlan {
+		return invocation.RuleScopePlan
+	}
+	return invocation.RuleScopeInvocation
 }
 
 func (h *Handler) resolveAgentRecordForRules(ctx context.Context, agentID string) string {
@@ -1324,6 +1350,14 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			h.handleAtryumRulesToolCall(w, r, req.ID, server, params.Arguments)
 			return
 		}
+		if params.Name == atryumPlanSubmitTool {
+			h.handleMCPPlanSubmit(w, r, req.ID, server, params.Arguments)
+			return
+		}
+		if params.Name == atryumPlanGetTool {
+			h.handleMCPPlanGet(w, r, req.ID, params.Arguments)
+			return
+		}
 		toolReq := invocation.CreateInvocationRequest{Server: server, Tool: params.Name, Input: params.Arguments}
 		if requestID != "" {
 			toolReq.RequestID = stringPtr(requestID)
@@ -1385,6 +1419,71 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		w.WriteHeader(status)
 		_, _ = w.Write(body)
 	}
+}
+
+func (h *Handler) handleMCPPlanSubmit(w http.ResponseWriter, r *http.Request, id json.RawMessage, server string, args map[string]any) {
+	raw, err := json.Marshal(args)
+	if err != nil {
+		h.writeRPCError(w, id, -32602, "invalid plan arguments")
+		return
+	}
+	var planReq invocation.PlanSubmitRequest
+	if err := json.Unmarshal(raw, &planReq); err != nil {
+		h.writeRPCError(w, id, -32602, "invalid plan arguments")
+		return
+	}
+	if planReq.Source == "" {
+		planReq.Source = server
+	}
+	if planReq.ClientName == "" {
+		if snap, ok := h.lookupClientInfo(r); ok {
+			planReq.ClientName = snap.Name
+			planReq.ClientVersion = snap.Version
+		}
+	}
+	plan, err := h.svc.SubmitPlan(r.Context(), planReq)
+	if err != nil {
+		h.writeRPCError(w, id, -32000, err.Error())
+		return
+	}
+	body, err := json.MarshalIndent(plan, "", "  ")
+	if err != nil {
+		h.writeRPCError(w, id, -32000, "failed to encode plan")
+		return
+	}
+	h.writeRPCResult(w, id, map[string]any{
+		"content": []map[string]any{{
+			"type": "text",
+			"text": "Atryum plan submitted:\n" + string(body),
+		}},
+		"structuredContent": plan,
+	})
+}
+
+func (h *Handler) handleMCPPlanGet(w http.ResponseWriter, r *http.Request, id json.RawMessage, args map[string]any) {
+	rawID, _ := args["plan_id"].(string)
+	planID := strings.TrimSpace(rawID)
+	if planID == "" {
+		h.writeRPCError(w, id, -32602, "plan_id is required")
+		return
+	}
+	plan, err := h.svc.GetPlan(r.Context(), planID)
+	if err != nil {
+		h.writeRPCError(w, id, -32000, err.Error())
+		return
+	}
+	body, err := json.MarshalIndent(plan, "", "  ")
+	if err != nil {
+		h.writeRPCError(w, id, -32000, "failed to encode plan")
+		return
+	}
+	h.writeRPCResult(w, id, map[string]any{
+		"content": []map[string]any{{
+			"type": "text",
+			"text": "Atryum plan status:\n" + string(body),
+		}},
+		"structuredContent": plan,
+	})
 }
 
 // agentIDs returns the distinct enabled agent IDs configured on synced agents.
@@ -1599,6 +1698,33 @@ type atryumToolPolicy struct {
 	MatchedRuleID   string `json:"matched_rule_id,omitempty"`
 }
 
+const (
+	atryumPlanSubmitTool = "atryum.plan.submit"
+	atryumPlanGetTool    = "atryum.plan.get"
+)
+
+func atryumPlanSubmitMCPTool() annotatedTool {
+	return annotatedTool{
+		Name:        atryumPlanSubmitTool,
+		Description: "Submit an Atryum plan before running a batch of tools. Arguments: goal string, rationale optional string, actions array of {tool, server?, description?, input_summary?}, ttl_seconds optional number, thread_id optional string, chat_context optional string. After submission, call atryum.plan.get with the returned plan_id until the plan is approved, denied, or needs_revision. Approved plans can preapprove matching later tool calls until expires_at.",
+		InputSchema: json.RawMessage(`{"type":"object","required":["goal","actions"],"properties":{"goal":{"type":"string"},"rationale":{"type":"string"},"actions":{"type":"array","minItems":1,"items":{"type":"object","required":["tool"],"properties":{"tool":{"type":"string"},"server":{"type":"string"},"description":{"type":"string"},"input_summary":{"type":"string"}}}},"ttl_seconds":{"type":"integer","minimum":1},"thread_id":{"type":"string"},"chat_context":{"type":"string"},"revision_of":{"type":"string"}}}`),
+		Annotations: &atryumAnnotations{Atryum: atryumToolPolicy{
+			EffectiveAction: invocation.RuleActionHumanApproval,
+		}},
+	}
+}
+
+func atryumPlanGetMCPTool() annotatedTool {
+	return annotatedTool{
+		Name:        atryumPlanGetTool,
+		Description: "Get the current status of an Atryum plan by plan_id. Use this after atryum.plan.submit while waiting for approved, denied, needs_revision, expired, cancelled, or superseded.",
+		InputSchema: json.RawMessage(`{"type":"object","required":["plan_id"],"properties":{"plan_id":{"type":"string"}}}`),
+		Annotations: &atryumAnnotations{Atryum: atryumToolPolicy{
+			EffectiveAction: invocation.RuleActionHumanApproval,
+		}},
+	}
+}
+
 // annotateToolsWithPolicy decorates each tool with its effective approval
 // disposition for the current agent so the model sees the policy at the moment
 // it picks a tool. Annotation requires both rulesRepo and a concrete server.
@@ -1622,6 +1748,10 @@ func (h *Handler) annotateToolsWithPolicy(ctx context.Context, agentID, server s
 		return append(out, atryumRulesTool)
 	}
 	agentCUID := h.resolveAgentRecordForRules(ctx, agentID)
+	if planSubmissionEnabledForRules(rules, server, agentCUID) {
+		out = append(out, atryumPlanSubmitMCPTool())
+		out = append(out, atryumPlanGetMCPTool())
+	}
 	for _, t := range tools {
 		if t.Name == atryumRulesToolName {
 			continue
@@ -1660,12 +1790,31 @@ var atryumRulesTool = mcp.Tool{
 // When no rule matches, it returns RuleActionHumanApproval (the default).
 func effectiveActionForTool(rules []store.Rule, server, tool, agentCUID string) (string, string) {
 	for _, r := range rules {
+		if normalizeRuleScope(r.AppliesTo) != invocation.RuleScopeInvocation {
+			continue
+		}
 		if !apiRuleMatches(r, server, tool, agentCUID, true) {
 			continue
 		}
 		return r.Action, r.ID
 	}
 	return invocation.RuleActionHumanApproval, ""
+}
+
+func planSubmissionEnabledForRules(rules []store.Rule, server, agentCUID string) bool {
+	for _, r := range rules {
+		if normalizeRuleScope(r.AppliesTo) != invocation.RuleScopePlan {
+			continue
+		}
+		if !apiRuleMatches(r, server, "", agentCUID, false) {
+			continue
+		}
+		if !apiMatchPatterns(r.ServerPatterns, server) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // appendRulesContextToToolResult adds an extra text content block to a denied

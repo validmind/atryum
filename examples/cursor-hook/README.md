@@ -132,6 +132,14 @@ the bearer token (auth mode). With neither, the caller is anonymous and Atryum
 resolves no session, evaluating the call history-free (tool calls are still
 gated, just without prior-call context).
 
+## Preapproval plans
+
+When plan-scoped rules apply to the current agent, the shared hook discovers
+that via `GET /api/v1/agent/rules` and includes a hint in the agent-visible
+blocked tool message. The agent can submit a batch plan to
+`POST /api/v1/external/plans`, wait for approval, and then continue with normal
+tool calls. Matching calls are preapproved until the plan expires.
+
 ## Plugin packaging
 
 For a Cursor plugin, point the plugin manifest at a hooks file that contains

@@ -84,6 +84,14 @@ the bearer token (auth mode). With neither, the caller is anonymous and Atryum
 resolves no session, evaluating the call history-free (tool calls are still
 gated, just without prior-call context).
 
+## Preapproval plans
+
+When plan-scoped rules apply to the current agent, the shared hook discovers
+that via `GET /api/v1/agent/rules` and includes a hint in the agent-visible
+blocked tool message. The agent can submit a batch plan to
+`POST /api/v1/external/plans`, wait for approval, and then continue with normal
+tool calls. Matching calls are preapproved until the plan expires.
+
 ## MCP proxy
 
 You can also configure Codex to use Atryum's MCP proxy instead of connecting
@@ -101,7 +109,9 @@ args = [
 ```
 
 Replace `leanctx` with the Atryum MCP server name you configured in the Atryum
-server registry.
+server registry. When plan-scoped rules apply, `tools/list` also exposes
+`atryum.plan.submit` and `atryum.plan.get`; MCP agents can call those synthetic
+tools to submit and poll a plan without using the raw HTTP endpoint directly.
 
 ## MCP coverage
 
