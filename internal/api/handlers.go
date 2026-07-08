@@ -3698,6 +3698,16 @@ func (h *Handler) externalPlans(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, plan)
 }
 
+// planOwnedByCaller enforces agent scoping on the external plan endpoints.
+// When the request carries a verified identity (OAuth via agentRuntimeHandler,
+// or the no-auth agent_id hint) it must match the plan's agent. Anonymous
+// callers (auth disabled, no hint) are not scoped — there is no identity to
+// enforce, matching the external invocation endpoints' trust model.
+func planOwnedByCaller(r *http.Request, plan invocation.Plan) bool {
+	callerID := auth.AgentIDFromContext(r.Context())
+	return callerID == "" || callerID == plan.AgentID
+}
+
 // externalPlanDetail handles GET /api/v1/external/plans/{id} (decision polling)
 // and POST /api/v1/external/plans/{id}/cancel.
 func (h *Handler) externalPlanDetail(w http.ResponseWriter, r *http.Request) {
@@ -3712,6 +3722,21 @@ func (h *Handler) externalPlanDetail(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		id := strings.TrimSuffix(strings.TrimSuffix(trimmed, "/cancel"), "/")
+		existing, err := h.svc.GetPlan(r.Context(), id)
+		if err != nil {
+			status := http.StatusBadRequest
+			if err == sql.ErrNoRows {
+				status = http.StatusNotFound
+			}
+			writeError(w, status, err.Error())
+			return
+		}
+		// 404 (not 403) on ownership mismatch so callers cannot probe for
+		// other agents' plan IDs.
+		if !planOwnedByCaller(r, existing) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
 		plan, err := h.svc.CancelPlan(r.Context(), id)
 		if err != nil {
 			status := http.StatusBadRequest
@@ -3735,6 +3760,10 @@ func (h *Handler) externalPlanDetail(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusNotFound
 		}
 		writeError(w, status, err.Error())
+		return
+	}
+	if !planOwnedByCaller(r, plan) {
+		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, plan)

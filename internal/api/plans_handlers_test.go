@@ -95,6 +95,60 @@ func TestExternalPlanPollAndCancel(t *testing.T) {
 	}
 }
 
+func TestExternalPlanEndpointsScopedToCallingAgent(t *testing.T) {
+	// The stub plan belongs to "agent-a". With the auth validator unset the
+	// noAuthAgentIDHint middleware turns ?agent_id= into the request identity,
+	// exercising the same auth.AgentIDFromContext path a verified JWT would.
+	stub := &stubService{plan: newPlanStub()}
+	h := NewHandler(stub, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+
+	// Owner can poll.
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/external/plans/plan_123?agent_id=agent-a", nil)
+	w := httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("owner poll: expected 200, got %d", w.Code)
+	}
+
+	// A different identified agent gets 404, not the plan.
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/external/plans/plan_123?agent_id=intruder", nil)
+	w = httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("intruder poll: expected 404, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	// A different identified agent cannot cancel; the service is never called.
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/external/plans/plan_123/cancel?agent_id=intruder", nil)
+	w = httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("intruder cancel: expected 404, got %d", w.Code)
+	}
+	if stub.planCancelID != "" {
+		t.Fatalf("CancelPlan must not be called for a non-owner, got id %q", stub.planCancelID)
+	}
+
+	// Owner can cancel.
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/external/plans/plan_123/cancel?agent_id=agent-a", nil)
+	w = httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("owner cancel: expected 200, got %d", w.Code)
+	}
+	if stub.planCancelID != "plan_123" {
+		t.Fatalf("cancel id = %q", stub.planCancelID)
+	}
+
+	// Anonymous callers (no identity at all) keep the existing open behavior.
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/external/plans/plan_123", nil)
+	w = httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("anonymous poll: expected 200, got %d", w.Code)
+	}
+}
+
 func TestAdminPlansListAndDetail(t *testing.T) {
 	stub := &stubService{plan: newPlanStub()}
 	h := NewHandler(stub, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
