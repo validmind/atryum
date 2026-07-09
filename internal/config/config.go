@@ -29,6 +29,10 @@ type Config struct {
 	// repeated `[[managed_agents]]` table. An entry with an empty api_key is
 	// skipped.
 	ManagedAgents []ManagedAgentsConfig `toml:"managed_agents"`
+	// GoogleGateway configures zero or more Google Agent Gateway authorization
+	// callouts (Envoy ext_authz). Declare each as a repeated [[google_gateway]]
+	// table with a listen_addr; entries without one are skipped.
+	GoogleGateway []GoogleGatewayConfig `toml:"google_gateway"`
 }
 
 // ManagedAgentsConfig configures one outbound connection to Anthropic's Claude
@@ -74,6 +78,36 @@ func (c *Config) applyManagedAgentsEnv() {
 		}
 		if c.ManagedAgents[0].Workspace == "" {
 			c.ManagedAgents[0].Workspace = envWorkspace
+		}
+	}
+}
+
+// GoogleGatewayConfig configures one Envoy ext_authz callout that Google Agent
+// Gateway's authorization extension dials for every agent tool call routed
+// through the gateway. When ListenAddr is empty the entry is skipped.
+type GoogleGatewayConfig struct {
+	ListenAddr             string `toml:"listen_addr"`
+	Source                 string `toml:"source"`
+	PollIntervalMillis     int    `toml:"poll_interval_millis"`
+	DecisionTimeoutSeconds int    `toml:"decision_timeout_seconds"`
+	ClientName             string `toml:"client_name"`
+	ClientVersion          string `toml:"client_version"`
+}
+
+// applyGoogleGatewayEnv lets ATRYUM_GOOGLE_GATEWAY_LISTEN_ADDR enable the callout
+// without TOML in the single-callout case: it fills an empty listen_addr on the
+// sole entry, or creates one when none is configured.
+func (c *Config) applyGoogleGatewayEnv() {
+	addr := os.Getenv("ATRYUM_GOOGLE_GATEWAY_LISTEN_ADDR")
+	if addr == "" {
+		return
+	}
+	switch len(c.GoogleGateway) {
+	case 0:
+		c.GoogleGateway = []GoogleGatewayConfig{{ListenAddr: addr}}
+	case 1:
+		if c.GoogleGateway[0].ListenAddr == "" {
+			c.GoogleGateway[0].ListenAddr = addr
 		}
 	}
 }
@@ -159,6 +193,7 @@ func Load(path string) (Config, error) {
 	}
 	cfg.Backend.ApplyEnv()
 	cfg.applyManagedAgentsEnv()
+	cfg.applyGoogleGatewayEnv()
 	return cfg, nil
 }
 

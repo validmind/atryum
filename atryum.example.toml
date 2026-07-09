@@ -86,6 +86,26 @@ api_key = ""          # Anthropic API key created in that workspace
 # workspace = "staging-workspace"
 # api_key = ""
 
+# Optional Google Agent Gateway authorization callout (Envoy ext_authz). Declare
+# one [[google_gateway]] table per gRPC listener. When listen_addr is set, Atryum
+# serves an ext_authz gRPC server that GEAP's Agent Gateway authorization
+# extension dials for every agent tool call, answering allow/deny through the
+# normal approval rules. Bound once at the gateway, it gates every routed agent
+# with no per-agent code. See examples/google-agent-gateway/.
+#
+# Environment override (single-callout convenience):
+# ATRYUM_GOOGLE_GATEWAY_LISTEN_ADDR.
+[[google_gateway]]
+listen_addr = ":8090"
+# Optional tuning (defaults shown):
+# source                   = "google-agent-gateway"  # rule "server" key for non-MCP tools
+# poll_interval_millis     = 200
+# decision_timeout_seconds = 10   # Agent Gateway caps the callout timeout at 10s;
+#                                 # auto-rules and a fast LLM-judge resolve inline,
+#                                 # longer human approvals fall back to deny-and-resubmit
+# client_name              = "google-agent-gateway"
+# client_version           = ""
+
 # Agent sync and AI evaluation settings (org, record type, charter field)
 # are managed through the Atryum Settings UI and stored in the database.
 # They no longer need to be configured here.

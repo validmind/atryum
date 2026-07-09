@@ -34,11 +34,13 @@ Ready to install and try it? Follow the [quickstart](https://atryum.org/document
 --- 
 ## How agents reach Atryum
 
-Atryum mediates three kinds of tool calls:
+Atryum mediates four kinds of tool calls:
 
 - **Pre-tool hooks from agent harnesses.** Managed harnesses (Claude Code, Cursor, amp, Pi) and autonomous ones (Microsoft Foundry, custom orchestrators) post their intended tool call to `POST /api/v1/external/invocations` (when the harness executes the tool itself) or `POST /api/v1/invocations` (when Atryum should execute it). The harness blocks on the response and only proceeds if Atryum returns an approved status. In the hook path Atryum never touches the tool — it just answers "may this call happen."
 - **Direct MCP proxying.** Agents that speak MCP connect to `POST /mcp/{server}` as their MCP endpoint. Atryum implements the JSON-RPC surface (`initialize`, `notifications/initialized`, `tools/list`, `tools/call`) and proxies calls to the configured upstream — HTTP or stdio. Because Atryum is the MCP client to the upstream, it holds the credentials (OAuth tokens, bearer tokens, custom headers) and the agent never sees them. The same approval engine runs on every `tools/call`.
 - **Claude Managed Agents events bridge.** Anthropic's hosted harness runs the agent loop on its own infrastructure and never calls Atryum, so for those sessions Atryum dials *out*: it discovers linked Claude sessions, streams their [events](https://platform.claude.com/docs/en/managed-agents/events-and-streaming), records the raw session events on a synthetic audit invocation, and — when the session blocks on a tool call (`session.status_idle` / `requires_action`) — runs the normal approval rules and answers Claude with a `user.tool_confirmation` (or `user.custom_tool_result`). Each tool call is also recorded as its own invocation. This gates both built-in and MCP tools. Enable it by declaring one or more `[[managed_agents]]` accounts (each with a `name`, `workspace`, and `api_key`) and link Claude agents from the Agents UI. Manual session registration remains available at `POST /api/v1/admin/managed-agents/sessions`. See `examples/managed-agents/`.
+
+- **Google Agent Gateway authorization extension.** For agents on the Gemini Enterprise Agent Platform (GEAP), Atryum runs a gRPC Envoy `ext_authz` callout. GEAP's Agent Gateway (the central data plane all managed agent traffic routes through) calls out to Atryum for every tool call; Atryum answers allow/deny through the same rules, and the gateway forwards or blocks the tool. Bound once to the gateway resource, it gates every routed agent (Agent Studio no-code, ADK, marketplace) with no per-agent code — Atryum is the Policy Decision Point, the gateway the enforcement point. Enable it with a `[[google_gateway]]` block; see `examples/google-agent-gateway/`.
 
 These paths converge on a single service so rules, audit, and the UI work identically regardless of how the call arrived.
 
