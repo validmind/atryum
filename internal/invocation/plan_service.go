@@ -514,6 +514,9 @@ func (s *Service) matchApprovedPlan(ctx context.Context, agentID, server, tool s
 func (s *Service) approvedPlanPass(ctx context.Context, match approvedPlanMatch, agentRec AgentRecord, server, tool string, input map[string]any, extraContext string) (string, *float64, bool) {
 	plan := match.Plan
 	reason := "matched approved plan " + plan.PlanID
+	if planStatusAccessAllowed(plan.PlanID, input) {
+		return reason + ": accessing approved plan status", nil, true
+	}
 	if plan.MatchedRuleID == nil || s.rules == nil || s.planJudge == nil {
 		return reason, nil, true
 	}
@@ -576,4 +579,52 @@ func (s *Service) planAdherenceRule(ctx context.Context, ruleID string) (Approva
 		}
 	}
 	return ApprovalRule{}, false
+}
+
+func planStatusAccessAllowed(planID string, input map[string]any) bool {
+	if planID == "" {
+		return false
+	}
+	for _, value := range input {
+		if planStatusAccessAllowedValue(planID, value) {
+			return true
+		}
+	}
+	return false
+}
+
+func planStatusAccessAllowedValue(planID string, value any) bool {
+	switch v := value.(type) {
+	case string:
+		text := strings.ToLower(v)
+		planPath := "/api/v1/external/plans/" + strings.ToLower(planID)
+		if !strings.Contains(text, planPath) {
+			return false
+		}
+		if strings.Contains(text, "/cancel") ||
+			strings.Contains(text, " -x ") ||
+			strings.Contains(text, " --request ") ||
+			strings.Contains(text, " -d ") ||
+			strings.Contains(text, " --data") {
+			return false
+		}
+		return strings.Contains(text, "curl") ||
+			strings.Contains(text, "http get") ||
+			strings.Contains(text, "method: get") ||
+			strings.Contains(text, `"method":"get"`) ||
+			strings.Contains(text, "'method':'get'")
+	case []any:
+		for _, item := range v {
+			if planStatusAccessAllowedValue(planID, item) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, item := range v {
+			if planStatusAccessAllowedValue(planID, item) {
+				return true
+			}
+		}
+	}
+	return false
 }

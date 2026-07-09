@@ -358,6 +358,8 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		planID := planMatch.Plan.PlanID
 		reason, confidence, passOK := s.approvedPlanPass(ctx, planMatch, agentRec, upstream.Name, req.Tool, req.Input, "")
 		if !passOK {
+			inv.PlanID = &planID
+			_ = s.invocations.UpdateResult(ctx, inv)
 			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.plan_mismatch", Payload: mustJSON(map[string]any{"plan_id": planID, "reason": reason, "confidence": confidence}), CreatedAt: time.Now().UTC()})
 		} else {
 			inv.PlanID = &planID
@@ -1408,6 +1410,8 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		planID := planMatch.Plan.PlanID
 		reason, confidence, passOK := s.approvedPlanPass(ctx, planMatch, agentRec, source, req.Tool, req.Input, chatContext)
 		if !passOK {
+			inv.PlanID = &planID
+			_ = s.invocations.UpdateResult(ctx, inv)
 			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.plan_mismatch", Payload: mustJSON(map[string]any{"plan_id": planID, "reason": reason, "confidence": confidence}), CreatedAt: time.Now().UTC()})
 		} else {
 			inv.PlanID = &planID

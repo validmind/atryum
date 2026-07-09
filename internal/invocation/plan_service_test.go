@@ -392,8 +392,46 @@ func TestAIEvaluatedPlanFallsBackWhenAdherenceJudgeRejects(t *testing.T) {
 	if resp.Status != invocation.StatusPendingApproval {
 		t.Fatalf("status = %s, want pending_approval fallback", resp.Status)
 	}
-	if resp.PlanID != nil {
-		t.Fatalf("plan_id = %v, want nil when adherence rejects", *resp.PlanID)
+	if resp.PlanID == nil {
+		t.Fatal("plan_id should be retained when adherence rejects")
+	}
+}
+
+func TestAIEvaluatedPlanAllowsReadingOwnPlanStatus(t *testing.T) {
+	rules := []invocation.ApprovalRule{{
+		ID:                "rule-plan-ai",
+		Action:            invocation.RuleActionAIEvaluation,
+		AppliesTo:         invocation.RuleScopePlan,
+		AtryumLLMConfigID: "llm-1",
+		Enabled:           true,
+	}}
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},
+	}}
+	judge := &planJudgeStub{
+		resp:          invocation.PlanEvaluateResponse{Verdict: "approved", Reason: "plan ok"},
+		adherenceResp: invocation.PlanAdherenceResponse{Verdict: "outside_plan", Reason: "would otherwise reject"},
+	}
+	svc, _ := newPlanTestService(t, rules, agents, judge)
+	ctx := context.Background()
+
+	plan, err := svc.SubmitPlan(ctx, planSubmit("agent-a", "Bash"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := `curl -fsS -H "Authorization: Bearer $ATRYUM_ACCESS_TOKEN" http://localhost:8080/api/v1/external/plans/` + plan.PlanID + ` | jq .`
+	resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{Tool: "Bash", AgentID: "agent-a", Input: map[string]any{"cmd": cmd}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusApproved || resp.Approval == nil || resp.Approval.Status != "plan_approved" {
+		t.Fatalf("resp = status %s approval %+v, want plan approved", resp.Status, resp.Approval)
+	}
+	if resp.Approval.Reason == nil || !strings.Contains(*resp.Approval.Reason, "accessing approved plan status") {
+		t.Fatalf("approval reason = %v", resp.Approval.Reason)
+	}
+	if got := judge.adherenceRequest(); got.Plan.PlanID != "" {
+		t.Fatalf("adherence judge should not be called for plan status read, got %+v", got)
 	}
 }
 
