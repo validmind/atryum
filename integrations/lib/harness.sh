@@ -330,7 +330,10 @@ PY
   unset CLAUDE_MCP_CONFIG CLAUDE_CONFIG_DIR CURSOR_MCP_CONFIG CURSOR_RUN_DIR || true
   unset PI_EXTENSION_PATH || true
 
-  harness_token_command_env "$auth_id"
+  harness_token_command_env "$auth_id" || {
+    warn "failed to configure harness auth env for auth=$auth_id"
+    return 1
+  }
   install_hook "$harness_id"
   configure_harness_mcp "$harness_id" "$auth_id" "$target_id"
 

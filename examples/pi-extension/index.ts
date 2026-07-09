@@ -23,9 +23,14 @@ const CHAT_MESSAGES_LIMIT = Number(
 const AGENT_ID = process.env.ATRYUM_AGENT_ID || "";
 const ACCESS_TOKEN = process.env.ATRYUM_ACCESS_TOKEN || "";
 const TOKEN_COMMAND = process.env.ATRYUM_TOKEN_COMMAND || "";
-const TOKEN_REFRESH_SKEW_MS = Number(
-  process.env.ATRYUM_TOKEN_REFRESH_SKEW_MS || 60000,
-);
+// Malformed values (e.g. "10s") would otherwise become NaN, which silently
+// disables the cache comparisons and makes exec() throw ERR_OUT_OF_RANGE.
+const envMs = (name: string, fallback: number) => {
+  const n = Math.floor(Number(process.env[name] || fallback));
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+};
+const TOKEN_REFRESH_SKEW_MS = envMs("ATRYUM_TOKEN_REFRESH_SKEW_MS", 60000);
+const TOKEN_COMMAND_TIMEOUT_MS = envMs("ATRYUM_TOKEN_COMMAND_TIMEOUT_MS", 10000);
 const STATE_DIR =
   process.env.ATRYUM_STATE_DIR ||
   join(homedir(), ".atryum", "pi-extension-state");
@@ -34,12 +39,16 @@ const TOKEN_CACHE_FILE = TOKEN_COMMAND
   : "";
 // Ties the cached token to the command and server that produced it, so
 // switching ATRYUM_TOKEN_COMMAND or ATRYUM_URL invalidates the cache instead
-// of sending a token minted for a different identity or target.
+// of sending a token minted for a different identity or target. Trailing
+// slashes are stripped so equivalent URL spellings share one cache entry.
 const TOKEN_CACHE_KEY = TOKEN_COMMAND
-  ? createHash("sha256").update(`${TOKEN_COMMAND}\n${API}`).digest("hex")
+  ? createHash("sha256")
+      .update(`${TOKEN_COMMAND}\n${API.replace(/\/+$/, "")}`)
+      .digest("hex")
   : "";
-let cachedToken = ACCESS_TOKEN;
-let cachedTokenExpiresAt = ACCESS_TOKEN && !TOKEN_COMMAND ? Number.POSITIVE_INFINITY : 0;
+let cachedToken = TOKEN_COMMAND ? "" : ACCESS_TOKEN;
+let cachedTokenExpiresAt =
+  ACCESS_TOKEN && !TOKEN_COMMAND ? Number.POSITIVE_INFINITY : 0;
 let refreshPromise: Promise<string> | null = null;
 
 function parseTokenResponse(raw: string): {
@@ -49,26 +58,40 @@ function parseTokenResponse(raw: string): {
   const text = raw.trim();
   if (!text) throw new Error("token command returned no token");
   if (!text.startsWith("{")) {
+    if (/\s/.test(text)) {
+      throw new Error("raw token command output must not contain whitespace");
+    }
     return { accessToken: text, expiresAt: Date.now() + 55 * 60 * 1000 };
   }
   const parsed = JSON.parse(text) as Record<string, unknown>;
-  const accessToken = firstString(parsed, [
-    "access_token",
-    "accessToken",
-    "token",
-  ]);
+  const accessToken =
+    typeof parsed.access_token === "string"
+      ? parsed.access_token
+      : typeof parsed.accessToken === "string"
+        ? parsed.accessToken
+        : typeof parsed.token === "string"
+          ? parsed.token
+          : "";
   if (!accessToken) {
     throw new Error("token command response did not include access_token");
   }
+  if (/\s/.test(accessToken)) {
+    throw new Error("token command response token must not contain whitespace");
+  }
   const toMs = (s: number) => (s > 1e11 ? s : s * 1000);
-  const expiresAt =
-    typeof parsed.expires_at === "number"
-      ? toMs(parsed.expires_at)
-      : typeof parsed.expiresAt === "number"
-        ? toMs(parsed.expiresAt)
-        : typeof parsed.expires_in === "number"
-          ? Date.now() + parsed.expires_in * 1000
-          : Date.now() + 55 * 60 * 1000;
+  // Providers send expiry fields as numbers or numeric strings; coerce, and
+  // treat non-numeric or non-positive values as absent (55-minute default).
+  const expiry = (v: unknown) => {
+    const n = typeof v === "string" && v.trim() ? Number(v) : v;
+    return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : 0;
+  };
+  const expiresAtValue = expiry(parsed.expires_at) || expiry(parsed.expiresAt);
+  const expiresIn = expiry(parsed.expires_in);
+  const expiresAt = expiresAtValue
+    ? toMs(expiresAtValue)
+    : expiresIn
+      ? Date.now() + expiresIn * 1000
+      : Date.now() + 55 * 60 * 1000;
   return { accessToken, expiresAt };
 }
 
@@ -127,7 +150,7 @@ async function refreshAccessToken(useFileCache: boolean): Promise<string> {
     }
   }
   const { stdout } = await execAsync(TOKEN_COMMAND, {
-    timeout: Number(process.env.ATRYUM_TOKEN_COMMAND_TIMEOUT_MS || 10000),
+    timeout: TOKEN_COMMAND_TIMEOUT_MS,
     maxBuffer: 1024 * 1024,
   });
   const token = parseTokenResponse(stdout);

@@ -149,11 +149,14 @@ EOF
       ;;
     oauth-dcr)
       local reg client_id client_secret script="$RUN_DIR/token-command-${auth_id}.sh"
+      # Explicit `|| return 1` on each fallible step: callers invoke this
+      # function on the left of `||`, which suppresses errexit inside it.
       reg="$(curl -fsS -X POST "$MOCK_OIDC_DCR_URL" \
         -H 'Content-Type: application/json' \
-        -d '{"client_name":"integration-harness","grant_types":["client_credentials"],"token_endpoint_auth_method":"client_secret_post","scope":"atryum:mcp"}')"
-      client_id="$(echo "$reg" | python3 -c 'import json,sys; print(json.load(sys.stdin)["client_id"])')"
-      client_secret="$(echo "$reg" | python3 -c 'import json,sys; print(json.load(sys.stdin)["client_secret"])')"
+        -d '{"client_name":"integration-harness","grant_types":["client_credentials"],"token_endpoint_auth_method":"client_secret_post","scope":"atryum:mcp"}')" || return 1
+      client_id="$(echo "$reg" | python3 -c 'import json,sys; print(json.load(sys.stdin)["client_id"])')" || return 1
+      client_secret="$(echo "$reg" | python3 -c 'import json,sys; print(json.load(sys.stdin)["client_secret"])')" || return 1
+      [[ -n "$client_id" && -n "$client_secret" ]] || return 1
       cat >"$script" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -169,6 +172,9 @@ EOF
     static-bearer)
       [[ -n "${ATRYUM_STATIC_BEARER_TOKEN:-}" ]] || return 1
       export ATRYUM_ACCESS_TOKEN="$ATRYUM_STATIC_BEARER_TOKEN"
+      ;;
+    *)
+      return 1
       ;;
   esac
 }

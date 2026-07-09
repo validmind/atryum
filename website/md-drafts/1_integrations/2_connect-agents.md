@@ -67,9 +67,9 @@ Use this path for agents that gate native tools (shell, file edits, in-process t
 
 3. Follow the setup steps in the example for your agent:
 
-    - Amp — Run `./atryum hooks install amp`, or follow the [manual Amp plugin setup](https://github.com/validmind/atryum/tree/main/examples/amp-plugin). Requires `PLUGINS=all` when starting Amp.
-    - Pi — Run `./atryum hooks install pi`, or follow the [manual Pi extension setup](https://github.com/validmind/atryum/tree/main/examples/pi-extension).
-    - [Claude Code hooks](https://github.com/validmind/atryum/tree/main/examples/claude-code-hook) — Or use [Connect Cursor, Claude Code, Amp, and Pi](#connect-cursor-claude-code-amp-and-pi) to install hooks automatically.
+   - Amp — Run `./atryum hooks install amp`, or follow the [manual Amp plugin setup](https://github.com/validmind/atryum/tree/main/examples/amp-plugin). Requires `PLUGINS=all` when starting Amp.
+   - Pi — Run `./atryum hooks install pi`, or follow the [manual Pi extension setup](https://github.com/validmind/atryum/tree/main/examples/pi-extension).
+   - [Claude Code hooks](https://github.com/validmind/atryum/tree/main/examples/claude-code-hook) — Or use [Connect Cursor, Claude Code, Amp, and Pi](#connect-cursor-claude-code-amp-and-pi) to install hooks automatically.
 
 4. Start your agent from that terminal session. Pending tool calls appear under **Invocations** in the Atryum platform left sidebar.
 
@@ -81,45 +81,45 @@ Use these variables for hook and extension integrations. MCP proxy clients do no
 
 2. Export `ATRYUM_URL` — the base URL of your Atryum server:
 
-    ```bash
-    export ATRYUM_URL=http://localhost:8080
-    ```
+   ```bash
+   export ATRYUM_URL=http://localhost:8080
+   ```
 
-    Change the host or port when Atryum runs elsewhere. When unset, integrations default to `http://localhost:8080`.
+   Change the host or port when Atryum runs elsewhere. When unset, integrations default to `http://localhost:8080`.
 
 3. (Optional) Export `ATRYUM_AGENT_ID` — a self-declared agent identifier that Atryum matches against Agent Record **Agent IDs**.
 
-    Leave this unset if you do not need invocations tagged to a specific agent record:
+   Leave this unset if you do not need invocations tagged to a specific agent record:
 
-    ```bash
-    export ATRYUM_AGENT_ID=amp-local
-    ```
+   ```bash
+   export ATRYUM_AGENT_ID=amp-local
+   ```
 
 4. (Optional, auth mode) Configure a bearer token. Use this when Atryum has one or more `[[auth]]` blocks configured. In auth mode, Atryum derives agent identity from the token and ignores `ATRYUM_AGENT_ID`. Pick one of two paths — if both variables are set, `ATRYUM_TOKEN_COMMAND` wins and `ATRYUM_ACCESS_TOKEN` is ignored.
 
-    **Static token — `ATRYUM_ACCESS_TOKEN`.** For long-lived tokens. Export an OAuth access token for Atryum's agent runtime APIs:
+   **Static token — `ATRYUM_ACCESS_TOKEN`.** For long-lived tokens. Export an OAuth access token for Atryum's agent runtime APIs:
 
-    ```bash
-    export ATRYUM_ACCESS_TOKEN=<oauth-access-token>
-    ```
+   ```bash
+   export ATRYUM_ACCESS_TOKEN=<oauth-access-token>
+   ```
 
-    The integration sends it as an `Authorization: Bearer ...` header to the external invocation API. The token is used as-is and never refreshed — if it expires, requests fail with `401`.
+   The integration sends it as an `Authorization: Bearer ...` header to the external invocation API. The token is used as-is and never refreshed — if it expires, requests fail with `401`.
 
-    **Refreshable token — `ATRYUM_TOKEN_COMMAND`.** For short-lived tokens. Export a shell command the integration runs whenever it needs to mint a new token — typically a client credentials request against your identity provider's token endpoint:
+   **Refreshable token — `ATRYUM_TOKEN_COMMAND`.** For short-lived tokens. Export a shell command the integration runs whenever it needs to mint a new token — typically a client credentials request against your identity provider's token endpoint:
 
-    ```bash
-    export ATRYUM_TOKEN_COMMAND='curl -fsS -X POST "$OIDC_TOKEN_URL" \
-      -d grant_type=client_credentials \
-      -d client_id="$CLIENT_ID" \
-      -d client_secret="$CLIENT_SECRET"'
-    ```
+   ```bash
+   export ATRYUM_TOKEN_COMMAND='curl -fsS -X POST "$OIDC_TOKEN_URL" \
+     -d grant_type=client_credentials \
+     -d client_id="$CLIENT_ID" \
+     -d client_secret="$CLIENT_SECRET"'
+   ```
 
-    The command may print a raw token or OAuth token JSON such as `{"access_token":"...","expires_in":3600}` (`expires_in` is relative seconds; `expires_at` as an absolute Unix timestamp in seconds or milliseconds is also accepted; without an expiry field the token is assumed valid for 55 minutes). The shared hook, Amp plugin, and Pi extension run the command on the first request, cache the token in memory and on disk (`token-cache.json` under their state directory, `ATRYUM_STATE_DIR`, written with mode 0600 and keyed to the token command and server URL), run it again to mint a replacement shortly before the token expires (`ATRYUM_TOKEN_REFRESH_SKEW_MS`, default 60 seconds), and after a `401` mint a fresh token and retry the request once. The command runs as a subprocess with a timeout (`ATRYUM_TOKEN_COMMAND_TIMEOUT_MS`, default 10 seconds); if it exits non-zero, times out, or prints no token, the runtime call fails — run the command by hand in a shell to debug it.
+   The command may print a raw token (a single string with no whitespace) or OAuth token JSON such as `{"access_token":"...","expires_in":3600}` (`expires_in` is relative seconds; `expires_at` as an absolute Unix timestamp in seconds or milliseconds is also accepted; either may be a JSON number or a numeric string; without a usable positive expiry the token is assumed valid for 55 minutes). The shared hook, Amp plugin, and Pi extension run the command on the first request, cache the token in memory and on disk (`token-cache.json` under their state directory, `ATRYUM_STATE_DIR`, written with mode 0600 and keyed to the token command and server URL with trailing slashes ignored; environment variables referenced by the command are not part of the cache key), run it again to mint a replacement shortly before the token expires (`ATRYUM_TOKEN_REFRESH_SKEW_MS`, default 60 seconds), and after a `401` mint a fresh token and retry the request once. The command runs as a subprocess with a timeout (`ATRYUM_TOKEN_COMMAND_TIMEOUT_MS`, default 10 seconds); if it exits non-zero, times out, or prints no/invalid token output, the runtime call fails — run the command by hand in a shell to debug it.
 
 5. (Optional) Export these variables to label the agent in Atryum:
 
-    - `ATRYUM_CLIENT_NAME` — Harness name shown in the **Agent** column on **Invocations**. Defaults to each integration's source label when unset.
-    - `ATRYUM_CLIENT_VERSION` — Harness version shown in Atryum. Some integrations also read their native version variables, such as `AMP_VERSION` or `PI_VERSION`.
+   - `ATRYUM_CLIENT_NAME` — Harness name shown in the **Agent** column on **Invocations**. Defaults to each integration's source label when unset.
+   - `ATRYUM_CLIENT_VERSION` — Harness version shown in Atryum. Some integrations also read their native version variables, such as `AMP_VERSION` or `PI_VERSION`.
 
 6. Make sure Atryum is running and reachable at `ATRYUM_URL`, then start your agent from the same terminal session.
 
@@ -129,17 +129,17 @@ Use this path when your agent speaks MCP and you want tool calls routed through 
 
 1. Register the upstream server in Atryum before connecting your agent. ([Connect MCP servers](3_connect-mcp-servers.md))
 
-    Skip this if your server is already registered.
+   Skip this if your server is already registered.
 
 2. In your agent's MCP settings, add a standard MCP connection entry and point it at:
 
-    ```text
-    http://<atryum-host-and-port>/mcp/<server_name>
-    ```
+   ```text
+   http://<atryum-host-and-port>/mcp/<server_name>
+   ```
 
 3. Replace `<atryum-host-and-port>` with your Atryum base URL.
 
-    The default local address is `localhost:8080`.
+   The default local address is `localhost:8080`.
 
 4. Replace `<server_name>` with the name you gave the MCP server under **Servers** in the Atryum platform left sidebar.
 
@@ -168,44 +168,44 @@ To apply agent-scoped rules, attach invocations to an agent record, or supply a 
 
 2. Click **New Agent** to create a local agent record, or click an existing agent — including records synced from ValidMind. ([Connect ValidMind](1_connect-validmind.md))
 
-    If creating a new local agent:
-    
-    a. Enter the:
+   If creating a new local agent:
 
-    - **Name**
-    - (Optional) **Description**
-    - (Optional, but recommended) **Charter** — The rules and constraints governing this agent's behavior. Atryum uses this for local LLM-as-judge evaluation rules. ([Configure LLM providers](4_configure-llm-providers.md))
+   a. Enter the:
 
-    b. Add a stable string to **Agent IDs** — Type the ID and press **Enter** to add it.
+   - **Name**
+   - (Optional) **Description**
+   - (Optional, but recommended) **Charter** — The rules and constraints governing this agent's behavior. Atryum uses this for local LLM-as-judge evaluation rules. ([Configure LLM providers](4_configure-llm-providers.md))
 
-    c. Make sure that **Enabled** is checked.
+   b. Add a stable string to **Agent IDs** — Type the ID and press **Enter** to add it.
 
-    d. Click **Save**.
+   c. Make sure that **Enabled** is checked.
+
+   d. Click **Save**.
 
 3. If you selected an existing agent instead, add a stable string to its **Agent IDs** field — type the ID and press **Enter** to add it, such as `amp-local` or `pi-alice`, then click **Save**.
 
 4. Tell your agent which **Agent IDs** string to send:
 
-    a. **Hook and extension agents** — In the same terminal session where you will start your agent, export that string as `ATRYUM_AGENT_ID`:
+   a. **Hook and extension agents** — In the same terminal session where you will start your agent, export that string as `ATRYUM_AGENT_ID`:
 
-    ```bash
-    export ATRYUM_URL=http://localhost:8080
-    export ATRYUM_AGENT_ID=amp-local
-    ```
+   ```bash
+   export ATRYUM_URL=http://localhost:8080
+   export ATRYUM_AGENT_ID=amp-local
+   ```
 
-    - Use the exact string you added in **Agent IDs** — matching is case-sensitive, so `amp-local` and `Amp-Local` are different IDs.
-    - Export both variables in the **same shell session** you use to launch your agent. If you export them in one terminal and start the agent from another, the agent will not see the values.
-    - `ATRYUM_URL` tells the integration where Atryum is running. It defaults to `http://localhost:8080` when unset; change the host or port if Atryum runs elsewhere. Refer to [Set environment variables](#set-environment-variables) for the full list of supported variables.
-    - In auth mode, put the token's configured agent ID claim in **Agent IDs** instead of a self-declared string, and export `ATRYUM_ACCESS_TOKEN` (static token) or `ATRYUM_TOKEN_COMMAND` (automatic refresh) before starting the agent. ([Agent identity and authentication](#agent-identity-and-authentication))
+   - Use the exact string you added in **Agent IDs** — matching is case-sensitive, so `amp-local` and `Amp-Local` are different IDs.
+   - Export both variables in the **same shell session** you use to launch your agent. If you export them in one terminal and start the agent from another, the agent will not see the values.
+   - `ATRYUM_URL` tells the integration where Atryum is running. It defaults to `http://localhost:8080` when unset; change the host or port if Atryum runs elsewhere. Refer to [Set environment variables](#set-environment-variables) for the full list of supported variables.
+   - In auth mode, put the token's configured agent ID claim in **Agent IDs** instead of a self-declared string, and export `ATRYUM_ACCESS_TOKEN` (static token) or `ATRYUM_TOKEN_COMMAND` (automatic refresh) before starting the agent. ([Agent identity and authentication](#agent-identity-and-authentication))
 
-    b. **MCP proxy agents** — Append the same string to your MCP proxy URL as `?agent_id=<your_id>` (for example, `http://localhost:8080/mcp/calc?agent_id=amp-local`).
+   b. **MCP proxy agents** — Append the same string to your MCP proxy URL as `?agent_id=<your_id>` (for example, `http://localhost:8080/mcp/calc?agent_id=amp-local`).
 
-    - Use the exact string you added in **Agent IDs** — matching is case-sensitive, so `amp-local` and `Amp-Local` are different IDs.
-    - In auth mode, put the token's JWT `sub` claim or OAuth `client_id` in **Agent IDs** instead of a self-declared string, and send a bearer token rather than a query-parameter agent ID. ([Agent identity and authentication](#agent-identity-and-authentication))
+   - Use the exact string you added in **Agent IDs** — matching is case-sensitive, so `amp-local` and `Amp-Local` are different IDs.
+   - In auth mode, put the token's JWT `sub` claim or OAuth `client_id` in **Agent IDs** instead of a self-declared string, and send a bearer token rather than a query-parameter agent ID. ([Agent identity and authentication](#agent-identity-and-authentication))
 
 5. Start your agent, then send a tool invocation again.
 
-    Atryum should attach the call to that agent record in the <span style="font-variant: small-caps;">agent record</span> column on **Invocations** instead of leaving it empty.
+   Atryum should attach the call to that agent record in the <span style="font-variant: small-caps;">agent record</span> column on **Invocations** instead of leaving it empty.
 
 :::
 For how Atryum uses agent identity in no-auth and auth mode, refer to [Agent identity and authentication](#agent-identity-and-authentication).
@@ -249,7 +249,7 @@ Manually configured Claude Code hooks and per-project plugin/extension installs 
 
 3. Restart the agent from that terminal session so it picks up the changes.
 
-    Pi can reload extensions without a full restart when the extension is already installed — run `/reload` in an active Pi session.
+   Pi can reload extensions without a full restart when the extension is already installed — run `/reload` in an active Pi session.
 
 To retag invocations to a different agent record, update **Agent IDs** in Atryum and export the matching `ATRYUM_AGENT_ID` before restarting. ([Tag invocations to agent records](#tag-invocations-to-agent-records))
 
@@ -259,9 +259,9 @@ To retag invocations to a different agent record, update **Agent IDs** in Atryum
 
 2. Update the proxy URL when Atryum's host, port, upstream **Servers** name, or `?agent_id=` value changes:
 
-    ```text
-    http://<atryum-host-and-port>/mcp/<server_name>?agent_id=<your_id>
-    ```
+   ```text
+   http://<atryum-host-and-port>/mcp/<server_name>?agent_id=<your_id>
+   ```
 
 3. Restart your agent so it reconnects with the updated URL.
 
@@ -275,15 +275,15 @@ When the upstream MCP server itself changes, edit the registration under **Serve
 
 3. Update the fields as desired:
 
-    - **Name**
-    - **Description**
-    - **Charter** — Editable for local agent records only. Synced ValidMind records show the charter as read-only — edit the source field in ValidMind instead. ([Connect ValidMind](1_connect-validmind.md))
-    - **Agent IDs** — Type an ID and press **Enter** to add it. Remove individual IDs with the control on each tag.
+   - **Name**
+   - **Description**
+   - **Charter** — Editable for local agent records only. Synced ValidMind records show the charter as read-only — edit the source field in ValidMind instead. ([Connect ValidMind](1_connect-validmind.md))
+   - **Agent IDs** — Type an ID and press **Enter** to add it. Remove individual IDs with the control on each tag.
 
 4. To turn the record on or off:
 
-    - Check **Enabled** to mark the agent record as active.
-    - Uncheck **Enabled** to mark it inactive.
+   - Check **Enabled** to mark the agent record as active.
+   - Uncheck **Enabled** to mark it inactive.
 
 5. Click **Save**.
 
@@ -320,7 +320,7 @@ Synced ValidMind agent records cannot be deleted from Atryum — remove them by 
 
 ## Agent identity and authentication
 
-When coding agents connect to Atryum, they present an *agent identity* that Atryum uses to tag invocations and match rules ([Rules](../3_rules.md)) scoped to specific agents. Atryum applies the same inbound auth behavior to agent runtime endpoints: `/mcp/<server_name>`, `/api/v1/invocations`, `/api/v1/external/invocations`, `/api/v1/external/invocations/<id>`, and `/api/v1/agent/rules`.
+When coding agents connect to Atryum, they present an _agent identity_ that Atryum uses to tag invocations and match rules ([Rules](../3_rules.md)) scoped to specific agents. Atryum applies the same inbound auth behavior to agent runtime endpoints: `/mcp/<server_name>`, `/api/v1/invocations`, `/api/v1/external/invocations`, `/api/v1/external/invocations/<id>`, and `/api/v1/agent/rules`.
 
 Atryum supports two inbound authentication modes:
 
@@ -348,19 +348,19 @@ In auth mode, agents must authenticate to Atryum with an OAuth bearer token. Atr
 
 1. Add one or more `[[auth]]` blocks to your `atryum.toml` configuration file:
 
-    ```toml
-    [[auth]]
-    enabled        = true
-    issuer         = "https://keycloak.example/realms/atryum"
-    audience       = "atryum"
-    required_scope = "atryum:mcp"
-    agent_id_claim = "client_id"
-    ```
+   ```toml
+   [[auth]]
+   enabled        = true
+   issuer         = "https://keycloak.example/realms/atryum"
+   audience       = "atryum"
+   required_scope = "atryum:mcp"
+   agent_id_claim = "client_id"
+   ```
 
-    - **issuer** — The OIDC issuer URL for your authorization server.
-    - **audience** — The audience Atryum expects on incoming tokens.
-    - **required_scope** — Optional. When set, tokens must include this scope.
-    - **agent_id_claim** — JWT claim Atryum uses as the authenticated agent ID for rule matching.
+   - **issuer** — The OIDC issuer URL for your authorization server.
+   - **audience** — The audience Atryum expects on incoming tokens.
+   - **required_scope** — Optional. When set, tokens must include this scope.
+   - **agent_id_claim** — JWT claim Atryum uses as the authenticated agent ID for rule matching.
 
 2. Restart Atryum so it loads the updated configuration:
 
