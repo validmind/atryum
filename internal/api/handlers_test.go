@@ -69,8 +69,8 @@ func (s *stubService) ListAgentIDs(context.Context) ([]string, error) {
 func (s *stubService) Events(context.Context, string, invocation.EventListFilter) (invocation.EventListResponse, error) {
 	return invocation.EventListResponse{}, nil
 }
-func (s *stubService) Approve(context.Context, string) error      { return nil }
-func (s *stubService) Deny(context.Context, string, string) error { return nil }
+func (s *stubService) Approve(context.Context, string, string) error      { return nil }
+func (s *stubService) Deny(context.Context, string, string, string) error { return nil }
 func (s *stubService) Submit(ctx context.Context, req invocation.ExternalSubmitRequest) (invocation.InvocationResponse, error) {
 	s.submitReq = &req
 	s.submitCtx = ctx

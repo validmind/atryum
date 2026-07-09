@@ -9,6 +9,7 @@ import {
   CloseButton,
   Code,
   Collapse,
+  Divider,
   Flex,
   FormControl,
   FormLabel,
@@ -67,7 +68,7 @@ import {
   useSummarizeInvocation,
 } from "../hooks/useInvocations";
 import { useSettings } from "../hooks/useSettings";
-import { useCreateRule } from "../hooks/useRules";
+import { useCreateRule, useRules } from "../hooks/useRules";
 import { useAgents } from "../hooks/useAgents";
 import { useInvocationStream } from "../hooks/useInvocationStream";
 import {
@@ -86,6 +87,9 @@ import {
   isAIEvaluated,
   getConfidenceColor,
   formatConfidence,
+  buildInvocationAudit,
+  type AuditEntry,
+  type AuditStep,
 } from "../utils/invocationDisplay";
 
 const PAGE_SIZE = 50;
@@ -138,6 +142,99 @@ const loadPendingInvocations = async (): Promise<Invocation[]> => {
     pendingInvocations.push(...page.items);
     if (page.items.length < limit) return pendingInvocations;
   }
+};
+
+const AUDIT_STEP_ICON: Record<AuditStep["variant"], string> = {
+  approve: "✓",
+  deny: "✗",
+  defer: "→",
+  pending: "…",
+  info: "→",
+  error: "✗",
+};
+
+const AuditEntryRow: React.FC<{ entry: AuditEntry }> = ({ entry }) => {
+  const [isOpen, setIsOpen] = useState(false);
+
+  const badge = entry.isAIEvaluation ? (
+    <Badge colorScheme="purple" fontSize="xs">
+      AI Evaluation
+    </Badge>
+  ) : entry.ruleName !== null ? (
+    <Badge colorScheme="purple" fontSize="xs">
+      Rule
+    </Badge>
+  ) : null;
+
+  return (
+    <Box borderWidth={1} borderColor="border.base" borderRadius="md" overflow="hidden">
+      <Flex
+        justify="space-between"
+        align="center"
+        px={3}
+        py={2}
+        cursor="pointer"
+        _hover={{ bg: "background.container.subtle" }}
+        onClick={() => setIsOpen((v) => !v)}>
+        <HStack gap={2} flex={1} minW={0}>
+          <Icon
+            as={isOpen ? ChevronUpIcon : ChevronDownIcon}
+            boxSize={4}
+            color="text.subtle"
+            flexShrink={0}
+          />
+          <Text fontSize="sm" fontWeight="medium" noOfLines={1}>
+            {entry.ruleName ?? "No rule matched"}
+          </Text>
+          {badge}
+        </HStack>
+      </Flex>
+      <Collapse in={isOpen} animateOpacity>
+        <VStack align="stretch" gap={0} px={3} pb={2}>
+          {entry.steps.map((step, i) => (
+            <Box
+              key={i}
+              pt={2}
+              borderTopWidth={i > 0 ? 1 : 0}
+              borderColor="border.base">
+              <Text fontSize="xs" fontWeight="medium">
+                {AUDIT_STEP_ICON[step.variant]} {step.text}
+              </Text>
+              {step.timestamp && (
+                <Text fontSize="xs" color="text.subtle" mt={0.5}>
+                  {formatDate(step.timestamp)}
+                </Text>
+              )}
+            </Box>
+          ))}
+        </VStack>
+      </Collapse>
+    </Box>
+  );
+};
+
+const InvocationAuditSection: React.FC<{ entries: AuditEntry[] }> = ({
+  entries,
+}) => {
+  if (entries.length === 0) return null;
+  return (
+    <Box>
+      <Text
+        fontSize="xs"
+        fontWeight="semibold"
+        textTransform="uppercase"
+        color="text.subtle"
+        letterSpacing="wide"
+        mb={2}>
+        Matched {entries.length === 1 ? "Rule" : "Rules"}
+      </Text>
+      <VStack align="stretch" gap={2}>
+        {entries.map((entry, i) => (
+          <AuditEntryRow key={entry.ruleId ?? 'unmatched'} entry={entry} />
+        ))}
+      </VStack>
+    </Box>
+  );
 };
 
 const EventRow: React.FC<{ event: InvocationEvent }> = ({ event }) => {
@@ -327,7 +424,20 @@ const Invocations: React.FC = () => {
   const deny = useDenyInvocation();
   const summarize = useSummarizeInvocation();
   const createRule = useCreateRule();
+  const { data: rulesData } = useRules();
   const { data: settings } = useSettings();
+
+  const auditEntries = useMemo(
+    () =>
+      detail
+        ? buildInvocationAudit(
+            detail,
+            rulesData?.items ?? [],
+            eventsData?.items ?? [],
+          )
+        : [],
+    [detail, rulesData?.items, eventsData?.items],
+  );
   const summaryModelConfigCuid = settings?.summary_model_config_cuid ?? "";
   const hasSummaryModel = Boolean(
     summaryModelConfigCuid || (settings?.summary_atryum_llm_config_id ?? ""),
@@ -1090,6 +1200,13 @@ const Invocations: React.FC = () => {
                         data-testid="invocation-detail-close-button"
                       />
                     </Flex>
+
+                    {auditEntries.length > 0 && (
+                      <>
+                        <InvocationAuditSection entries={auditEntries} />
+                        <Divider />
+                      </>
+                    )}
 
                     <Box
                       p={3}
