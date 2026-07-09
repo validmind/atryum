@@ -655,7 +655,9 @@ const atryumInitializeInstructions = "This MCP server is gated by the Atryum har
 	"To see the static approval rules that currently apply to you, call the atryum_rules_get MCP tool or issue an HTTP GET to /api/v1/agent/rules " +
 	"(optionally with ?server={server}&tool={tool} to preview the disposition for a specific tool); " +
 	"the response is advisory only, as AI-evaluation and human-approval outcomes are decided during the actual gated call. " +
-	"When the atryum.plan.submit tool is listed, you may submit a batch plan before running tools; an approved plan can preapprove matching later tool calls until it expires."
+	"When the atryum.plan.submit tool is listed and a task is complex, risky, or has multiple clear tool steps, submit a batch plan before running tools. " +
+	"Use plans for work with two or more tool calls, file changes, shell commands, external systems, or ordered actions. " +
+	"After submitting a plan, call atryum.plan.get until the plan is approved, denied, needs_revision, expired, cancelled, or superseded; only proceed with planned tool calls after approval."
 
 // Dotted tool names are valid MCP names, but common harnesses have rejected
 // them in practice. Keep this synthetic helper underscore-only for compatibility.
@@ -1108,7 +1110,7 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 			resp.PlanSubmission = &AgentPlanSubmission{
 				Enabled:  true,
 				Endpoint: "/api/v1/external/plans",
-				Message:  "Plan-scoped rules apply to this agent. Submit a plan before running a batch of tools; an approved plan can preapprove matching later tool calls until it expires.",
+				Message:  "Plan-scoped rules apply to this agent. When a task is complex, risky, or involves multiple clear tool steps, submit a plan before running tools. Use plans for two or more tool calls, file changes, shell commands, external systems, or ordered actions. Wait for approval before executing the planned steps.",
 			}
 		}
 		resp.Items = append(resp.Items, AgentRule{

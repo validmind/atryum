@@ -328,7 +328,7 @@ async function planHint(tool) {
   const rules = await planSupport;
   if (!rules?.plan_submission?.enabled) return "";
   const endpoint = rules.plan_submission.endpoint || "/api/v1/external/plans";
-  return ` Atryum also supports preapproval plans for this agent: submit a batch plan to ${endpoint} before running tools, then wait for approval.`;
+  return ` Atryum supports preapproval plans for complex, risky, or multi-step work. For tasks with two or more tool calls, file changes, shell commands, external systems, or ordered actions, submit a batch plan to ${endpoint} before running tools, then wait for approval before executing the planned steps.`;
 }
 
 function normalizeRole(value) {
