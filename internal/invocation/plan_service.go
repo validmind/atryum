@@ -479,18 +479,23 @@ func (s *Service) PlanEvents(ctx context.Context, id string, filter EventListFil
 	return EventListResponse{Items: items, Total: total, Offset: filter.Offset, Limit: filter.Limit}, nil
 }
 
+type approvedPlanMatch struct {
+	Plan   Plan
+	Action PlanAction
+}
+
 // matchApprovedPlan returns the newest approved, unexpired plan of the agent
-// with a declared action matching (server, tool). It is the plan-pass check
-// run before rule matching in Invoke/Submit; it never matches when the plan
-// feature is unused or the caller is anonymous.
-func (s *Service) matchApprovedPlan(ctx context.Context, agentID, server, tool string) (string, bool) {
+// with a declared action matching (server, tool). It is the deterministic
+// plan-pass check run before rule matching in Invoke/Submit; it never matches
+// when the plan feature is unused or the caller is anonymous.
+func (s *Service) matchApprovedPlan(ctx context.Context, agentID, server, tool string) (approvedPlanMatch, bool) {
 	if !s.plansEnabled() || agentID == "" || tool == "" {
-		return "", false
+		return approvedPlanMatch{}, false
 	}
 	plans, err := s.plans.ListActiveByAgent(ctx, agentID)
 	if err != nil {
 		slog.Warn("plan pass lookup failed; falling back to normal gating", "agent_id", agentID, "error", err)
-		return "", false
+		return approvedPlanMatch{}, false
 	}
 	for _, plan := range plans {
 		plan = s.expireIfStale(ctx, plan)
@@ -499,9 +504,76 @@ func (s *Service) matchApprovedPlan(ctx context.Context, agentID, server, tool s
 		}
 		for _, a := range plan.Actions {
 			if a.Tool == tool && (a.Server == "" || a.Server == server) {
-				return plan.PlanID, true
+				return approvedPlanMatch{Plan: plan, Action: a}, true
 			}
 		}
 	}
-	return "", false
+	return approvedPlanMatch{}, false
+}
+
+func (s *Service) approvedPlanPass(ctx context.Context, match approvedPlanMatch, agentRec AgentRecord, server, tool string, input map[string]any, extraContext string) (string, *float64, bool) {
+	plan := match.Plan
+	reason := "matched approved plan " + plan.PlanID
+	if plan.MatchedRuleID == nil || s.rules == nil || s.planJudge == nil {
+		return reason, nil, true
+	}
+
+	rule, ok := s.planAdherenceRule(ctx, *plan.MatchedRuleID)
+	if !ok || rule.Action != RuleActionAIEvaluation || rule.AtryumLLMConfigID == "" {
+		return reason, nil, true
+	}
+	if agentRec.Charter == "" {
+		slog.Warn("plan adherence judge skipped: agent has no charter; falling back to normal gating",
+			"plan_id", plan.PlanID, "agent_id", plan.AgentID, "rule_id", rule.ID)
+		return "approved plan " + plan.PlanID + " requires adherence review but agent has no charter", nil, false
+	}
+
+	evalCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	resp, err := s.planJudge.EvaluatePlanAdherence(evalCtx, PlanAdherenceRequest{
+		AtryumLLMConfigID: rule.AtryumLLMConfigID,
+		Charter:           agentRec.Charter,
+		Plan:              plan,
+		Action:            match.Action,
+		ServerName:        server,
+		ToolName:          tool,
+		ToolArgs:          input,
+		Context:           extraContext,
+	})
+	if err != nil {
+		slog.Error("plan adherence judge failed; falling back to normal gating",
+			"plan_id", plan.PlanID, "rule_id", rule.ID, "error", err)
+		return "approved plan " + plan.PlanID + " requires adherence review but judge failed", nil, false
+	}
+
+	switch resp.Verdict {
+	case "follows_plan":
+		if strings.TrimSpace(resp.Reason) != "" {
+			reason += ": " + resp.Reason
+		}
+		return reason, resp.Confidence, true
+	case "outside_plan":
+		slog.Info("plan adherence judge rejected plan pass",
+			"plan_id", plan.PlanID, "rule_id", rule.ID, "tool", tool, "reason", resp.Reason)
+		return "tool call is outside approved plan " + plan.PlanID + ": " + resp.Reason, resp.Confidence, false
+	default:
+		slog.Info("plan adherence judge escalated plan pass",
+			"plan_id", plan.PlanID, "rule_id", rule.ID, "tool", tool, "reason", resp.Reason)
+		return "tool call needs human review for approved plan " + plan.PlanID + ": " + resp.Reason, resp.Confidence, false
+	}
+}
+
+func (s *Service) planAdherenceRule(ctx context.Context, ruleID string) (ApprovalRule, bool) {
+	rules, err := s.rules.ListApprovalRules(ctx)
+	if err != nil {
+		slog.Warn("plan adherence rule lookup failed; allowing deterministic plan pass",
+			"rule_id", ruleID, "error", err)
+		return ApprovalRule{}, false
+	}
+	for _, rule := range rules {
+		if rule.ID == ruleID {
+			return rule, true
+		}
+	}
+	return ApprovalRule{}, false
 }

@@ -17,10 +17,13 @@ import (
 )
 
 type planJudgeStub struct {
-	mu   sync.Mutex
-	req  invocation.PlanEvaluateRequest
-	resp invocation.PlanEvaluateResponse
-	err  error
+	mu            sync.Mutex
+	req           invocation.PlanEvaluateRequest
+	resp          invocation.PlanEvaluateResponse
+	err           error
+	adherenceReq  invocation.PlanAdherenceRequest
+	adherenceResp invocation.PlanAdherenceResponse
+	adherenceErr  error
 }
 
 func (s *planJudgeStub) EvaluatePlan(_ context.Context, req invocation.PlanEvaluateRequest) (invocation.PlanEvaluateResponse, error) {
@@ -30,10 +33,23 @@ func (s *planJudgeStub) EvaluatePlan(_ context.Context, req invocation.PlanEvalu
 	return s.resp, s.err
 }
 
+func (s *planJudgeStub) EvaluatePlanAdherence(_ context.Context, req invocation.PlanAdherenceRequest) (invocation.PlanAdherenceResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.adherenceReq = req
+	return s.adherenceResp, s.adherenceErr
+}
+
 func (s *planJudgeStub) request() invocation.PlanEvaluateRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.req
+}
+
+func (s *planJudgeStub) adherenceRequest() invocation.PlanAdherenceRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.adherenceReq
 }
 
 // newPlanTestService builds a Service backed by real sqlite repos with the
@@ -303,6 +319,81 @@ func TestApprovedPlanGrantsPassToMatchingSubmit(t *testing.T) {
 	}
 	if resp.Status != invocation.StatusPendingApproval {
 		t.Fatalf("other agent status = %s, want pending_approval", resp.Status)
+	}
+}
+
+func TestAIEvaluatedPlanRequiresAdherenceJudgeForMatchingSubmit(t *testing.T) {
+	rules := []invocation.ApprovalRule{{
+		ID:                "rule-plan-ai",
+		Action:            invocation.RuleActionAIEvaluation,
+		AppliesTo:         invocation.RuleScopePlan,
+		AtryumLLMConfigID: "llm-1",
+		Enabled:           true,
+	}}
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},
+	}}
+	judge := &planJudgeStub{
+		resp:          invocation.PlanEvaluateResponse{Verdict: "approved", Reason: "plan ok"},
+		adherenceResp: invocation.PlanAdherenceResponse{Verdict: "follows_plan", Reason: "matches planned command"},
+	}
+	svc, _ := newPlanTestService(t, rules, agents, judge)
+	ctx := context.Background()
+
+	plan, err := svc.SubmitPlan(ctx, planSubmit("agent-a", "Bash"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != invocation.PlanStatusApproved {
+		t.Fatalf("plan status = %s, want approved", plan.Status)
+	}
+
+	resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{Tool: "Bash", AgentID: "agent-a", Input: map[string]any{"cmd": "echo ok"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusApproved || resp.Approval == nil || resp.Approval.Status != "plan_approved" {
+		t.Fatalf("resp = status %s approval %+v, want plan approved", resp.Status, resp.Approval)
+	}
+	if resp.Approval.Reason == nil || !strings.Contains(*resp.Approval.Reason, "matches planned command") {
+		t.Fatalf("approval reason = %v", resp.Approval.Reason)
+	}
+	got := judge.adherenceRequest()
+	if got.Plan.PlanID != plan.PlanID || got.Action.Tool != "Bash" || got.ToolArgs["cmd"] != "echo ok" {
+		t.Fatalf("adherence request = %+v", got)
+	}
+}
+
+func TestAIEvaluatedPlanFallsBackWhenAdherenceJudgeRejects(t *testing.T) {
+	rules := []invocation.ApprovalRule{{
+		ID:                "rule-plan-ai",
+		Action:            invocation.RuleActionAIEvaluation,
+		AppliesTo:         invocation.RuleScopePlan,
+		AtryumLLMConfigID: "llm-1",
+		Enabled:           true,
+	}}
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},
+	}}
+	judge := &planJudgeStub{
+		resp:          invocation.PlanEvaluateResponse{Verdict: "approved", Reason: "plan ok"},
+		adherenceResp: invocation.PlanAdherenceResponse{Verdict: "outside_plan", Reason: "command deletes unrelated files"},
+	}
+	svc, _ := newPlanTestService(t, rules, agents, judge)
+	ctx := context.Background()
+
+	if _, err := svc.SubmitPlan(ctx, planSubmit("agent-a", "Bash")); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{Tool: "Bash", AgentID: "agent-a", Input: map[string]any{"cmd": "rm -rf tmp"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusPendingApproval {
+		t.Fatalf("status = %s, want pending_approval fallback", resp.Status)
+	}
+	if resp.PlanID != nil {
+		t.Fatalf("plan_id = %v, want nil when adherence rejects", *resp.PlanID)
 	}
 }
 
