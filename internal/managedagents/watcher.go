@@ -61,6 +61,7 @@ type watcher struct {
 	pending       map[string]pendingCall // keyed by tool-use event ID
 	toolUseCustom map[string]bool
 	toolUseInfo   map[string]toolUse
+	toolUseOrder  []string // insertion order of tool-use event IDs, for evicting the caches above
 	recentChat    []chatMessage
 	recentTools   []toolContextEvent
 }
@@ -89,6 +90,7 @@ func (w *watcher) recordToolUseContext(tu toolUse) {
 		w.toolUseInfo = make(map[string]toolUse)
 	}
 	w.toolUseInfo[tu.EventID] = tu
+	w.rememberToolUseLocked(tu.EventID)
 	w.appendToolContextLocked(toolContextEvent{
 		Phase:    "call",
 		Kind:     tu.Kind,
@@ -112,8 +114,32 @@ func (w *watcher) recordToolResultContext(tr toolResult) {
 	if tu, ok := w.toolUseInfo[tr.ToolUseID]; ok {
 		entry.ToolName = tu.ToolName
 		entry.Server = tu.ServerName
+		// The result is the only reader of this entry; drop it now that it has
+		// been consumed rather than waiting for eviction.
+		delete(w.toolUseInfo, tr.ToolUseID)
 	}
 	w.appendToolContextLocked(entry)
+}
+
+// rememberToolUseLocked tracks insertion order for the per-tool-use caches
+// (toolUseInfo, toolUseCustom) and evicts the oldest entries once the number
+// of remembered tool uses exceeds the recent-context limit, so the maps cannot
+// grow without bound when results never arrive. pending is excluded: it is
+// deleted deterministically when its result is processed. Results normally
+// arrive promptly, so anything past the limit is a straggler whose cached
+// enrichment we can afford to lose (toolUseCustom has a persisted fallback via
+// pendingCall's audit-event recovery).
+func (w *watcher) rememberToolUseLocked(eventID string) {
+	w.toolUseOrder = append(w.toolUseOrder, eventID)
+	limit := w.acct.cfg.RecentChatMessagesLimit
+	if len(w.toolUseOrder) <= limit {
+		return
+	}
+	for _, id := range w.toolUseOrder[:len(w.toolUseOrder)-limit] {
+		delete(w.toolUseInfo, id)
+		delete(w.toolUseCustom, id)
+	}
+	w.toolUseOrder = append([]string(nil), w.toolUseOrder[len(w.toolUseOrder)-limit:]...)
 }
 
 func (w *watcher) appendToolContextLocked(evt toolContextEvent) {
@@ -641,6 +667,7 @@ func (w *watcher) customToolUse(ctx context.Context, toolUseEventID string) (boo
 	}
 	if ok {
 		w.toolUseCustom[toolUseEventID] = isCustom
+		w.rememberToolUseLocked(toolUseEventID)
 	}
 	w.mu.Unlock()
 	return isCustom, ok

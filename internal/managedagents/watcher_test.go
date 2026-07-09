@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"runtime"
 	"strings"
@@ -806,4 +807,46 @@ func TestDuplicateToolUseUsesIdempotencyKey(t *testing.T) {
 			t.Fatalf("expected idempotency key t1, got %v", req.IdempotencyKey)
 		}
 	}
+}
+
+func TestToolUseCachesAreBounded(t *testing.T) {
+	w := newTestWatcher(nil, nil, nil)
+	w.acct.cfg.RecentChatMessagesLimit = 5
+	limit := w.acct.cfg.RecentChatMessagesLimit
+
+	for i := 0; i < limit*4; i++ {
+		id := fmt.Sprintf("tu_%d", i)
+		w.recordToolUseContext(toolUse{EventID: id, ToolName: "bash", Kind: "builtin"})
+		w.mu.Lock()
+		if w.toolUseCustom == nil {
+			w.toolUseCustom = make(map[string]bool)
+		}
+		w.toolUseCustom[id] = false
+		w.mu.Unlock()
+	}
+
+	w.mu.Lock()
+	if len(w.toolUseInfo) > limit {
+		t.Fatalf("toolUseInfo grew to %d entries, want <= %d", len(w.toolUseInfo), limit)
+	}
+	if len(w.toolUseCustom) > limit {
+		t.Fatalf("toolUseCustom grew to %d entries, want <= %d", len(w.toolUseCustom), limit)
+	}
+	if len(w.toolUseOrder) > limit {
+		t.Fatalf("toolUseOrder grew to %d entries, want <= %d", len(w.toolUseOrder), limit)
+	}
+	// The most recent entries survive eviction.
+	newest := fmt.Sprintf("tu_%d", limit*4-1)
+	if _, ok := w.toolUseInfo[newest]; !ok {
+		t.Fatalf("newest tool use %s evicted, want retained", newest)
+	}
+	w.mu.Unlock()
+
+	// A result consumes its toolUseInfo entry immediately.
+	w.recordToolResultContext(toolResult{ToolUseID: newest, Kind: "builtin"})
+	w.mu.Lock()
+	if _, ok := w.toolUseInfo[newest]; ok {
+		t.Fatalf("toolUseInfo entry %s not deleted after its result was recorded", newest)
+	}
+	w.mu.Unlock()
 }

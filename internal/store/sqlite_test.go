@@ -45,8 +45,8 @@ func TestInitDB_FreshDatabase(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 26 {
-		t.Fatalf("expected 26 migrations, got %d", count)
+	if count != 25 {
+		t.Fatalf("expected 25 migrations, got %d", count)
 	}
 
 	// Verify all tables exist
@@ -74,8 +74,8 @@ func TestInitDB_Idempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 26 {
-		t.Fatalf("expected 26 migrations after double init, got %d", count)
+	if count != 25 {
+		t.Fatalf("expected 25 migrations after double init, got %d", count)
 	}
 }
 
@@ -551,7 +551,7 @@ func TestInitDBBackfillsEndpointSlugCollisionsDeterministically(t *testing.T) {
 	}
 	// Isolate migration 024 (server endpoint_slug backfill): mark every other
 	// migration as already applied so InitDB runs only 024 against this minimal
-	// seed. Later migrations (025 external_sessions, 026 expires_at) touch tables
+	// seed. Later migrations (025 external_sessions + expires_at) touch tables
 	// this fixture never creates, so they must stay marked-applied here.
 	for _, m := range migrations {
 		if m.Version == 24 {
@@ -1044,8 +1044,8 @@ func TestInitDBToleratesRenumberedMigrationStamps(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 26 {
-		t.Fatalf("expected 26 migrations recorded, got %d", count)
+	if count != 25 {
+		t.Fatalf("expected 25 migrations recorded, got %d", count)
 	}
 
 	// The columns/tables the renumbered migrations add must still be
