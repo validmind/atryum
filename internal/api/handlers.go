@@ -48,6 +48,7 @@ type service interface {
 	Approve(ctx context.Context, invocationID string, actorID string) error
 	Deny(ctx context.Context, invocationID string, message string, actorID string) error
 	Submit(ctx context.Context, req invocation.ExternalSubmitRequest) (invocation.InvocationResponse, error)
+	CreateSession(ctx context.Context, req invocation.CreateSessionRequest, agentID string) (invocation.SessionResponse, error)
 	RecordExecution(ctx context.Context, invocationID string, update invocation.ExternalExecutionUpdate) (invocation.InvocationResponse, error)
 	SetSummary(ctx context.Context, invocationID string, summary string) (invocation.InvocationResponse, error)
 }
@@ -806,6 +807,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("/api/v1/agent/rules", agentRulesHandler)
 	mux.Handle("/api/v1/external/invocations", h.agentRuntimeHandler(http.HandlerFunc(h.externalInvocations)))
 	mux.Handle("/api/v1/external/invocations/", h.agentRuntimeHandler(http.HandlerFunc(h.externalInvocationDetail)))
+	mux.Handle("/api/v1/external/sessions", h.agentRuntimeHandler(http.HandlerFunc(h.externalSessions)))
 	apiKeyMW := auth.APIKeyMiddleware(h.apiKeyAuth)
 	mux.Handle("/agent_ids", apiKeyMW(http.HandlerFunc(h.agentIDs)))
 	mux.Handle("/invocations/", apiKeyMW(http.HandlerFunc(h.invocationsByAgentID)))
@@ -3443,6 +3445,34 @@ func (h *Handler) externalInvocations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// externalSessions mints a harness session (POST /api/v1/external/sessions).
+// The harness calls this once at startup and echoes the returned session_id on
+// every subsequent /api/v1/external/invocations call, letting Atryum rebuild the
+// judge's context from prior tool calls in the same session.
+func (h *Handler) externalSessions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req invocation.CreateSessionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	// Authenticated identity wins; otherwise bind to the self-declared agent_id
+	// (no-auth mode), mirroring Submit.
+	agentID := auth.AgentIDFromContext(r.Context())
+	if agentID == "" {
+		agentID = strings.TrimSpace(req.AgentID)
+	}
+	resp, err := h.svc.CreateSession(r.Context(), req, agentID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, resp)
 }
 
 // adminManagedAgentSessions registers a Claude Managed Agents session for

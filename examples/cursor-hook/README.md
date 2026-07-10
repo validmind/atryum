@@ -53,11 +53,7 @@ Restart Cursor after changing hooks.
 | `ATRYUM_TOKEN_COMMAND`            | _(empty)_                         | optional command run to mint each new token; prints a raw token with no whitespace or OAuth token JSON with `access_token` |
 | `ATRYUM_TOKEN_REFRESH_SKEW_MS`    | `60000`                           | refresh command cache skew before token expiry                                                                             |
 | `ATRYUM_TOKEN_COMMAND_TIMEOUT_MS` | `10000`                           | timeout for the token command subprocess                                                                                   |
-| `ATRYUM_STATE_DIR`                | `~/.atryum/agent-hook-state`      | tool-use to invocation-id state and the on-disk token cache (`token-cache.json`, mode 0600)                                |
-| `ATRYUM_CHAT_MESSAGES_LIMIT`      | `100`                             | recent Cursor chat messages sent as LLM-as-judge context when available                                                    |
-| `ATRYUM_MAX_MESSAGE_CHARS`        | `2000`                            | maximum characters included from any one chat message                                                                      |
-| `ATRYUM_CURSOR_TRANSCRIPT_PATH`   | hook transcript/conversation path | override Cursor transcript file path                                                                                       |
-| `ATRYUM_CHAT_HISTORY_PATH`        | _(empty)_                         | generic override for a chat history JSON/JSONL file                                                                        |
+| `ATRYUM_STATE_DIR`                | `~/.atryum/agent-hook-state`      | tool-use to invocation-id state, the cached Atryum session, and the on-disk token cache (`token-cache.json`, mode 0600)     |
 
 ## Authentication
 
@@ -115,17 +111,27 @@ Export these variables in the terminal session where you launch Cursor (or
 prefix them in the hook `command` strings in `hooks.json`, as with
 `ATRYUM_HOOK_HOST`).
 
-## LLM-as-judge chat context
+## LLM-as-judge session context
 
-Before each Cursor `preToolUse` decision, the hook looks for recent chat
-messages in the hook payload (`messages`, `conversation`, `transcript`, or
-`chat_history`) and, when those are absent, reads a hook-provided
-`transcript_path` / `conversation_path` file if available. It sends extracted
-user/assistant/system messages to Atryum as `chat_context` and
-`chat_context_messages`.
+The hook does **not** scrape Cursor's chat payload or transcript, or send any
+chat/context blob to Atryum. The harness is trusted to report _which_ session a
+tool call belongs to, but a runaway agent must not be able to hand the judge
+arbitrary text to poison it.
 
-Set `ATRYUM_CHAT_MESSAGES_LIMIT` to change how many recent messages are sent.
-Set it to `0` to disable Cursor chat context.
+Instead, the hook mints an Atryum session via `POST /api/v1/external/sessions`
+(passing `harness` and, for cross-referencing only, Cursor's own session id as
+`client_session_id`). Because each hook invocation is a fresh process, the
+returned `session_id` is cached on disk under `$ATRYUM_STATE_DIR` keyed by the
+host session id and echoed on every `POST /api/v1/external/invocations`. Atryum
+then reconstructs the judge's context from the prior tool calls it recorded for
+that session — trusting tool outputs more than tool inputs, and ignoring agent
+chat entirely.
+
+Sessions require an agent binding: `ATRYUM_AGENT_ID` (no-auth mode) or the
+bearer token (auth mode). With neither, the caller is anonymous and the hook
+submits without a `session_id` (tool calls are still gated, just without
+prior-call context). If a cached session is unknown, foreign, or expired, the
+hook mints a fresh one and retries the submit once.
 
 ## Plugin packaging
 

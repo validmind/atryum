@@ -24,6 +24,25 @@ type pendingCall struct {
 
 const toolUseKindEvent = "managed_agents.tool_use"
 
+const maxToolContextJSONChars = 4000
+
+// maxSessionContextChars bounds the managed-agent session context by runes. This
+// is a separate cap from the invocation service's maxSessionContextBytes (which
+// bounds a different, reconstructed context by bytes); they happen to share the
+// value 24_000 but measure different units on different paths, so don't unify them.
+const maxSessionContextChars = 24_000
+
+type toolContextEvent struct {
+	Phase     string
+	Kind      string
+	EventID   string
+	ToolUseID string
+	ToolName  string
+	Server    string
+	IsError   bool
+	Payload   json.RawMessage
+}
+
 type decisionResult struct {
 	BlockingID string
 	Delivered  bool
@@ -41,7 +60,10 @@ type watcher struct {
 	mu            sync.Mutex
 	pending       map[string]pendingCall // keyed by tool-use event ID
 	toolUseCustom map[string]bool
+	toolUseInfo   map[string]toolUse
+	toolUseOrder  []string // insertion order of tool-use event IDs, for evicting the caches above
 	recentChat    []chatMessage
+	recentTools   []toolContextEvent
 }
 
 const hydrateSessionEventsPageSize = 500
@@ -60,23 +82,159 @@ func (w *watcher) recordChatMessage(msg chatMessage) {
 	}
 }
 
-func (w *watcher) recentChatContext() string {
+func (w *watcher) recordToolUseContext(tu toolUse) {
+	payload, _ := json.Marshal(tu.Input)
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if len(w.recentChat) == 0 {
+	if w.toolUseInfo == nil {
+		w.toolUseInfo = make(map[string]toolUse)
+	}
+	w.toolUseInfo[tu.EventID] = tu
+	w.rememberToolUseLocked(tu.EventID)
+	w.appendToolContextLocked(toolContextEvent{
+		Phase:    "call",
+		Kind:     tu.Kind,
+		EventID:  tu.EventID,
+		ToolName: tu.ToolName,
+		Server:   tu.ServerName,
+		Payload:  payload,
+	})
+}
+
+func (w *watcher) recordToolResultContext(tr toolResult) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	entry := toolContextEvent{
+		Phase:     "result",
+		Kind:      tr.Kind,
+		ToolUseID: tr.ToolUseID,
+		IsError:   tr.IsError,
+		Payload:   tr.Content,
+	}
+	if tu, ok := w.toolUseInfo[tr.ToolUseID]; ok {
+		entry.ToolName = tu.ToolName
+		entry.Server = tu.ServerName
+		// The result is the only reader of this entry; drop it now that it has
+		// been consumed rather than waiting for eviction.
+		delete(w.toolUseInfo, tr.ToolUseID)
+	}
+	w.appendToolContextLocked(entry)
+}
+
+// rememberToolUseLocked tracks insertion order for the per-tool-use caches
+// (toolUseInfo, toolUseCustom) and evicts the oldest entries once the number
+// of remembered tool uses exceeds the recent-context limit, so the maps cannot
+// grow without bound when results never arrive. pending is excluded: it is
+// deleted deterministically when its result is processed. Results normally
+// arrive promptly, so anything past the limit is a straggler whose cached
+// enrichment we can afford to lose (toolUseCustom has a persisted fallback via
+// pendingCall's audit-event recovery).
+func (w *watcher) rememberToolUseLocked(eventID string) {
+	w.toolUseOrder = append(w.toolUseOrder, eventID)
+	limit := w.acct.cfg.RecentChatMessagesLimit
+	if len(w.toolUseOrder) <= limit {
+		return
+	}
+	for _, id := range w.toolUseOrder[:len(w.toolUseOrder)-limit] {
+		delete(w.toolUseInfo, id)
+		delete(w.toolUseCustom, id)
+	}
+	w.toolUseOrder = append([]string(nil), w.toolUseOrder[len(w.toolUseOrder)-limit:]...)
+}
+
+func (w *watcher) appendToolContextLocked(evt toolContextEvent) {
+	w.recentTools = append(w.recentTools, evt)
+	limit := w.acct.cfg.RecentChatMessagesLimit
+	if len(w.recentTools) > limit {
+		w.recentTools = append([]toolContextEvent(nil), w.recentTools[len(w.recentTools)-limit:]...)
+	}
+}
+
+func (w *watcher) recentSessionContext() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.recentChat) == 0 && len(w.recentTools) == 0 {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("Recent chat messages (oldest to newest, up to ")
-	b.WriteString(strconv.Itoa(w.acct.cfg.RecentChatMessagesLimit))
-	b.WriteString("):")
-	for _, msg := range w.recentChat {
-		b.WriteString("\n- ")
-		b.WriteString(msg.Role)
-		b.WriteString(": ")
-		b.WriteString(msg.Text)
+	if len(w.recentChat) > 0 {
+		b.WriteString("Recent human messages (oldest to newest, up to ")
+		b.WriteString(strconv.Itoa(w.acct.cfg.RecentChatMessagesLimit))
+		b.WriteString("):")
+		for _, msg := range w.recentChat {
+			b.WriteString("\n- ")
+			b.WriteString(msg.Role)
+			b.WriteString(": ")
+			b.WriteString(msg.Text)
+		}
 	}
+	if len(w.recentTools) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString("Recent tool calls/results (oldest to newest, up to ")
+		b.WriteString(strconv.Itoa(w.acct.cfg.RecentChatMessagesLimit))
+		b.WriteString("):")
+		for _, evt := range w.recentTools {
+			b.WriteString("\n* ")
+			b.WriteString(formatToolContextEvent(evt))
+		}
+	}
+	return trimSessionContextToRecentTail(b.String())
+}
+
+func trimSessionContextToRecentTail(text string) string {
+	runes := []rune(text)
+	if len(runes) <= maxSessionContextChars {
+		return text
+	}
+	return "[older session context omitted: exceeded context-size limit]\n" + string(runes[len(runes)-maxSessionContextChars:])
+}
+
+func formatToolContextEvent(evt toolContextEvent) string {
+	var b strings.Builder
+	b.WriteString(evt.Phase)
+	if evt.Kind != "" {
+		b.WriteString(" ")
+		b.WriteString(evt.Kind)
+	}
+	if evt.EventID != "" {
+		b.WriteString(" id=")
+		b.WriteString(evt.EventID)
+	}
+	if evt.ToolUseID != "" {
+		b.WriteString(" tool_use_id=")
+		b.WriteString(evt.ToolUseID)
+	}
+	if evt.Server != "" {
+		b.WriteString(" server=")
+		b.WriteString(evt.Server)
+	}
+	if evt.ToolName != "" {
+		b.WriteString(" tool=")
+		b.WriteString(evt.ToolName)
+	}
+	if evt.Phase == "result" {
+		b.WriteString(" is_error=")
+		b.WriteString(strconv.FormatBool(evt.IsError))
+		b.WriteString(" output=")
+	} else {
+		b.WriteString(" input=")
+	}
+	b.WriteString(toolContextJSON(evt.Payload))
 	return b.String()
+}
+
+func toolContextJSON(raw json.RawMessage) string {
+	text := strings.TrimSpace(string(raw))
+	if text == "" {
+		return "null"
+	}
+	runes := []rune(text)
+	if len(runes) <= maxToolContextJSONChars {
+		return text
+	}
+	return string(runes[:maxToolContextJSONChars]) + "...[truncated]"
 }
 
 func (w *watcher) recentChatCount() int {
@@ -94,7 +252,8 @@ func (w *watcher) hydrateRecentChat(ctx context.Context) {
 		return
 	}
 	offset := uint64(0)
-	hydrated := 0
+	hydratedChat := 0
+	hydratedTools := 0
 	for {
 		events, total, err := w.svc.audit.ListEvents(ctx, w.auditID, invocation.EventListFilter{
 			Offset: offset,
@@ -111,7 +270,14 @@ func (w *watcher) hydrateRecentChat(ctx context.Context) {
 			}
 			if msg, ok := parseChatMessage(rawEvt); ok {
 				w.recordChatMessage(msg)
-				hydrated++
+				hydratedChat++
+			}
+			if tu, ok := parseToolUse(rawEvt); ok {
+				w.recordToolUseContext(tu)
+				hydratedTools++
+			} else if tr, ok := parseToolResult(rawEvt); ok {
+				w.recordToolResultContext(tr)
+				hydratedTools++
 			}
 		}
 		offset += uint64(len(events))
@@ -119,8 +285,8 @@ func (w *watcher) hydrateRecentChat(ctx context.Context) {
 			break
 		}
 	}
-	if hydrated > 0 {
-		w.log().Info("hydrated recent chat from audit events", "chat_messages_seen", hydrated, "chat_messages_retained", w.recentChatCount())
+	if hydratedChat > 0 || hydratedTools > 0 {
+		w.log().Info("hydrated recent context from audit events", "chat_messages_seen", hydratedChat, "chat_messages_retained", w.recentChatCount(), "tool_events_seen", hydratedTools)
 	}
 }
 
@@ -277,19 +443,20 @@ func (w *watcher) handleToolUse(ctx context.Context, evt RawEvent) bool {
 	}
 	source := w.cfgSource(tu)
 	eventID := tu.EventID
+	sessionContext := w.recentSessionContext()
 	resp, err := w.svc.inv.Submit(ctx, invocation.ExternalSubmitRequest{
-		Source:              source,
-		Tool:                tu.ToolName,
-		Description:         "Claude managed agent " + tu.Kind + " in session " + w.reg.SessionID,
-		Input:               tu.Input,
-		ChatContext:         w.recentChatContext(),
-		ChatContextMessages: w.recentChatCount(),
-		RequestID:           &eventID,
-		IdempotencyKey:      &eventID, // dedupe across stream reconnects/replays
-		ThreadID:            w.reg.SessionID,
-		ClientName:          w.acct.cfg.ClientName,
-		ClientVersion:       w.acct.cfg.ClientVersion,
-		AgentID:             w.reg.AgentID,
+		Source:                 source,
+		Tool:                   tu.ToolName,
+		Description:            "Claude managed agent " + tu.Kind + " in session " + w.reg.SessionID,
+		Input:                  tu.Input,
+		SessionContext:         sessionContext,
+		SessionContextMessages: w.recentChatCount(),
+		RequestID:              &eventID,
+		IdempotencyKey:         &eventID, // dedupe across stream reconnects/replays
+		ThreadID:               w.reg.SessionID,
+		ClientName:             w.acct.cfg.ClientName,
+		ClientVersion:          w.acct.cfg.ClientVersion,
+		AgentID:                w.reg.AgentID,
 	})
 	if err != nil {
 		w.log().Warn("submit tool call failed", "tool", tu.ToolName, "error", err)
@@ -299,6 +466,7 @@ func (w *watcher) handleToolUse(ctx context.Context, evt RawEvent) bool {
 		w.log().Warn("persist tool-use kind failed", "tool_use_event_id", eventID, "invocation_id", resp.InvocationID, "error", err)
 		return false
 	}
+	w.recordToolUseContext(tu)
 	w.mu.Lock()
 	w.pending[eventID] = pendingCall{InvocationID: resp.InvocationID, IsCustom: tu.IsCustom, KindKnown: true}
 	if w.toolUseCustom == nil {
@@ -419,6 +587,7 @@ func (w *watcher) sendDeny(ctx context.Context, blockingID string, pc pendingCal
 // handleToolResult records the executor outcome reported by Anthropic onto the
 // matching invocation.
 func (w *watcher) handleToolResult(ctx context.Context, tr toolResult) {
+	w.recordToolResultContext(tr)
 	pc, ok := w.pendingCall(ctx, tr.ToolUseID, false)
 	if !ok {
 		return
@@ -498,6 +667,7 @@ func (w *watcher) customToolUse(ctx context.Context, toolUseEventID string) (boo
 	}
 	if ok {
 		w.toolUseCustom[toolUseEventID] = isCustom
+		w.rememberToolUseLocked(toolUseEventID)
 	}
 	w.mu.Unlock()
 	return isCustom, ok

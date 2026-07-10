@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"runtime"
 	"strings"
@@ -310,6 +311,28 @@ func toolUseEvent(id, eventType, name string, input map[string]any) RawEvent {
 	return RawEvent{ID: id, Type: eventType, Raw: raw, ProcessedAt: time.Now()}
 }
 
+func mcpToolUseEvent(id, server, name string, input map[string]any) RawEvent {
+	body := map[string]any{"id": id, "type": evtAgentMCPToolUse, "mcp_server_name": server, "name": name, "input": input}
+	raw, _ := json.Marshal(body)
+	return RawEvent{ID: id, Type: evtAgentMCPToolUse, Raw: raw, ProcessedAt: time.Now()}
+}
+
+func toolResultEvent(id, eventType, toolUseID string, content any, isError bool) RawEvent {
+	toolUseIDKey := "tool_use_id"
+	switch eventType {
+	case "agent.mcp_tool_result":
+		toolUseIDKey = "mcp_tool_use_id"
+	case "user.custom_tool_result":
+		toolUseIDKey = "custom_tool_use_id"
+	}
+	body := map[string]any{"id": id, "type": eventType, toolUseIDKey: toolUseID, "content": content}
+	if isError {
+		body["is_error"] = true
+	}
+	raw, _ := json.Marshal(body)
+	return RawEvent{ID: id, Type: eventType, Raw: raw, ProcessedAt: time.Now()}
+}
+
 func idleRequiresAction(id string, blockingIDs []string) RawEvent {
 	body := map[string]any{"id": id, "type": evtSessionIdle, "stop_reason": map[string]any{"type": stopReasonRequiresAction, "event_ids": blockingIDs}}
 	raw, _ := json.Marshal(body)
@@ -531,6 +554,8 @@ func TestToolUseSubmitIncludesRecentChatContext(t *testing.T) {
 	for i := 1; i <= 105; i++ {
 		w.handleEvent(ctx, chatEvent("msg_"+itoa(i), "user.message", "chat-"+itoa(i)+".")) // oldest five should be trimmed
 	}
+	// Agent-authored messages must never enter judge context.
+	w.handleEvent(ctx, chatEvent("agent_msg", "agent.message", "agent-secret-do-not-include"))
 	w.handleEvent(ctx, toolUseEvent("tool_evt_1", evtAgentToolUse, "Bash", map[string]any{"command": "pwd"}))
 
 	g.mu.Lock()
@@ -538,7 +563,10 @@ func TestToolUseSubmitIncludesRecentChatContext(t *testing.T) {
 	if len(g.submitted) != 1 {
 		t.Fatalf("expected one submitted tool call, got %d", len(g.submitted))
 	}
-	context := g.submitted[0].ChatContext
+	context := g.submitted[0].SessionContext
+	if strings.Contains(context, "agent-secret-do-not-include") {
+		t.Fatalf("context contains agent-authored message: %s", context)
+	}
 	if strings.Contains(context, "chat-5.") {
 		t.Fatalf("context contains trimmed message: %s", context)
 	}
@@ -548,8 +576,42 @@ func TestToolUseSubmitIncludesRecentChatContext(t *testing.T) {
 	if got := strings.Count(context, "\n- "); got != 100 {
 		t.Fatalf("context message count = %d, want 100", got)
 	}
-	if got := g.submitted[0].ChatContextMessages; got != 100 {
-		t.Fatalf("ChatContextMessages = %d, want 100", got)
+	if got := g.submitted[0].SessionContextMessages; got != 100 {
+		t.Fatalf("SessionContextMessages = %d, want 100", got)
+	}
+}
+
+func TestToolUseSubmitIncludesRecentToolContext(t *testing.T) {
+	g := newFakeGateway()
+	w := newTestWatcher(g, &fakeClient{}, newFakeAudit())
+	ctx := context.Background()
+
+	w.handleEvent(ctx, toolUseEvent("builtin_1", evtAgentToolUse, "Bash", map[string]any{"command": "pwd"}))
+	w.handleEvent(ctx, toolResultEvent("builtin_result_1", "agent.tool_result", "builtin_1", "done", false))
+	w.handleEvent(ctx, mcpToolUseEvent("mcp_1", "linear", "create_issue", map[string]any{"title": "bug"}))
+	w.handleEvent(ctx, toolResultEvent("mcp_result_1", "agent.mcp_tool_result", "mcp_1", map[string]any{"url": "https://linear.app/issue/BUG-1"}, false))
+	w.handleEvent(ctx, toolUseEvent("custom_1", evtAgentCustomToolUse, "deploy", map[string]any{"env": "staging"}))
+	w.handleEvent(ctx, toolResultEvent("custom_result_1", "user.custom_tool_result", "custom_1", []map[string]any{{"type": "text", "text": "deployed"}}, false))
+	w.handleEvent(ctx, toolUseEvent("next_1", evtAgentToolUse, "Read", map[string]any{"path": "README.md"}))
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(g.submitted) != 4 {
+		t.Fatalf("expected four submitted tool calls, got %d", len(g.submitted))
+	}
+	context := g.submitted[len(g.submitted)-1].SessionContext
+	for _, want := range []string{
+		"Recent tool calls/results",
+		"call agent.tool_use id=builtin_1 tool=Bash input={\"command\":\"pwd\"}",
+		"result agent.tool_result tool_use_id=builtin_1 tool=Bash is_error=false output=\"done\"",
+		"call agent.mcp_tool_use id=mcp_1 server=linear tool=create_issue input={\"title\":\"bug\"}",
+		"result agent.mcp_tool_result tool_use_id=mcp_1 server=linear tool=create_issue is_error=false output={\"url\":\"https://linear.app/issue/BUG-1\"}",
+		"call agent.custom_tool_use id=custom_1 tool=deploy input={\"env\":\"staging\"}",
+		"result user.custom_tool_result tool_use_id=custom_1 tool=deploy is_error=false output=[{\"text\":\"deployed\",\"type\":\"text\"}]",
+	} {
+		if !strings.Contains(context, want) {
+			t.Fatalf("context missing %q:\n%s", want, context)
+		}
 	}
 }
 
@@ -574,7 +636,7 @@ func TestToolUseSubmitHonorsRecentChatMessageLimit(t *testing.T) {
 	if len(g.submitted) != 1 {
 		t.Fatalf("expected one submitted tool call, got %d", len(g.submitted))
 	}
-	context := g.submitted[0].ChatContext
+	context := g.submitted[0].SessionContext
 	if strings.Contains(context, "chat-2.") {
 		t.Fatalf("context contains trimmed message: %s", context)
 	}
@@ -584,8 +646,8 @@ func TestToolUseSubmitHonorsRecentChatMessageLimit(t *testing.T) {
 	if got := strings.Count(context, "\n- "); got != 3 {
 		t.Fatalf("context message count = %d, want 3", got)
 	}
-	if got := g.submitted[0].ChatContextMessages; got != 3 {
-		t.Fatalf("ChatContextMessages = %d, want 3", got)
+	if got := g.submitted[0].SessionContextMessages; got != 3 {
+		t.Fatalf("SessionContextMessages = %d, want 3", got)
 	}
 }
 
@@ -601,6 +663,8 @@ func TestWatcherHydratesRecentChatFromAuditOnStartup(t *testing.T) {
 	for i := 1; i <= 105; i++ {
 		w.svc.appendSessionEvent(ctx, w.auditID, w.reg.SessionID, chatEvent("msg_"+itoa(i), "user.message", "chat-"+itoa(i)+"."))
 	}
+	w.svc.appendSessionEvent(ctx, w.auditID, w.reg.SessionID, toolUseEvent("old_tool", evtAgentToolUse, "Bash", map[string]any{"command": "pwd"}))
+	w.svc.appendSessionEvent(ctx, w.auditID, w.reg.SessionID, toolResultEvent("old_result", "agent.tool_result", "old_tool", "done", false))
 
 	restarted := newTestWatcher(g, &fakeClient{}, a)
 	restarted.hydrateRecentChat(ctx)
@@ -611,15 +675,21 @@ func TestWatcherHydratesRecentChatFromAuditOnStartup(t *testing.T) {
 	if len(g.submitted) != 1 {
 		t.Fatalf("expected one submitted tool call, got %d", len(g.submitted))
 	}
-	context := g.submitted[0].ChatContext
+	context := g.submitted[0].SessionContext
 	if strings.Contains(context, "chat-5.") {
 		t.Fatalf("context contains trimmed message: %s", context)
 	}
 	if !strings.Contains(context, "chat-6.") || !strings.Contains(context, "chat-105.") {
 		t.Fatalf("context missing expected hydrated messages: %s", context)
 	}
-	if got := g.submitted[0].ChatContextMessages; got != 100 {
-		t.Fatalf("ChatContextMessages = %d, want 100", got)
+	if got := g.submitted[0].SessionContextMessages; got != 100 {
+		t.Fatalf("SessionContextMessages = %d, want 100", got)
+	}
+	if !strings.Contains(context, "call agent.tool_use id=old_tool tool=Bash input={\"command\":\"pwd\"}") {
+		t.Fatalf("context missing hydrated tool call: %s", context)
+	}
+	if !strings.Contains(context, "result agent.tool_result tool_use_id=old_tool tool=Bash is_error=false output=\"done\"") {
+		t.Fatalf("context missing hydrated tool result: %s", context)
 	}
 }
 
@@ -737,4 +807,46 @@ func TestDuplicateToolUseUsesIdempotencyKey(t *testing.T) {
 			t.Fatalf("expected idempotency key t1, got %v", req.IdempotencyKey)
 		}
 	}
+}
+
+func TestToolUseCachesAreBounded(t *testing.T) {
+	w := newTestWatcher(nil, nil, nil)
+	w.acct.cfg.RecentChatMessagesLimit = 5
+	limit := w.acct.cfg.RecentChatMessagesLimit
+
+	for i := 0; i < limit*4; i++ {
+		id := fmt.Sprintf("tu_%d", i)
+		w.recordToolUseContext(toolUse{EventID: id, ToolName: "bash", Kind: "builtin"})
+		w.mu.Lock()
+		if w.toolUseCustom == nil {
+			w.toolUseCustom = make(map[string]bool)
+		}
+		w.toolUseCustom[id] = false
+		w.mu.Unlock()
+	}
+
+	w.mu.Lock()
+	if len(w.toolUseInfo) > limit {
+		t.Fatalf("toolUseInfo grew to %d entries, want <= %d", len(w.toolUseInfo), limit)
+	}
+	if len(w.toolUseCustom) > limit {
+		t.Fatalf("toolUseCustom grew to %d entries, want <= %d", len(w.toolUseCustom), limit)
+	}
+	if len(w.toolUseOrder) > limit {
+		t.Fatalf("toolUseOrder grew to %d entries, want <= %d", len(w.toolUseOrder), limit)
+	}
+	// The most recent entries survive eviction.
+	newest := fmt.Sprintf("tu_%d", limit*4-1)
+	if _, ok := w.toolUseInfo[newest]; !ok {
+		t.Fatalf("newest tool use %s evicted, want retained", newest)
+	}
+	w.mu.Unlock()
+
+	// A result consumes its toolUseInfo entry immediately.
+	w.recordToolResultContext(toolResult{ToolUseID: newest, Kind: "builtin"})
+	w.mu.Lock()
+	if _, ok := w.toolUseInfo[newest]; ok {
+		t.Fatalf("toolUseInfo entry %s not deleted after its result was recorded", newest)
+	}
+	w.mu.Unlock()
 }

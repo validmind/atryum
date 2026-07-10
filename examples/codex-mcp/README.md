@@ -59,23 +59,31 @@ the hook definition, so changing the command requires re-review.
 | `ATRYUM_URL` | `http://localhost:8080` | base URL of the Atryum server |
 | `ATRYUM_SOURCE` | `codex` in the example | source label in Atryum |
 | `ATRYUM_POLL_MS` | `2000` | approval polling interval |
-| `ATRYUM_STATE_DIR` | `~/.atryum/agent-hook-state` | tool-use to invocation-id state |
-| `ATRYUM_CHAT_MESSAGES_LIMIT` | `100` | recent Codex chat messages sent as LLM-as-judge context when available |
-| `ATRYUM_MAX_MESSAGE_CHARS` | `2000` | maximum characters included from any one chat message |
-| `ATRYUM_CODEX_TRANSCRIPT_PATH` | hook transcript/conversation path | override Codex transcript file path |
-| `ATRYUM_CHAT_HISTORY_PATH` | _(empty)_ | generic override for a chat history JSON/JSONL file |
+| `ATRYUM_AGENT_ID` | _(empty)_ | self-declared agent identifier; matched against Agent Record `agent_ids` |
+| `ATRYUM_ACCESS_TOKEN` | _(empty)_ | optional OAuth bearer token for Atryum agent runtime APIs |
+| `ATRYUM_STATE_DIR` | `~/.atryum/agent-hook-state` | tool-use to invocation-id state and the cached Atryum session |
 
-## LLM-as-judge chat context
+## LLM-as-judge session context
 
-Before each Codex `PreToolUse` decision, the hook looks for recent chat
-messages in the hook payload. If Codex does not include chat messages there, the
-hook reads Codex's local session JSONL under `~/.codex/sessions` using the hook
-`session_id` when available, or the latest `~/.codex/history.jsonl` session as a
-fallback. It sends extracted user/assistant/system messages to Atryum as
-`chat_context` and `chat_context_messages`.
+The hook does **not** scrape Codex's chat payload, local session JSONL, or
+history, or send any chat/context blob to Atryum. The harness is trusted to
+report _which_ session a tool call belongs to, but a runaway agent must not be
+able to hand the judge arbitrary text to poison it.
 
-Set `ATRYUM_CHAT_MESSAGES_LIMIT` to change how many recent messages are sent.
-Set it to `0` to disable Codex chat context.
+Instead, the hook mints an Atryum session via `POST /api/v1/external/sessions`
+(passing `harness` and, for cross-referencing only, Codex's own session id as
+`client_session_id`). Because each hook invocation is a fresh process, the
+returned `session_id` is cached on disk under `$ATRYUM_STATE_DIR` keyed by the
+host session id and echoed on every `POST /api/v1/external/invocations`. Atryum
+then reconstructs the judge's context from the prior tool calls it recorded for
+that session — trusting tool outputs more than tool inputs, and ignoring agent
+chat entirely.
+
+Sessions require an agent binding: `ATRYUM_AGENT_ID` (no-auth mode) or the
+bearer token (auth mode). With neither, the caller is anonymous and the hook
+submits without a `session_id` (tool calls are still gated, just without
+prior-call context). If a cached session is unknown, foreign, or expired, the
+hook mints a fresh one and retries the submit once.
 
 ## MCP proxy
 

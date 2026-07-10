@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -79,6 +81,9 @@ func runServer(args []string) error {
 	cfg, err := config.Load(resolvedConfigPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+	if err := configureLogging(cfg.Server.LogLevel); err != nil {
+		return err
 	}
 	backendClient, err := backendclient.NewClient(cfg.Backend)
 	if err != nil {
@@ -236,6 +241,7 @@ func runServer(args []string) error {
 	if backendClient != nil {
 		service.SetInvocationSummarizer(&summaryAdapter{client: backendClient})
 	}
+	service.SetSessionStore(store.NewExternalSessionRepoWithDialect(db, dialect))
 	serverAdmin := api.NewServerAdminService(serverRepo, oauthRepo, client, 5*time.Second, cfg.Server.PublicBaseURL)
 	if *initServers {
 		if err := initEnabledServerStatuses(context.Background(), serverRepo, serverAdmin); err != nil {
@@ -645,6 +651,30 @@ func (s *summaryAdapter) SummarizeInvocation(ctx context.Context, req invocation
 func truthyEnv(name string) bool {
 	value := os.Getenv(name)
 	return value == "1" || value == "true" || value == "TRUE" || value == "yes" || value == "YES"
+}
+
+func configureLogging(logLevel string) error {
+	level, err := parseLogLevel(logLevel)
+	if err != nil {
+		return err
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+	return nil
+}
+
+func parseLogLevel(logLevel string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(logLevel)) {
+	case "", "info":
+		return slog.LevelInfo, nil
+	case "debug":
+		return slog.LevelDebug, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return 0, fmt.Errorf("invalid server.log_level %q", logLevel)
+	}
 }
 
 func emptyDefault(value, fallback string) string {
