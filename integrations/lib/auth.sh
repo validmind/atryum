@@ -124,3 +124,57 @@ mcp_remote_headers_env() {
       ;;
   esac
 }
+
+harness_token_command_env() {
+  local auth_id="$1"
+  unset ATRYUM_ACCESS_TOKEN ATRYUM_TOKEN_COMMAND ATRYUM_TOKEN_COMMAND_TIMEOUT_MS ATRYUM_TOKEN_REFRESH_SKEW_MS || true
+
+  case "$auth_id" in
+    no-auth)
+      return 0
+      ;;
+    oauth-client-credentials)
+      local script="$RUN_DIR/token-command-${auth_id}.sh"
+      cat >"$script" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+curl -fsS -X POST "$MOCK_OIDC_TOKEN_URL" \
+  -d "grant_type=client_credentials" \
+  -d "client_id=$MOCK_OIDC_CLIENT_ID" \
+  -d "client_secret=$MOCK_OIDC_CLIENT_SECRET" \
+  -d "scope=atryum:mcp"
+EOF
+      chmod 700 "$script"
+      export ATRYUM_TOKEN_COMMAND="$script"
+      ;;
+    oauth-dcr)
+      local reg client_id client_secret script="$RUN_DIR/token-command-${auth_id}.sh"
+      # Explicit `|| return 1` on each fallible step: callers invoke this
+      # function on the left of `||`, which suppresses errexit inside it.
+      reg="$(curl -fsS -X POST "$MOCK_OIDC_DCR_URL" \
+        -H 'Content-Type: application/json' \
+        -d '{"client_name":"integration-harness","grant_types":["client_credentials"],"token_endpoint_auth_method":"client_secret_post","scope":"atryum:mcp"}')" || return 1
+      client_id="$(echo "$reg" | python3 -c 'import json,sys; print(json.load(sys.stdin)["client_id"])')" || return 1
+      client_secret="$(echo "$reg" | python3 -c 'import json,sys; print(json.load(sys.stdin)["client_secret"])')" || return 1
+      [[ -n "$client_id" && -n "$client_secret" ]] || return 1
+      cat >"$script" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+curl -fsS -X POST "\$MOCK_OIDC_TOKEN_URL" \\
+  -d "grant_type=client_credentials" \\
+  -d "client_id=${client_id}" \\
+  -d "client_secret=${client_secret}" \\
+  -d "scope=atryum:mcp"
+EOF
+      chmod 700 "$script"
+      export ATRYUM_TOKEN_COMMAND="$script"
+      ;;
+    static-bearer)
+      [[ -n "${ATRYUM_STATIC_BEARER_TOKEN:-}" ]] || return 1
+      export ATRYUM_ACCESS_TOKEN="$ATRYUM_STATIC_BEARER_TOKEN"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}

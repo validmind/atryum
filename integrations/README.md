@@ -44,6 +44,23 @@ Harness LLM billing credentials (never committed):
 
 Harness→**Atryum** auth is configured separately (`no-auth`, `oauth-client-credentials`, `oauth-dcr`, …).
 
+## Token refresh harness testing
+
+For the OAuth protocols (`oauth-client-credentials`, `oauth-dcr`), harness setup
+writes a token-minting script against the mock OIDC server and exports it as
+`ATRYUM_TOKEN_COMMAND` (`lib/auth.sh`, `harness_token_command_env`), so hook and
+extension integrations from `examples/` exercise the full refresh path: mint on
+first request, cache to `token-cache.json`, re-mint near expiry, and retry once
+after a `401`. The `static-bearer` protocol exports `ATRYUM_ACCESS_TOKEN`
+instead, which is used as-is and never refreshed.
+
+To run a single refresh-exercising case, e.g. Pi against client credentials:
+
+```bash
+cd integrations
+./scripts/agent_harness_integration_tests.sh run --harness pi --auth oauth-client-credentials
+```
+
 ## Registries
 
 | File | Contents |

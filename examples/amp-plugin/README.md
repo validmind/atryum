@@ -78,18 +78,22 @@ To remove the global plugin later:
 
 ## Configure (env vars)
 
-| var | default | meaning |
-| --- | --- | --- |
-| `ATRYUM_URL` | `http://localhost:8080` | base URL of the atryum server |
-| `ATRYUM_SOURCE` | `amp` | label shown as the "upstream" column in the atryum UI |
-| `ATRYUM_POLL_MS` | `2000` | how often the plugin polls atryum while awaiting approval |
-| `ATRYUM_CLIENT_NAME` | `amp` | harness name shown in the Atryum Agent column |
-| `ATRYUM_CLIENT_VERSION` | `AMP_VERSION` if set | harness version shown in Atryum |
-| `ATRYUM_AGENT_ID` | _(empty)_ | self-declared agent identifier; matched against Agent Record `agent_ids` (see below) |
-| `ATRYUM_ACCESS_TOKEN` | _(empty)_ | optional OAuth bearer token for Atryum agent runtime APIs |
-| `ATRYUM_CHAT_MESSAGES_LIMIT` | `100` | recent Amp thread messages sent as LLM-as-judge context |
-| `ATRYUM_AMP_THREADS_DIR` | `~/.local/share/amp/threads` | Amp thread JSON directory |
-| `ATRYUM_AMP_SESSION_FILE` | `~/.local/share/amp/session.json` | Amp session state file used to identify the active thread |
+| var                               | default                           | meaning                                                                                                                    |
+| --------------------------------- | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `ATRYUM_URL`                      | `http://localhost:8080`           | base URL of the atryum server                                                                                              |
+| `ATRYUM_SOURCE`                   | `amp`                             | label shown as the "upstream" column in the atryum UI                                                                      |
+| `ATRYUM_POLL_MS`                  | `2000`                            | how often the plugin polls atryum while awaiting approval                                                                  |
+| `ATRYUM_CLIENT_NAME`              | `amp`                             | harness name shown in the Atryum Agent column                                                                              |
+| `ATRYUM_CLIENT_VERSION`           | `AMP_VERSION` if set              | harness version shown in Atryum                                                                                            |
+| `ATRYUM_AGENT_ID`                 | _(empty)_                         | self-declared agent identifier; matched against Agent Record `agent_ids` (see below)                                       |
+| `ATRYUM_ACCESS_TOKEN`             | _(empty)_                         | optional OAuth bearer token for Atryum agent runtime APIs                                                                  |
+| `ATRYUM_TOKEN_COMMAND`            | _(empty)_                         | optional command run to mint each new token; prints a raw token with no whitespace or OAuth token JSON with `access_token` |
+| `ATRYUM_TOKEN_REFRESH_SKEW_MS`    | `60000`                           | refresh command cache skew before token expiry                                                                             |
+| `ATRYUM_TOKEN_COMMAND_TIMEOUT_MS` | `10000`                           | timeout for the token command subprocess                                                                                   |
+| `ATRYUM_STATE_DIR`                | `~/.atryum/amp-plugin-state`      | directory for the on-disk token cache (`token-cache.json`, mode 0600)                                                      |
+| `ATRYUM_CHAT_MESSAGES_LIMIT`      | `100`                             | recent Amp thread messages sent as LLM-as-judge context                                                                    |
+| `ATRYUM_AMP_THREADS_DIR`          | `~/.local/share/amp/threads`      | Amp thread JSON directory                                                                                                  |
+| `ATRYUM_AMP_SESSION_FILE`         | `~/.local/share/amp/session.json` | Amp session state file used to identify the active thread                                                                  |
 
 ## LLM-as-judge chat context
 
@@ -135,7 +139,46 @@ export ATRYUM_ACCESS_TOKEN=<oauth-access-token>
 
 The plugin sends it as `Authorization: Bearer ...` on every agent runtime
 call. In auth mode Atryum derives the agent id from the token and ignores
-`ATRYUM_AGENT_ID`.
+`ATRYUM_AGENT_ID`. The token is used as-is and never refreshed — if it
+expires, requests fail with `401`.
+
+For short-lived tokens, set `ATRYUM_TOKEN_COMMAND` instead (if both are set,
+`ATRYUM_TOKEN_COMMAND` wins and `ATRYUM_ACCESS_TOKEN` is ignored). This is a
+shell command the plugin runs whenever it needs to mint a new token —
+typically a client credentials request against your identity provider's token
+endpoint, or a CLI that prints one:
+
+```sh
+export ATRYUM_TOKEN_COMMAND='curl -fsS -X POST "$OIDC_TOKEN_URL" \
+  -d grant_type=client_credentials \
+  -d client_id="$CLIENT_ID" \
+  -d client_secret="$CLIENT_SECRET" \
+  -d scope=atryum:mcp'
+```
+
+(`$OIDC_TOKEN_URL`, `$CLIENT_ID`, and `$CLIENT_SECRET` are placeholders for
+your identity provider's values — export them alongside the command.)
+
+The command may print a raw token (a single string with no whitespace) or JSON such as
+`{"access_token":"...","expires_in":3600}`. The `expires_in` field is relative
+seconds; `expires_at` (absolute Unix timestamp in seconds or milliseconds) is
+also accepted, and either may be a JSON number or a numeric string. A raw
+token, or JSON without a usable (positive, numeric) expiry field, is assumed
+valid for 55 minutes.
+
+Token lifecycle: the plugin runs the command on the first request, then
+caches the token — in memory and on disk at
+`$ATRYUM_STATE_DIR/token-cache.json` (mode 0600) so restarts reuse it — and
+reuses it until `ATRYUM_TOKEN_REFRESH_SKEW_MS` (default 60s) before expiry,
+when it runs the command again to mint a replacement. If a request still gets
+a `401`, the plugin bypasses the cache, mints a fresh token, and retries
+the request once. The disk cache is keyed to `ATRYUM_TOKEN_COMMAND` and
+`ATRYUM_URL` (trailing slashes ignored), so changing either invalidates it;
+environment variables referenced by the command are not part of the cache
+key. If the command fails
+(non-zero exit, timeout after `ATRYUM_TOKEN_COMMAND_TIMEOUT_MS`, empty output,
+or invalid token output), the runtime call fails — run the command by hand in
+a shell to debug it.
 
 ## API used
 

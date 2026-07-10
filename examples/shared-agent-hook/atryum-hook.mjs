@@ -15,9 +15,20 @@
 // LLM-as-judge context.
 
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { exec } from "node:child_process";
+import {
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
+
+const execAsync = promisify(exec);
 
 const API = process.env.ATRYUM_URL || "http://localhost:8080";
 const POLL_INTERVAL = Number(process.env.ATRYUM_POLL_MS || 2000);
@@ -28,15 +39,17 @@ const SOURCE =
     ? "cursor"
     : HOST === "codex"
       ? "codex"
-    : HOST === "claude"
-      ? "claude-code"
-      : process.env.ATRYUM_SOURCE || process.env.ATRYUM_HOOK_HOST || "agent";
+      : HOST === "claude"
+        ? "claude-code"
+        : process.env.ATRYUM_SOURCE || process.env.ATRYUM_HOOK_HOST || "agent";
 const CLIENT_NAME = process.env.ATRYUM_CLIENT_NAME || SOURCE;
 const CLIENT_VERSION = process.env.ATRYUM_CLIENT_VERSION || "";
 const STATE_DIR =
   process.env.ATRYUM_STATE_DIR ||
   path.join(os.homedir(), ".atryum", "agent-hook-state");
-const CHAT_MESSAGES_LIMIT = Number(process.env.ATRYUM_CHAT_MESSAGES_LIMIT || 100);
+const CHAT_MESSAGES_LIMIT = Number(
+  process.env.ATRYUM_CHAT_MESSAGES_LIMIT || 100,
+);
 const MAX_MESSAGE_CHARS = Number(process.env.ATRYUM_MAX_MESSAGE_CHARS || 2000);
 // Self-declared agent identity sent to Atryum as the invocation `agent_id`.
 // When this string is listed in an Agent Record's `agent_ids` array in the
@@ -45,12 +58,162 @@ const MAX_MESSAGE_CHARS = Number(process.env.ATRYUM_MAX_MESSAGE_CHARS || 2000);
 // identity use OAuth. Default: empty (no agent tagging).
 const AGENT_ID = process.env.ATRYUM_AGENT_ID || "";
 const ACCESS_TOKEN = process.env.ATRYUM_ACCESS_TOKEN || "";
+const TOKEN_COMMAND = process.env.ATRYUM_TOKEN_COMMAND || "";
+// Malformed values (e.g. "10s") would otherwise become NaN, which silently
+// disables the cache comparisons and makes exec() throw ERR_OUT_OF_RANGE.
+const envMs = (name, fallback) => {
+  const n = Math.floor(Number(process.env[name] || fallback));
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+};
+const TOKEN_REFRESH_SKEW_MS = envMs("ATRYUM_TOKEN_REFRESH_SKEW_MS", 60000);
+const TOKEN_COMMAND_TIMEOUT_MS = envMs("ATRYUM_TOKEN_COMMAND_TIMEOUT_MS", 10000);
+const TOKEN_CACHE_FILE = TOKEN_COMMAND
+  ? path.join(STATE_DIR, "token-cache.json")
+  : "";
+// Ties the cached token to the command and server that produced it, so
+// switching ATRYUM_TOKEN_COMMAND or ATRYUM_URL invalidates the cache instead
+// of sending a token minted for a different identity or target. Trailing
+// slashes are stripped so equivalent URL spellings share one cache entry.
+const TOKEN_CACHE_KEY = TOKEN_COMMAND
+  ? createHash("sha256")
+      .update(`${TOKEN_COMMAND}\n${API.replace(/\/+$/, "")}`)
+      .digest("hex")
+  : "";
+let cachedToken = TOKEN_COMMAND ? "" : ACCESS_TOKEN;
+let cachedTokenExpiresAt =
+  ACCESS_TOKEN && !TOKEN_COMMAND ? Number.POSITIVE_INFINITY : 0;
 
-function atryumHeaders(contentType = false) {
+function parseTokenResponse(raw) {
+  const text = String(raw || "").trim();
+  if (!text) throw new Error("token command returned no token");
+  if (!text.startsWith("{")) {
+    if (/\s/.test(text)) {
+      throw new Error("raw token command output must not contain whitespace");
+    }
+    return { accessToken: text, expiresAt: Date.now() + 55 * 60 * 1000 };
+  }
+  const parsed = JSON.parse(text);
+  const accessToken =
+    typeof parsed.access_token === "string"
+      ? parsed.access_token
+      : typeof parsed.accessToken === "string"
+        ? parsed.accessToken
+        : typeof parsed.token === "string"
+          ? parsed.token
+          : "";
+  if (!accessToken) {
+    throw new Error("token command response did not include access_token");
+  }
+  if (/\s/.test(accessToken)) {
+    throw new Error("token command response token must not contain whitespace");
+  }
+  const toMs = (s) => (s > 1e11 ? s : s * 1000);
+  // Providers send expiry fields as numbers or numeric strings; coerce, and
+  // treat non-numeric or non-positive values as absent (55-minute default).
+  const expiry = (v) => {
+    const n = typeof v === "string" && v.trim() ? Number(v) : v;
+    return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : 0;
+  };
+  const expiresAtValue = expiry(parsed.expires_at) || expiry(parsed.expiresAt);
+  const expiresIn = expiry(parsed.expires_in);
+  const expiresAt = expiresAtValue
+    ? toMs(expiresAtValue)
+    : expiresIn
+      ? Date.now() + expiresIn * 1000
+      : Date.now() + 55 * 60 * 1000;
+  return { accessToken, expiresAt };
+}
+
+async function readTokenCache() {
+  if (!TOKEN_CACHE_FILE) return null;
+  try {
+    const raw = await readFile(TOKEN_CACHE_FILE, "utf8");
+    const { token, expiresAt, key } = JSON.parse(raw);
+    if (
+      typeof token === "string" &&
+      token &&
+      typeof expiresAt === "number" &&
+      key === TOKEN_CACHE_KEY &&
+      Date.now() < expiresAt - TOKEN_REFRESH_SKEW_MS
+    ) {
+      return { token, expiresAt };
+    }
+  } catch {
+    // cache miss or unreadable
+  }
+  return null;
+}
+
+async function writeTokenCache(token, expiresAt) {
+  if (!TOKEN_CACHE_FILE) return;
+  try {
+    await mkdir(path.dirname(TOKEN_CACHE_FILE), { recursive: true });
+    // Write to a fresh temp file so mode 0o600 applies (it is ignored on
+    // existing files), then rename into place atomically.
+    const tmp = `${TOKEN_CACHE_FILE}.${process.pid}.tmp`;
+    await writeFile(
+      tmp,
+      JSON.stringify({ token, expiresAt, key: TOKEN_CACHE_KEY }),
+      { encoding: "utf8", mode: 0o600 },
+    );
+    await rename(tmp, TOKEN_CACHE_FILE);
+  } catch {
+    // ignore — in-memory cache still works
+  }
+}
+
+async function accessToken(forceRefresh = false) {
+  if (!TOKEN_COMMAND) return ACCESS_TOKEN;
+  if (!forceRefresh) {
+    if (
+      cachedToken &&
+      Date.now() < cachedTokenExpiresAt - TOKEN_REFRESH_SKEW_MS
+    ) {
+      return cachedToken;
+    }
+    const fileCache = await readTokenCache();
+    if (fileCache) {
+      cachedToken = fileCache.token;
+      cachedTokenExpiresAt = fileCache.expiresAt;
+      return cachedToken;
+    }
+  }
+  const { stdout } = await execAsync(TOKEN_COMMAND, {
+    timeout: TOKEN_COMMAND_TIMEOUT_MS,
+    maxBuffer: 1024 * 1024,
+  });
+  const token = parseTokenResponse(stdout);
+  cachedToken = token.accessToken;
+  cachedTokenExpiresAt = token.expiresAt;
+  await writeTokenCache(cachedToken, cachedTokenExpiresAt);
+  return cachedToken;
+}
+
+async function atryumHeaders(contentType = false, forceRefresh = false) {
   const headers = {};
   if (contentType) headers["Content-Type"] = "application/json";
-  if (ACCESS_TOKEN) headers.Authorization = `Bearer ${ACCESS_TOKEN}`;
+  const token = await accessToken(forceRefresh);
+  if (token) headers.Authorization = `Bearer ${token}`;
   return headers;
+}
+
+async function atryumFetch(url, options = {}) {
+  const contentType = options.contentType === true;
+  const init = { ...options };
+  delete init.contentType;
+  init.headers = {
+    ...(await atryumHeaders(contentType)),
+    ...(options.headers || {}),
+  };
+  let res = await fetch(url, init);
+  if (res.status === 401 && TOKEN_COMMAND) {
+    init.headers = {
+      ...(await atryumHeaders(contentType, true)),
+      ...(options.headers || {}),
+    };
+    res = await fetch(url, init);
+  }
+  return res;
 }
 
 function sleep(ms) {
@@ -68,7 +231,9 @@ function jsonOut(value) {
 }
 
 function toolName(event) {
-  return event.tool_name || event.toolName || event.tool || event.name || "unknown";
+  return (
+    event.tool_name || event.toolName || event.tool || event.name || "unknown"
+  );
 }
 
 function toolInput(event) {
@@ -96,7 +261,7 @@ function eventName(event) {
       event.hookEventName ||
       event.event ||
       event.type ||
-      ""
+      "",
   );
 }
 
@@ -152,7 +317,8 @@ function extractText(value) {
     return `[tool call: ${name}]`;
   }
   if (type === "tool_result" || type === "tool-result") {
-    const status = typeof record.status === "string" ? record.status : "completed";
+    const status =
+      typeof record.status === "string" ? record.status : "completed";
     return `[tool result: ${status}]`;
   }
   if (record.content !== undefined) return extractText(record.content);
@@ -167,18 +333,20 @@ function messageFromRecord(record) {
   if (codex) return codex;
 
   const nested =
-    record.message && typeof record.message === "object" ? record.message : undefined;
+    record.message && typeof record.message === "object"
+      ? record.message
+      : undefined;
   const role = normalizeRole(
     nested?.role ||
       record.role ||
       record.type ||
       record.sender ||
-      record.author
+      record.author,
   );
   if (!role) return undefined;
 
   const text = trimMessage(
-    extractText(nested?.content ?? record.content ?? nested ?? record)
+    extractText(nested?.content ?? record.content ?? nested ?? record),
   );
   if (!text) return undefined;
   return { role, text };
@@ -328,7 +496,11 @@ async function findCodexSessionPath(id) {
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         stack.push(fullPath);
-      } else if (entry.isFile() && entry.name.endsWith(".jsonl") && entry.name.includes(id)) {
+      } else if (
+        entry.isFile() &&
+        entry.name.endsWith(".jsonl") &&
+        entry.name.includes(id)
+      ) {
         return fullPath;
       }
     }
@@ -440,7 +612,7 @@ async function saveInvocation(toolUseId, invocationId) {
   await writeFile(
     statePath(toolUseId),
     JSON.stringify({ invocation_id: invocationId }),
-    "utf8"
+    "utf8",
   );
 }
 
@@ -462,9 +634,9 @@ async function submit(event) {
   const input = toolInput(event);
   const id = toolUseID(event);
   const chat = await chatContext(event);
-  const res = await fetch(`${API}/api/v1/external/invocations`, {
+  const res = await atryumFetch(`${API}/api/v1/external/invocations`, {
     method: "POST",
-    headers: atryumHeaders(true),
+    contentType: true,
     body: JSON.stringify({
       source: SOURCE,
       tool: name,
@@ -488,14 +660,18 @@ async function submit(event) {
 
 async function poll(invocationId) {
   while (true) {
-    const res = await fetch(`${API}/api/v1/external/invocations/${invocationId}`, {
-      headers: atryumHeaders(),
-    });
+    const res = await atryumFetch(
+      `${API}/api/v1/external/invocations/${invocationId}`,
+    );
     if (!res.ok) {
       throw new Error(`atryum poll failed: ${res.status}`);
     }
     const inv = await res.json();
-    if (inv.status !== "pending_approval" && inv.status !== "received" && inv.status !== "executing") {
+    if (
+      inv.status !== "pending_approval" &&
+      inv.status !== "received" &&
+      inv.status !== "executing"
+    ) {
       return inv;
     }
     await sleep(POLL_INTERVAL);
@@ -503,11 +679,14 @@ async function poll(invocationId) {
 }
 
 async function patchExecution(invocationId, body) {
-  const res = await fetch(`${API}/api/v1/external/invocations/${invocationId}`, {
-    method: "PATCH",
-    headers: atryumHeaders(true),
-    body: JSON.stringify(body),
-  });
+  const res = await atryumFetch(
+    `${API}/api/v1/external/invocations/${invocationId}`,
+    {
+      method: "PATCH",
+      contentType: true,
+      body: JSON.stringify(body),
+    },
+  );
   if (!res.ok) {
     throw new Error(`atryum patch failed: ${res.status} ${await res.text()}`);
   }
@@ -537,7 +716,9 @@ function denyOutput(reason) {
 }
 
 function toolResult(event) {
-  return event.tool_response || event.toolResponse || event.output || event.result;
+  return (
+    event.tool_response || event.toolResponse || event.output || event.result
+  );
 }
 
 function isFailedResult(result) {
@@ -556,7 +737,8 @@ async function handlePreToolUse(event) {
   let decided = submitted;
   if (
     submitted.status === "pending_approval" ||
-    submitted.status === "received"
+    submitted.status === "received" ||
+    submitted.status === "executing"
   ) {
     decided = await poll(submitted.invocation_id);
   }
@@ -572,8 +754,8 @@ async function handlePreToolUse(event) {
   await deleteInvocation(id);
   jsonOut(
     denyOutput(
-      `atryum: tool call '${toolName(event)}' was ${decided.status} by reviewer.`
-    )
+      `atryum: tool call '${toolName(event)}' was ${decided.status} by reviewer.`,
+    ),
   );
 }
 
@@ -615,6 +797,8 @@ async function main() {
 }
 
 main().catch((err) => {
-  jsonOut(denyOutput(`atryum: failed to gate tool call: ${err.message || err}`));
+  jsonOut(
+    denyOutput(`atryum: failed to gate tool call: ${err.message || err}`),
+  );
   process.exitCode = 0;
 });

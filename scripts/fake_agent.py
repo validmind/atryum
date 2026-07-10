@@ -48,15 +48,29 @@ Config (env or flags):
                     realistic harness names (amp, cursor, claude-code, …)
   ATRYUM_POLL_MS    poll interval ms while awaiting approval, default 1000
   THREAD_ID         thread id surfaced in harness submissions
+
+Auth (env; both unset = no-auth mode):
+  ATRYUM_ACCESS_TOKEN   static OAuth bearer token, used as-is and never refreshed
+  ATRYUM_TOKEN_COMMAND  shell command that mints a token (raw, or OAuth token
+                        JSON with access_token); wins over ATRYUM_ACCESS_TOKEN
+                        when both are set
+  ATRYUM_TOKEN_REFRESH_SKEW_MS     re-mint this long before expiry, default 60000
+  ATRYUM_TOKEN_COMMAND_TIMEOUT_MS  token command timeout, default 10000
+  ATRYUM_STATE_DIR      token-cache.json location,
+                        default ~/.atryum/fake-agent-state
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import math
 import os
 import random
+import subprocess
 import sys
+import threading
 import time
 import uuid
 from typing import Any
@@ -71,6 +85,47 @@ DEFAULT_THREAD_ID = os.environ.get("THREAD_ID", "")
 # upstreams (shortcut, github, etc.) are world-impacting so we don't want a
 # bare `mcp` invocation to land there by accident.
 DEFAULT_MCP_SERVER = os.environ.get("ATRYUM_MCP_SERVER", "calc-mcp")
+ACCESS_TOKEN = os.environ.get("ATRYUM_ACCESS_TOKEN", "").strip()
+TOKEN_COMMAND = os.environ.get("ATRYUM_TOKEN_COMMAND", "").strip()
+
+
+def _env_ms(name: str, fallback: float) -> float:
+    """Read a millisecond env var, falling back on malformed or negative
+    values (mirrors the Node integrations)."""
+    try:
+        n = float(os.environ.get(name, "") or fallback)
+    except ValueError:
+        return fallback
+    return n if math.isfinite(n) and n >= 0 else fallback
+
+
+TOKEN_REFRESH_SKEW_SECONDS = _env_ms("ATRYUM_TOKEN_REFRESH_SKEW_MS", 60000) / 1000
+TOKEN_COMMAND_TIMEOUT_SECONDS = _env_ms("ATRYUM_TOKEN_COMMAND_TIMEOUT_MS", 10000) / 1000
+STATE_DIR = os.environ.get("ATRYUM_STATE_DIR", "") or os.path.join(
+    os.path.expanduser("~"), ".atryum", "fake-agent-state"
+)
+TOKEN_CACHE_FILE = os.path.join(STATE_DIR, "token-cache.json") if TOKEN_COMMAND else ""
+
+
+def _set_token_cache_key(base: str) -> None:
+    """Tie the cached token to the command and server that produced it, so
+    switching ATRYUM_TOKEN_COMMAND or the resolved base URL invalidates the
+    cache instead of sending a token minted for a different identity or
+    target. Trailing slashes are stripped so equivalent URL spellings (and
+    the Node integrations' keys) match. main() re-keys with the resolved
+    --base once args are parsed."""
+    global TOKEN_CACHE_KEY
+    TOKEN_CACHE_KEY = (
+        hashlib.sha256(f"{TOKEN_COMMAND}\n{base.rstrip('/')}".encode()).hexdigest()
+        if TOKEN_COMMAND
+        else ""
+    )
+
+
+_set_token_cache_key(DEFAULT_URL)
+_cached_token = "" if TOKEN_COMMAND else ACCESS_TOKEN
+_cached_token_expires_at = float("inf") if (ACCESS_TOKEN and not TOKEN_COMMAND) else 0.0
+_token_refresh_lock = threading.Lock()
 
 # Real-world agent/harness identities. Used as:
 #   - harness mode: --source (drives the Agent column via inv.client_name)
@@ -114,6 +169,139 @@ def _env_or_random_identity() -> tuple[str, str]:
 # ─── tiny HTTP helper (stdlib only, no requests dep) ────────────────────────
 
 
+def _parse_token_response(raw: str) -> tuple[str, float]:
+    text = raw.strip()
+    if not text:
+        raise RuntimeError("token command returned no token")
+    if not text.startswith("{"):
+        if any(c.isspace() for c in text):
+            raise RuntimeError("raw token command output must not contain whitespace")
+        return text, time.time() + 55 * 60
+    parsed = json.loads(text)
+    token = next(
+        (
+            value
+            for value in (
+                parsed.get("access_token"),
+                parsed.get("accessToken"),
+                parsed.get("token"),
+            )
+            if isinstance(value, str)
+        ),
+        "",
+    )
+    if not token:
+        raise RuntimeError("token command response did not include access_token")
+    if any(c.isspace() for c in token):
+        raise RuntimeError("token command response token must not contain whitespace")
+
+    def _to_epoch_s(v: float) -> float:
+        return v / 1000 if v > 1e11 else v
+
+    def _expiry(value: Any) -> float:
+        # Providers send expiry fields as numbers or numeric strings; coerce,
+        # and treat non-numeric or non-positive values as absent (mirrors the
+        # Node integrations).
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            return 0.0
+        try:
+            n = float(value)
+        except ValueError:
+            return 0.0
+        return n if math.isfinite(n) and n > 0 else 0.0
+
+    expires_at_value = _expiry(parsed.get("expires_at")) or _expiry(
+        parsed.get("expiresAt")
+    )
+    expires_in = _expiry(parsed.get("expires_in"))
+    if expires_at_value:
+        expires_at = _to_epoch_s(expires_at_value)
+    elif expires_in:
+        expires_at = time.time() + expires_in
+    else:
+        expires_at = time.time() + 55 * 60
+    return token, expires_at
+
+
+def _read_token_cache() -> tuple[str, float] | None:
+    if not TOKEN_CACHE_FILE:
+        return None
+    try:
+        with open(TOKEN_CACHE_FILE, encoding="utf-8") as f:
+            cached = json.load(f)
+        token = cached.get("token")
+        expires_at = float(cached.get("expiresAt")) / 1000  # ms, shared with Node caches
+        if (
+            isinstance(token, str)
+            and token
+            and cached.get("key") == TOKEN_CACHE_KEY
+            and time.time() < expires_at - TOKEN_REFRESH_SKEW_SECONDS
+        ):
+            return token, expires_at
+    except (OSError, ValueError, TypeError):
+        pass  # cache miss or unreadable
+    return None
+
+
+def _write_token_cache(token: str, expires_at: float) -> None:
+    if not TOKEN_CACHE_FILE:
+        return
+    try:
+        os.makedirs(os.path.dirname(TOKEN_CACHE_FILE), exist_ok=True)
+        # Write to a fresh temp file so 0o600 applies (an existing file keeps
+        # its old mode), then rename into place atomically.
+        tmp = f"{TOKEN_CACHE_FILE}.{os.getpid()}.tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(
+                {"token": token, "expiresAt": int(expires_at * 1000), "key": TOKEN_CACHE_KEY},
+                f,
+            )
+        os.replace(tmp, TOKEN_CACHE_FILE)
+    except OSError:
+        pass  # ignore — in-memory cache still works
+
+
+def _access_token(force_refresh: bool = False) -> str:
+    global _cached_token, _cached_token_expires_at
+    if not TOKEN_COMMAND:
+        return ACCESS_TOKEN
+    if (
+        not force_refresh
+        and _cached_token
+        and time.time() < _cached_token_expires_at - TOKEN_REFRESH_SKEW_SECONDS
+    ):
+        return _cached_token
+    with _token_refresh_lock:
+        if (
+            not force_refresh
+            and _cached_token
+            and time.time() < _cached_token_expires_at - TOKEN_REFRESH_SKEW_SECONDS
+        ):
+            return _cached_token
+        if not force_refresh:
+            file_cache = _read_token_cache()
+            if file_cache:
+                _cached_token, _cached_token_expires_at = file_cache
+                return _cached_token
+        proc = subprocess.run(
+            TOKEN_COMMAND,
+            shell=True,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=TOKEN_COMMAND_TIMEOUT_SECONDS,
+        )
+        _cached_token, _cached_token_expires_at = _parse_token_response(proc.stdout)
+        _write_token_cache(_cached_token, _cached_token_expires_at)
+        return _cached_token
+
+
+def _authorization_headers(force_refresh: bool = False) -> dict[str, str]:
+    token = _access_token(force_refresh)
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 def _request(
     method: str,
     url: str,
@@ -121,8 +309,21 @@ def _request(
     headers: dict[str, str] | None = None,
     timeout: float = 30.0,
 ) -> tuple[int, dict[str, Any] | str]:
+    return _request_once(method, url, body, headers, timeout, False)
+
+
+def _request_once(
+    method: str,
+    url: str,
+    body: Any | None,
+    headers: dict[str, str] | None,
+    timeout: float,
+    force_refresh: bool,
+) -> tuple[int, dict[str, Any] | str]:
     data = None
     hdrs = dict(headers or {})
+    if "Authorization" not in hdrs:
+        hdrs.update(_authorization_headers(force_refresh))
     if body is not None:
         data = json.dumps(body).encode("utf-8")
         hdrs.setdefault("Content-Type", "application/json")
@@ -135,9 +336,12 @@ def _request(
         raw = e.read().decode("utf-8", errors="replace")
         status = e.code
     try:
-        return status, json.loads(raw) if raw else {}
+        payload: dict[str, Any] | str = json.loads(raw) if raw else {}
     except json.JSONDecodeError:
-        return status, raw
+        payload = raw
+    if status == 401 and TOKEN_COMMAND and not force_refresh:
+        return _request_once(method, url, body, headers, timeout, True)
+    return status, payload
 
 
 def _print_json(label: str, payload: Any) -> None:
@@ -544,6 +748,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     args = p.parse_args(argv)
+    _set_token_cache_key(args.base)
 
     if args.mode == "harness":
         run_harness_once(
