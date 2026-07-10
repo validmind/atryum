@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 
 	authv3 "github.com/envoyproxy/go-control-plane/envoy/service/auth/v3"
 	typev3 "github.com/envoyproxy/go-control-plane/envoy/type/v3"
@@ -72,20 +73,56 @@ func (s *Server) Serve(ctx context.Context) error {
 // Check is the ext_authz entrypoint invoked by Agent Gateway per tool call.
 func (s *Server) Check(ctx context.Context, req *authv3.CheckRequest) (*authv3.CheckResponse, error) {
 	httpReq := req.GetAttributes().GetRequest().GetHttp()
+	// TEMP diagnostic: dump exactly what Agent Gateway sends so we can see where
+	// the MCP tool name lives in a REQUEST_AUTHZ CheckRequest.
+	{
+		b := httpReq.GetBody()
+		if len(b) > 400 {
+			b = b[:400]
+		}
+		slog.Info("ext_authz raw",
+			"ctxExt", req.GetAttributes().GetContextExtensions(),
+			"method", httpReq.GetMethod(),
+			"path", httpReq.GetPath(),
+			"headers", httpReq.GetHeaders(),
+			"bodyLen", len(httpReq.GetBody()),
+			"body", string(b),
+		)
+	}
 	tc := googlegateway.ExtractToolCall(
 		req.GetAttributes().GetContextExtensions(),
 		httpReq.GetHeaders(),
 		[]byte(httpReq.GetBody()),
 	)
+	// REQUEST_AUTHZ (ext_authz) is headers-only: Agent Gateway hands the callout
+	// just method + path, not the MCP JSON-RPC body, so the per-tool name is not
+	// visible here (that needs a CONTENT_AUTHZ/ext_proc extension). We can still
+	// govern the agent's *access to the MCP tool surface* at this layer: every
+	// downstream MCP tool call is a POST to the ".../mcp" path. Attribute those to
+	// a synthetic tool so approval rules can allow/deny the agent's tool egress.
 	if tc.Tool == "" {
-		// Unattributable call: fail closed rather than wave it through.
-		return denied("atryum: could not identify a tool in the gateway request"), nil
+		if p := httpReq.GetPath(); strings.HasSuffix(p, "/mcp") || strings.Contains(p, "/mcp?") {
+			tc.Tool = "mcp_tool_call"
+			if tc.ServerName == "" {
+				tc.ServerName = "mcp"
+			}
+		}
 	}
-	d := s.svc.Decide(ctx, tc)
-	if d.Allow {
+	if tc.Tool == "" {
+		// Non-MCP infrastructure egress (control-plane / LLM / telemetry calls the
+		// agent makes to Google APIs). Atryum governs MCP *tool* calls; the Agent
+		// Gateway's registry default-deny and IAP govern raw infra egress. Pass
+		// these through rather than break the agent's own control plane.
+		slog.Debug("google agent gateway decision", "decision", "allow", "reason", "no MCP tool in request (pass-through)")
 		return allowed(), nil
 	}
-	return denied(d.Message), nil
+	d := s.svc.Decide(ctx, tc)
+	if !d.Allow {
+		slog.Info("google agent gateway decision", "tool", tc.Tool, "agent", tc.AgentID, "server", tc.ServerName, "decision", "deny", "reason", d.Message)
+		return denied(d.Message), nil
+	}
+	slog.Info("google agent gateway decision", "tool", tc.Tool, "agent", tc.AgentID, "server", tc.ServerName, "decision", "allow")
+	return allowed(), nil
 }
 
 func allowed() *authv3.CheckResponse {
