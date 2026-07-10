@@ -398,7 +398,8 @@ func planStatusPollOrigins(server config.ServerConfig) []string {
 		origins = append(origins, server.PublicBaseURL)
 	}
 	if _, port, err := net.SplitHostPort(server.ListenAddr); err == nil && port != "" {
-		origins = append(origins, "localhost:"+port, "127.0.0.1:"+port, "[::1]:"+port)
+		origins = append(origins,
+			"http://localhost:"+port, "http://127.0.0.1:"+port, "http://[::1]:"+port)
 	}
 	return origins
 }

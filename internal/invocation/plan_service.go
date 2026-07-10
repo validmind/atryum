@@ -613,12 +613,18 @@ var planPollScalarKeys = map[string]bool{
 	"run_in_background": true, "background": true,
 }
 
-// planOriginSet holds the normalized hosts this Atryum API is reachable on.
-// The fast pass fails closed: a poll addressed to any other host — even with
-// the right path — goes to the adherence judge, since a matching path on an
-// attacker-controlled host would exfiltrate the caller's bearer token.
+// planOriginSet holds the normalized scheme://host origins this Atryum API
+// is reachable on. The fast pass fails closed: a poll addressed to any other
+// origin — even with the right path — goes to the adherence judge. Host
+// alone is not enough: a matching path on an attacker-controlled host would
+// exfiltrate the caller's bearer token, and an http downgrade of an https
+// origin would expose it in cleartext.
 type planOriginSet map[string]bool
 
+// newPlanOriginSet normalizes entries to scheme://host[:port] keys with
+// default ports stripped. The scheme is pinned: a scheme-less entry is
+// treated as http (loopback convenience); trusting a host over https
+// requires spelling out the https:// URL.
 func newPlanOriginSet(entries []string) planOriginSet {
 	set := planOriginSet{}
 	for _, entry := range entries {
@@ -626,21 +632,20 @@ func newPlanOriginSet(entries []string) planOriginSet {
 		if entry == "" {
 			continue
 		}
-		if strings.Contains(entry, "://") {
-			u, err := neturl.Parse(entry)
-			if err != nil || u.Host == "" {
-				continue
-			}
-			set[stripDefaultPort(u.Scheme, u.Host)] = true
+		if !strings.Contains(entry, "://") {
+			entry = "http://" + entry
+		}
+		u, err := neturl.Parse(entry)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 			continue
 		}
-		set[entry] = true
+		set[u.Scheme+"://"+stripDefaultPort(u.Scheme, u.Host)] = true
 	}
 	return set
 }
 
 func (o planOriginSet) contains(u *neturl.URL) bool {
-	return o[stripDefaultPort(u.Scheme, strings.ToLower(u.Host))]
+	return o[u.Scheme+"://"+stripDefaultPort(u.Scheme, strings.ToLower(u.Host))]
 }
 
 func stripDefaultPort(scheme, host string) string {
