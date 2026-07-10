@@ -1408,7 +1408,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	// approval reason.
 	if planMatch, ok := s.matchApprovedPlan(ctx, agentID, source, req.Tool); ok {
 		planID := planMatch.Plan.PlanID
-		reason, confidence, passOK := s.approvedPlanPass(ctx, planMatch, agentRec, source, req.Tool, req.Input, chatContext)
+		reason, confidence, passOK := s.approvedPlanPass(ctx, planMatch, agentRec, source, req.Tool, req.Input, sessionContext)
 		if !passOK {
 			inv.PlanID = &planID
 			_ = s.invocations.UpdateResult(ctx, inv)
