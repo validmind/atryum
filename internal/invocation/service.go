@@ -198,6 +198,7 @@ type Service struct {
 	plans            planRepo             // nil = plan submission disabled
 	planEvents       planEventRepo
 	planJudge        PlanEvaluator
+	planPollOrigins  planOriginSet // hosts trusted by the plan-status fast pass
 	defaultTimeout   time.Duration
 	mu               sync.Mutex
 	pendingApprovals map[string]chan approvalDecision

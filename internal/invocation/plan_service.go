@@ -35,11 +35,14 @@ type planEventRepo interface {
 
 // SetPlanStore installs the optional plan-submission feature. When it is not
 // called the service behaves exactly as before: plan endpoints error and
-// matchApprovedPlan never grants a pass.
-func (s *Service) SetPlanStore(plans planRepo, events planEventRepo, judge PlanEvaluator) {
+// matchApprovedPlan never grants a pass. statusPollOrigins lists the hosts
+// (host or host:port, or full URLs) this Atryum API is reachable on; the
+// plan-status fast pass only trusts polls addressed to one of them.
+func (s *Service) SetPlanStore(plans planRepo, events planEventRepo, judge PlanEvaluator, statusPollOrigins []string) {
 	s.plans = plans
 	s.planEvents = events
 	s.planJudge = judge
+	s.planPollOrigins = newPlanOriginSet(statusPollOrigins)
 }
 
 func (s *Service) plansEnabled() bool { return s.plans != nil }
@@ -516,7 +519,7 @@ func (s *Service) matchApprovedPlan(ctx context.Context, agentID, server, tool s
 func (s *Service) approvedPlanPass(ctx context.Context, match approvedPlanMatch, agentRec AgentRecord, server, tool string, input map[string]any, extraContext string) (string, *float64, bool) {
 	plan := match.Plan
 	reason := "matched approved plan " + plan.PlanID
-	if planStatusFastPass(plan.PlanID, input) {
+	if planStatusFastPass(s.planPollOrigins, plan.PlanID, input) {
 		return reason + ": accessing approved plan status", nil, true
 	}
 	if plan.MatchedRuleID == nil || s.rules == nil || s.planJudge == nil {
@@ -601,6 +604,55 @@ var planPollMetadataKeys = map[string]bool{
 	"reason": true, "summary": true, "title": true,
 }
 
+// planPollScalarKeys are the only non-string fields a poll may carry. A
+// boolean or number under any other key could give a tool operational
+// meaning we cannot reason about, so it forfeits the fast pass.
+var planPollScalarKeys = map[string]bool{
+	"timeout": true, "timeout_ms": true, "timeout_seconds": true,
+	"max_time": true, "connect_timeout": true,
+	"run_in_background": true, "background": true,
+}
+
+// planOriginSet holds the normalized hosts this Atryum API is reachable on.
+// The fast pass fails closed: a poll addressed to any other host — even with
+// the right path — goes to the adherence judge, since a matching path on an
+// attacker-controlled host would exfiltrate the caller's bearer token.
+type planOriginSet map[string]bool
+
+func newPlanOriginSet(entries []string) planOriginSet {
+	set := planOriginSet{}
+	for _, entry := range entries {
+		entry = strings.TrimSpace(strings.ToLower(entry))
+		if entry == "" {
+			continue
+		}
+		if strings.Contains(entry, "://") {
+			u, err := neturl.Parse(entry)
+			if err != nil || u.Host == "" {
+				continue
+			}
+			set[stripDefaultPort(u.Scheme, u.Host)] = true
+			continue
+		}
+		set[entry] = true
+	}
+	return set
+}
+
+func (o planOriginSet) contains(u *neturl.URL) bool {
+	return o[stripDefaultPort(u.Scheme, strings.ToLower(u.Host))]
+}
+
+func stripDefaultPort(scheme, host string) string {
+	switch scheme {
+	case "http":
+		return strings.TrimSuffix(host, ":80")
+	case "https":
+		return strings.TrimSuffix(host, ":443")
+	}
+	return host
+}
+
 const planPollURLToken = `https?://[^\s"'` + "`" + `;|&<>(){}]+`
 
 // planPollCurlAllowedArg whitelists curl arguments that cannot change the
@@ -622,15 +674,15 @@ var (
 	planPollJQRe = regexp.MustCompile(`^\|\s*jq(?:\s+[A-Za-z0-9_.,\[\]"' -]*)?$`)
 )
 
-func planStatusFastPass(planID string, input map[string]any) bool {
-	if planID == "" || len(input) == 0 {
+func planStatusFastPass(origins planOriginSet, planID string, input map[string]any) bool {
+	if len(origins) == 0 || planID == "" || len(input) == 0 {
 		return false
 	}
 	matched := false
 	for key, value := range input {
 		switch v := value.(type) {
 		case string:
-			if planStatusPollValue(planID, v) {
+			if planStatusPollValue(origins, planID, v) {
 				matched = true
 				continue
 			}
@@ -643,13 +695,15 @@ func planStatusFastPass(planID string, input map[string]any) bool {
 			}
 			return false
 		case []any:
-			if planStatusPollArgv(planID, v) {
+			if planStatusPollArgv(origins, planID, v) {
 				matched = true
 				continue
 			}
 			return false
 		case bool, float64, int, int64, nil:
-			// Numbers, booleans, and nulls (timeouts, flags) carry no payload.
+			if !planPollScalarKeys[strings.ToLower(key)] {
+				return false
+			}
 		default:
 			return false
 		}
@@ -659,7 +713,7 @@ func planStatusFastPass(planID string, input map[string]any) bool {
 
 // planStatusPollArgv matches argv-style command fields: either the curl argv
 // itself or a shell -c wrapper around a single poll command.
-func planStatusPollArgv(planID string, argv []any) bool {
+func planStatusPollArgv(origins planOriginSet, planID string, argv []any) bool {
 	parts := make([]string, 0, len(argv))
 	for _, item := range argv {
 		s, ok := item.(string)
@@ -670,15 +724,15 @@ func planStatusPollArgv(planID string, argv []any) bool {
 	}
 	if len(parts) == 3 && (parts[0] == "bash" || parts[0] == "sh" || parts[0] == "zsh") &&
 		(parts[1] == "-c" || parts[1] == "-lc") {
-		return planStatusPollValue(planID, parts[2])
+		return planStatusPollValue(origins, planID, parts[2])
 	}
-	return planStatusPollValue(planID, strings.Join(parts, " "))
+	return planStatusPollValue(origins, planID, strings.Join(parts, " "))
 }
 
 // planStatusPollValue reports whether the value in its ENTIRETY is a
-// read-only fetch of the plan's status: either the bare status URL, or a
-// whitelisted curl GET of it, optionally piped to jq.
-func planStatusPollValue(planID, value string) bool {
+// read-only fetch of the plan's status from a trusted origin: either the
+// bare status URL, or a whitelisted curl GET of it, optionally piped to jq.
+func planStatusPollValue(origins planOriginSet, planID, value string) bool {
 	text := strings.TrimSpace(value)
 	if text == "" || strings.ContainsAny(text, "`;&<>(){}\n\r") {
 		return false
@@ -690,19 +744,22 @@ func planStatusPollValue(planID, value string) bool {
 		text = strings.TrimSpace(text[:i])
 	}
 	if planPollURLRe.MatchString(text) {
-		return planPollPathMatches(planID, text)
+		return planPollURLMatches(origins, planID, text)
 	}
 	m := planPollCurlRe.FindStringSubmatch(text)
 	if m == nil {
 		return false
 	}
-	return planPollPathMatches(planID, m[1])
+	return planPollURLMatches(origins, planID, m[1])
 }
 
-func planPollPathMatches(planID, raw string) bool {
+func planPollURLMatches(origins planOriginSet, planID, raw string) bool {
 	u, err := neturl.Parse(raw)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") ||
 		u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	if !origins.contains(u) {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSuffix(u.Path, "/"), "/api/v1/external/plans/"+planID)

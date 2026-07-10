@@ -78,7 +78,7 @@ func newPlanTestService(t *testing.T, rules []invocation.ApprovalRule, agents in
 		nil,
 	)
 	plansRepo := store.NewPlansRepo(db)
-	svc.SetPlanStore(plansRepo, store.NewPlanEventsRepo(db), judge)
+	svc.SetPlanStore(plansRepo, store.NewPlanEventsRepo(db), judge, []string{"localhost:8080"})
 	return svc, plansRepo
 }
 
