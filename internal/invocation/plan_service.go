@@ -663,11 +663,13 @@ const planPollURLToken = `https?://[^\s"'` + "`" + `;|&<>(){}]+`
 // planPollCurlAllowedArg whitelists curl arguments that cannot change the
 // request from a plain GET, write the response anywhere, or weaken transport
 // security: read-only flags, timeouts, and headers. Notably absent:
-// -X/--request, -d/--data*, -o/-O, and -k/--insecure (disabling certificate
-// validation would let a network attacker impersonate the trusted origin and
-// capture the bearer token).
-const planPollCurlAllowedArg = `-[fsSLv]+` +
-	`|--(?:fail|silent|show-error|location|compressed)` +
+// -X/--request and -d/--data* (method/body changes), -o/-O (file writes),
+// -k/--insecure (a network attacker could impersonate the trusted origin),
+// and -L/--location (curl forwards -H headers — including Authorization —
+// to every redirect target, so a redirect could carry the bearer token off
+// the trusted origin; the status endpoint never redirects anyway).
+const planPollCurlAllowedArg = `-[fsSv]+` +
+	`|--(?:fail|silent|show-error|compressed)` +
 	`|(?:-m|--max-time|--connect-timeout)\s+\d+` +
 	`|-H\s+(?:"[^"]*"|'[^']*'|[^\s"']+)`
 
