@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	neturl "net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -514,7 +516,7 @@ func (s *Service) matchApprovedPlan(ctx context.Context, agentID, server, tool s
 func (s *Service) approvedPlanPass(ctx context.Context, match approvedPlanMatch, agentRec AgentRecord, server, tool string, input map[string]any, extraContext string) (string, *float64, bool) {
 	plan := match.Plan
 	reason := "matched approved plan " + plan.PlanID
-	if planStatusAccessAllowed(plan.PlanID, input) {
+	if planStatusFastPass(plan.PlanID, input) {
 		return reason + ": accessing approved plan status", nil, true
 	}
 	if plan.MatchedRuleID == nil || s.rules == nil || s.planJudge == nil {
@@ -581,50 +583,127 @@ func (s *Service) planAdherenceRule(ctx context.Context, ruleID string) (Approva
 	return ApprovalRule{}, false
 }
 
-func planStatusAccessAllowed(planID string, input map[string]any) bool {
-	if planID == "" {
-		return false
-	}
-	for _, value := range input {
-		if planStatusAccessAllowedValue(planID, value) {
-			return true
-		}
-	}
-	return false
+// ─── Plan-status fast pass ────────────────────────────────────────────────
+//
+// The routine submit-then-poll loop would otherwise pay one adherence-judge
+// LLM call per poll. The fast pass skips the judge ONLY when the tool input,
+// taken as a whole, provably is a plain read-only poll of this plan's own
+// status: one field must BE the poll (an anchored match, never substring
+// containment) and every other field must be inert. Anything unaccounted for
+// falls through to the judge with the full call — this path is an
+// optimization, never a verdict.
+
+// planPollMetadataKeys are input fields harnesses attach alongside a command
+// but never execute (e.g. Claude Code's Bash "description"). Their content
+// cannot change what runs, so they may accompany a poll command.
+var planPollMetadataKeys = map[string]bool{
+	"description": true, "explanation": true, "justification": true,
+	"reason": true, "summary": true, "title": true,
 }
 
-func planStatusAccessAllowedValue(planID string, value any) bool {
-	switch v := value.(type) {
-	case string:
-		text := strings.ToLower(v)
-		planPath := "/api/v1/external/plans/" + strings.ToLower(planID)
-		if !strings.Contains(text, planPath) {
-			return false
-		}
-		if strings.Contains(text, "/cancel") ||
-			strings.Contains(text, " -x ") ||
-			strings.Contains(text, " --request ") ||
-			strings.Contains(text, " -d ") ||
-			strings.Contains(text, " --data") {
-			return false
-		}
-		return strings.Contains(text, "curl") ||
-			strings.Contains(text, "http get") ||
-			strings.Contains(text, "method: get") ||
-			strings.Contains(text, `"method":"get"`) ||
-			strings.Contains(text, "'method':'get'")
-	case []any:
-		for _, item := range v {
-			if planStatusAccessAllowedValue(planID, item) {
-				return true
+const planPollURLToken = `https?://[^\s"'` + "`" + `;|&<>(){}]+`
+
+// planPollCurlAllowedArg whitelists curl arguments that cannot change the
+// request from a plain GET or write the response anywhere: read-only flags,
+// timeouts, and headers. Notably absent: -X/--request, -d/--data*, -o/-O.
+const planPollCurlAllowedArg = `-[fsSLkv]+` +
+	`|--(?:fail|silent|show-error|location|insecure|compressed)` +
+	`|(?:-m|--max-time|--connect-timeout)\s+\d+` +
+	`|-H\s+(?:"[^"]*"|'[^']*'|[^\s"']+)`
+
+var (
+	planPollCurlRe = regexp.MustCompile(
+		`^curl(?:\s+(?:` + planPollCurlAllowedArg + `))*` +
+			`\s+["']?(` + planPollURLToken + `)["']?` +
+			`(?:\s+(?:` + planPollCurlAllowedArg + `))*\s*$`)
+	planPollURLRe = regexp.MustCompile(`^` + planPollURLToken + `$`)
+	// A single trailing pipe to a plain jq filter is the only compound shell
+	// syntax a poll may use.
+	planPollJQRe = regexp.MustCompile(`^\|\s*jq(?:\s+[A-Za-z0-9_.,\[\]"' -]*)?$`)
+)
+
+func planStatusFastPass(planID string, input map[string]any) bool {
+	if planID == "" || len(input) == 0 {
+		return false
+	}
+	matched := false
+	for key, value := range input {
+		switch v := value.(type) {
+		case string:
+			if planStatusPollValue(planID, v) {
+				matched = true
+				continue
 			}
-		}
-	case map[string]any:
-		for _, item := range v {
-			if planStatusAccessAllowedValue(planID, item) {
-				return true
+			if strings.EqualFold(key, "method") && strings.EqualFold(strings.TrimSpace(v), "get") {
+				continue
 			}
+			if planPollMetadataKeys[strings.ToLower(key)] &&
+				!strings.Contains(strings.ToLower(v), "/api/v1/external/plans/") {
+				continue
+			}
+			return false
+		case []any:
+			if planStatusPollArgv(planID, v) {
+				matched = true
+				continue
+			}
+			return false
+		case bool, float64, int, int64, nil:
+			// Numbers, booleans, and nulls (timeouts, flags) carry no payload.
+		default:
+			return false
 		}
 	}
-	return false
+	return matched
+}
+
+// planStatusPollArgv matches argv-style command fields: either the curl argv
+// itself or a shell -c wrapper around a single poll command.
+func planStatusPollArgv(planID string, argv []any) bool {
+	parts := make([]string, 0, len(argv))
+	for _, item := range argv {
+		s, ok := item.(string)
+		if !ok {
+			return false
+		}
+		parts = append(parts, s)
+	}
+	if len(parts) == 3 && (parts[0] == "bash" || parts[0] == "sh" || parts[0] == "zsh") &&
+		(parts[1] == "-c" || parts[1] == "-lc") {
+		return planStatusPollValue(planID, parts[2])
+	}
+	return planStatusPollValue(planID, strings.Join(parts, " "))
+}
+
+// planStatusPollValue reports whether the value in its ENTIRETY is a
+// read-only fetch of the plan's status: either the bare status URL, or a
+// whitelisted curl GET of it, optionally piped to jq.
+func planStatusPollValue(planID, value string) bool {
+	text := strings.TrimSpace(value)
+	if text == "" || strings.ContainsAny(text, "`;&<>(){}\n\r") {
+		return false
+	}
+	if i := strings.IndexByte(text, '|'); i >= 0 {
+		if !planPollJQRe.MatchString(text[i:]) {
+			return false
+		}
+		text = strings.TrimSpace(text[:i])
+	}
+	if planPollURLRe.MatchString(text) {
+		return planPollPathMatches(planID, text)
+	}
+	m := planPollCurlRe.FindStringSubmatch(text)
+	if m == nil {
+		return false
+	}
+	return planPollPathMatches(planID, m[1])
+}
+
+func planPollPathMatches(planID, raw string) bool {
+	u, err := neturl.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") ||
+		u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSuffix(u.Path, "/"), "/api/v1/external/plans/"+planID)
 }

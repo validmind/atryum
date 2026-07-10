@@ -435,6 +435,47 @@ func TestAIEvaluatedPlanAllowsReadingOwnPlanStatus(t *testing.T) {
 	}
 }
 
+// A status poll with anything else riding along must not take the fast pass:
+// the adherence judge has to see the entire call.
+func TestPlanStatusPollWithExtraCommandGoesToJudge(t *testing.T) {
+	rules := []invocation.ApprovalRule{{
+		ID:                "rule-plan-ai",
+		Action:            invocation.RuleActionAIEvaluation,
+		AppliesTo:         invocation.RuleScopePlan,
+		AtryumLLMConfigID: "llm-1",
+		Enabled:           true,
+	}}
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},
+	}}
+	judge := &planJudgeStub{
+		resp:          invocation.PlanEvaluateResponse{Verdict: "approved", Reason: "plan ok"},
+		adherenceResp: invocation.PlanAdherenceResponse{Verdict: "outside_plan", Reason: "poll is chained to a destructive command"},
+	}
+	svc, _ := newPlanTestService(t, rules, agents, judge)
+	ctx := context.Background()
+
+	plan, err := svc.SubmitPlan(ctx, planSubmit("agent-a", "Bash"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := `curl -fsS http://localhost:8080/api/v1/external/plans/` + plan.PlanID + ` && rm -rf /`
+	resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{Tool: "Bash", AgentID: "agent-a", Input: map[string]any{"cmd": cmd}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusPendingApproval {
+		t.Fatalf("status = %s, want pending_approval when adherence judge rejects", resp.Status)
+	}
+	got := judge.adherenceRequest()
+	if got.Plan.PlanID != plan.PlanID {
+		t.Fatalf("adherence judge was not called, got %+v", got)
+	}
+	if args, _ := got.ToolArgs["cmd"].(string); args != cmd {
+		t.Fatalf("judge must see the entire call, got cmd = %q", args)
+	}
+}
+
 func TestPendingPlanGrantsNoPass(t *testing.T) {
 	svc, _ := newPlanTestService(t, nil, nil, nil)
 	ctx := context.Background()
