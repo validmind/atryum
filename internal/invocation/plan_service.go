@@ -661,10 +661,13 @@ func stripDefaultPort(scheme, host string) string {
 const planPollURLToken = `https?://[^\s"'` + "`" + `;|&<>(){}]+`
 
 // planPollCurlAllowedArg whitelists curl arguments that cannot change the
-// request from a plain GET or write the response anywhere: read-only flags,
-// timeouts, and headers. Notably absent: -X/--request, -d/--data*, -o/-O.
-const planPollCurlAllowedArg = `-[fsSLkv]+` +
-	`|--(?:fail|silent|show-error|location|insecure|compressed)` +
+// request from a plain GET, write the response anywhere, or weaken transport
+// security: read-only flags, timeouts, and headers. Notably absent:
+// -X/--request, -d/--data*, -o/-O, and -k/--insecure (disabling certificate
+// validation would let a network attacker impersonate the trusted origin and
+// capture the bearer token).
+const planPollCurlAllowedArg = `-[fsSLv]+` +
+	`|--(?:fail|silent|show-error|location|compressed)` +
 	`|(?:-m|--max-time|--connect-timeout)\s+\d+` +
 	`|-H\s+(?:"[^"]*"|'[^']*'|[^\s"']+)`
 
