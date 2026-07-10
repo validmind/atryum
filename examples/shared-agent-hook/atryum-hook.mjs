@@ -13,19 +13,21 @@
 // Session context for the LLM-as-judge is NOT scraped or sent by this hook. The
 // harness is trusted to report which session a tool call belongs to, but it does
 // not get to hand Atryum a free-form context blob (a runaway agent could use that
-// to poison the judge). Instead, the hook mints an Atryum session once per host
-// session (POST /api/v1/external/sessions), caches the returned session_id in a
-// state file keyed by the host's own session/thread id (the hook runs as a fresh
-// process per tool event, so the cache must live on disk), and echoes that
-// session_id on every /api/v1/external/invocations submit. Atryum reconstructs
-// the judge's context from the prior tool calls it recorded for that session,
-// trusting tool outputs more than tool inputs and ignoring agent chat entirely.
+// to poison the judge). Instead, the hook sends the host's own session/thread id
+// as `client_session_id` on every /api/v1/external/invocations submit and lets
+// Atryum manage the session server-side: Atryum resolves the internal session
+// with get-or-create keyed by (agent binding, client_session_id) and
+// reconstructs the judge's context from the prior tool calls it recorded for
+// that session, trusting tool outputs more than tool inputs and ignoring agent
+// chat entirely. Because the server manages the session, this hook keeps no
+// session state on disk — no mint call, no cache file, no re-mint/retry — even
+// though it runs as a fresh process per tool event.
 //
-// Sessions require an agent binding. In no-auth mode the binding comes from
-// ATRYUM_AGENT_ID; in auth mode it comes from the bearer token. When neither is
-// available the caller is anonymous: the hook skips minting and submits without a
-// session_id (tool calls are still gated, just without prior-call context),
-// matching the graceful degradation of the session-less fake_agent.py baseline.
+// A session still requires an agent binding (from ATRYUM_AGENT_ID in no-auth
+// mode, or the bearer token in auth mode). When neither is present the caller is
+// anonymous: the server simply resolves no session and evaluates the call
+// history-free — the same graceful degradation as the session-less
+// fake_agent.py baseline, now decided server-side rather than gated here.
 
 import { createHash } from "node:crypto";
 import { exec } from "node:child_process";
@@ -61,11 +63,6 @@ const STATE_DIR =
 const AGENT_ID = process.env.ATRYUM_AGENT_ID || "";
 const ACCESS_TOKEN = process.env.ATRYUM_ACCESS_TOKEN || "";
 const TOKEN_COMMAND = process.env.ATRYUM_TOKEN_COMMAND || "";
-// A session must be bound to an agent identity. That comes from ATRYUM_AGENT_ID
-// (no-auth mode) or from the bearer token (auth mode). With neither, the caller
-// is anonymous and the server rejects session minting with a 400, so skip
-// minting entirely and submit history-free.
-const CAN_BIND_SESSION = Boolean(AGENT_ID || ACCESS_TOKEN || TOKEN_COMMAND);
 // Malformed values (e.g. "10s") would otherwise become NaN, which silently
 // disables the cache comparisons and makes exec() throw ERR_OUT_OF_RANGE.
 const envMs = (name, fallback) => {
@@ -300,9 +297,9 @@ function rulesEndpointHint(tool) {
   return `atryum: to see the approval rules that apply to this call, GET ${url.toString()} (advisory only; Atryum re-checks policy during the actual gated call).`;
 }
 
-// The host's own session/thread identifier. Used only for cross-referencing:
-// it becomes the invocation `thread_id` and the session's `client_session_id`.
-// Atryum keys the judge's context off the session_id it mints, not this value.
+// The host's own session/thread identifier. Sent as the invocation `thread_id`
+// and `client_session_id`; Atryum resolves the internal session with
+// get-or-create keyed by (agent binding, client_session_id).
 function sessionId(event) {
   return (
     event.session_id ||
@@ -316,101 +313,16 @@ function sessionId(event) {
 }
 
 // ---------------------------------------------------------------------------
-// Atryum session (LLM-as-judge context lives server-side, keyed by session_id).
+// Atryum submit (LLM-as-judge context lives server-side; the session is resolved
+// by (agent binding, client_session_id) get-or-create — nothing to persist here).
 // ---------------------------------------------------------------------------
 
-// Ties a cached session to the agent identity and server that minted it, so
-// switching ATRYUM_AGENT_ID or ATRYUM_URL invalidates stale cache entries.
-const SESSION_CACHE_KEY = createHash("sha256")
-  .update(`${AGENT_ID}\n${API.replace(/\/+$/, "")}`)
-  .digest("hex");
-
-// The disk key under which a session is cached. Prefer the host's own session
-// id so each host conversation reuses one Atryum session across the fresh
-// per-event processes; fall back to a per-host key when the host exposes none.
-function sessionCacheKey(event) {
-  return sessionId(event) || `${SOURCE}:default`;
-}
-
-function sessionStatePath(hostKey) {
-  const safe = createHash("sha256").update(`session:${hostKey}`).digest("hex");
-  return path.join(STATE_DIR, `session-${safe}.json`);
-}
-
-async function readSessionCache(hostKey) {
-  try {
-    const raw = await readFile(sessionStatePath(hostKey), "utf8");
-    const { session_id: id, key } = JSON.parse(raw);
-    if (typeof id === "string" && id && key === SESSION_CACHE_KEY) return id;
-  } catch {
-    // cache miss or unreadable
-  }
-  return "";
-}
-
-async function writeSessionCache(hostKey, id) {
-  try {
-    await mkdir(STATE_DIR, { recursive: true });
-    await writeFile(
-      sessionStatePath(hostKey),
-      JSON.stringify({ session_id: id, key: SESSION_CACHE_KEY }),
-      "utf8",
-    );
-  } catch {
-    // best-effort; a failed cache just means we mint again next event
-  }
-}
-
-async function deleteSessionCache(hostKey) {
-  await rm(sessionStatePath(hostKey), { force: true });
-}
-
-async function createSession(clientSessionID) {
-  const res = await atryumFetch(`${API}/api/v1/external/sessions`, {
-    method: "POST",
-    contentType: true,
-    body: JSON.stringify({
-      harness: SOURCE,
-      client_session_id: clientSessionID || undefined,
-      agent_id: AGENT_ID || undefined,
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(`${res.status} ${await res.text()}`);
-  }
-  const body = await res.json();
-  return body.session_id || "";
-}
-
-// Returns a usable session_id, minting one if needed. Sessions are an
-// optimization for richer judge context: on any failure this returns "" and the
-// caller submits without a session_id rather than blocking the tool call.
-async function ensureSession(hostKey, clientSessionID, forceNew = false) {
-  if (!CAN_BIND_SESSION) return "";
-  if (!forceNew) {
-    const cached = await readSessionCache(hostKey);
-    if (cached) return cached;
-  }
-  try {
-    const id = await createSession(clientSessionID);
-    if (id) await writeSessionCache(hostKey, id);
-    return id;
-  } catch {
-    return "";
-  }
-}
-
-// Unknown/foreign/expired sessions are hard 400 rejections whose body mentions
-// "session". Those are recoverable by minting a fresh session and retrying once.
-function looksLikeSessionError(status, body) {
-  return status >= 400 && status < 500 && /session/i.test(body || "");
-}
-
-async function submitOnce(event, sessionIDValue) {
+async function submit(event) {
   const name = toolName(event);
   const input = toolInput(event);
   const id = toolUseID(event);
-  return atryumFetch(`${API}/api/v1/external/invocations`, {
+  const clientSessionID = sessionId(event) || undefined;
+  const res = await atryumFetch(`${API}/api/v1/external/invocations`, {
     method: "POST",
     contentType: true,
     body: JSON.stringify({
@@ -419,32 +331,13 @@ async function submitOnce(event, sessionIDValue) {
       description: describe(input),
       input,
       request_id: id,
-      thread_id: sessionId(event) || undefined,
-      session_id: sessionIDValue || undefined,
+      thread_id: clientSessionID,
+      client_session_id: clientSessionID,
       client_name: CLIENT_NAME,
       client_version: CLIENT_VERSION || undefined,
       agent_id: AGENT_ID || undefined,
     }),
   });
-}
-
-async function submit(event) {
-  const hostKey = sessionCacheKey(event);
-  const clientSessionID = sessionId(event) || undefined;
-  let sessionIDValue = await ensureSession(hostKey, clientSessionID);
-  let res = await submitOnce(event, sessionIDValue);
-
-  if (!res.ok && sessionIDValue) {
-    const body = await res.text();
-    if (looksLikeSessionError(res.status, body)) {
-      // Stale session — drop the cache, mint a fresh one, and retry once.
-      await deleteSessionCache(hostKey);
-      sessionIDValue = await ensureSession(hostKey, clientSessionID, true);
-      res = await submitOnce(event, sessionIDValue);
-    } else {
-      throw new Error(`atryum submit failed: ${res.status} ${body}`);
-    }
-  }
   if (!res.ok) {
     throw new Error(`atryum submit failed: ${res.status} ${await res.text()}`);
   }
