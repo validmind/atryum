@@ -62,10 +62,7 @@ Restart Claude Code after changing settings.
 | `ATRYUM_TOKEN_COMMAND`            | _(empty)_                    | optional command run to mint each new token; prints a raw token with no whitespace or OAuth token JSON with `access_token` |
 | `ATRYUM_TOKEN_REFRESH_SKEW_MS`    | `60000`                      | refresh command cache skew before token expiry                                                                             |
 | `ATRYUM_TOKEN_COMMAND_TIMEOUT_MS` | `10000`                      | timeout for the token command subprocess                                                                                   |
-| `ATRYUM_STATE_DIR`                | `~/.atryum/agent-hook-state` | tool-use to invocation-id state and the on-disk token cache (`token-cache.json`, mode 0600)                                |
-| `ATRYUM_CHAT_MESSAGES_LIMIT`      | `100`                        | recent Claude Code chat messages sent as LLM-as-judge context                                                              |
-| `ATRYUM_MAX_MESSAGE_CHARS`        | `2000`                       | maximum characters included from any one chat message                                                                      |
-| `ATRYUM_CLAUDE_TRANSCRIPT_PATH`   | hook `transcript_path`       | override Claude Code transcript file path                                                                                  |
+| `ATRYUM_STATE_DIR`                | `~/.atryum/agent-hook-state` | tool-use to invocation-id state, the cached Atryum session, and the on-disk token cache (`token-cache.json`, mode 0600)     |
 
 ## Authentication
 
@@ -124,20 +121,30 @@ Export these variables in the terminal session where you launch Claude Code
 (or prefix them in the hook `command` strings in settings, as with
 `ATRYUM_HOOK_HOST` above).
 
-## LLM-as-judge chat context
+## LLM-as-judge session context
 
-Before each Claude Code `PreToolUse` decision, the hook reads Claude's
-`transcript_path` from the hook input when available, extracts recent
-user/assistant/system messages, and sends them to Atryum as `chat_context` and
-`chat_context_messages`. Atryum appends that context to local and backend
-LLM-as-judge evaluations, alongside any tool description/schema context.
+The hook does **not** scrape the Claude Code transcript or send any chat/context
+blob to Atryum. The harness is trusted to report _which_ session a tool call
+belongs to, but a runaway agent must not be able to hand the judge arbitrary
+text to poison it.
 
-Set `ATRYUM_CHAT_MESSAGES_LIMIT` to change how many recent messages are sent.
-Set it to `0` to disable Claude Code chat context.
+Instead, the hook mints an Atryum session via `POST /api/v1/external/sessions`
+(passing `harness` and, for cross-referencing only, Claude Code's own session id
+as `client_session_id`). Because each hook invocation is a fresh process, the
+returned `session_id` is cached on disk under `$ATRYUM_STATE_DIR` keyed by the
+host session id and echoed on every `POST /api/v1/external/invocations`. Atryum
+then reconstructs the judge's context from the prior tool calls it recorded for
+that session — trusting tool outputs more than tool inputs, and ignoring agent
+chat entirely.
+
+Sessions require an agent binding: `ATRYUM_AGENT_ID` (no-auth mode) or the
+bearer token (auth mode). With neither, the caller is anonymous and the hook
+submits without a `session_id` (tool calls are still gated, just without
+prior-call context). If a cached session is unknown, foreign, or expired, the
+hook mints a fresh one and retries the submit once.
 
 ## Notes
 
 Claude Code hook support is documented around `PreToolUse` and `PostToolUse`.
-`PreToolUse` receives `tool_name`, `tool_input`, `tool_use_id`, and, in current
-Claude Code builds, `transcript_path`; the hook returns a permission decision
-before the tool executes.
+`PreToolUse` receives `tool_name`, `tool_input`, and `tool_use_id`; the hook
+returns a permission decision before the tool executes.
