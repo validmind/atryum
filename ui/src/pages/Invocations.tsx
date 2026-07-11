@@ -184,7 +184,7 @@ const AuditEntryRow: React.FC<{ entry: AuditEntry }> = ({ entry }) => {
             flexShrink={0}
           />
           <Text fontSize="sm" fontWeight="medium" noOfLines={1}>
-            {entry.ruleName ?? "No rule matched"}
+            {entry.ruleName ?? "*No rule matched*"}
           </Text>
           {badge}
         </HStack>

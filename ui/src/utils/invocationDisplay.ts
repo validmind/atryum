@@ -214,7 +214,7 @@ function buildAuditFromEvents(
     const ruleId = d.rule_id ?? null;
     const rule = ruleId ? (rules.find((r) => r.id === ruleId) ?? null) : null;
     const ruleName =
-      rule?.description ?? (ruleId ? `Rule ${ruleId}` : null);
+      rule?.description ?? (ruleId ? '*Deleted Rule*' : null);
     const isAIEval = d.action === 'ai_evaluation' && !!ruleId;
     const confidence = d.confidence;
     const aiReason =
@@ -237,6 +237,7 @@ function buildAuditFromEvents(
         actor,
         isAIEval,
         aiReason,
+        !ruleId && !isAIEval,
       );
       steps.push(
         ...resolved.map((step) => ({
@@ -259,7 +260,6 @@ function buildAuditFromApproval(
 ): AuditEntry[] {
   const ruleId = inv.matched_rule_id ?? null;
   const rule = ruleId ? (rules.find((r) => r.id === ruleId) ?? null) : null;
-  const ruleName = rule?.description ?? (ruleId ? `Rule ${ruleId}` : null);
 
   const approvalStatus = inv.approval?.status ?? null;
   const reason = inv.approval?.reason ?? '';
@@ -272,11 +272,27 @@ function buildAuditFromApproval(
     approvalStatus === 'ai_escalated_approved' ||
     approvalStatus === 'ai_escalated_denied';
 
+  // When matched_rule_id is absent but the reason indicates a specific rule was
+  // AI-evaluated (not the all-deferred fallback), the rule likely existed and
+  // was since deleted. Distinguish that from a genuine no-match fallback.
+  const isAIAllDeferred = reason.startsWith(
+    'ai_evaluation: all matching rules deferred',
+  );
+  const ruleName =
+    rule?.description ??
+    (ruleId
+      ? '*Deleted Rule*'
+      : isAIEval && !isAIAllDeferred
+        ? '*Deleted Rule*'
+        : null);
+
   const steps = resolveDecisionSteps(
     approvalStatus ?? '',
     inv,
     actor ?? undefined,
     isAIEval,
+    undefined,
+    !ruleId && !isAIEval,
   );
 
   return [{ ruleName, ruleId, isAIEvaluation: isAIEval, confidence, steps }];
@@ -307,6 +323,7 @@ function resolveDecisionSteps(
   actor?: string,
   isAIEval?: boolean,
   aiReason?: string,
+  isServerDefault?: boolean,
 ): AuditStep[] {
   const approvalStatus = inv.approval?.status ?? null;
   const reason = inv.approval?.reason ?? '';
@@ -320,7 +337,9 @@ function resolveDecisionSteps(
       {
         text: byAI
           ? 'Invocation approved by AI'
-          : 'Invocation approved by rule',
+          : isServerDefault
+            ? 'Invocation approved by server default'
+            : 'Invocation approved by rule',
         variant: 'approve',
       },
     ];
@@ -329,7 +348,11 @@ function resolveDecisionSteps(
     const byAI = isAIEval ?? reason.startsWith('ai_evaluation');
     return [
       {
-        text: byAI ? 'Invocation denied by AI' : 'Invocation denied by rule',
+        text: byAI
+          ? 'Invocation denied by AI'
+          : isServerDefault
+            ? 'Invocation denied by server default'
+            : 'Invocation denied by rule',
         variant: 'deny',
       },
     ];
