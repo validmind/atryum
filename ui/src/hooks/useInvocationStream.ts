@@ -1,6 +1,6 @@
 // Direct useEffect is required here to manage the SSE connection lifecycle.
 /* eslint-disable react-hooks/exhaustive-deps */
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { useQueryClient } from 'react-query';
 import type { QueryKey } from 'react-query';
 import { getAdminAccessToken, refreshAdminAccessToken } from '../auth/adminAuth';
@@ -9,7 +9,6 @@ import {
   INVOCATION_DETAIL_KEY,
   INVOCATION_EVENTS_KEY,
   INVOCATIONS_KEY,
-  normalizeInvocationFilters,
 } from './useInvocations';
 import type { InvocationFilters } from '../api/AtryumAPI';
 
@@ -26,11 +25,6 @@ const buildStreamUrl = (filters: InvocationFilters): string => {
   params.set('limit', String(filters.limit ?? 50));
   return `/api/v1/admin/invocations/stream?${params.toString()}`;
 };
-
-const listKey = (filters: InvocationFilters): QueryKey => [
-  INVOCATIONS_KEY,
-  normalizeInvocationFilters(filters),
-];
 
 const detailKey = (id: string): QueryKey => [INVOCATION_DETAIL_KEY, id];
 const eventsKey = (id: string): QueryKey => [INVOCATION_EVENTS_KEY, id];
@@ -56,11 +50,6 @@ export const useInvocationStream = (
   const selectedIdRef = useRef<string | null>(selectedId);
   selectedIdRef.current = selectedId;
 
-  const normalizedFilters = useMemo(
-    () => normalizeInvocationFilters(filters),
-    [filters],
-  );
-
   useEffect(() => {
     if (!isEnabled) return;
 
@@ -73,10 +62,11 @@ export const useInvocationStream = (
       const payload = JSON.parse(data) as InvocationStreamPayload;
       const items = payload.items ?? [];
 
-      queryClient.setQueryData<{ items: Invocation[] }>(
-        listKey(normalizedFilters),
-        { items },
-      );
+      // Invalidate all invocations list queries regardless of offset/limit so
+      // the currently-viewed page (which includes offset in its cache key)
+      // picks up the update. Using setQueryData with the stream's own key no
+      // longer works since pagination added offset to the useInvocations key.
+      void queryClient.invalidateQueries([INVOCATIONS_KEY]);
 
       const currentSelectedId = selectedIdRef.current;
       if (!currentSelectedId) return;
@@ -124,7 +114,7 @@ export const useInvocationStream = (
         const headers: HeadersInit = { Accept: 'text/event-stream' };
         if (token) headers.Authorization = `Bearer ${token}`;
 
-        let response = await fetch(buildStreamUrl(normalizedFilters), {
+        let response = await fetch(buildStreamUrl(filters), {
           headers,
           signal: controller.signal,
         });
@@ -132,7 +122,7 @@ export const useInvocationStream = (
         if (response.status === 401 && !didRefresh) {
           token = await refreshAdminAccessToken();
           if (token) {
-            response = await fetch(buildStreamUrl(normalizedFilters), {
+            response = await fetch(buildStreamUrl(filters), {
               headers: {
                 Accept: 'text/event-stream',
                 Authorization: `Bearer ${token}`,
@@ -203,5 +193,5 @@ export const useInvocationStream = (
       if (retryTimer) window.clearTimeout(retryTimer);
       controller?.abort();
     };
-  }, [isEnabled, normalizedFilters, queryClient]);
+  }, [isEnabled, filters, queryClient]);
 };
