@@ -10,6 +10,7 @@ import {
   INVOCATION_EVENTS_KEY,
   INVOCATIONS_KEY,
 } from './useInvocations';
+import { RULES_KEY } from './useRules';
 import type { InvocationFilters } from '../api/AtryumAPI';
 
 interface InvocationStreamPayload {
@@ -67,6 +68,11 @@ export const useInvocationStream = (
       // picks up the update. Using setQueryData with the stream's own key no
       // longer works since pagination added offset to the useInvocations key.
       void queryClient.invalidateQueries([INVOCATIONS_KEY]);
+
+      // Also refresh the rules cache: a new invocation may reference a rule
+      // that was created after the rules list was last fetched, which would
+      // cause the audit display to show "*Deleted Rule*" for a valid rule.
+      void queryClient.invalidateQueries([RULES_KEY]);
 
       const currentSelectedId = selectedIdRef.current;
       if (!currentSelectedId) return;

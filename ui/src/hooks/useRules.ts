@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { rulesApi, serversApi, type RuleInput, type ServerTool } from '../api/AtryumAPI';
 
-const RULES_KEY = 'atryum-rules';
+export const RULES_KEY = 'atryum-rules';
 
 export const useRules = () =>
   useQuery([RULES_KEY], () => rulesApi.list(), {

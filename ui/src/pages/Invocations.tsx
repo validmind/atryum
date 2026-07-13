@@ -22,13 +22,6 @@ import {
   MenuButton,
   MenuItem,
   MenuList,
-  Modal,
-  ModalBody,
-  ModalCloseButton,
-  ModalContent,
-  ModalFooter,
-  ModalHeader,
-  ModalOverlay,
   Spinner,
   Stack,
   Table,
@@ -45,6 +38,7 @@ import {
   Alert,
   AlertDescription,
   AlertIcon,
+  useDisclosure,
   useToast,
 } from "@chakra-ui/react";
 import { Select } from "chakra-react-select";
@@ -56,6 +50,7 @@ import {
 } from "@heroicons/react/24/outline";
 
 import { ContentPageTitle } from "../components/Layout";
+import { CreateRuleModal } from "../components/CreateRuleModal";
 import DiffViewer from "../components/DiffViewer";
 import { extractDiff } from "../components/diffUtils";
 import AgentIcon, { detectAgentKind } from "../components/AgentIcon";
@@ -68,7 +63,7 @@ import {
   useSummarizeInvocation,
 } from "../hooks/useInvocations";
 import { useSettings } from "../hooks/useSettings";
-import { useCreateRule, useRules } from "../hooks/useRules";
+import { useRules } from "../hooks/useRules";
 import { useAgents } from "../hooks/useAgents";
 import { useInvocationStream } from "../hooks/useInvocationStream";
 import {
@@ -76,7 +71,6 @@ import {
   type Invocation,
   type InvocationEvent,
   type InvocationStatus,
-  type RuleAction,
   type RuleInput,
 } from "../api/AtryumAPI";
 import {
@@ -151,6 +145,25 @@ const AUDIT_STEP_ICON: Record<AuditStep["variant"], string> = {
   pending: "…",
   info: "→",
   error: "✗",
+};
+
+const ACTION_LABEL: Partial<Record<string, string>> = {
+  auto_approve: "Auto-approve",
+  auto_deny: "Auto-deny",
+  human_approval: "Human approval",
+  ai_evaluation: "AI evaluation",
+};
+
+const buildRuleDescription = (
+  action: string | undefined,
+  serverName: string | null | undefined,
+  toolName: string | null | undefined,
+): string => {
+  const parts: string[] = [];
+  if (action && ACTION_LABEL[action]) parts.push(ACTION_LABEL[action]!);
+  const target = [serverName, toolName].filter(Boolean).join("/");
+  if (target) parts.push(target);
+  return parts.join(" ");
 };
 
 const AuditEntryRow: React.FC<{ entry: AuditEntry }> = ({ entry }) => {
@@ -339,24 +352,14 @@ const Invocations: React.FC = () => {
     () => new Set(),
   );
   const [denyMode, setDenyMode] = useState<"once" | "always">("once");
-  const [showCustomizeScope, setShowCustomizeScope] = useState(false);
-  const [ruleForm, setRuleForm] = useState({
-    server_patterns: "",
-    tool_patterns: "",
-    description: "",
-  });
-  const [showCreateRule, setShowCreateRule] = useState(false);
-  const [createRuleForm, setCreateRuleForm] = useState<{
-    action: RuleAction;
-    server_patterns: string;
-    tool_patterns: string;
-    description: string;
-  }>({
-    action: "auto_approve",
-    server_patterns: "",
-    tool_patterns: "",
-    description: "",
-  });
+  const [ruleModalInitial, setRuleModalInitial] = useState<
+    Partial<RuleInput> | undefined
+  >();
+  const {
+    isOpen: isRuleModalOpen,
+    onOpen: openRuleModal,
+    onClose: closeRuleModal,
+  } = useDisclosure();
 
   const filters = useMemo(
     () =>
@@ -423,7 +426,6 @@ const Invocations: React.FC = () => {
   const approve = useApproveInvocation();
   const deny = useDenyInvocation();
   const summarize = useSummarizeInvocation();
-  const createRule = useCreateRule();
   const { data: rulesData } = useRules();
   const { data: settings } = useSettings();
 
@@ -469,42 +471,6 @@ const Invocations: React.FC = () => {
     }
   }, [resolvedSelectedId, summarize, summaryModelConfigCuid]);
 
-  const buildScopeRule = (action: RuleAction): RuleInput => ({
-    action,
-    server_patterns: ruleForm.server_patterns
-      ? ruleForm.server_patterns
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean)
-      : [],
-    tool_patterns: ruleForm.tool_patterns
-      ? ruleForm.tool_patterns
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean)
-      : [],
-    description: ruleForm.description || undefined,
-    enabled: true,
-  });
-
-  const resetRuleForm = (serverName?: string, toolName?: string) => {
-    setRuleForm({
-      server_patterns: serverName ?? "",
-      tool_patterns: toolName ?? "",
-      description: "",
-    });
-    setShowCustomizeScope(false);
-  };
-
-  const resetCreateRuleForm = (serverName?: string, toolName?: string) => {
-    setCreateRuleForm({
-      action: "auto_approve",
-      server_patterns: serverName ?? "",
-      tool_patterns: toolName ?? "",
-      description: "",
-    });
-    setShowCreateRule(false);
-  };
 
   const handleApply = () => {
     setAppliedFilters({ ...draftFilters });
@@ -535,38 +501,24 @@ const Invocations: React.FC = () => {
     if (!resolvedSelectedId) return;
     await approve.mutateAsync({ id: resolvedSelectedId });
     setShowDenyInput(false);
-    resetRuleForm();
   };
 
-  const handleAlwaysApprove = async () => {
-    if (!resolvedSelectedId) return;
-    const rule = buildScopeRule("auto_approve");
-    await approve.mutateAsync({ id: resolvedSelectedId, createRule: rule });
-
-    const matchingPendingInvocations = (await loadPendingInvocations()).filter(
-      (invocation) =>
-        invocation.invocation_id !== resolvedSelectedId &&
-        invocation.status === "pending_approval" &&
-        matchesRuleScope(invocation, rule),
-    );
-
-    if (
-      matchingPendingInvocations.length > 0 &&
-      window.confirm(
-        `Apply this auto-approve rule to ${matchingPendingInvocations.length} other pending approval${
-          matchingPendingInvocations.length === 1 ? "" : "s"
-        } now?`,
-      )
-    ) {
-      await Promise.all(
-        matchingPendingInvocations.map((invocation) =>
-          approve.mutateAsync({ id: invocation.invocation_id }),
-        ),
-      );
-    }
-
-    setShowDenyInput(false);
-    resetRuleForm();
+  const handleAlwaysApprove = () => {
+    const agentEntry = detail?.agent_id
+      ? agentByAgentID.get(detail.agent_id)
+      : undefined;
+    setRuleModalInitial({
+      action: "auto_approve",
+      server_patterns: detail?.server_name ? [detail.server_name] : [],
+      tool_patterns: detail?.tool_name ? [detail.tool_name] : [],
+      agent_cuids: agentEntry?.cuid ? [agentEntry.cuid] : [],
+      description: buildRuleDescription(
+        "auto_approve",
+        detail?.server_name,
+        detail?.tool_name,
+      ),
+    });
+    openRuleModal();
   };
 
   const handleDenyOnce = async () => {
@@ -574,63 +526,24 @@ const Invocations: React.FC = () => {
     await deny.mutateAsync({ id: resolvedSelectedId, message: denyMessage });
     setDenyMessage("");
     setShowDenyInput(false);
-    resetRuleForm();
   };
 
-  const handleAlwaysDeny = async () => {
-    if (!resolvedSelectedId) return;
-    const rule = buildScopeRule("auto_deny");
-    await deny.mutateAsync({
-      id: resolvedSelectedId,
-      message: denyMessage,
-      createRule: rule,
+  const handleAlwaysDeny = () => {
+    const agentEntry = detail?.agent_id
+      ? agentByAgentID.get(detail.agent_id)
+      : undefined;
+    setRuleModalInitial({
+      action: "auto_deny",
+      server_patterns: detail?.server_name ? [detail.server_name] : [],
+      tool_patterns: detail?.tool_name ? [detail.tool_name] : [],
+      agent_cuids: agentEntry?.cuid ? [agentEntry.cuid] : [],
+      description: buildRuleDescription(
+        "auto_deny",
+        detail?.server_name,
+        detail?.tool_name,
+      ),
     });
-    setDenyMessage("");
-    setShowDenyInput(false);
-    resetRuleForm();
-  };
-
-  const handleSaveRule = async () => {
-    const input: RuleInput = {
-      action: createRuleForm.action,
-      server_patterns: createRuleForm.server_patterns
-        ? createRuleForm.server_patterns
-            .split(",")
-            .map((s) => s.trim())
-            .filter(Boolean)
-        : [],
-      tool_patterns: createRuleForm.tool_patterns
-        ? createRuleForm.tool_patterns
-            .split(",")
-            .map((s) => s.trim())
-            .filter(Boolean)
-        : [],
-      description: createRuleForm.description || undefined,
-      enabled: true,
-    };
-    try {
-      await createRule.mutateAsync(input);
-      resetCreateRuleForm();
-      toast({
-        title: "Rule created",
-        status: "success",
-        duration: 3000,
-        isClosable: true,
-      });
-    } catch (err) {
-      const message =
-        (err as { response?: { data?: { error?: { message?: string } } } })
-          ?.response?.data?.error?.message ??
-        (err as Error)?.message ??
-        "Failed to create rule";
-      toast({
-        title: "Failed to create rule",
-        description: message,
-        status: "error",
-        duration: 6000,
-        isClosable: true,
-      });
-    }
+    openRuleModal();
   };
 
   const isPending = detail?.status === "pending_approval";
@@ -844,11 +757,6 @@ const Invocations: React.FC = () => {
                               setShowDenyInput(false);
                               setShowArgsJson(false);
                               setDenyMessage("");
-                              resetRuleForm(inv.server_name, inv.tool_name);
-                              resetCreateRuleForm(
-                                inv.server_name,
-                                inv.tool_name,
-                              );
                             }
                           }}>
                           <Td
@@ -1479,10 +1387,7 @@ const Invocations: React.FC = () => {
                                 />
                                 <MenuList>
                                   <MenuItem
-                                    onClick={() => {
-                                      setDenyMode("always");
-                                      setShowDenyInput(true);
-                                    }}
+                                    onClick={handleAlwaysDeny}
                                     data-testid="invocation-always-deny-menu-item">
                                     Always deny
                                   </MenuItem>
@@ -1531,97 +1436,6 @@ const Invocations: React.FC = () => {
                           </VStack>
                         )}
 
-                        <Box mt={3}>
-                          <Button
-                            variant="ghost"
-                            size="xs"
-                            onClick={() => {
-                              if (!showCustomizeScope) {
-                                setRuleForm((f) => ({
-                                  ...f,
-                                  server_patterns:
-                                    f.server_patterns ||
-                                    detail.server_name ||
-                                    "",
-                                  tool_patterns:
-                                    f.tool_patterns || detail.tool_name || "",
-                                }));
-                              }
-                              setShowCustomizeScope((v) => !v);
-                            }}>
-                            {showCustomizeScope
-                              ? "▲ Hide rule scope"
-                              : "▼ Customize rule scope"}
-                          </Button>
-                          <Collapse in={showCustomizeScope} animateOpacity>
-                            <VStack
-                              align="stretch"
-                              gap={2}
-                              mt={2}
-                              p={3}
-                              borderWidth={1}
-                              borderColor="border.base"
-                              borderRadius="md">
-                              <Text
-                                fontSize="xs"
-                                color="text.subtle"
-                                fontWeight="semibold">
-                                Rule scope for &ldquo;Always approve&rdquo; /
-                                &ldquo;Always deny&rdquo;
-                              </Text>
-                              <FormControl size="sm">
-                                <FormLabel fontSize="xs" mb={1}>
-                                  Server patterns (comma-separated)
-                                </FormLabel>
-                                <Input
-                                  size="sm"
-                                  fontFamily="mono"
-                                  placeholder="e.g. github, *"
-                                  value={ruleForm.server_patterns}
-                                  onChange={(e) =>
-                                    setRuleForm((f) => ({
-                                      ...f,
-                                      server_patterns: e.target.value,
-                                    }))
-                                  }
-                                />
-                              </FormControl>
-                              <FormControl size="sm">
-                                <FormLabel fontSize="xs" mb={1}>
-                                  Tool patterns (comma-separated)
-                                </FormLabel>
-                                <Input
-                                  size="sm"
-                                  fontFamily="mono"
-                                  placeholder="e.g. list_issues, *"
-                                  value={ruleForm.tool_patterns}
-                                  onChange={(e) =>
-                                    setRuleForm((f) => ({
-                                      ...f,
-                                      tool_patterns: e.target.value,
-                                    }))
-                                  }
-                                />
-                              </FormControl>
-                              <FormControl size="sm">
-                                <FormLabel fontSize="xs" mb={1}>
-                                  Description (optional)
-                                </FormLabel>
-                                <Input
-                                  size="sm"
-                                  placeholder="e.g. Allow GitHub read tools"
-                                  value={ruleForm.description}
-                                  onChange={(e) =>
-                                    setRuleForm((f) => ({
-                                      ...f,
-                                      description: e.target.value,
-                                    }))
-                                  }
-                                />
-                              </FormControl>
-                            </VStack>
-                          </Collapse>
-                        </Box>
                       </Box>
                     )}
 
@@ -1631,132 +1445,38 @@ const Invocations: React.FC = () => {
                       alignSelf="flex-start"
                       leftIcon={<Icon as={ShieldCheckIcon} boxSize={4} />}
                       onClick={() => {
-                        setCreateRuleForm((f) => ({
-                          ...f,
-                          server_patterns:
-                            f.server_patterns || detail.server_name || "",
-                          tool_patterns:
-                            f.tool_patterns || detail.tool_name || "",
-                        }));
-                        setShowCreateRule(true);
+                        const agentEntry = detail.agent_id
+                          ? agentByAgentID.get(detail.agent_id)
+                          : undefined;
+                        setRuleModalInitial({
+                          server_patterns: detail.server_name
+                            ? [detail.server_name]
+                            : [],
+                          tool_patterns: detail.tool_name
+                            ? [detail.tool_name]
+                            : [],
+                          agent_cuids: agentEntry?.cuid
+                            ? [agentEntry.cuid]
+                            : [],
+                          description: buildRuleDescription(
+                            undefined,
+                            detail.server_name,
+                            detail.tool_name,
+                          ),
+                        });
+                        openRuleModal();
                       }}
                       data-testid="invocation-create-rule-button">
                       Create Rule From This
                     </Button>
-                    <Modal
-                      isOpen={showCreateRule}
-                      onClose={() => setShowCreateRule(false)}
-                      size="lg"
-                      isCentered>
-                      <ModalOverlay />
-                      <ModalContent data-testid="create-rule-modal">
-                        <ModalHeader>
-                          Create Rule From This Invocation
-                        </ModalHeader>
-                        <ModalCloseButton data-testid="create-rule-modal-close-button" />
-                        <ModalBody>
-                          <VStack align="stretch" gap={2}>
-                            <FormControl size="sm">
-                              <FormLabel fontSize="xs" mb={1}>
-                                Action
-                              </FormLabel>
-                              <Select
-                                classNamePrefix="chakra-react-select"
-                                size="sm"
-                                options={[
-                                  {
-                                    value: "auto_approve",
-                                    label: "Auto Approve",
-                                  },
-                                  { value: "auto_deny", label: "Auto Deny" },
-                                ]}
-                                value={{
-                                  value: createRuleForm.action,
-                                  label:
-                                    createRuleForm.action === "auto_approve"
-                                      ? "Auto Approve"
-                                      : "Auto Deny",
-                                }}
-                                onChange={(opt) =>
-                                  opt &&
-                                  setCreateRuleForm((f) => ({
-                                    ...f,
-                                    action: opt.value as RuleAction,
-                                  }))
-                                }
-                              />
-                            </FormControl>
-                            <FormControl size="sm">
-                              <FormLabel fontSize="xs" mb={1}>
-                                Server patterns (comma-separated)
-                              </FormLabel>
-                              <Input
-                                size="sm"
-                                fontFamily="mono"
-                                placeholder="e.g. github, *"
-                                value={createRuleForm.server_patterns}
-                                onChange={(e) =>
-                                  setCreateRuleForm((f) => ({
-                                    ...f,
-                                    server_patterns: e.target.value,
-                                  }))
-                                }
-                              />
-                            </FormControl>
-                            <FormControl size="sm">
-                              <FormLabel fontSize="xs" mb={1}>
-                                Tool patterns (comma-separated)
-                              </FormLabel>
-                              <Input
-                                size="sm"
-                                fontFamily="mono"
-                                placeholder="e.g. list_issues, *"
-                                value={createRuleForm.tool_patterns}
-                                onChange={(e) =>
-                                  setCreateRuleForm((f) => ({
-                                    ...f,
-                                    tool_patterns: e.target.value,
-                                  }))
-                                }
-                              />
-                            </FormControl>
-                            <FormControl size="sm">
-                              <FormLabel fontSize="xs" mb={1}>
-                                Description (optional)
-                              </FormLabel>
-                              <Input
-                                size="sm"
-                                placeholder="e.g. Allow GitHub read tools"
-                                value={createRuleForm.description}
-                                onChange={(e) =>
-                                  setCreateRuleForm((f) => ({
-                                    ...f,
-                                    description: e.target.value,
-                                  }))
-                                }
-                              />
-                            </FormControl>
-                          </VStack>
-                        </ModalBody>
-                        <ModalFooter gap={2}>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setShowCreateRule(false)}
-                            data-testid="create-rule-modal-cancel-button">
-                            Cancel
-                          </Button>
-                          <Button
-                            variant="primary"
-                            size="sm"
-                            isLoading={createRule.isLoading}
-                            onClick={handleSaveRule}
-                            data-testid="create-rule-modal-save-button">
-                            Save Rule
-                          </Button>
-                        </ModalFooter>
-                      </ModalContent>
-                    </Modal>
+
+                    <CreateRuleModal
+                      isOpen={isRuleModalOpen}
+                      onClose={closeRuleModal}
+                      {...(ruleModalInitial
+                        ? { initialValues: ruleModalInitial }
+                        : {})}
+                    />
 
                     {detail.result != null && (
                       <Box>
