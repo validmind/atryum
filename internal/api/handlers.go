@@ -4098,11 +4098,15 @@ func (h *Handler) adminManagedAgentSessionDetail(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusNotImplemented, "managed agents bridge not configured (set [managed_agents].api_key)")
 		return
 	}
+	rawID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/admin/managed-agents/sessions/"), "/")
+	if strings.HasSuffix(rawID, "/plan") {
+		h.adminManagedAgentSessionPlan(w, r, strings.TrimSuffix(rawID, "/plan"))
+		return
+	}
 	if r.Method != http.MethodDelete {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	rawID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/admin/managed-agents/sessions/"), "/")
 	sessionID, err := url.PathUnescape(rawID)
 	if err != nil || strings.TrimSpace(sessionID) == "" {
 		writeError(w, http.StatusNotFound, "not found")
@@ -4117,6 +4121,106 @@ func (h *Handler) adminManagedAgentSessionDetail(w http.ResponseWriter, r *http.
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ManagedAgentSessionPlanRequest is an administrator-submitted plan for a
+// registered Claude Managed Agents session. The bridge applies the resulting
+// approval pass to matching future tool confirmations for this session's
+// agent; Claude itself is not required to call Atryum's plan tools.
+type ManagedAgentSessionPlanRequest struct {
+	Goal        string                  `json:"goal"`
+	Rationale   string                  `json:"rationale,omitempty"`
+	Actions     []invocation.PlanAction `json:"actions"`
+	TTLSeconds  int                     `json:"ttl_seconds,omitempty"`
+	ChatContext string                  `json:"chat_context,omitempty"`
+}
+
+// adminManagedAgentSessionPlan handles POST
+// /api/v1/admin/managed-agents/sessions/{session_id}/plan. A plan is tied to
+// the registered agent and session so a later managed-agent tool event can use
+// the normal plan fast-approval path.
+func (h *Handler) adminManagedAgentSessionPlan(w http.ResponseWriter, r *http.Request, rawID string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	sessionID, err := url.PathUnescape(strings.Trim(rawID, "/"))
+	if err != nil || strings.TrimSpace(sessionID) == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	var req ManagedAgentSessionPlanRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	sessions, err := h.managedAgents.ListSessions(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var session *managedagents.SessionRegistration
+	for i := range sessions {
+		if sessions[i].SessionID == sessionID {
+			session = &sessions[i]
+			break
+		}
+	}
+	if session == nil {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if strings.TrimSpace(session.AgentID) == "" {
+		writeError(w, http.StatusBadRequest, "managed-agent session has no agent_id")
+		return
+	}
+	if len(req.Actions) == 0 {
+		writeError(w, http.StatusBadRequest, "at least one action is required")
+		return
+	}
+	// The current plan model evaluates one server scope per plan. Requiring a
+	// concrete, shared server prevents a plan approved for one managed-agent
+	// source from becoming a pass for another source.
+	source := strings.TrimSpace(req.Actions[0].Server)
+	if source == "" {
+		writeError(w, http.StatusBadRequest, "actions[0].server is required")
+		return
+	}
+	for i, action := range req.Actions {
+		if strings.TrimSpace(action.Tool) == "" {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("actions[%d].tool is required", i))
+			return
+		}
+		if strings.TrimSpace(action.Server) != source {
+			writeError(w, http.StatusBadRequest, "all actions must use the same non-empty server")
+			return
+		}
+	}
+	// This is an admin-authorized delegation: the plan must belong to the
+	// managed agent that will later make the tool call, rather than the human
+	// administrator who authenticated this request.
+	planCtx := auth.WithIdentity(r.Context(), auth.Identity{
+		AgentID: session.AgentID,
+		Issuer:  "atryum:managed-agent-session",
+		Subject: session.AgentID,
+	})
+	plan, err := h.svc.SubmitPlan(planCtx, invocation.PlanSubmitRequest{
+		Source:        source,
+		AgentID:       session.AgentID,
+		ThreadID:      sessionID,
+		Goal:          req.Goal,
+		Rationale:     req.Rationale,
+		Actions:       req.Actions,
+		TTLSeconds:    req.TTLSeconds,
+		ChatContext:   req.ChatContext,
+		ClientName:    "claude-managed-agents",
+		ClientVersion: "",
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, plan)
 }
 
 func (h *Handler) adminManagedAgentAccounts(w http.ResponseWriter, r *http.Request) {

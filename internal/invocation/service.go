@@ -355,7 +355,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	// An approved plan grants a scoped pass: a declared action matching this
 	// call executes immediately without rule/policy gating, recording the
 	// plan as the approval reason.
-	if planMatch, ok := s.matchApprovedPlan(ctx, agentID, upstream.Name, req.Tool); ok {
+	if planMatch, ok := s.matchApprovedPlan(ctx, agentID, upstream.Name, req.Tool, ""); ok {
 		planID := planMatch.Plan.PlanID
 		reason, confidence, passOK := s.approvedPlanPass(ctx, planMatch, agentRec, upstream.Name, req.Tool, req.Input, "")
 		if !passOK {
@@ -1407,7 +1407,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	// An approved plan grants a scoped pass: a declared action matching this
 	// call auto-approves it before rule matching, recording the plan as the
 	// approval reason.
-	if planMatch, ok := s.matchApprovedPlan(ctx, agentID, source, req.Tool); ok {
+	if planMatch, ok := s.matchApprovedPlan(ctx, agentID, source, req.Tool, req.ThreadID); ok {
 		planID := planMatch.Plan.PlanID
 		reason, confidence, passOK := s.approvedPlanPass(ctx, planMatch, agentRec, source, req.Tool, req.Input, sessionContext)
 		if !passOK {
