@@ -363,6 +363,12 @@ export interface RuleInput {
   /** Local LLM config ID for native ai_evaluation (alternative to model_config_cuid). */
   atryum_llm_config_id?: string;
   enabled: boolean;
+  /**
+   * When present, inserts the new rule before the rule with this ID.
+   * Pass an empty string ("") to insert at position 0 (top of list).
+   * Omit to append at the end (default).
+   */
+  insert_before?: string;
 }
 
 export const rulesApi = {

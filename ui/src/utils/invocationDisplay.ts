@@ -214,15 +214,19 @@ function buildAuditFromEvents(
     const ruleId = d.rule_id ?? null;
     const rule = ruleId ? (rules.find((r) => r.id === ruleId) ?? null) : null;
     const ruleName =
-      rule?.description ?? (ruleId ? `Rule ${ruleId}` : null);
-    const isAIEval = d.action === 'ai_evaluation';
+      rule?.description ?? (ruleId ? '*Deleted Rule*' : null);
+    const isAIEval = d.action === 'ai_evaluation' && !!ruleId;
     const confidence = d.confidence;
+    const aiReason =
+      d.action === 'ai_evaluation' && d.reason
+        ? extractAIReason(d.reason)
+        : undefined;
 
     const steps: AuditStep[] = [];
 
     if (d.skipped) {
       steps.push({
-        text: 'Skipped this rule as per charter',
+        text: aiReason ?? 'Skipped this rule as per charter',
         variant: 'info',
         timestamp: evt.timestamp,
       });
@@ -232,6 +236,8 @@ function buildAuditFromEvents(
         inv,
         actor,
         isAIEval,
+        aiReason,
+        !ruleId && !isAIEval,
       );
       steps.push(
         ...resolved.map((step) => ({
@@ -254,7 +260,6 @@ function buildAuditFromApproval(
 ): AuditEntry[] {
   const ruleId = inv.matched_rule_id ?? null;
   const rule = ruleId ? (rules.find((r) => r.id === ruleId) ?? null) : null;
-  const ruleName = rule?.description ?? (ruleId ? `Rule ${ruleId}` : null);
 
   const approvalStatus = inv.approval?.status ?? null;
   const reason = inv.approval?.reason ?? '';
@@ -267,14 +272,49 @@ function buildAuditFromApproval(
     approvalStatus === 'ai_escalated_approved' ||
     approvalStatus === 'ai_escalated_denied';
 
+  // When matched_rule_id is absent but the reason indicates a specific rule was
+  // AI-evaluated (not the all-deferred fallback), the rule likely existed and
+  // was since deleted. Distinguish that from a genuine no-match fallback.
+  const isAIAllDeferred = reason.startsWith(
+    'ai_evaluation: all matching rules deferred',
+  );
+  const ruleName =
+    rule?.description ??
+    (ruleId
+      ? '*Deleted Rule*'
+      : isAIEval && !isAIAllDeferred
+        ? '*Deleted Rule*'
+        : null);
+
   const steps = resolveDecisionSteps(
     approvalStatus ?? '',
     inv,
     actor ?? undefined,
     isAIEval,
+    undefined,
+    !ruleId && !isAIEval,
   );
 
   return [{ ruleName, ruleId, isAIEvaluation: isAIEval, confidence, steps }];
+}
+
+function extractAIReason(raw: string): string {
+  const exact: Record<string, string> = {
+    'ai_evaluation: all matching rules deferred; falling back to human_approval':
+      'All matching rules deferred — falling back to human approval',
+  };
+  if (exact[raw]) return exact[raw];
+
+  const prefixes = [
+    'ai_evaluation requires human approval: ',
+    'ai_evaluation approved: ',
+    'ai_evaluation denied: ',
+    'ai_evaluation deferred to next rule: ',
+  ];
+  for (const prefix of prefixes) {
+    if (raw.startsWith(prefix)) return raw.slice(prefix.length);
+  }
+  return raw;
 }
 
 function resolveDecisionSteps(
@@ -282,9 +322,14 @@ function resolveDecisionSteps(
   inv: InvocationAuditInput,
   actor?: string,
   isAIEval?: boolean,
+  aiReason?: string,
+  isServerDefault?: boolean,
 ): AuditStep[] {
   const approvalStatus = inv.approval?.status ?? null;
   const reason = inv.approval?.reason ?? '';
+  const deferReason =
+    aiReason ??
+    (isAIEval && reason ? extractAIReason(reason) : undefined);
 
   if (disposition === 'auto' || disposition === 'auto_approved') {
     const byAI = isAIEval ?? reason.startsWith('ai_evaluation');
@@ -292,7 +337,9 @@ function resolveDecisionSteps(
       {
         text: byAI
           ? 'Invocation approved by AI'
-          : 'Invocation approved by rule',
+          : isServerDefault
+            ? 'Invocation approved by server default'
+            : 'Invocation approved by rule',
         variant: 'approve',
       },
     ];
@@ -301,7 +348,11 @@ function resolveDecisionSteps(
     const byAI = isAIEval ?? reason.startsWith('ai_evaluation');
     return [
       {
-        text: byAI ? 'Invocation denied by AI' : 'Invocation denied by rule',
+        text: byAI
+          ? 'Invocation denied by AI'
+          : isServerDefault
+            ? 'Invocation denied by server default'
+            : 'Invocation denied by rule',
         variant: 'deny',
       },
     ];
@@ -311,12 +362,14 @@ function resolveDecisionSteps(
     disposition === 'ai_escalated_approved' ||
     disposition === 'ai_escalated_denied'
   ) {
+    const escalatedDeferText =
+      deferReason ?? 'Deferring to human approval as per charter';
     if (
       approvalStatus === 'ai_escalated_approved' ||
       approvalStatus === 'approved'
     ) {
       return [
-        { text: 'Deferring to human approval as per charter', variant: 'defer' },
+        { text: escalatedDeferText, variant: 'defer' },
         { text: 'Invocation approved by human', variant: 'approve', actor },
       ];
     }
@@ -325,12 +378,12 @@ function resolveDecisionSteps(
       approvalStatus === 'denied'
     ) {
       return [
-        { text: 'Deferring to human approval as per charter', variant: 'defer' },
+        { text: escalatedDeferText, variant: 'defer' },
         { text: 'Invocation denied by human', variant: 'deny', actor },
       ];
     }
     return [
-      { text: 'Deferring to human approval as per charter', variant: 'defer' },
+      { text: escalatedDeferText, variant: 'defer' },
       ...undecidedSteps(inv),
     ];
   }
@@ -338,9 +391,7 @@ function resolveDecisionSteps(
     const deferText =
       disposition === 'workflow'
         ? 'Deferring to approval workflow'
-        : isAIEval
-          ? 'Deferring to human approval as per charter'
-          : 'Human approval required as per rule';
+        : deferReason ?? 'Human approval required as per rule';
     if (
       approvalStatus === 'approved' ||
       approvalStatus === 'ai_escalated_approved'

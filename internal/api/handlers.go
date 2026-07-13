@@ -317,6 +317,10 @@ type AdminRuleInput struct {
 	AgentCUIDs        []string `json:"agent_cuids"`
 	Description       string   `json:"description,omitempty"`
 	Enabled           *bool    `json:"enabled,omitempty"`
+	// InsertBefore, when present, inserts the new rule before the rule with this
+	// ID in the priority list. An empty string inserts at position 0 (top).
+	// When absent (nil), the rule is appended at the end (default behaviour).
+	InsertBefore *string `json:"insert_before,omitempty"`
 }
 
 // AdminModelConfig is the API representation of a VM agent model configuration.
@@ -2141,11 +2145,6 @@ func (h *Handler) adminRules(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		order, err := h.rulesRepo.NextOrder(r.Context())
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
 		enabled := true
 		if req.Enabled != nil {
 			enabled = *req.Enabled
@@ -2160,11 +2159,24 @@ func (h *Handler) adminRules(w http.ResponseWriter, r *http.Request) {
 			AgentCUIDs:        normalizePatternSlice(req.AgentCUIDs),
 			Description:       req.Description,
 			Enabled:           enabled,
-			Order:             order,
 		}
-		if err := h.rulesRepo.Create(r.Context(), rule); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
+		if req.InsertBefore != nil {
+			// insert_before="" → top of list; insert_before="<id>" → before that rule.
+			if err := h.rulesRepo.InsertBefore(r.Context(), *req.InsertBefore, rule); err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+		} else {
+			order, err := h.rulesRepo.NextOrder(r.Context())
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			rule.Order = order
+			if err := h.rulesRepo.Create(r.Context(), rule); err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
 		}
 		created, err := h.rulesRepo.Get(r.Context(), rule.ID)
 		if err != nil {
