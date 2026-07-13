@@ -1474,6 +1474,14 @@ func (h *Handler) handleMCPPlanGet(w http.ResponseWriter, r *http.Request, id js
 		h.writeRPCError(w, id, -32000, err.Error())
 		return
 	}
+	// Match the external polling endpoint's ownership check. In authenticated
+	// deployments a caller may only inspect plans belonging to its verified
+	// agent identity; anonymous no-auth deployments retain their existing
+	// unscoped behavior.
+	if !planOwnedByCaller(r, plan) {
+		h.writeRPCError(w, id, -32000, "plan not found")
+		return
+	}
 	body, err := json.MarshalIndent(plan, "", "  ")
 	if err != nil {
 		h.writeRPCError(w, id, -32000, "failed to encode plan")
