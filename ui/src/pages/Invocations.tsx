@@ -1,5 +1,5 @@
 /* eslint-disable react/jsx-no-bind */
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ResizablePanels from "../components/ResizablePanels";
 import {
   Badge,
@@ -355,6 +355,10 @@ const Invocations: React.FC = () => {
   const [ruleModalInitial, setRuleModalInitial] = useState<
     Partial<RuleInput> | undefined
   >();
+  // Stored as a ref so the callback is never stale without causing re-renders.
+  const ruleModalOnSuccessRef = useRef<
+    (() => void | Promise<void>) | undefined
+  >(undefined);
   const {
     isOpen: isRuleModalOpen,
     onOpen: openRuleModal,
@@ -518,6 +522,9 @@ const Invocations: React.FC = () => {
         detail?.tool_name,
       ),
     });
+    ruleModalOnSuccessRef.current = resolvedSelectedId
+      ? () => approve.mutateAsync({ id: resolvedSelectedId })
+      : undefined;
     openRuleModal();
   };
 
@@ -543,6 +550,9 @@ const Invocations: React.FC = () => {
         detail?.tool_name,
       ),
     });
+    ruleModalOnSuccessRef.current = resolvedSelectedId
+      ? () => deny.mutateAsync({ id: resolvedSelectedId, message: denyMessage })
+      : undefined;
     openRuleModal();
   };
 
@@ -1464,6 +1474,7 @@ const Invocations: React.FC = () => {
                             detail.tool_name,
                           ),
                         });
+                        ruleModalOnSuccessRef.current = undefined;
                         openRuleModal();
                       }}
                       data-testid="invocation-create-rule-button">
@@ -1473,6 +1484,7 @@ const Invocations: React.FC = () => {
                     <CreateRuleModal
                       isOpen={isRuleModalOpen}
                       onClose={closeRuleModal}
+                      onSuccess={ruleModalOnSuccessRef.current}
                       {...(ruleModalInitial
                         ? { initialValues: ruleModalInitial }
                         : {})}
