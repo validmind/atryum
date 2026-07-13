@@ -68,7 +68,6 @@ import { useAgents } from "../hooks/useAgents";
 import { useInvocationStream } from "../hooks/useInvocationStream";
 import {
   invocationsApi,
-  type Invocation,
   type InvocationEvent,
   type InvocationStatus,
   type RuleInput,
@@ -104,39 +103,6 @@ const STATUS_OPTIONS = STATUSES.map((status) => ({
   value: status,
 }));
 
-const wildcardToRegExp = (pattern: string): RegExp => {
-  const escapedPattern = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`^${escapedPattern.replace(/\*/g, ".*")}$`);
-};
-
-const matchesAnyPattern = (
-  patterns: string[],
-  value: string | null | undefined,
-): boolean => {
-  if (patterns.length === 0) return true;
-  const normalizedValue = value ?? "";
-  return patterns.some((pattern) =>
-    wildcardToRegExp(pattern).test(normalizedValue),
-  );
-};
-
-const matchesRuleScope = (invocation: Invocation, rule: RuleInput): boolean =>
-  matchesAnyPattern(rule.server_patterns, invocation.server_name) &&
-  matchesAnyPattern(rule.tool_patterns, invocation.tool_name);
-
-const loadPendingInvocations = async (): Promise<Invocation[]> => {
-  const limit = 50;
-  const pendingInvocations: Invocation[] = [];
-  for (let offset = 0; ; offset += limit) {
-    const page = await invocationsApi.list({
-      status: "pending_approval",
-      limit,
-      offset,
-    });
-    pendingInvocations.push(...page.items);
-    if (page.items.length < limit) return pendingInvocations;
-  }
-};
 
 const AUDIT_STEP_ICON: Record<AuditStep["variant"], string> = {
   approve: "✓",
