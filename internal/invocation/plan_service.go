@@ -490,11 +490,10 @@ type approvedPlanMatch struct {
 }
 
 // matchApprovedPlan returns the newest approved, unexpired plan of the agent
-// with a declared action matching (server, tool). A plan with ThreadID is
-// session-scoped and must match the caller's thread exactly. It is the
-// deterministic plan-pass check run before rule matching in Invoke/Submit; it
-// never matches when the plan feature is unused or the caller is anonymous.
-func (s *Service) matchApprovedPlan(ctx context.Context, agentID, server, tool, threadID string) (approvedPlanMatch, bool) {
+// with a declared action matching (server, tool). It is the deterministic
+// plan-pass check run before rule matching in Invoke/Submit; it never matches
+// when the plan feature is unused or the caller is anonymous.
+func (s *Service) matchApprovedPlan(ctx context.Context, agentID, server, tool string) (approvedPlanMatch, bool) {
 	if !s.plansEnabled() || agentID == "" || tool == "" {
 		return approvedPlanMatch{}, false
 	}
@@ -506,9 +505,6 @@ func (s *Service) matchApprovedPlan(ctx context.Context, agentID, server, tool, 
 	for _, plan := range plans {
 		plan = s.expireIfStale(ctx, plan)
 		if plan.Status != PlanStatusApproved {
-			continue
-		}
-		if plan.ThreadID != "" && plan.ThreadID != threadID {
 			continue
 		}
 		for _, a := range plan.Actions {

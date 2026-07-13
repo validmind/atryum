@@ -52,7 +52,6 @@ type stubService struct {
 	plan                 invocation.Plan
 	planErr              error
 	planSubmitReq        *invocation.PlanSubmitRequest
-	planSubmitCtx        context.Context
 	planApproveID        string
 	planTTL              int
 	planDenyID           string
@@ -120,8 +119,7 @@ func (s *stubService) RecordExecution(ctx context.Context, id string, req invoca
 	}
 	return invocation.InvocationResponse{InvocationID: id, Status: invocation.StatusSucceeded}, s.invErr
 }
-func (s *stubService) SubmitPlan(ctx context.Context, req invocation.PlanSubmitRequest) (invocation.Plan, error) {
-	s.planSubmitCtx = ctx
+func (s *stubService) SubmitPlan(_ context.Context, req invocation.PlanSubmitRequest) (invocation.Plan, error) {
 	s.planSubmitReq = &req
 	return s.plan, s.planErr
 }
@@ -619,77 +617,6 @@ func TestManagedAgentSessionRegistrationDebugLogsFailure(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected logs to contain %q, got:\n%s", want, got)
 		}
-	}
-}
-
-func TestManagedAgentSessionPlanUsesRegisteredAgentAndServer(t *testing.T) {
-	now := time.Now().UTC()
-	svc := &stubService{plan: invocation.Plan{
-		PlanID:      "plan_123",
-		AgentID:     "agent-managed",
-		Source:      "github",
-		Goal:        "Update the issue",
-		Actions:     []invocation.PlanAction{{Server: "github", Tool: "issues.update"}},
-		Status:      invocation.PlanStatusPendingApproval,
-		Revision:    1,
-		TTLSeconds:  3600,
-		SubmittedAt: now,
-	}}
-	managed := &stubManagedAgentsAdmin{sessions: []managedagents.SessionRegistration{{
-		SessionID: "ses_managed", AgentID: "agent-managed",
-	}}}
-	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
-	h.SetManagedAgents(managed)
-	body := strings.NewReader(`{
-		"goal":"Update the issue",
-		"actions":[{"server":"github","tool":"issues.update","description":"Set the issue status"}],
-		"ttl_seconds":600
-	}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/managed-agents/sessions/ses_managed/plan", body)
-	req = req.WithContext(auth.WithIdentity(req.Context(), auth.Identity{AgentID: "human-reviewer"}))
-	w := httptest.NewRecorder()
-
-	h.Routes().ServeHTTP(w, req)
-
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d body=%s", w.Code, w.Body.String())
-	}
-	if svc.planSubmitReq == nil {
-		t.Fatal("expected SubmitPlan to be called")
-	}
-	got := svc.planSubmitReq
-	if got.AgentID != "agent-managed" || got.ThreadID != "ses_managed" || got.Source != "github" {
-		t.Fatalf("unexpected managed-session plan request: %#v", got)
-	}
-	if got.ClientName != "claude-managed-agents" || got.TTLSeconds != 600 {
-		t.Fatalf("unexpected plan metadata: %#v", got)
-	}
-	if agentID := auth.AgentIDFromContext(svc.planSubmitCtx); agentID != "agent-managed" {
-		t.Fatalf("SubmitPlan context agent_id = %q, want managed agent", agentID)
-	}
-}
-
-func TestManagedAgentSessionPlanRejectsMixedOrUnscopedServers(t *testing.T) {
-	svc := &stubService{}
-	managed := &stubManagedAgentsAdmin{sessions: []managedagents.SessionRegistration{{
-		SessionID: "ses_managed", AgentID: "agent-managed",
-	}}}
-	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
-	h.SetManagedAgents(managed)
-
-	for _, body := range []string{
-		`{"goal":"x","actions":[{"tool":"Bash"}]}`,
-		`{"goal":"x","actions":[{"server":"github","tool":"get"},{"server":"slack","tool":"send"}]}`,
-	} {
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/managed-agents/sessions/ses_managed/plan", strings.NewReader(body))
-		w := httptest.NewRecorder()
-		h.Routes().ServeHTTP(w, req)
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("expected 400 for %s, got %d body=%s", body, w.Code, w.Body.String())
-		}
-	}
-	if svc.planSubmitReq != nil {
-		t.Fatalf("SubmitPlan must not be called for invalid session plans: %#v", svc.planSubmitReq)
 	}
 }
 

@@ -146,30 +146,6 @@ sessions on restart (the cursor is persisted, so it replays anything missed).
 Send the session a user message; blocking tool calls now flow through your
 Atryum rules and appear live in the invocations UI.
 
-### 4. Preapprove a session plan
-
-The event bridge cannot add plan tools to Claude's hosted agent. Instead, an
-administrator can submit a plan for a registered session before Claude reaches
-its tool confirmations:
-
-```bash
-curl -sS -X POST http://localhost:8080/api/v1/admin/managed-agents/sessions/sess_.../plan \
-  -H "content-type: application/json" \
-  -d '{
-    "goal": "Triage and update the GitHub issue",
-    "actions": [
-      {"server": "github", "tool": "issues.get", "description": "Read the issue"},
-      {"server": "github", "tool": "issues.update", "description": "Apply the approved update"}
-    ],
-    "ttl_seconds": 1800
-  }'
-```
-
-All actions in one managed-session plan must name the same non-empty server.
-Once approved, matching tool confirmations for that registered agent use the
-normal plan fast approval until the plan expires, is cancelled, or is
-superseded.
-
 ### Approval rules
 
 Rules match on `(server, tool, agent)` exactly as for any other invocation:

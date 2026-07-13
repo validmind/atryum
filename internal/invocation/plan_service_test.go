@@ -322,40 +322,6 @@ func TestApprovedPlanGrantsPassToMatchingSubmit(t *testing.T) {
 	}
 }
 
-func TestSessionScopedPlanOnlyGrantsPassToItsThread(t *testing.T) {
-	svc, _ := newPlanTestService(t, nil, nil, nil)
-	ctx := context.Background()
-	req := planSubmit("agent-a", "Bash")
-	req.ThreadID = "managed-session-a"
-	plan, err := svc.SubmitPlan(ctx, req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.ApprovePlan(ctx, plan.PlanID, 0); err != nil {
-		t.Fatal(err)
-	}
-
-	resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{
-		Source: "Bash", Tool: "Bash", AgentID: "agent-a", ThreadID: "managed-session-a", Input: map[string]any{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.Status != invocation.StatusApproved || resp.PlanID == nil || *resp.PlanID != plan.PlanID {
-		t.Fatalf("same-thread response = %+v, want plan approval", resp)
-	}
-
-	resp, err = svc.Submit(ctx, invocation.ExternalSubmitRequest{
-		Source: "Bash", Tool: "Bash", AgentID: "agent-a", ThreadID: "managed-session-b", Input: map[string]any{},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.Status != invocation.StatusPendingApproval || resp.PlanID != nil {
-		t.Fatalf("other-thread response = %+v, must not receive session A's plan pass", resp)
-	}
-}
-
 func TestAIEvaluatedPlanRequiresAdherenceJudgeForMatchingSubmit(t *testing.T) {
 	rules := []invocation.ApprovalRule{{
 		ID:                "rule-plan-ai",

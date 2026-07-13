@@ -145,7 +145,7 @@ Admin (UI and operators):
 - `/api/v1/admin/agents`, `/{id}`
 - `/api/v1/admin/settings`, `/api/v1/admin/policy`
 - `/api/v1/admin/managed-agents/accounts`, `/managed-agents/agents` — discover configured Anthropic accounts and Claude agents for UI linking
-- `/api/v1/admin/managed-agents/sessions` — manually register a Claude Managed Agents session for the events bridge to watch; `/{session_id}/plan` submits a preapproval plan for that session's registered agent
+- `/api/v1/admin/managed-agents/sessions` — manually register a Claude Managed Agents session for the events bridge to watch; kept as a debugging escape hatch
 - `/api/v1/mcp/oauth/callback` — public OAuth callback for upstream MCP server connect flows
 - `/api/v1/admin-auth/config` — public, non-secret OIDC metadata for the admin UI login screen
 
