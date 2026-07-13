@@ -487,6 +487,7 @@ const Invocations: React.FC = () => {
         detail?.server_name,
         detail?.tool_name,
       ),
+      insert_before: "",
     });
     ruleModalOnSuccessRef.current = resolvedSelectedId
       ? () => approve.mutateAsync({ id: resolvedSelectedId })
@@ -515,6 +516,7 @@ const Invocations: React.FC = () => {
         detail?.server_name,
         detail?.tool_name,
       ),
+      insert_before: "",
     });
     ruleModalOnSuccessRef.current = resolvedSelectedId
       ? () => deny.mutateAsync({ id: resolvedSelectedId, message: denyMessage })
