@@ -102,10 +102,10 @@ export type CreateRuleModalProps = {
   initialValues?: Partial<RuleInput>;
   /**
    * Called after a rule is successfully created (not on edit or delete).
-   * Use this to trigger a follow-up action such as approving or denying the
-   * current invocation after the rule has been saved.
+   * Receives the saved rule so callers can inspect the final action before
+   * deciding whether to approve or deny the current invocation.
    */
-  onSuccess?: () => void | Promise<void>;
+  onSuccess?: (savedRule: Rule) => void | Promise<void>;
 };
 
 export const CreateRuleModal: React.FC<CreateRuleModalProps> = ({
@@ -224,10 +224,10 @@ export const CreateRuleModal: React.FC<CreateRuleModalProps> = ({
         toast({ title: 'Rule saved', status: 'success', duration: 3000, isClosable: true });
         onClose();
       } else {
-        await createRule.mutateAsync(form);
+        const saved = await createRule.mutateAsync(form);
         toast({ title: 'Rule created', status: 'success', duration: 3000, isClosable: true });
         onClose();
-        await onSuccess?.();
+        await onSuccess?.(saved);
       }
     } catch (err: unknown) {
       setStatusMsg({ text: apiErrorMessage(err, 'Save failed.'), isError: true });

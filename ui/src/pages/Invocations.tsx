@@ -70,6 +70,7 @@ import {
   invocationsApi,
   type InvocationEvent,
   type InvocationStatus,
+  type Rule,
   type RuleInput,
 } from "../api/AtryumAPI";
 import {
@@ -323,7 +324,7 @@ const Invocations: React.FC = () => {
   >();
   // Stored as a ref so the callback is never stale without causing re-renders.
   const ruleModalOnSuccessRef = useRef<
-    (() => void | Promise<void>) | undefined
+    ((savedRule: Rule) => void | Promise<void>) | undefined
   >(undefined);
   const {
     isOpen: isRuleModalOpen,
@@ -490,7 +491,12 @@ const Invocations: React.FC = () => {
       insert_before: "",
     });
     ruleModalOnSuccessRef.current = resolvedSelectedId
-      ? () => approve.mutateAsync({ id: resolvedSelectedId })
+      ? (savedRule) => {
+          if (savedRule.action === "auto_approve")
+            return approve.mutateAsync({ id: resolvedSelectedId });
+          if (savedRule.action === "auto_deny")
+            return deny.mutateAsync({ id: resolvedSelectedId, message: denyMessage });
+        }
       : undefined;
     openRuleModal();
   };
@@ -519,7 +525,12 @@ const Invocations: React.FC = () => {
       insert_before: "",
     });
     ruleModalOnSuccessRef.current = resolvedSelectedId
-      ? () => deny.mutateAsync({ id: resolvedSelectedId, message: denyMessage })
+      ? (savedRule) => {
+          if (savedRule.action === "auto_approve")
+            return approve.mutateAsync({ id: resolvedSelectedId });
+          if (savedRule.action === "auto_deny")
+            return deny.mutateAsync({ id: resolvedSelectedId, message: denyMessage });
+        }
       : undefined;
     openRuleModal();
   };
