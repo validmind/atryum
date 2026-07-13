@@ -211,6 +211,28 @@ release-push tag:
           gh release create "{{tag}}" "${artifacts[@]}" --generate-notes
         fi
 
+# Run the LLM-as-judge grounding eval against any OpenAI-compatible endpoint.
+# Session history is always reconstructed and fenced, matching production.
+# base_url is the server ROOT — no /v1; the runner appends /v1/chat/completions.
+# api_key may be empty for keyless local servers (e.g. Ollama).
+# Examples:
+#   just judge-eval                                                       # litellm at :4000, gpt-5.4-mini
+#   just judge-eval model=llama3.1 base_url=http://localhost:11434        # Ollama, keyless
+#   just judge-eval model=gpt-4o base_url=https://api.openai.com api_key="$OPENAI_API_KEY"
+# Results land in internal/invocation/testdata/judge_evals/results/<model>.{json,md}
+judge-eval model="gpt-5.4-mini" base_url="http://localhost:4000" api_key="" trials="1":
+	ATRYUM_JUDGE_EVAL_MODEL="{{model}}" \
+	ATRYUM_JUDGE_EVAL_BASE_URL="{{base_url}}" \
+	ATRYUM_JUDGE_EVAL_API_KEY="{{api_key}}" \
+	ATRYUM_JUDGE_EVAL_TRIALS="{{trials}}" \
+	  go test -tags judgeeval ./internal/invocation -run TestJudgeGrounding -v
+
+# Verify the eval harness and corpus load with no LLM or API key (fail-closed
+# contract tests + the constant-verdict baseline floor). Fast, offline, deterministic.
+judge-eval-check:
+	go test -tags judgeeval ./internal/invocation \
+	  -run 'TestJudge(GarbageOutput|MarkdownFenced|Request|UnrecognizedVerdict)|TestConstantVerdictBaselines' -v
+
 # List registered harnesses, auth protocols, and MCP targets
 integration-list:
 	integrations/scripts/agent_harness_integration_tests.sh list
