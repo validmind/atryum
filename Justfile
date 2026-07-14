@@ -154,33 +154,34 @@ release-build tag:
 
         repo_dir="$(pwd)"
         release_dir="$repo_dir/{{release_dir}}/{{tag}}"
-        worktree_dir="$repo_dir/../atryum-release-{{tag}}"
+        build_dir="$repo_dir/../atryum-release-{{tag}}"
 
-        # Build from a clean checkout of the tag: only tracked, tagged content
-        # can reach the artifacts, and the artifacts always match the tag.
-        if [ -e "$worktree_dir" ]; then
-          git worktree remove --force "$worktree_dir" 2>/dev/null || rm -rf "$worktree_dir"
-        fi
-        git worktree add --detach "$worktree_dir" "{{tag}}"
-        trap 'git worktree remove --force "$worktree_dir"' EXIT
+        # Build from a pristine local clone of the tag: only tracked, tagged
+        # content can reach the artifacts, and go stamps the tag's commit into
+        # the binaries as VCS provenance. A clone, not a worktree — go's repo
+        # detection needs a .git directory; a worktree's .git file makes it
+        # walk up and stamp (or choke on) whatever repo encloses the parent.
+        rm -rf "$build_dir"
+        git clone --quiet --branch "{{tag}}" "$repo_dir" "$build_dir"
+        trap 'rm -rf "$build_dir"' EXIT
 
-        (cd "$worktree_dir" && just third-party-notices build-ui)
+        (cd "$build_dir" && just third-party-notices build-ui)
 
         rm -rf "$release_dir"
         mkdir -p "$release_dir"
-        cp "$worktree_dir/LICENSE" "$worktree_dir/NOTICE" "$release_dir/"
-        cp "$worktree_dir/{{license_dir}}/third-party/THIRD_PARTY_NOTICES" "$release_dir/"
-        cp -R "$worktree_dir/{{license_dir}}/third-party/licenses" "$release_dir/third_party_licenses"
-        cp "$worktree_dir/{{license_dir}}/third-party/go-licenses.csv" "$release_dir/"
-        cp "$worktree_dir/{{license_dir}}/third-party/npm-production-licenses.json" "$release_dir/"
-        cp "$worktree_dir/{{license_dir}}/third-party/npm-production-license-files.tsv" "$release_dir/"
+        cp "$build_dir/LICENSE" "$build_dir/NOTICE" "$release_dir/"
+        cp "$build_dir/{{license_dir}}/third-party/THIRD_PARTY_NOTICES" "$release_dir/"
+        cp -R "$build_dir/{{license_dir}}/third-party/licenses" "$release_dir/third_party_licenses"
+        cp "$build_dir/{{license_dir}}/third-party/go-licenses.csv" "$release_dir/"
+        cp "$build_dir/{{license_dir}}/third-party/npm-production-licenses.json" "$release_dir/"
+        cp "$build_dir/{{license_dir}}/third-party/npm-production-license-files.tsv" "$release_dir/"
 
         build_target() {
           local goos="$1"
           local goarch="$2"
           local out="atryum-${goos}-${goarch}"
 
-          (cd "$worktree_dir" && GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build -tags release_notices -o "$release_dir/$out" ./cmd/atryum)
+          (cd "$build_dir" && GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build -trimpath -tags release_notices -o "$release_dir/$out" ./cmd/atryum)
         }
 
         # Build targets
@@ -188,6 +189,16 @@ release-build tag:
         build_target darwin arm64
         build_target linux amd64
         build_target linux arm64
+
+        # The stamp is the release's provenance: fail if the binaries don't
+        # carry the tag's commit. vcs.modified is not asserted — build-ui may
+        # regenerate tracked UI files in the clone before compiling.
+        tag_commit="$(git rev-parse "{{tag}}^{commit}")"
+        if ! go version -m "$release_dir/atryum-linux-amd64" | grep -q "vcs.revision=$tag_commit"; then
+          echo "Release binary VCS stamp does not match tag {{tag}} ($tag_commit):"
+          go version -m "$release_dir/atryum-linux-amd64" | grep vcs || true
+          exit 1
+        fi
 
 # Create or update a GitHub release from releases/<tag>/
 release-push tag:

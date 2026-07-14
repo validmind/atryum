@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   triggering invocation.
 - `rule_evaluated` audit events for human-fallback dispositions, keyed by
   rule ID.
+- Release builds run from a pristine clone of the release tag, with the
+  tag's commit stamped into the binaries as VCS provenance, and GitHub
+  release notes are drawn from this changelog.
 
 ### Changed
 
