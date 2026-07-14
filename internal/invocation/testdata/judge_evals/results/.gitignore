@@ -1,0 +1,3 @@
+# Eval run outputs are generated artifacts, not source. Keep the dir, ignore contents.
+*
+!.gitignore
