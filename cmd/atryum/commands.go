@@ -1,6 +1,7 @@
 package main
 
 import (
+	"atryum/internal/version"
 	"bufio"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 )
@@ -24,6 +26,7 @@ Commands:
 	  setup      First-time setup flows (demo, mcp, validmind).
   hooks      Install or uninstall agent hooks.
   licenses   Print bundled third-party license notices.
+  version    Print the atryum version.
   help       Show this help.
 
 	Examples:
@@ -37,6 +40,35 @@ Commands:
 	  atryum hooks install amp
 	  atryum hooks install pi
 	  atryum licenses`)
+}
+
+// versionString is the injected release version, annotated with the VCS
+// revision go stamped into the binary when one is present.
+func versionString() string {
+	v := version.Version
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return v
+	}
+	var rev, modified string
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.modified":
+			modified = s.Value
+		}
+	}
+	if rev == "" {
+		return v
+	}
+	if len(rev) > 12 {
+		rev = rev[:12]
+	}
+	if modified == "true" {
+		rev += ", modified"
+	}
+	return fmt.Sprintf("%s (%s)", v, rev)
 }
 
 func runUsage() string {
