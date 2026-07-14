@@ -46,10 +46,10 @@ upgrade for belongs there, even if the commit called it a "fix" or "feat".
      present but empty.
    - Keep the compare links at the bottom of the file in sync.
 4. Sanity-check the release path: `just release <tag>` builds from a
-   pristine worktree of the tag (at `../atryum-release-<tag>`) and reads
-   the notes from the tag's own `CHANGELOG.md` — so the order is commit
-   the changelog, tag, push the tag, then release. Anything not committed
-   and tagged simply isn't in the release, notes included.
+   pristine local clone of the tag (at `../atryum-release-<tag>`) and
+   reads the notes from the tag's own `CHANGELOG.md` — so the order is
+   commit the changelog, tag, push the tag, then release. Anything not
+   committed and tagged simply isn't in the release, notes included.
 
 Show the drafted section to the user before they tag — the changelog is a
 judgment call about emphasis, and they may know context the log doesn't
