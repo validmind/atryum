@@ -13,6 +13,8 @@ atryum.db
 .direnv
 *.nix
 .codex
+*.swp
+*.swo
 __inspiration
 opencode-state
 
