@@ -137,8 +137,8 @@ release tag:
         just release-build "{{tag}}"
         just release-push "{{tag}}"
 
-# Build release artifacts into releases/<tag>/
-release-build tag: third-party-notices build-ui
+# Build release artifacts into releases/<tag>/ from a pristine worktree of the tag
+release-build tag:
         #!/usr/bin/env bash
         set -euo pipefail
 
@@ -147,36 +147,40 @@ release-build tag: third-party-notices build-ui
           exit 1
         fi
 
+        if ! git rev-parse -q --verify "refs/tags/{{tag}}" >/dev/null; then
+          echo "Tag {{tag}} does not exist. Commit the release (including CHANGELOG.md), then: git tag {{tag}}"
+          exit 1
+        fi
+
         repo_dir="$(pwd)"
         release_dir="$repo_dir/{{release_dir}}/{{tag}}"
+        worktree_dir="$repo_dir/../atryum-release-{{tag}}"
+
+        # Build from a clean checkout of the tag: only tracked, tagged content
+        # can reach the artifacts, and the artifacts always match the tag.
+        if [ -e "$worktree_dir" ]; then
+          git worktree remove --force "$worktree_dir" 2>/dev/null || rm -rf "$worktree_dir"
+        fi
+        git worktree add --detach "$worktree_dir" "{{tag}}"
+        trap 'git worktree remove --force "$worktree_dir"' EXIT
+
+        (cd "$worktree_dir" && just third-party-notices build-ui)
+
         rm -rf "$release_dir"
         mkdir -p "$release_dir"
-        cp LICENSE NOTICE "$release_dir/"
-        cp "{{license_dir}}/third-party/THIRD_PARTY_NOTICES" "$release_dir/"
-        cp -R "{{license_dir}}/third-party/licenses" "$release_dir/third_party_licenses"
-        cp "{{license_dir}}/third-party/go-licenses.csv" "$release_dir/"
-        cp "{{license_dir}}/third-party/npm-production-licenses.json" "$release_dir/"
-        cp "{{license_dir}}/third-party/npm-production-license-files.tsv" "$release_dir/"
+        cp "$worktree_dir/LICENSE" "$worktree_dir/NOTICE" "$release_dir/"
+        cp "$worktree_dir/{{license_dir}}/third-party/THIRD_PARTY_NOTICES" "$release_dir/"
+        cp -R "$worktree_dir/{{license_dir}}/third-party/licenses" "$release_dir/third_party_licenses"
+        cp "$worktree_dir/{{license_dir}}/third-party/go-licenses.csv" "$release_dir/"
+        cp "$worktree_dir/{{license_dir}}/third-party/npm-production-licenses.json" "$release_dir/"
+        cp "$worktree_dir/{{license_dir}}/third-party/npm-production-license-files.tsv" "$release_dir/"
 
         build_target() {
           local goos="$1"
           local goarch="$2"
           local out="atryum-${goos}-${goarch}"
 
-          tmp_dir="$(mktemp -d)"
-          trap 'rm -rf "$tmp_dir"' RETURN
-
-          mkdir -p "$tmp_dir/atryum"
-          rsync -a --delete \
-            --exclude .git \
-            --exclude /atryum \
-            --exclude /atryum.db \
-            --exclude /{{release_dir}} \
-            --exclude /ui/node_modules \
-            --exclude /ui/dist \
-            "$repo_dir/" "$tmp_dir/atryum/"
-
-          (cd "$tmp_dir/atryum" && GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build -tags release_notices -o "$release_dir/$out" ./cmd/atryum)
+          (cd "$worktree_dir" && GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build -tags release_notices -o "$release_dir/$out" ./cmd/atryum)
         }
 
         # Build targets
@@ -204,10 +208,40 @@ release-push tag:
           exit 1
         fi
 
+        # The GitHub release tag must exist on origin and match the local tag,
+        # or the published release would point at a different commit than the
+        # artifacts were built from.
+        local_sha="$(git rev-parse "refs/tags/{{tag}}")"
+        remote_sha="$(git ls-remote origin "refs/tags/{{tag}}" | cut -f1)"
+        if [ -z "$remote_sha" ]; then
+          echo "Tag {{tag}} is not on origin. Push it first: git push origin {{tag}}"
+          exit 1
+        fi
+        if [ "$remote_sha" != "$local_sha" ]; then
+          echo "Tag {{tag}} differs between local ($local_sha) and origin ($remote_sha). Reconcile before releasing."
+          exit 1
+        fi
+
+        # Curated notes: the CHANGELOG.md section for this version as of the
+        # tagged commit, if present. gh prepends --notes-file content to the
+        # --generate-notes PR list.
+        version="{{tag}}"
+        version="${version#v}"
+        notes_file="$(mktemp)"
+        trap 'rm -f "$notes_file"' EXIT
+        git show "{{tag}}:CHANGELOG.md" 2>/dev/null | awk -v ver="$version" '
+          $0 ~ "^## \\[" ver "\\]" {found=1; next}
+          found && /^## \[/ {exit}
+          found {print}
+        ' > "$notes_file" || true
+
         # Create or upload to release
         if gh release view "{{tag}}" >/dev/null 2>&1; then
           gh release upload "{{tag}}" "${artifacts[@]}" --clobber
+        elif [ -s "$notes_file" ]; then
+          gh release create "{{tag}}" "${artifacts[@]}" --title "{{tag}}" --notes-file "$notes_file" --generate-notes
         else
+          echo "No CHANGELOG.md section found for {{tag}}; falling back to generated notes only."
           gh release create "{{tag}}" "${artifacts[@]}" --generate-notes
         fi
 
