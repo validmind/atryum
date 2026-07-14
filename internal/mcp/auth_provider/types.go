@@ -3,7 +3,7 @@ package authprovider
 import (
 	"context"
 
-	"atryum/internal/mcp"
+	"github.com/validmind/atryum/internal/mcp"
 )
 
 type Provider interface {

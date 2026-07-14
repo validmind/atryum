@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"atryum/internal/config"
+	"github.com/validmind/atryum/internal/config"
 )
 
 const atryumAPIPath = "/api/atryum/unstable"

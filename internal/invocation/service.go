@@ -15,9 +15,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"atryum/internal/auth"
-	"atryum/internal/invocation/policy"
-	"atryum/internal/mcp"
+	"github.com/validmind/atryum/internal/auth"
+	"github.com/validmind/atryum/internal/invocation/policy"
+	"github.com/validmind/atryum/internal/mcp"
 )
 
 // dispositionContinue is an internal sentinel returned by runAIEvaluation when the

@@ -20,7 +20,7 @@ opencode-state
 docker-compose.override.yml
 
 # build
-atryum
+/atryum
 !cmd/atryum/
 !cmd/atryum/licenses_stub.go
 releases

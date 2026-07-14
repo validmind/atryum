@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"atryum/internal/config"
+	"github.com/validmind/atryum/internal/config"
 )
 
 func TestNewClientReturnsNilWhenBackendNotConfigured(t *testing.T) {

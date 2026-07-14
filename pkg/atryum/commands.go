@@ -1,12 +1,12 @@
-package main
+package atryum
 
 import (
-	"atryum/internal/version"
 	"bufio"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/validmind/atryum/internal/version"
 	"io"
 	"os"
 	"path/filepath"
@@ -91,9 +91,9 @@ Examples:
 	  atryum run --init-servers`)
 }
 
-func runLicenses() error {
-	fmt.Print(thirdPartyNotices)
-	if !strings.HasSuffix(thirdPartyNotices, "\n") {
+func runLicenses(o options) error {
+	fmt.Print(o.thirdPartyNotices)
+	if !strings.HasSuffix(o.thirdPartyNotices, "\n") {
 		fmt.Println()
 	}
 	return nil

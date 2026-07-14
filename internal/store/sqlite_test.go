@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"atryum/internal/invocation"
-	"atryum/internal/mcp"
+	"github.com/validmind/atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/mcp"
 
 	_ "modernc.org/sqlite"
 )

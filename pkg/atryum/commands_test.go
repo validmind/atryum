@@ -1,4 +1,4 @@
-package main
+package atryum
 
 import (
 	"log/slog"
@@ -18,7 +18,7 @@ func TestGlobalUsageIncludesCommands(t *testing.T) {
 }
 
 func TestRunLicensesReturnsNoError(t *testing.T) {
-	if err := runLicenses(); err != nil {
+	if err := runLicenses(buildOptions(nil)); err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 }
