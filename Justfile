@@ -200,6 +200,17 @@ release-build tag:
           exit 1
         fi
 
+        # Run the host-platform binary and check it self-reports the tag —
+        # -ldflags -X silently no-ops if the version symbol is ever renamed.
+        host_bin="$release_dir/atryum-$(go env GOHOSTOS)-$(go env GOHOSTARCH)"
+        if [ -x "$host_bin" ]; then
+          reported="$("$host_bin" version 2>&1 || true)"
+          if [[ "$reported" != "{{tag}} "* && "$reported" != "{{tag}}" ]]; then
+            echo "Release binary reports version \"$reported\", expected \"{{tag}}\". Check the -ldflags -X path against internal/version."
+            exit 1
+          fi
+        fi
+
 # Create or update a GitHub release from releases/<tag>/
 release-push tag:
         #!/usr/bin/env bash
