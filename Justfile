@@ -181,7 +181,7 @@ release-build tag:
           local goarch="$2"
           local out="atryum-${goos}-${goarch}"
 
-          (cd "$build_dir" && GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build -trimpath -tags release_notices -o "$release_dir/$out" ./cmd/atryum)
+          (cd "$build_dir" && GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build -trimpath -tags release_notices -ldflags "-X atryum/internal/version.Version={{tag}}" -o "$release_dir/$out" ./cmd/atryum)
         }
 
         # Build targets
@@ -198,6 +198,17 @@ release-build tag:
           echo "Release binary VCS stamp does not match tag {{tag}} ($tag_commit):"
           go version -m "$release_dir/atryum-linux-amd64" | grep vcs || true
           exit 1
+        fi
+
+        # Run the host-platform binary and check it self-reports the tag —
+        # -ldflags -X silently no-ops if the version symbol is ever renamed.
+        host_bin="$release_dir/atryum-$(go env GOHOSTOS)-$(go env GOHOSTARCH)"
+        if [ -x "$host_bin" ]; then
+          reported="$("$host_bin" version 2>&1 || true)"
+          if [[ "$reported" != "{{tag}} "* && "$reported" != "{{tag}}" ]]; then
+            echo "Release binary reports version \"$reported\", expected \"{{tag}}\". Check the -ldflags -X path against internal/version."
+            exit 1
+          fi
         fi
 
 # Create or update a GitHub release from releases/<tag>/
