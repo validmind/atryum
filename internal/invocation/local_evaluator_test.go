@@ -98,6 +98,17 @@ func TestLocalEvaluatorPlanAdherenceUsesDefaultConfigWhenIDEmpty(t *testing.T) {
 	}
 }
 
+func TestParsePlanAdherenceVerdictAcceptsCharterViolation(t *testing.T) {
+	evaluator := NewLocalEvaluatorClient(localLLMConfigStoreStub{})
+	resp := evaluator.parsePlanAdherenceVerdict(`{"verdict":"violates_charter","confidence":0.98,"reason":"deletion is forbidden"}`)
+	if resp.Verdict != "violates_charter" {
+		t.Fatalf("verdict = %q, want violates_charter", resp.Verdict)
+	}
+	if resp.Confidence == nil || *resp.Confidence != 0.98 {
+		t.Fatalf("confidence = %v, want 0.98", resp.Confidence)
+	}
+}
+
 // defaultOnlyLLMConfigStoreStub fails GetLLMConfig so the test proves the
 // empty-ID path goes through DefaultLLMConfig.
 type defaultOnlyLLMConfigStoreStub struct {

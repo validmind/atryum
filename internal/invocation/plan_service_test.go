@@ -439,6 +439,38 @@ func TestPlanGatedCallDeniedWhenAdherenceJudgeRejects(t *testing.T) {
 	}
 }
 
+func TestPlanGatedCallDeniedWhenItViolatesCharter(t *testing.T) {
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "Never delete files."},
+	}}
+	judge := &planJudgeStub{adherenceResp: invocation.PlanAdherenceResponse{
+		Verdict: "violates_charter", Reason: "the charter forbids file deletion",
+	}}
+	svc, _ := newPlanTestService(t, nil, agents, judge)
+	ctx := context.Background()
+
+	plan, err := svc.SubmitPlan(ctx, planSubmit("agent-a", "Bash"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApprovePlan(ctx, plan.PlanID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{
+		Tool: "Bash", AgentID: "agent-a", Input: map[string]any{"cmd": "rm obsolete.txt"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusDenied {
+		t.Fatalf("status = %s, want denied for charter violation", resp.Status)
+	}
+	if resp.Approval == nil || resp.Approval.Status != "plan_denied" || resp.Approval.Reason == nil || !strings.Contains(*resp.Approval.Reason, "violates agent charter") {
+		t.Fatalf("approval = %+v, want plan_denied with charter violation reason", resp.Approval)
+	}
+}
+
 func TestAIEvaluatedPlanAllowsReadingOwnPlanStatus(t *testing.T) {
 	rules := []invocation.ApprovalRule{{
 		ID:                "rule-plan-ai",

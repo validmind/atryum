@@ -597,9 +597,12 @@ func (s *Service) judgePlanAdherence(ctx context.Context, plan Plan, action Plan
 			reason += ": " + resp.Reason
 		}
 		return reason, resp.Confidence, planGateApprove
-	case "outside_plan":
+	case "outside_plan", "violates_charter":
 		slog.Info("plan adherence judge rejected plan-gated call",
 			"plan_id", plan.PlanID, "tool", tool, "reason", resp.Reason)
+		if resp.Verdict == "violates_charter" {
+			return "tool call violates agent charter: " + resp.Reason, resp.Confidence, planGateDeny
+		}
 		return "tool call is outside approved plan " + plan.PlanID + ": " + resp.Reason, resp.Confidence, planGateDeny
 	default:
 		slog.Info("plan adherence judge escalated plan-gated call",
