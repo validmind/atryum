@@ -655,8 +655,8 @@ const atryumInitializeInstructions = "This MCP server is gated by the Atryum har
 	"To see the static approval rules that currently apply to you, call the atryum_rules_get MCP tool or issue an HTTP GET to /api/v1/agent/rules " +
 	"(optionally with ?server={server}&tool={tool} to preview the disposition for a specific tool); " +
 	"the response is advisory only, as AI-evaluation and human-approval outcomes are decided during the actual gated call. " +
-	"When the atryum.plan.submit tool is listed and a task is complex, risky, or has multiple clear tool steps, submit a batch plan before running tools. " +
-	"Use plans for work with two or more tool calls, file changes, shell commands, external systems, or ordered actions. " +
+	"When the atryum.plan.submit tool is listed and work is risky or could leave files, systems, or external state inconsistent if a later call is denied, submit a batch plan before running tools. " +
+	"Use plans for dependent changes whose safe completion requires every step to run. " +
 	"After submitting a plan, call atryum.plan.get until the plan is approved, denied, needs_revision, expired, cancelled, or superseded; only proceed with planned tool calls after approval."
 
 // Dotted tool names are valid MCP names, but common harnesses have rejected
@@ -1110,7 +1110,7 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 			resp.PlanSubmission = &AgentPlanSubmission{
 				Enabled:  true,
 				Endpoint: "/api/v1/external/plans",
-				Message:  "Plan-scoped rules apply to this agent. When a task is complex, risky, or involves multiple clear tool steps, submit a plan before running tools. Use plans for two or more tool calls, file changes, shell commands, external systems, or ordered actions. Wait for approval before executing the planned steps. The plan response gives every action an action_id; retain it. When multiple plan steps share a tool and server, include the selected action_id as plan_action_id on the later tool-call submission. Once the plan is approved, tool calls matching its declared actions are checked by an adherence judge against both the plan and the agent charter — only calls that satisfy both are auto-approved; off-plan or charter-violating calls are denied. Polling the approved plan's own status is always auto-approved.",
+				Message:  "Plan-scoped rules apply to this agent. When work is risky or could leave systems, files, or external state inconsistent if a later call is denied, submit a plan before running tools. In particular, plan dependent changes whose safe completion requires every step to run, so they can be reviewed together before the first side effect. Wait for approval before executing the planned steps. The plan response gives every action an action_id; retain it. When multiple plan steps share a tool and server, include the selected action_id as plan_action_id on the later tool-call submission. Once the plan is approved, tool calls matching its declared actions are checked against both the plan and the agent charter — only calls that satisfy both are auto-approved; off-plan or charter-violating calls are denied. Polling the approved plan's own status is always auto-approved.",
 			}
 		}
 		resp.Items = append(resp.Items, AgentRule{
@@ -1716,7 +1716,7 @@ const (
 func atryumPlanSubmitMCPTool() annotatedTool {
 	return annotatedTool{
 		Name:        atryumPlanSubmitTool,
-		Description: "Submit an Atryum plan before running a batch of tools. Arguments: goal string, rationale optional string, actions array of {tool, server?, description?, input_summary?}, ttl_seconds optional number, thread_id optional string, chat_context optional string. After submission, call atryum.plan.get with the returned plan_id until the plan is approved, denied, or needs_revision. Approved plans can preapprove matching later tool calls until expires_at.",
+		Description: "Submit an Atryum plan before running a batch of tools, especially when dependent calls could leave files, systems, or external state inconsistent if a later call is denied. Arguments: goal string, rationale optional string, actions array of {tool, server?, description?, input_summary?}, ttl_seconds optional number, thread_id optional string, chat_context optional string. After submission, call atryum.plan.get with the returned plan_id until the plan is approved, denied, or needs_revision. Approved plans can preapprove matching later tool calls until expires_at.",
 		InputSchema: json.RawMessage(`{"type":"object","required":["goal","actions"],"properties":{"goal":{"type":"string"},"rationale":{"type":"string"},"actions":{"type":"array","minItems":1,"items":{"type":"object","required":["tool"],"properties":{"tool":{"type":"string"},"server":{"type":"string"},"description":{"type":"string"},"input_summary":{"type":"string"}}}},"ttl_seconds":{"type":"integer","minimum":1},"thread_id":{"type":"string"},"chat_context":{"type":"string"},"revision_of":{"type":"string"}}}`),
 		Annotations: &atryumAnnotations{Atryum: atryumToolPolicy{
 			EffectiveAction: invocation.RuleActionHumanApproval,

@@ -330,7 +330,7 @@ async function planHint(tool) {
   const rules = await planSupport;
   if (!rules?.plan_submission?.enabled) return "";
   const endpoint = rules.plan_submission.endpoint || "/api/v1/external/plans";
-  return ` Atryum supports preapproval plans for complex, risky, or multi-step work. For tasks with two or more tool calls, file changes, shell commands, external systems, or ordered actions, submit a batch plan to ${endpoint} before running tools, then wait for approval before executing the planned steps. The plan response gives every action an action_id; retain it and include it as plan_action_id on a later tool-call submission when multiple steps use the same tool and server. Once the plan is approved, matching tool calls are checked against it by an adherence judge (off-plan calls are denied); polling the plan's status URL is always allowed.`;
+  return ` Atryum supports preapproval plans for risky work or dependent changes that could leave files, systems, or external state inconsistent if a later call is denied. Submit a batch plan to ${endpoint} before running tools, then wait for approval before executing the planned steps. The plan response gives every action an action_id; retain it and include it as plan_action_id on a later tool-call submission when multiple steps use the same tool and server. Once the plan is approved, matching tool calls are checked against it by an adherence judge (off-plan calls are denied); polling the plan's status URL is always allowed.`;
 }
 
 function normalizeRole(value) {
