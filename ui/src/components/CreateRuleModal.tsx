@@ -328,7 +328,7 @@ export const CreateRuleModal: React.FC<CreateRuleModalProps> = ({
               <FormHelperText fontSize="xs">
                 Plan rules gate agent-submitted action plans instead of individual
                 tool calls. A plan rule only matches when every declared action's
-                tool matches its tool patterns.
+                server and tool match its patterns.
               </FormHelperText>
             </FormControl>
 

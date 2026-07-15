@@ -282,9 +282,13 @@ func planSafetyRuleMatches(rule ApprovalRule, source string, actions []PlanActio
 		return false
 	}
 	for _, action := range actions {
-		server := source
-		if rule.AppliesTo != RuleScopePlan && action.Server != "" {
-			server = action.Server
+		// Judge each action by the server it actually targets, whatever the
+		// rule's scope: a deny/human rule scoped to server B must catch an
+		// action explicitly declared on B even when the plan was submitted
+		// through another source.
+		server := action.Server
+		if server == "" {
+			server = source
 		}
 		if matchPatterns(rule.ServerPatterns, server) && matchPatterns(rule.ToolPatterns, action.Tool) {
 			return true

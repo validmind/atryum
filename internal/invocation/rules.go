@@ -73,8 +73,10 @@ func matchRules(rules []ApprovalRule, server, tool, agentCUID string) []Approval
 // matchPlanRules returns all enabled plan-scoped rules matching a submitted
 // plan, in stored priority order. A rule matches when its server patterns
 // match the plan's source, its agent CUIDs match, and EVERY declared action's
-// tool matches its tool patterns — a plan rule never fires on a plan that
-// mixes in tools outside the rule's scope.
+// (server, tool) pair matches its patterns — a plan rule never fires on a
+// plan that mixes in tools outside the rule's scope, and a plan may not
+// escape the rule's server scope by explicitly declaring an action on
+// another server.
 func matchPlanRules(rules []ApprovalRule, source string, actions []PlanAction, agentCUID string) []ApprovalRule {
 	var matched []ApprovalRule
 	for _, r := range rules {
@@ -87,14 +89,18 @@ func matchPlanRules(rules []ApprovalRule, source string, actions []PlanAction, a
 		if !matchAgentCUIDs(r.AgentCUIDs, agentCUID) {
 			continue
 		}
-		allTools := true
+		allActions := true
 		for _, a := range actions {
-			if !matchPatterns(r.ToolPatterns, a.Tool) {
-				allTools = false
+			server := a.Server
+			if server == "" {
+				server = source
+			}
+			if !matchPatterns(r.ServerPatterns, server) || !matchPatterns(r.ToolPatterns, a.Tool) {
+				allActions = false
 				break
 			}
 		}
-		if !allTools {
+		if !allActions {
 			continue
 		}
 		matched = append(matched, r)

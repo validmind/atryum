@@ -187,6 +187,61 @@ func TestSubmitPlanAutoDenyRule(t *testing.T) {
 	}
 }
 
+func TestPlanRuleServerScopeCoversExplicitCrossServerActions(t *testing.T) {
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "be careful"},
+	}}
+
+	// An auto-approve plan rule scoped to srv-a must not approve a plan that
+	// explicitly declares an action on srv-b, even when submitted via srv-a.
+	rules := []invocation.ApprovalRule{
+		{ID: "grant-a", Action: invocation.RuleActionAutoApprove, AppliesTo: invocation.RuleScopePlan, ServerPatterns: []string{"srv-a"}, Enabled: true},
+	}
+	svc, _ := newPlanTestService(t, rules, agents, &planJudgeStub{})
+	plan, err := svc.SubmitPlan(context.Background(), invocation.PlanSubmitRequest{
+		AgentID: "agent-a", Source: "srv-a", Goal: "cross-server",
+		Actions: []invocation.PlanAction{
+			{Tool: "Bash"},
+			{Tool: "Bash", Server: "srv-b"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != invocation.PlanStatusPendingApproval {
+		t.Fatalf("status = %s, want pending_approval — grant must not cover srv-b action", plan.Status)
+	}
+
+	// A same-server plan still matches the grant.
+	plan, err = svc.SubmitPlan(context.Background(), invocation.PlanSubmitRequest{
+		AgentID: "agent-a", Source: "srv-a", Goal: "same server",
+		Actions: []invocation.PlanAction{{Tool: "Bash"}, {Tool: "Bash", Server: "srv-a"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != invocation.PlanStatusApproved {
+		t.Fatalf("status = %s, want approved for actions inside the rule's server scope", plan.Status)
+	}
+
+	// A plan-scoped deny rule on srv-b must catch an explicit srv-b action
+	// submitted through another source.
+	rules = []invocation.ApprovalRule{
+		{ID: "deny-b", Action: invocation.RuleActionAutoDeny, AppliesTo: invocation.RuleScopePlan, ServerPatterns: []string{"srv-b"}, Enabled: true},
+	}
+	svc, _ = newPlanTestService(t, rules, agents, &planJudgeStub{})
+	plan, err = svc.SubmitPlan(context.Background(), invocation.PlanSubmitRequest{
+		AgentID: "agent-a", Source: "srv-a", Goal: "cross-server",
+		Actions: []invocation.PlanAction{{Tool: "Bash", Server: "srv-b"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != invocation.PlanStatusNeedsRevision || plan.MatchedRuleID == nil || *plan.MatchedRuleID != "deny-b" {
+		t.Fatalf("plan = %+v, want needs_revision from deny-b", plan)
+	}
+}
+
 func TestConfiguredPlanTTLBoundsClampSubmissionAndApproval(t *testing.T) {
 	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
 		"agent-a": {ID: "agent-rec-a", Charter: "be careful"},
