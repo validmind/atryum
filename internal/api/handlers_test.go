@@ -1481,6 +1481,9 @@ func TestAgentRulesListsApplicableRulesAndDisposition(t *testing.T) {
 	if resp.PlanSubmission == nil || !resp.PlanSubmission.Enabled {
 		t.Fatalf("expected plan submission capability, got %#v", resp.PlanSubmission)
 	}
+	if resp.PlanSubmission.Endpoint != "/api/v1/external/plans?source=amp" {
+		t.Fatalf("plan submission endpoint must carry the caller's source, got %q", resp.PlanSubmission.Endpoint)
+	}
 	if len(resp.Items) != 4 {
 		t.Fatalf("expected four applicable rules, got %#v", resp.Items)
 	}

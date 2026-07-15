@@ -1107,10 +1107,18 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 		}
 		appliesTo := normalizeRuleScope(rule.AppliesTo)
 		if appliesTo == invocation.RuleScopePlan && resp.PlanSubmission == nil {
+			// Bake the caller's source into the submission endpoint: plan
+			// actions are scoped to their source and only match later tool
+			// calls from the same source, and agents copy this endpoint
+			// verbatim from the hint.
+			endpoint := "/api/v1/external/plans"
+			if server != "" {
+				endpoint += "?source=" + url.QueryEscape(server)
+			}
 			resp.PlanSubmission = &AgentPlanSubmission{
 				Enabled:  true,
-				Endpoint: "/api/v1/external/plans",
-				Message:  "Plan-scoped rules apply to this agent. When work is risky or could leave systems, files, or external state inconsistent if a later call is denied, submit a plan before running tools. In particular, plan dependent changes whose safe completion requires every step to run, so they can be reviewed together before the first side effect. Wait for approval before executing the planned steps. The plan response gives every action an action_id; retain it. When multiple plan steps share a tool and server, pass the selected action_id as plan_action_id when the tool-call transport supports it; otherwise the adherence judge must identify exactly one matching action. Once the plan is approved, tool calls matching its declared actions are checked against both the plan and the agent charter — only calls that satisfy both are auto-approved; off-plan or charter-violating calls are denied. A plain poll of the approved plan's own status is always auto-approved.",
+				Endpoint: endpoint,
+				Message:  "Plan-scoped rules apply to this agent. When work is risky or could leave systems, files, or external state inconsistent if a later call is denied, submit a plan before running tools. In particular, plan dependent changes whose safe completion requires every step to run, so they can be reviewed together before the first side effect. Submit to the endpoint exactly as given — its source parameter scopes the plan's actions to this harness so later tool calls match. Wait for approval before executing the planned steps. The plan response gives every action an action_id; retain it. When multiple plan steps share a tool and server, pass the selected action_id as plan_action_id when the tool-call transport supports it; otherwise the adherence judge must identify exactly one matching action. Once the plan is approved, tool calls matching its declared actions are checked against both the plan and the agent charter — only calls that satisfy both are auto-approved; off-plan or charter-violating calls are denied. A plain poll of the approved plan's own status is always auto-approved.",
 			}
 		}
 		resp.Items = append(resp.Items, AgentRule{
@@ -3882,6 +3890,14 @@ func (h *Handler) externalPlans(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
+	}
+	// Plan actions are scoped to their source, and later tool calls only
+	// match actions declared for the same source. Agents copy the submission
+	// endpoint from the plan hint verbatim, so a ?source= query parameter is
+	// a far more reliable channel for the harness source than a body field
+	// the agent must remember to write. Body fields win.
+	if req.Source == "" {
+		req.Source = strings.TrimSpace(r.URL.Query().Get("source"))
 	}
 	// Header fallbacks for callers that can't (or don't) put their
 	// harness identity in the JSON body. Body fields win.

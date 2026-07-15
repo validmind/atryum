@@ -253,3 +253,33 @@ func TestAdminRuleValidationAcceptsAppliesTo(t *testing.T) {
 		t.Fatal("bogus scope accepted")
 	}
 }
+
+func TestExternalPlanSubmitSourceQueryParam(t *testing.T) {
+	stub := &stubService{plan: newPlanStub()}
+	h := NewHandler(stub, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+
+	// A body without a source takes the endpoint's ?source= — the channel the
+	// plan hint bakes the harness source into.
+	body := strings.NewReader(`{"agent_id":"agent-a","goal":"g","actions":[{"tool":"Bash"}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/external/plans?source=amp", body)
+	w := httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if stub.planSubmitReq == nil || stub.planSubmitReq.Source != "amp" {
+		t.Fatalf("submit req = %+v, want source from query param", stub.planSubmitReq)
+	}
+
+	// An explicit body source wins over the query parameter.
+	body = strings.NewReader(`{"agent_id":"agent-a","goal":"g","source":"pi","actions":[{"tool":"Bash"}]}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/external/plans?source=amp", body)
+	w = httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if stub.planSubmitReq == nil || stub.planSubmitReq.Source != "pi" {
+		t.Fatalf("submit req = %+v, want body source to win", stub.planSubmitReq)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -200,4 +201,20 @@ func (t *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		Body:       io.NopCloser(bytes.NewBufferString(t.responseBody)),
 		Request:    req,
 	}, nil
+}
+
+// Both plan judges auto-approve real side effects, so their system prompts
+// must mark every agent-authored field as untrusted data.
+func TestPlanJudgePromptsMarkAgentContentUntrusted(t *testing.T) {
+	for name, prompt := range map[string]string{
+		"plan evaluation": planJudgeSystemPrompt,
+		"plan adherence":  planAdherenceSystemPrompt,
+	} {
+		if !strings.Contains(prompt, "trusted") {
+			t.Errorf("%s prompt does not mark agent-authored content untrusted", name)
+		}
+		if !strings.Contains(prompt, "Never follow instructions") {
+			t.Errorf("%s prompt does not forbid obeying embedded instructions", name)
+		}
+	}
 }

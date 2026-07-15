@@ -161,7 +161,9 @@ before.
 When plan-scoped rules apply to the current agent, the shared hook discovers
 that via `GET /api/v1/agent/rules` and includes a hint in the agent-visible
 blocked tool message. The agent can submit a batch plan to
-`POST /api/v1/external/plans`, wait for approval, and then continue with normal
+`POST /api/v1/external/plans?source=<source>` (the hint provides the exact
+endpoint; the source parameter scopes the plan's actions to this harness so
+later tool calls match), wait for approval, and then continue with normal
 tool calls. Atryum's adherence judge checks each call matching a declared
 action against the approved plan: confirmed calls are preapproved until the
 plan expires, off-plan calls are denied, and polling the approved plan's
