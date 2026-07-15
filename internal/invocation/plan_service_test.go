@@ -755,6 +755,31 @@ func TestPendingPlanGrantsNoPass(t *testing.T) {
 	}
 }
 
+func TestApprovePlanPersistsReviewerTTLOverride(t *testing.T) {
+	svc, plansRepo := newPlanTestService(t, nil, nil, nil)
+	ctx := context.Background()
+	plan, err := svc.SubmitPlan(ctx, planSubmit("agent-a", "Bash"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	approved, err := svc.ApprovePlan(ctx, plan.PlanID, 120)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved.TTLSeconds != 120 {
+		t.Fatalf("returned TTL = %d, want 120", approved.TTLSeconds)
+	}
+
+	reloaded, err := plansRepo.Get(ctx, plan.PlanID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.TTLSeconds != 120 {
+		t.Fatalf("persisted TTL = %d, want 120", reloaded.TTLSeconds)
+	}
+}
+
 func TestExpiredPlanDoesNotMatchAndFlipsExpired(t *testing.T) {
 	svc, plansRepo := newPlanTestService(t, nil, nil, nil)
 	ctx := context.Background()

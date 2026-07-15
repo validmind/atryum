@@ -55,7 +55,7 @@ func (r *PlansRepo) Create(ctx context.Context, p invocation.Plan) error {
 }
 
 // Update persists the mutable review fields of a plan: status, approval,
-// feedback, matched rule, expiry, and decision time.
+// feedback, matched rule, TTL, expiry, and decision time.
 func (r *PlansRepo) Update(ctx context.Context, p invocation.Plan) error {
 	_, approvalJSON, err := encodePlanJSON(p)
 	if err != nil {
@@ -66,6 +66,7 @@ func (r *PlansRepo) Update(ctx context.Context, p invocation.Plan) error {
 		Set("approval_json", approvalJSON).
 		Set("matched_rule_id", p.MatchedRuleID).
 		Set("feedback", p.Feedback).
+		Set("ttl_seconds", p.TTLSeconds).
 		Set("expires_at", p.ExpiresAt).
 		Set("decided_at", p.DecidedAt).
 		Set("updated_at", time.Now().UTC()).
