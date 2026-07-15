@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,10 @@ type localLLMConfigStoreStub struct {
 }
 
 func (s localLLMConfigStoreStub) GetLLMConfig(_ context.Context, _ string) (LocalLLMConfig, error) {
+	return s.cfg, nil
+}
+
+func (s localLLMConfigStoreStub) DefaultLLMConfig(_ context.Context) (LocalLLMConfig, error) {
 	return s.cfg, nil
 }
 
@@ -55,6 +60,56 @@ func TestLocalEvaluatorJudgeOpenAISendsTemperatureZero(t *testing.T) {
 	if got, ok := payload["temperature"].(float64); !ok || got != 0 {
 		t.Fatalf("temperature = %#v, want 0", payload["temperature"])
 	}
+}
+
+// A plan adherence request without a rule-specific config ID (human- or
+// auto-approved plans) must resolve the default enabled config, not fail the
+// empty-ID lookup.
+func TestLocalEvaluatorPlanAdherenceUsesDefaultConfigWhenIDEmpty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]any{"content": `{"verdict":"follows_plan","confidence":1,"reason":"ok"}`},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	evaluator := NewLocalEvaluatorClient(defaultOnlyLLMConfigStoreStub{cfg: LocalLLMConfig{
+		ID:       "llm-default",
+		Provider: "openai_compatible",
+		Model:    "judge-model",
+		BaseURL:  server.URL,
+	}})
+
+	resp, err := evaluator.EvaluatePlanAdherence(context.Background(), PlanAdherenceRequest{
+		AtryumLLMConfigID: "",
+		Charter:           "Only run planned safe commands.",
+		Plan:              Plan{PlanID: "plan_x", Goal: "test"},
+		Action:            PlanAction{Tool: "Bash"},
+		ToolName:          "Bash",
+		ToolArgs:          map[string]any{"cmd": "echo ok"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Verdict != "follows_plan" {
+		t.Fatalf("verdict = %q, want follows_plan", resp.Verdict)
+	}
+}
+
+// defaultOnlyLLMConfigStoreStub fails GetLLMConfig so the test proves the
+// empty-ID path goes through DefaultLLMConfig.
+type defaultOnlyLLMConfigStoreStub struct {
+	cfg LocalLLMConfig
+}
+
+func (s defaultOnlyLLMConfigStoreStub) GetLLMConfig(_ context.Context, id string) (LocalLLMConfig, error) {
+	return LocalLLMConfig{}, fmt.Errorf("unexpected GetLLMConfig(%q); want DefaultLLMConfig", id)
+}
+
+func (s defaultOnlyLLMConfigStoreStub) DefaultLLMConfig(_ context.Context) (LocalLLMConfig, error) {
+	return s.cfg, nil
 }
 
 func TestLocalEvaluatorJudgeAnthropicSendsTemperatureZero(t *testing.T) {

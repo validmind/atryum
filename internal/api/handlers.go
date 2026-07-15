@@ -1110,7 +1110,7 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 			resp.PlanSubmission = &AgentPlanSubmission{
 				Enabled:  true,
 				Endpoint: "/api/v1/external/plans",
-				Message:  "Plan-scoped rules apply to this agent. When a task is complex, risky, or involves multiple clear tool steps, submit a plan before running tools. Use plans for two or more tool calls, file changes, shell commands, external systems, or ordered actions. Wait for approval before executing the planned steps.",
+				Message:  "Plan-scoped rules apply to this agent. When a task is complex, risky, or involves multiple clear tool steps, submit a plan before running tools. Use plans for two or more tool calls, file changes, shell commands, external systems, or ordered actions. Wait for approval before executing the planned steps. Once the plan is approved, tool calls matching its declared actions are compared against it by an adherence judge — calls that follow the plan are auto-approved and off-plan calls are denied. Polling the approved plan's own status is always auto-approved.",
 			}
 		}
 		resp.Items = append(resp.Items, AgentRule{

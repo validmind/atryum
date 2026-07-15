@@ -17,6 +17,10 @@ import (
 // localEvaluatorLookup adapter in cmd/atryum/main.go (avoids import cycle).
 type LLMConfigProvider interface {
 	GetLLMConfig(ctx context.Context, id string) (LocalLLMConfig, error)
+	// DefaultLLMConfig returns the config to use when a caller has no
+	// rule-specific config ID — e.g. the plan adherence judge reviewing a
+	// human-approved plan. Errors when no enabled config exists.
+	DefaultLLMConfig(ctx context.Context) (LocalLLMConfig, error)
 }
 
 // LocalLLMConfig holds the configuration needed for a single LLM provider call.
@@ -418,9 +422,17 @@ Respond with valid JSON only — no markdown fences, no extra text:
 
 // EvaluatePlanAdherence calls the locally-configured LLM to judge whether a
 // tool call follows an approved plan action. Falls back to human review on
-// unparseable output; returns an error on HTTP failure.
+// unparseable output; returns an error on HTTP failure. When the request
+// carries no rule-specific config ID (human- or auto-approved plans have no
+// ai_evaluation rule to borrow one from), the default enabled config is used.
 func (e *LocalEvaluatorClient) EvaluatePlanAdherence(ctx context.Context, req PlanAdherenceRequest) (PlanAdherenceResponse, error) {
-	cfg, err := e.store.GetLLMConfig(ctx, req.AtryumLLMConfigID)
+	var cfg LocalLLMConfig
+	var err error
+	if req.AtryumLLMConfigID == "" {
+		cfg, err = e.store.DefaultLLMConfig(ctx)
+	} else {
+		cfg, err = e.store.GetLLMConfig(ctx, req.AtryumLLMConfigID)
+	}
 	if err != nil {
 		return PlanAdherenceResponse{}, fmt.Errorf("local plan adherence evaluator: fetch llm config %q: %w", req.AtryumLLMConfigID, err)
 	}

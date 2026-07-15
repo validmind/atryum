@@ -20,8 +20,8 @@ const (
 
 // PlanAction is a single intended tool call declared up front in a plan.
 // Tool is matched exactly against later invocations; Server of "" matches
-// any source. Description and InputSummary are informational — they are
-// shown to the reviewer but not enforced at execution time.
+// any source. Description and InputSummary are shown to reviewers and to the
+// adherence judge, which compares them with the concrete later invocation.
 type PlanAction struct {
 	Tool         string `json:"tool"`
 	Server       string `json:"server,omitempty"`
@@ -30,8 +30,9 @@ type PlanAction struct {
 }
 
 // Plan is a batch of intended actions submitted for review before any tool
-// executes. An approved plan grants a scoped pass: invocations from the same
-// agent matching a declared action auto-approve until ExpiresAt.
+// executes. An approved plan grants a scoped pass only after the adherence
+// judge confirms that a concrete matching invocation follows the plan; the
+// sole exception is a read-only poll of the plan's own status.
 type Plan struct {
 	PlanID        string       `json:"plan_id"`
 	AgentID       string       `json:"agent_id"`

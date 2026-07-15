@@ -274,7 +274,11 @@ func TestSubmitPlanAIEvaluationWithoutCharterDenies(t *testing.T) {
 }
 
 func TestApprovedPlanGrantsPassToMatchingSubmit(t *testing.T) {
-	svc, _ := newPlanTestService(t, nil, nil, nil)
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},
+	}}
+	judge := &planJudgeStub{adherenceResp: invocation.PlanAdherenceResponse{Verdict: "follows_plan", Reason: "matches human-approved plan"}}
+	svc, _ := newPlanTestService(t, nil, agents, judge)
 	ctx := context.Background()
 
 	plan, err := svc.SubmitPlan(ctx, planSubmit("agent-a", "Bash", "read_file"))
@@ -285,7 +289,8 @@ func TestApprovedPlanGrantsPassToMatchingSubmit(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A declared tool auto-approves with the plan recorded.
+	// A declared tool auto-approves once the adherence judge confirms it,
+	// with the plan recorded — even for a human-approved plan.
 	resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{Tool: "Bash", AgentID: "agent-a", Input: map[string]any{}})
 	if err != nil {
 		t.Fatal(err)
@@ -299,8 +304,11 @@ func TestApprovedPlanGrantsPassToMatchingSubmit(t *testing.T) {
 	if resp.PlanID == nil || *resp.PlanID != plan.PlanID {
 		t.Fatalf("plan_id = %v, want %s", resp.PlanID, plan.PlanID)
 	}
+	if got := judge.adherenceRequest(); got.Plan.PlanID != plan.PlanID || got.ToolArgs == nil {
+		t.Fatalf("human-approved plan must be adherence-judged, got %+v", got)
+	}
 
-	// An undeclared tool still hits normal gating.
+	// An undeclared tool does not match the plan and hits normal gating.
 	resp, err = svc.Submit(ctx, invocation.ExternalSubmitRequest{Tool: "delete_everything", AgentID: "agent-a", Input: map[string]any{}})
 	if err != nil {
 		t.Fatal(err)
@@ -319,6 +327,37 @@ func TestApprovedPlanGrantsPassToMatchingSubmit(t *testing.T) {
 	}
 	if resp.Status != invocation.StatusPendingApproval {
 		t.Fatalf("other agent status = %s, want pending_approval", resp.Status)
+	}
+}
+
+func TestAutoApprovedPlanRequiresAdherenceJudgeForMatchingSubmit(t *testing.T) {
+	rules := []invocation.ApprovalRule{{
+		ID: "rule-auto", Action: invocation.RuleActionAutoApprove,
+		AppliesTo: invocation.RuleScopePlan, Enabled: true,
+	}}
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},
+	}}
+	judge := &planJudgeStub{adherenceResp: invocation.PlanAdherenceResponse{Verdict: "outside_plan", Reason: "arguments exceed plan"}}
+	svc, _ := newPlanTestService(t, rules, agents, judge)
+
+	if _, err := svc.SubmitPlan(context.Background(), planSubmit("agent-a", "Bash")); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := svc.Submit(context.Background(), invocation.ExternalSubmitRequest{
+		Tool: "Bash", AgentID: "agent-a", Input: map[string]any{"cmd": "rm -rf /"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusDenied {
+		t.Fatalf("status = %s, want denied after adherence rejection", resp.Status)
+	}
+	if resp.Approval == nil || resp.Approval.Status != "plan_denied" {
+		t.Fatalf("approval = %+v, want plan_denied", resp.Approval)
+	}
+	if got := judge.adherenceRequest(); got.ToolArgs["cmd"] != "rm -rf /" {
+		t.Fatalf("auto-approved plan must send concrete arguments to adherence judge, got %+v", got)
 	}
 }
 
@@ -364,7 +403,7 @@ func TestAIEvaluatedPlanRequiresAdherenceJudgeForMatchingSubmit(t *testing.T) {
 	}
 }
 
-func TestAIEvaluatedPlanFallsBackWhenAdherenceJudgeRejects(t *testing.T) {
+func TestPlanGatedCallDeniedWhenAdherenceJudgeRejects(t *testing.T) {
 	rules := []invocation.ApprovalRule{{
 		ID:                "rule-plan-ai",
 		Action:            invocation.RuleActionAIEvaluation,
@@ -389,8 +428,11 @@ func TestAIEvaluatedPlanFallsBackWhenAdherenceJudgeRejects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Status != invocation.StatusPendingApproval {
-		t.Fatalf("status = %s, want pending_approval fallback", resp.Status)
+	if resp.Status != invocation.StatusDenied {
+		t.Fatalf("status = %s, want denied when adherence judge rejects", resp.Status)
+	}
+	if resp.Approval == nil || resp.Approval.Status != "plan_denied" || !strings.Contains(*resp.Approval.Reason, "outside approved plan") {
+		t.Fatalf("approval = %+v", resp.Approval)
 	}
 	if resp.PlanID == nil {
 		t.Fatal("plan_id should be retained when adherence rejects")
@@ -427,7 +469,7 @@ func TestAIEvaluatedPlanAllowsReadingOwnPlanStatus(t *testing.T) {
 	if resp.Status != invocation.StatusApproved || resp.Approval == nil || resp.Approval.Status != "plan_approved" {
 		t.Fatalf("resp = status %s approval %+v, want plan approved", resp.Status, resp.Approval)
 	}
-	if resp.Approval.Reason == nil || !strings.Contains(*resp.Approval.Reason, "accessing approved plan status") {
+	if resp.Approval.Reason == nil || !strings.Contains(*resp.Approval.Reason, "status") {
 		t.Fatalf("approval reason = %v", resp.Approval.Reason)
 	}
 	if got := judge.adherenceRequest(); got.Plan.PlanID != "" {
@@ -436,7 +478,8 @@ func TestAIEvaluatedPlanAllowsReadingOwnPlanStatus(t *testing.T) {
 }
 
 // A status poll with anything else riding along must not take the fast pass:
-// the adherence judge has to see the entire call.
+// the adherence judge has to see the entire call, and its rejection denies
+// the call outright.
 func TestPlanStatusPollWithExtraCommandGoesToJudge(t *testing.T) {
 	rules := []invocation.ApprovalRule{{
 		ID:                "rule-plan-ai",
@@ -464,8 +507,8 @@ func TestPlanStatusPollWithExtraCommandGoesToJudge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Status != invocation.StatusPendingApproval {
-		t.Fatalf("status = %s, want pending_approval when adherence judge rejects", resp.Status)
+	if resp.Status != invocation.StatusDenied {
+		t.Fatalf("status = %s, want denied when adherence judge rejects", resp.Status)
 	}
 	got := judge.adherenceRequest()
 	if got.Plan.PlanID != plan.PlanID {
@@ -530,7 +573,11 @@ func TestExpiredPlanDoesNotMatchAndFlipsExpired(t *testing.T) {
 }
 
 func TestPlanRevisionFlow(t *testing.T) {
-	svc, _ := newPlanTestService(t, nil, nil, nil)
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},
+	}}
+	judge := &planJudgeStub{adherenceResp: invocation.PlanAdherenceResponse{Verdict: "follows_plan"}}
+	svc, _ := newPlanTestService(t, nil, agents, judge)
 	ctx := context.Background()
 
 	plan, err := svc.SubmitPlan(ctx, planSubmit("agent-a", "Bash"))

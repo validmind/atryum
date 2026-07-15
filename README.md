@@ -133,7 +133,7 @@ Public (auth-protected when `[[auth]]` is configured):
 - `GET /mcp/{server}` — Streamable HTTP / legacy SSE channel for MCP clients that need a long-lived event stream.
 - `POST /api/v1/invocations` — direct invocation (Atryum executes).
 - `POST /api/v1/external/invocations`, `PATCH /api/v1/external/invocations/{id}` — hook path (harness executes, Atryum gates and records).
-- `POST /api/v1/external/plans`, `GET /api/v1/external/plans/{id}` — agent-submitted preapproval plans for batches of intended tool calls.
+- `POST /api/v1/external/plans`, `GET /api/v1/external/plans/{id}` — agent-submitted preapproval plans for batches of intended tool calls. Once a plan is approved, tool calls matching its declared actions are compared against it by an adherence judge — confirmed calls auto-approve, off-plan calls are denied, and polling the plan's own status always passes.
 - `GET /api/v1/agent/rules` — agent-facing rule introspection.
 - `GET /healthz` — liveness.
 

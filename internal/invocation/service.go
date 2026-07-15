@@ -352,30 +352,34 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		return InvocationResponse{}, err
 	}
 
-	// An approved plan grants a scoped pass: a declared action matching this
-	// call executes immediately without rule/policy gating, recording the
-	// plan as the approval reason.
+	// An approved plan grants a scoped pass. On this MCP proxy path the
+	// tools/call arguments leave no channel for an explicit plan_id, so the
+	// association is implicit: a declared action of the agent's newest
+	// approved plan. A matched call is gated exclusively by the plan flow —
+	// a status poll auto-approves, the adherence judge confirms or denies
+	// everything else, and an unverifiable call goes straight to a human,
+	// bypassing rules/policy. Unmatched calls get normal gating.
 	if planMatch, ok := s.matchApprovedPlan(ctx, agentID, upstream.Name, req.Tool); ok {
 		planID := planMatch.Plan.PlanID
-		reason, confidence, passOK := s.approvedPlanPass(ctx, planMatch, agentRec, upstream.Name, req.Tool, req.Input, "")
-		if !passOK {
-			inv.PlanID = &planID
-			_ = s.invocations.UpdateResult(ctx, inv)
-			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.plan_mismatch", Payload: mustJSON(map[string]any{"plan_id": planID, "reason": reason, "confidence": confidence}), CreatedAt: time.Now().UTC()})
-		} else {
-			inv.PlanID = &planID
-			planPayload := map[string]any{
-				"tool": req.Tool, "upstream": upstream.Name,
-				"request_id": req.RequestID,
-				"input":      json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input),
-				"disposition": "plan_approved", "disposition_reason": reason, "plan_id": planID,
-			}
-			if agentID != "" {
-				planPayload["agent_id"] = agentID
-			}
+		inv.PlanID = &planID
+		reason, confidence, outcome := s.approvedPlanPass(ctx, planMatch, agentRec, upstream.Name, req.Tool, req.Input, "")
+
+		planPayload := map[string]any{
+			"tool": req.Tool, "upstream": upstream.Name,
+			"request_id": req.RequestID,
+			"input":      json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input),
+			"disposition_reason": reason, "plan_id": planID,
+		}
+		if agentID != "" {
+			planPayload["agent_id"] = agentID
+		}
+
+		switch outcome {
+		case planGateApprove:
+			planPayload["disposition"] = "plan_approved"
 			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(planPayload), CreatedAt: now})
 			inv.Status = StatusExecuting
-			inv.Approval = &Approval{Status: "plan_approved", Reason: stringPtr(reason), ConfidenceScore: confidence}
+			inv.Approval = newApproval("plan_approved", reason, confidence)
 			if err := s.invocations.UpdateResult(ctx, inv); err != nil {
 				return InvocationResponse{}, err
 			}
@@ -390,6 +394,27 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 				CreatedAt: time.Now().UTC(),
 			})
 			return s.finishExecution(ctx, inv, upstream, req)
+
+		case planGateDeny:
+			planPayload["disposition"] = "plan_denied"
+			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(planPayload), CreatedAt: now})
+			completed := time.Now().UTC()
+			inv.Status = StatusDenied
+			inv.CompletedAt = &completed
+			inv.Approval = newApproval("plan_denied", reason, confidence)
+			inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": "Tool call denied: " + reason}}, "isError": true})
+			_ = s.invocations.UpdateResult(context.Background(), inv)
+			_ = s.events.Create(context.Background(), Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"plan_id": planID, "reason": reason, "confidence": confidence}), CreatedAt: completed})
+			return s.toResponse(inv), nil
+
+		default: // planGateHuman: adherence unverifiable — straight to a human.
+			planPayload["disposition"] = "plan_escalated"
+			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(planPayload), CreatedAt: now})
+			inv.Approval = newApproval("plan_escalated", reason, confidence)
+			if err := s.invocations.UpdateResult(ctx, inv); err != nil {
+				return InvocationResponse{}, err
+			}
+			return s.waitForHumanApproval(ctx, inv, upstream, req)
 		}
 	}
 
@@ -1404,29 +1429,58 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		_ = s.sessions.TouchSession(ctx, sessionID, now.Add(externalSessionTTL)) // best-effort last-seen/expiry bump
 	}
 
-	// An approved plan grants a scoped pass: a declared action matching this
-	// call auto-approves it before rule matching, recording the plan as the
-	// approval reason.
+	// An approved plan grants a scoped pass. The association is implicit —
+	// the agent's newest approved plan declaring this tool — because harness
+	// tool-input schemas leave the agent no channel to declare a plan id. A
+	// matched call is gated exclusively by the plan flow: a status poll
+	// auto-approves, the adherence judge confirms or denies everything else,
+	// and an unverifiable call goes straight to a human, bypassing approval
+	// rules. Unmatched calls get normal gating.
 	if planMatch, ok := s.matchApprovedPlan(ctx, agentID, source, req.Tool); ok {
 		planID := planMatch.Plan.PlanID
-		reason, confidence, passOK := s.approvedPlanPass(ctx, planMatch, agentRec, source, req.Tool, req.Input, sessionContext)
-		if !passOK {
-			inv.PlanID = &planID
-			_ = s.invocations.UpdateResult(ctx, inv)
-			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.plan_mismatch", Payload: mustJSON(map[string]any{"plan_id": planID, "reason": reason, "confidence": confidence}), CreatedAt: time.Now().UTC()})
-		} else {
-			inv.PlanID = &planID
+		inv.PlanID = &planID
+		reason, confidence, outcome := s.approvedPlanPass(ctx, planMatch, agentRec, source, req.Tool, req.Input, sessionContext)
+
+		planPayload := map[string]any{"tool": req.Tool, "upstream": source, "request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "external": true, "plan_id": planID}
+		if agentID != "" {
+			planPayload["agent_id"] = agentID
+		}
+
+		switch outcome {
+		case planGateApprove:
 			inv.Status = StatusApproved
-			inv.Approval = &Approval{Status: "plan_approved", Reason: stringPtr(reason), ConfidenceScore: confidence}
+			inv.Approval = newApproval("plan_approved", reason, confidence)
 			if err := s.invocations.UpdateResult(ctx, inv); err != nil {
 				return InvocationResponse{}, err
 			}
-			planPayload := map[string]any{"tool": req.Tool, "upstream": source, "request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "external": true, "plan_id": planID, "disposition": "plan_approved"}
-			if agentID != "" {
-				planPayload["agent_id"] = agentID
-			}
+			planPayload["disposition"] = "plan_approved"
 			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(planPayload), CreatedAt: now})
 			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.approved", Payload: mustJSON(map[string]any{"plan_id": planID, "auto_approved": true, "auto_reason": reason}), CreatedAt: time.Now().UTC()})
+			return s.toResponse(inv), nil
+
+		case planGateDeny:
+			completed := time.Now().UTC()
+			inv.Status = StatusDenied
+			inv.CompletedAt = &completed
+			inv.Approval = newApproval("plan_denied", reason, confidence)
+			inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": "Tool call denied: " + reason}}, "isError": true})
+			_ = s.invocations.UpdateResult(context.Background(), inv)
+			planPayload["disposition"] = "plan_denied"
+			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(planPayload), CreatedAt: now})
+			_ = s.events.Create(context.Background(), Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"plan_id": planID, "reason": reason, "confidence": confidence}), CreatedAt: completed})
+			return s.toResponse(inv), nil
+
+		default: // planGateHuman: adherence unverifiable — straight to a human.
+			inv.Status = StatusPendingApproval
+			inv.Approval = newApproval("plan_escalated", reason, confidence)
+			if err := s.invocations.UpdateResult(ctx, inv); err != nil {
+				return InvocationResponse{}, err
+			}
+			planPayload["disposition"] = "plan_escalated"
+			planPayload["disposition_reason"] = reason
+			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(planPayload), CreatedAt: now})
+			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.pending_approval", Payload: mustJSON(planPayload), CreatedAt: time.Now().UTC()})
+			s.summarizePendingApproval(inv.InvocationID)
 			return s.toResponse(inv), nil
 		}
 	}

@@ -35,9 +35,11 @@ type planEventRepo interface {
 
 // SetPlanStore installs the optional plan-submission feature. When it is not
 // called the service behaves exactly as before: plan endpoints error and
-// matchApprovedPlan never grants a pass. statusPollOrigins lists the hosts
-// (host or host:port, or full URLs) this Atryum API is reachable on; the
-// plan-status fast pass only trusts polls addressed to one of them.
+// matchApprovedPlan never grants a pass. Every matching invocation is sent to
+// the adherence judge before the plan pass is granted, except a provable
+// read-only poll of the plan's own status (the fast pass). statusPollOrigins
+// lists the hosts (host or host:port, or full URLs) this Atryum API is
+// reachable on; the fast pass only trusts polls addressed to one of them.
 func (s *Service) SetPlanStore(plans planRepo, events planEventRepo, judge PlanEvaluator, statusPollOrigins []string) {
 	s.plans = plans
 	s.planEvents = events
@@ -516,65 +518,100 @@ func (s *Service) matchApprovedPlan(ctx context.Context, agentID, server, tool s
 	return approvedPlanMatch{}, false
 }
 
-func (s *Service) approvedPlanPass(ctx context.Context, match approvedPlanMatch, agentRec AgentRecord, server, tool string, input map[string]any, extraContext string) (string, *float64, bool) {
-	plan := match.Plan
-	reason := "matched approved plan " + plan.PlanID
-	if planStatusFastPass(s.planPollOrigins, plan.PlanID, input) {
-		return reason + ": accessing approved plan status", nil, true
-	}
-	if plan.MatchedRuleID == nil || s.rules == nil || s.planJudge == nil {
-		return reason, nil, true
-	}
+// planGateOutcome is the disposition the plan gate assigns to an invocation.
+// The plan flow is exclusive: approval rules are never consulted for a call
+// gated by a plan.
+type planGateOutcome int
 
-	rule, ok := s.planAdherenceRule(ctx, *plan.MatchedRuleID)
-	if !ok || rule.Action != RuleActionAIEvaluation || rule.AtryumLLMConfigID == "" {
-		return reason, nil, true
+const (
+	// planGateApprove grants the plan pass: a status poll or a judged match.
+	planGateApprove planGateOutcome = iota
+	// planGateDeny rejects the call outright: the adherence judge found it
+	// outside the approved plan.
+	planGateDeny
+	// planGateHuman sends the call straight to human approval: adherence
+	// could not be established (no judge, no charter, judge error) or the
+	// judge asked for escalation.
+	planGateHuman
+)
+
+// approvedPlanPass gates an invocation that matched an approved plan: the
+// agent's newest approved plan declaring this tool. A status poll of the plan
+// fast-passes; everything else must be confirmed by the adherence judge.
+func (s *Service) approvedPlanPass(ctx context.Context, match approvedPlanMatch, agentRec AgentRecord, server, tool string, input map[string]any, extraContext string) (string, *float64, planGateOutcome) {
+	if planStatusFastPass(s.planPollOrigins, match.Plan.PlanID, input) {
+		return "matched approved plan " + match.Plan.PlanID + ": accessing approved plan status", nil, planGateApprove
+	}
+	return s.judgePlanAdherence(ctx, match.Plan, match.Action, agentRec, server, tool, input, extraContext)
+}
+
+// judgePlanAdherence submits the concrete call to the adherence judge and
+// maps its verdict to a gate outcome. Every plan-gated call other than a
+// status poll comes through here regardless of how the plan was approved —
+// human-approved and auto-approved plans get no deterministic pass.
+func (s *Service) judgePlanAdherence(ctx context.Context, plan Plan, action PlanAction, agentRec AgentRecord, server, tool string, input map[string]any, extraContext string) (string, *float64, planGateOutcome) {
+	if s.planJudge == nil {
+		slog.Warn("plan adherence judge unavailable; escalating plan-gated call to human approval",
+			"plan_id", plan.PlanID, "tool", tool)
+		return "plan " + plan.PlanID + " requires adherence review but no judge is configured", nil, planGateHuman
 	}
 	if agentRec.Charter == "" {
-		slog.Warn("plan adherence judge skipped: agent has no charter; falling back to normal gating",
-			"plan_id", plan.PlanID, "agent_id", plan.AgentID, "rule_id", rule.ID)
-		return "approved plan " + plan.PlanID + " requires adherence review but agent has no charter", nil, false
+		slog.Warn("plan adherence judge skipped: agent has no charter; escalating to human approval",
+			"plan_id", plan.PlanID, "agent_id", plan.AgentID)
+		return "plan " + plan.PlanID + " requires adherence review but agent has no charter", nil, planGateHuman
+	}
+
+	// The evaluator configured by an ai_evaluation rule is also used for its
+	// adherence check. Human-approved and auto-approved plans are judged the
+	// same way with an empty config ID, which the evaluator resolves to its
+	// default enabled LLM config.
+	llmConfigID := ""
+	if plan.MatchedRuleID != nil && s.rules != nil {
+		if rule, ok := s.planAdherenceRule(ctx, *plan.MatchedRuleID); ok && rule.Action == RuleActionAIEvaluation {
+			llmConfigID = rule.AtryumLLMConfigID
+		}
 	}
 
 	evalCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 	resp, err := s.planJudge.EvaluatePlanAdherence(evalCtx, PlanAdherenceRequest{
-		AtryumLLMConfigID: rule.AtryumLLMConfigID,
+		AtryumLLMConfigID: llmConfigID,
 		Charter:           agentRec.Charter,
 		Plan:              plan,
-		Action:            match.Action,
+		Action:            action,
 		ServerName:        server,
 		ToolName:          tool,
 		ToolArgs:          input,
 		Context:           extraContext,
 	})
 	if err != nil {
-		slog.Error("plan adherence judge failed; falling back to normal gating",
-			"plan_id", plan.PlanID, "rule_id", rule.ID, "error", err)
-		return "approved plan " + plan.PlanID + " requires adherence review but judge failed", nil, false
+		slog.Error("plan adherence judge failed; escalating to human approval",
+			"plan_id", plan.PlanID, "error", err)
+		return "plan " + plan.PlanID + " requires adherence review but judge failed", nil, planGateHuman
 	}
 
 	switch resp.Verdict {
 	case "follows_plan":
+		reason := "follows approved plan " + plan.PlanID
 		if strings.TrimSpace(resp.Reason) != "" {
 			reason += ": " + resp.Reason
 		}
-		return reason, resp.Confidence, true
+		return reason, resp.Confidence, planGateApprove
 	case "outside_plan":
-		slog.Info("plan adherence judge rejected plan pass",
-			"plan_id", plan.PlanID, "rule_id", rule.ID, "tool", tool, "reason", resp.Reason)
-		return "tool call is outside approved plan " + plan.PlanID + ": " + resp.Reason, resp.Confidence, false
+		slog.Info("plan adherence judge rejected plan-gated call",
+			"plan_id", plan.PlanID, "tool", tool, "reason", resp.Reason)
+		return "tool call is outside approved plan " + plan.PlanID + ": " + resp.Reason, resp.Confidence, planGateDeny
 	default:
-		slog.Info("plan adherence judge escalated plan pass",
-			"plan_id", plan.PlanID, "rule_id", rule.ID, "tool", tool, "reason", resp.Reason)
-		return "tool call needs human review for approved plan " + plan.PlanID + ": " + resp.Reason, resp.Confidence, false
+		slog.Info("plan adherence judge escalated plan-gated call",
+			"plan_id", plan.PlanID, "tool", tool, "reason", resp.Reason)
+		return "tool call needs human review for approved plan " + plan.PlanID + ": " + resp.Reason, resp.Confidence, planGateHuman
 	}
 }
 
 func (s *Service) planAdherenceRule(ctx context.Context, ruleID string) (ApprovalRule, bool) {
 	rules, err := s.rules.ListApprovalRules(ctx)
 	if err != nil {
-		slog.Warn("plan adherence rule lookup failed; allowing deterministic plan pass",
+		slog.Warn("plan adherence rule lookup failed; adherence judge will use no rule-specific LLM config",
 			"rule_id", ruleID, "error", err)
 		return ApprovalRule{}, false
 	}

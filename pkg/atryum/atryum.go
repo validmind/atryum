@@ -617,13 +617,33 @@ func (a *llmConfigsLookupAdapter) GetLLMConfig(ctx context.Context, id string) (
 	if err != nil {
 		return invocation.LocalLLMConfig{}, err
 	}
+	return toLocalLLMConfig(cfg), nil
+}
+
+// DefaultLLMConfig returns the first enabled LLM config, for evaluator calls
+// that carry no rule-specific config ID (e.g. the plan adherence judge
+// reviewing a human-approved plan).
+func (a *llmConfigsLookupAdapter) DefaultLLMConfig(ctx context.Context) (invocation.LocalLLMConfig, error) {
+	configs, err := a.repo.List(ctx)
+	if err != nil {
+		return invocation.LocalLLMConfig{}, err
+	}
+	for _, cfg := range configs {
+		if cfg.Enabled {
+			return toLocalLLMConfig(cfg), nil
+		}
+	}
+	return invocation.LocalLLMConfig{}, fmt.Errorf("no enabled LLM config available")
+}
+
+func toLocalLLMConfig(cfg store.LLMConfig) invocation.LocalLLMConfig {
 	return invocation.LocalLLMConfig{
 		ID:       cfg.ID,
 		Provider: string(cfg.Provider),
 		Model:    cfg.Model,
 		APIKey:   cfg.APIKey,
 		BaseURL:  cfg.BaseURL,
-	}, nil
+	}
 }
 
 // syncSettingsAdapter bridges store.AgentSyncSettingsRepo → invocation.SyncSettingsProvider.

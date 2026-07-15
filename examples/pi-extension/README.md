@@ -110,7 +110,10 @@ When plan-scoped rules apply to the current agent, the extension discovers that
 via `GET /api/v1/agent/rules` and includes a hint in the agent-visible blocked
 tool message. The agent can submit a batch plan to
 `POST /api/v1/external/plans`, wait for approval, and then continue with normal
-tool calls. Matching calls are preapproved until the plan expires.
+tool calls. Atryum's adherence judge checks each call matching a declared
+action against the approved plan: confirmed calls are preapproved until the
+plan expires, off-plan calls are denied, and polling the approved plan's
+status URL is always allowed.
 
 ## Tagging invocations to an Agent Record
 

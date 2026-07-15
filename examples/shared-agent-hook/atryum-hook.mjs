@@ -63,6 +63,8 @@ const SOURCE =
         : process.env.ATRYUM_SOURCE || process.env.ATRYUM_HOOK_HOST || "agent";
 const CLIENT_NAME = process.env.ATRYUM_CLIENT_NAME || SOURCE;
 const CLIENT_VERSION = process.env.ATRYUM_CLIENT_VERSION || "";
+// Per-message cap when trimming chat transcript entries.
+const MAX_MESSAGE_CHARS = 2000;
 const STATE_DIR =
   process.env.ATRYUM_STATE_DIR ||
   path.join(os.homedir(), ".atryum", "agent-hook-state");
@@ -328,7 +330,7 @@ async function planHint(tool) {
   const rules = await planSupport;
   if (!rules?.plan_submission?.enabled) return "";
   const endpoint = rules.plan_submission.endpoint || "/api/v1/external/plans";
-  return ` Atryum supports preapproval plans for complex, risky, or multi-step work. For tasks with two or more tool calls, file changes, shell commands, external systems, or ordered actions, submit a batch plan to ${endpoint} before running tools, then wait for approval before executing the planned steps.`;
+  return ` Atryum supports preapproval plans for complex, risky, or multi-step work. For tasks with two or more tool calls, file changes, shell commands, external systems, or ordered actions, submit a batch plan to ${endpoint} before running tools, then wait for approval before executing the planned steps. Once the plan is approved, matching tool calls are checked against it by an adherence judge (off-plan calls are denied); polling the plan's status URL is always allowed.`;
 }
 
 function normalizeRole(value) {
