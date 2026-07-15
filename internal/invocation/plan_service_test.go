@@ -426,6 +426,37 @@ func TestApprovedPlanGrantsPassToMatchingSubmit(t *testing.T) {
 	}
 }
 
+func TestPlanActionWithoutServerIsScopedToSubmittingSource(t *testing.T) {
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},
+	}}
+	judge := &planJudgeStub{adherenceResp: invocation.PlanAdherenceResponse{Verdict: "follows_plan"}}
+	svc, _ := newPlanTestService(t, nil, agents, judge)
+	ctx := context.Background()
+
+	plan, err := svc.SubmitPlan(ctx, invocation.PlanSubmitRequest{
+		AgentID: "agent-a", Source: "server-a", Goal: "search",
+		Actions: []invocation.PlanAction{{Tool: "search"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Actions[0].Server != "server-a" {
+		t.Fatalf("action server = %q, want submitting source", plan.Actions[0].Server)
+	}
+	if _, err := svc.ApprovePlan(ctx, plan.PlanID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{Source: "server-b", Tool: "search", AgentID: "agent-a", Input: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusPendingApproval || resp.PlanID != nil {
+		t.Fatalf("cross-server response = %+v, want normal unplanned gating", resp)
+	}
+}
+
 func TestAutoApprovedPlanRequiresAdherenceJudgeForMatchingSubmit(t *testing.T) {
 	rules := []invocation.ApprovalRule{{
 		ID: "rule-auto", Action: invocation.RuleActionAutoApprove,

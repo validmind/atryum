@@ -19,10 +19,10 @@ const (
 )
 
 // PlanAction is a single intended tool call declared up front in a plan.
-// ActionID uniquely identifies the step. Tool is matched exactly against later
-// invocations; Server of "" matches any source. Description and InputSummary
-// are shown to reviewers and to the adherence judge, which compares them with
-// the concrete later invocation.
+// ActionID uniquely identifies the step. Tool and Server are matched exactly
+// against later invocations; an omitted Server is stamped with the submitting
+// plan source. Description and InputSummary are shown to reviewers and to the
+// adherence judge, which compares them with the concrete later invocation.
 type PlanAction struct {
 	ActionID     string `json:"action_id"`
 	Tool         string `json:"tool"`

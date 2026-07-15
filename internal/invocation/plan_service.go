@@ -95,6 +95,10 @@ func (s *Service) SubmitPlan(ctx context.Context, req PlanSubmitRequest) (Plan, 
 	if len(req.Actions) == 0 {
 		return Plan{}, fmt.Errorf("at least one action is required")
 	}
+	source := req.Source
+	if source == "" {
+		source = "external"
+	}
 	actionIDs := make(map[string]struct{}, len(req.Actions))
 	for i, a := range req.Actions {
 		if strings.TrimSpace(a.Tool) == "" {
@@ -103,16 +107,14 @@ func (s *Service) SubmitPlan(ctx context.Context, req PlanSubmitRequest) (Plan, 
 		if strings.TrimSpace(a.ActionID) == "" {
 			req.Actions[i].ActionID = "action_" + uuid.NewString()
 		}
+		if strings.TrimSpace(a.Server) == "" {
+			req.Actions[i].Server = source
+		}
 		if _, exists := actionIDs[req.Actions[i].ActionID]; exists {
 			return Plan{}, fmt.Errorf("actions[%d].action_id duplicates an earlier action", i)
 		}
 		actionIDs[req.Actions[i].ActionID] = struct{}{}
 	}
-	source := req.Source
-	if source == "" {
-		source = "external"
-	}
-
 	var parent *Plan
 	if req.RevisionOf != "" {
 		p, err := s.plans.Get(ctx, req.RevisionOf)
@@ -576,7 +578,7 @@ func (s *Service) matchApprovedPlan(ctx context.Context, agentID, server, tool, 
 		}
 		var candidates []approvedPlanMatch
 		for i, a := range plan.Actions {
-			if a.Tool == tool && (a.Server == "" || a.Server == server) {
+			if a.Tool == tool && a.Server == server {
 				candidates = append(candidates, approvedPlanMatch{Plan: plan, Action: a, ActionIndex: i})
 			}
 		}
