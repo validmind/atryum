@@ -95,10 +95,18 @@ func (s *Service) SubmitPlan(ctx context.Context, req PlanSubmitRequest) (Plan, 
 	if len(req.Actions) == 0 {
 		return Plan{}, fmt.Errorf("at least one action is required")
 	}
+	actionIDs := make(map[string]struct{}, len(req.Actions))
 	for i, a := range req.Actions {
 		if strings.TrimSpace(a.Tool) == "" {
 			return Plan{}, fmt.Errorf("actions[%d].tool is required", i)
 		}
+		if strings.TrimSpace(a.ActionID) == "" {
+			req.Actions[i].ActionID = "action_" + uuid.NewString()
+		}
+		if _, exists := actionIDs[req.Actions[i].ActionID]; exists {
+			return Plan{}, fmt.Errorf("actions[%d].action_id duplicates an earlier action", i)
+		}
+		actionIDs[req.Actions[i].ActionID] = struct{}{}
 	}
 	source := req.Source
 	if source == "" {
@@ -487,35 +495,55 @@ func (s *Service) PlanEvents(ctx context.Context, id string, filter EventListFil
 }
 
 type approvedPlanMatch struct {
-	Plan   Plan
-	Action PlanAction
+	Plan        Plan
+	Action      PlanAction
+	ActionIndex int
 }
 
 // matchApprovedPlan returns the newest approved, unexpired plan of the agent
 // with a declared action matching (server, tool). It is the deterministic
 // plan-pass check run before rule matching in Invoke/Submit; it never matches
 // when the plan feature is unused or the caller is anonymous.
-func (s *Service) matchApprovedPlan(ctx context.Context, agentID, server, tool string) (approvedPlanMatch, bool) {
+// The third return value reports that a plan action matched the tool/server,
+// but could not be selected unambiguously. Callers must not fall through to
+// ordinary approval rules in that case.
+func (s *Service) matchApprovedPlan(ctx context.Context, agentID, server, tool, actionID string) (approvedPlanMatch, bool, bool) {
 	if !s.plansEnabled() || agentID == "" || tool == "" {
-		return approvedPlanMatch{}, false
+		return approvedPlanMatch{}, false, false
 	}
 	plans, err := s.plans.ListActiveByAgent(ctx, agentID)
 	if err != nil {
 		slog.Warn("plan pass lookup failed; falling back to normal gating", "agent_id", agentID, "error", err)
-		return approvedPlanMatch{}, false
+		return approvedPlanMatch{}, false, false
 	}
 	for _, plan := range plans {
 		plan = s.expireIfStale(ctx, plan)
 		if plan.Status != PlanStatusApproved {
 			continue
 		}
-		for _, a := range plan.Actions {
+		var candidates []approvedPlanMatch
+		for i, a := range plan.Actions {
 			if a.Tool == tool && (a.Server == "" || a.Server == server) {
-				return approvedPlanMatch{Plan: plan, Action: a}, true
+				candidates = append(candidates, approvedPlanMatch{Plan: plan, Action: a, ActionIndex: i})
 			}
 		}
+		if len(candidates) == 0 {
+			continue
+		}
+		if actionID != "" {
+			for _, candidate := range candidates {
+				if candidate.Action.ActionID == actionID {
+					return candidate, true, false
+				}
+			}
+			return approvedPlanMatch{Plan: plan}, false, true
+		}
+		if len(candidates) == 1 {
+			return candidates[0], true, false
+		}
+		return approvedPlanMatch{Plan: plan}, false, true
 	}
-	return approvedPlanMatch{}, false
+	return approvedPlanMatch{}, false, false
 }
 
 // planGateOutcome is the disposition the plan gate assigns to an invocation.
@@ -542,7 +570,38 @@ func (s *Service) approvedPlanPass(ctx context.Context, match approvedPlanMatch,
 	if planStatusFastPass(s.planPollOrigins, match.Plan.PlanID, input) {
 		return "matched approved plan " + match.Plan.PlanID + ": accessing approved plan status", nil, planGateApprove
 	}
+	highestStep, found, err := s.highestExecutedPlanStep(ctx, match.Plan.PlanID)
+	if err != nil {
+		return "plan " + match.Plan.PlanID + " requires execution-order review", nil, planGateHuman
+	}
+	if found && match.ActionIndex < highestStep {
+		return fmt.Sprintf("tool call would run plan step %d after step %d has already run", match.ActionIndex+1, highestStep+1), nil, planGateDeny
+	}
 	return s.judgePlanAdherence(ctx, match.Plan, match.Action, agentRec, server, tool, input, extraContext)
+}
+
+// highestExecutedPlanStep returns the latest declared action that has been
+// approved to run for a plan. A plan may skip steps, but never move backwards
+// after a later step has been approved or started.
+func (s *Service) highestExecutedPlanStep(ctx context.Context, planID string) (int, bool, error) {
+	invs, _, err := s.invocations.List(ctx, InvocationListFilter{PlanID: planID, Limit: 500})
+	if err != nil {
+		slog.Warn("could not determine plan execution order; escalating to human approval", "plan_id", planID, "error", err)
+		return 0, false, err
+	}
+	highest := -1
+	for _, inv := range invs {
+		if inv.PlanStepIndex == nil {
+			continue
+		}
+		switch inv.Status {
+		case StatusApproved, StatusExecuting, StatusSucceeded, StatusFailed:
+			if *inv.PlanStepIndex > highest {
+				highest = *inv.PlanStepIndex
+			}
+		}
+	}
+	return highest, highest >= 0, nil
 }
 
 // judgePlanAdherence submits the concrete call to the adherence judge and

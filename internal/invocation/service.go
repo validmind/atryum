@@ -359,10 +359,26 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	// a status poll auto-approves, the adherence judge confirms or denies
 	// everything else, and an unverifiable call goes straight to a human,
 	// bypassing rules/policy. Unmatched calls get normal gating.
-	if planMatch, ok := s.matchApprovedPlan(ctx, agentID, upstream.Name, req.Tool); ok {
+	if planMatch, ok, ambiguous := s.matchApprovedPlan(ctx, agentID, upstream.Name, req.Tool, req.PlanActionID); ok || ambiguous {
 		planID := planMatch.Plan.PlanID
 		inv.PlanID = &planID
-		reason, confidence, outcome := s.approvedPlanPass(ctx, planMatch, agentRec, upstream.Name, req.Tool, req.Input, "")
+		if ok {
+			actionID := planMatch.Action.ActionID
+			inv.PlanActionID = &actionID
+		}
+		if ok && !planStatusFastPass(s.planPollOrigins, planID, req.Input) {
+			stepIndex := planMatch.ActionIndex
+			inv.PlanStepIndex = &stepIndex
+		}
+		var reason string
+		var confidence *float64
+		var outcome planGateOutcome
+		if ambiguous {
+			reason = "multiple approved plan actions match this tool; include plan_action_id to select the intended step"
+			outcome = planGateHuman
+		} else {
+			reason, confidence, outcome = s.approvedPlanPass(ctx, planMatch, agentRec, upstream.Name, req.Tool, req.Input, "")
+		}
 
 		planPayload := map[string]any{
 			"tool": req.Tool, "upstream": upstream.Name,
@@ -1436,10 +1452,26 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	// auto-approves, the adherence judge confirms or denies everything else,
 	// and an unverifiable call goes straight to a human, bypassing approval
 	// rules. Unmatched calls get normal gating.
-	if planMatch, ok := s.matchApprovedPlan(ctx, agentID, source, req.Tool); ok {
+	if planMatch, ok, ambiguous := s.matchApprovedPlan(ctx, agentID, source, req.Tool, req.PlanActionID); ok || ambiguous {
 		planID := planMatch.Plan.PlanID
 		inv.PlanID = &planID
-		reason, confidence, outcome := s.approvedPlanPass(ctx, planMatch, agentRec, source, req.Tool, req.Input, sessionContext)
+		if ok {
+			actionID := planMatch.Action.ActionID
+			inv.PlanActionID = &actionID
+		}
+		if ok && !planStatusFastPass(s.planPollOrigins, planID, req.Input) {
+			stepIndex := planMatch.ActionIndex
+			inv.PlanStepIndex = &stepIndex
+		}
+		var reason string
+		var confidence *float64
+		var outcome planGateOutcome
+		if ambiguous {
+			reason = "multiple approved plan actions match this tool; include plan_action_id to select the intended step"
+			outcome = planGateHuman
+		} else {
+			reason, confidence, outcome = s.approvedPlanPass(ctx, planMatch, agentRec, source, req.Tool, req.Input, sessionContext)
+		}
 
 		planPayload := map[string]any{"tool": req.Tool, "upstream": source, "request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "external": true, "plan_id": planID}
 		if agentID != "" {

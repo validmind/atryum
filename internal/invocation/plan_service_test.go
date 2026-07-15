@@ -471,6 +471,99 @@ func TestPlanGatedCallDeniedWhenItViolatesCharter(t *testing.T) {
 	}
 }
 
+func TestPlanStepsMaySkipForwardButCannotGoBackwards(t *testing.T) {
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},
+	}}
+	judge := &planJudgeStub{adherenceResp: invocation.PlanAdherenceResponse{Verdict: "follows_plan"}}
+	svc, _ := newPlanTestService(t, nil, agents, judge)
+	ctx := context.Background()
+
+	plan, err := svc.SubmitPlan(ctx, invocation.PlanSubmitRequest{
+		AgentID: "agent-a",
+		Goal:    "deploy safely",
+		Actions: []invocation.PlanAction{
+			{Tool: "inspect"},
+			{Tool: "validate"},
+			{Tool: "deploy"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApprovePlan(ctx, plan.PlanID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	// A later step may run without first executing every earlier step.
+	resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{Tool: "deploy", AgentID: "agent-a", Input: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusApproved {
+		t.Fatalf("deploy status = %s, want approved when skipping ahead", resp.Status)
+	}
+
+	// Once step three has run, steps one and two cannot run afterwards.
+	resp, err = svc.Submit(ctx, invocation.ExternalSubmitRequest{Tool: "validate", AgentID: "agent-a", Input: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusDenied || resp.Approval == nil || resp.Approval.Reason == nil || !strings.Contains(*resp.Approval.Reason, "step 2 after step 3") {
+		t.Fatalf("validate response = %+v, want denied for backwards plan execution", resp)
+	}
+}
+
+func TestPlanActionIDSelectsRepeatedToolStepsForOrdering(t *testing.T) {
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},
+	}}
+	judge := &planJudgeStub{adherenceResp: invocation.PlanAdherenceResponse{Verdict: "follows_plan"}}
+	svc, _ := newPlanTestService(t, nil, agents, judge)
+	ctx := context.Background()
+
+	plan, err := svc.SubmitPlan(ctx, invocation.PlanSubmitRequest{
+		AgentID: "agent-a",
+		Goal:    "build then deploy",
+		Actions: []invocation.PlanAction{
+			{ActionID: "action_build", Tool: "Bash", Description: "build"},
+			{ActionID: "action_deploy", Tool: "Bash", Description: "deploy"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApprovePlan(ctx, plan.PlanID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	// Without an ID, the repeated Bash actions are not safely distinguishable.
+	resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{Tool: "Bash", AgentID: "agent-a", Input: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusPendingApproval {
+		t.Fatalf("ambiguous Bash status = %s, want pending approval", resp.Status)
+	}
+
+	// Explicitly selecting deploy records step two, even though step one was skipped.
+	resp, err = svc.Submit(ctx, invocation.ExternalSubmitRequest{Tool: "Bash", AgentID: "agent-a", PlanActionID: "action_deploy", Input: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusApproved {
+		t.Fatalf("deploy status = %s, want approved", resp.Status)
+	}
+
+	resp, err = svc.Submit(ctx, invocation.ExternalSubmitRequest{Tool: "Bash", AgentID: "agent-a", PlanActionID: "action_build", Input: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusDenied || resp.Approval == nil || resp.Approval.Reason == nil || !strings.Contains(*resp.Approval.Reason, "step 1 after step 2") {
+		t.Fatalf("build response = %+v, want denied for backwards repeated-tool step", resp)
+	}
+}
+
 func TestAIEvaluatedPlanAllowsReadingOwnPlanStatus(t *testing.T) {
 	rules := []invocation.ApprovalRule{{
 		ID:                "rule-plan-ai",
