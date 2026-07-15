@@ -470,8 +470,9 @@ func (s *Service) ListPlanRevisions(ctx context.Context, id string) ([]Plan, err
 	return revs, nil
 }
 
-// ApprovePlan records a human approval. ttlSeconds of 0 keeps the TTL the
-// agent requested at submission.
+// ApprovePlan records a human approval. ttlSeconds of 0 uses the TTL the
+// agent requested at submission, but always reapplies the current deployment
+// bounds so lowering the configured ceiling also covers pending stored plans.
 func (s *Service) ApprovePlan(ctx context.Context, id string, ttlSeconds int) (Plan, error) {
 	if !s.plansEnabled() {
 		return Plan{}, fmt.Errorf("plan submission is not enabled")
@@ -483,9 +484,11 @@ func (s *Service) ApprovePlan(ctx context.Context, id string, ttlSeconds int) (P
 	if plan.Status != PlanStatusPendingApproval {
 		return Plan{}, fmt.Errorf("plan %s is not pending approval (status=%s)", id, plan.Status)
 	}
+	requestedTTL := plan.TTLSeconds
 	if ttlSeconds > 0 {
-		plan.TTLSeconds = s.clampPlanTTL(ttlSeconds)
+		requestedTTL = ttlSeconds
 	}
+	plan.TTLSeconds = s.clampPlanTTL(requestedTTL)
 	approval := &Approval{Status: humanDecisionStatus(plan.Approval, true), Reason: stringPtr("human")}
 	return s.finalizePlanDecision(ctx, plan, PlanStatusApproved, approval, "")
 }

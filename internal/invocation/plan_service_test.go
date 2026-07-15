@@ -278,6 +278,37 @@ func TestConfiguredPlanTTLBoundsClampSubmissionAndApproval(t *testing.T) {
 	}
 }
 
+func TestApprovePlanReclampsStoredTTLToCurrentCeiling(t *testing.T) {
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "be careful"},
+	}}
+	svc, _ := newPlanTestService(t, nil, agents, &planJudgeStub{})
+	ctx := context.Background()
+
+	// Simulate a plan stored while the deployment allowed a longer pass.
+	svc.SetPlanTTLBounds(3600, 7200)
+	plan, err := svc.SubmitPlan(ctx, invocation.PlanSubmitRequest{
+		AgentID: "agent-a", Goal: "long pending job", TTLSeconds: 3600,
+		Actions: []invocation.PlanAction{{Tool: "inspect"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.TTLSeconds != 3600 {
+		t.Fatalf("submitted ttl = %d, want 3600", plan.TTLSeconds)
+	}
+
+	// A restart/config reload can lower the ceiling before human approval.
+	svc.SetPlanTTLBounds(120, 600)
+	approved, err := svc.ApprovePlan(ctx, plan.PlanID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved.TTLSeconds != 600 {
+		t.Fatalf("approved ttl = %d, want current ceiling 600", approved.TTLSeconds)
+	}
+}
+
 func TestPlanEvaluationChatContextIsFencedAgainstInjection(t *testing.T) {
 	rules := []invocation.ApprovalRule{
 		{ID: "ai-plan", Action: invocation.RuleActionAIEvaluation, AppliesTo: invocation.RuleScopePlan, AtryumLLMConfigID: "llm-1", Enabled: true},
