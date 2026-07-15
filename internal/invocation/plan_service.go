@@ -192,6 +192,31 @@ func (s *Service) evaluatePlanRules(ctx context.Context, plan Plan, chatContext 
 
 	if s.rules != nil {
 		if approvalRules, err := s.rules.ListApprovalRules(ctx); err == nil {
+			// A plan cannot use an AI (or an auto-approve rule) to bypass a
+			// deny rule that applies to any of its individual steps. A denial
+			// asks the agent to revise the batch before any side effect occurs.
+			for _, rule := range approvalRules {
+				if rule.Action != RuleActionAutoDeny || !planSafetyRuleMatches(rule, plan.Source, plan.Actions, agentRec.ID) {
+					continue
+				}
+				plan.MatchedRuleID = ruleIDPtr(rule.ID)
+				feedback := "A planned action matches a deny rule. Revise the plan to remove or replace that action."
+				return s.finalizePlanDecision(ctx, plan, PlanStatusNeedsRevision,
+					newApproval("auto_denied", "plan requires revision: matched deny rule", nil), feedback)
+			}
+
+			// Likewise, if any step requires human approval, the entire plan
+			// waits for a human. AI evaluation may still be useful for plans
+			// without such steps, but it must not approve around this gate.
+			for _, rule := range approvalRules {
+				if rule.Action != RuleActionHumanApproval || !planSafetyRuleMatches(rule, plan.Source, plan.Actions, agentRec.ID) {
+					continue
+				}
+				plan.MatchedRuleID = ruleIDPtr(rule.ID)
+				return s.finalizePlanDecision(ctx, plan, PlanStatusPendingApproval,
+					newApproval("human_required", "plan includes an action requiring human approval", nil), "")
+			}
+
 			for _, rule := range matchPlanRules(approvalRules, plan.Source, plan.Actions, agentRec.ID) {
 				r := rule
 				if r.ID != "" {
@@ -221,6 +246,34 @@ func (s *Service) evaluatePlanRules(ctx context.Context, plan Plan, chatContext 
 	// No matching rule: default to human review.
 	plan.MatchedRuleID = nil
 	return s.finalizePlanDecision(ctx, plan, PlanStatusPendingApproval, nil, "")
+}
+
+func ruleIDPtr(id string) *string {
+	if id == "" {
+		return nil
+	}
+	return &id
+}
+
+// planSafetyRuleMatches reports whether a deny or human-approval rule applies
+// to at least one planned action. Invocation-scoped rules use each action's
+// server (or the plan source when omitted); plan-scoped rules use the plan
+// source. Grants remain governed by matchPlanRules, which requires a rule to
+// cover the whole plan before it can approve it.
+func planSafetyRuleMatches(rule ApprovalRule, source string, actions []PlanAction, agentCUID string) bool {
+	if !rule.Enabled || !matchAgentCUIDs(rule.AgentCUIDs, agentCUID) {
+		return false
+	}
+	for _, action := range actions {
+		server := source
+		if rule.AppliesTo != RuleScopePlan && action.Server != "" {
+			server = action.Server
+		}
+		if matchPatterns(rule.ServerPatterns, server) && matchPatterns(rule.ToolPatterns, action.Tool) {
+			return true
+		}
+	}
+	return false
 }
 
 // runPlanAIEvaluation judges the plan with the locally-configured LLM.
@@ -570,6 +623,9 @@ func (s *Service) approvedPlanPass(ctx context.Context, match approvedPlanMatch,
 	if planStatusFastPass(s.planPollOrigins, match.Plan.PlanID, input) {
 		return "matched approved plan " + match.Plan.PlanID + ": accessing approved plan status", nil, planGateApprove
 	}
+	if rule, ok := s.matchInvocationAutoDeny(ctx, agentRec, server, tool); ok {
+		return "tool call denied by matching rule " + rule.ID + " before plan adherence review", nil, planGateDeny
+	}
 	highestStep, found, err := s.highestExecutedPlanStep(ctx, match.Plan.PlanID)
 	if err != nil {
 		return "plan " + match.Plan.PlanID + " requires execution-order review", nil, planGateHuman
@@ -578,6 +634,26 @@ func (s *Service) approvedPlanPass(ctx context.Context, match approvedPlanMatch,
 		return fmt.Sprintf("tool call would run plan step %d after step %d has already run", match.ActionIndex+1, highestStep+1), nil, planGateDeny
 	}
 	return s.judgePlanAdherence(ctx, match.Plan, match.Action, agentRec, server, tool, input, extraContext)
+}
+
+// matchInvocationAutoDeny reapplies invocation-scoped deny rules at execution
+// time. Rules can change after a plan is approved, so an approved plan never
+// bypasses a current deny policy before its adherence judge runs.
+func (s *Service) matchInvocationAutoDeny(ctx context.Context, agentRec AgentRecord, server, tool string) (ApprovalRule, bool) {
+	if s.rules == nil {
+		return ApprovalRule{}, false
+	}
+	rules, err := s.rules.ListApprovalRules(ctx)
+	if err != nil {
+		slog.Warn("could not evaluate invocation deny rules before plan adherence", "server", server, "tool", tool, "error", err)
+		return ApprovalRule{}, false
+	}
+	for _, rule := range matchRules(rules, server, tool, agentRec.ID) {
+		if rule.Action == RuleActionAutoDeny {
+			return rule, true
+		}
+	}
+	return ApprovalRule{}, false
 }
 
 // highestExecutedPlanStep returns the latest declared action that has been

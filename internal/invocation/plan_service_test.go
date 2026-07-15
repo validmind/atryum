@@ -56,6 +56,20 @@ func (s *planJudgeStub) adherenceRequest() invocation.PlanAdherenceRequest {
 // plan feature installed. Returns the service and the plans repo for direct
 // row manipulation in expiry tests.
 func newPlanTestService(t *testing.T, rules []invocation.ApprovalRule, agents invocation.AgentLookup, judge invocation.PlanEvaluator) (*invocation.Service, *store.PlansRepo) {
+	return newPlanTestServiceWithRuleStore(t, rulesStoreStub{rules: rules}, agents, judge)
+}
+
+type mutableRulesStore struct {
+	rules []invocation.ApprovalRule
+}
+
+func (s *mutableRulesStore) ListApprovalRules(context.Context) ([]invocation.ApprovalRule, error) {
+	return s.rules, nil
+}
+
+func newPlanTestServiceWithRuleStore(t *testing.T, rules interface {
+	ListApprovalRules(context.Context) ([]invocation.ApprovalRule, error)
+}, agents invocation.AgentLookup, judge invocation.PlanEvaluator) (*invocation.Service, *store.PlansRepo) {
 	t.Helper()
 	db := newSQLiteTestDB(t)
 	serverRepo := store.NewServerRepo(db)
@@ -72,7 +86,7 @@ func newPlanTestService(t *testing.T, rules []invocation.ApprovalRule, agents in
 		mcp.NewHTTPClient(),
 		nil,
 		5*time.Second,
-		rulesStoreStub{rules: rules},
+		rules,
 		agents,
 		nil,
 		nil,
@@ -161,8 +175,90 @@ func TestSubmitPlanAutoDenyRule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Status != invocation.PlanStatusDenied {
-		t.Fatalf("status = %s, want denied", plan.Status)
+	if plan.Status != invocation.PlanStatusNeedsRevision {
+		t.Fatalf("status = %s, want needs_revision", plan.Status)
+	}
+	if plan.Approval == nil || plan.Approval.Status != "auto_denied" || plan.Feedback == "" {
+		t.Fatalf("plan = %+v, want automatic denial feedback for revision", plan)
+	}
+}
+
+func TestPlanDenyRulePreemptsAIEvaluationForAnyStep(t *testing.T) {
+	rules := []invocation.ApprovalRule{
+		{ID: "ai-plan", Action: invocation.RuleActionAIEvaluation, AppliesTo: invocation.RuleScopePlan, AtryumLLMConfigID: "llm-1", Enabled: true},
+		{ID: "deny-deploy", Action: invocation.RuleActionAutoDeny, ToolPatterns: []string{"deploy"}, Enabled: true},
+	}
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "be careful"},
+	}}
+	judge := &planJudgeStub{resp: invocation.PlanEvaluateResponse{Verdict: "approved"}}
+	svc, _ := newPlanTestService(t, rules, agents, judge)
+	plan, err := svc.SubmitPlan(context.Background(), planSubmit("agent-a", "inspect", "deploy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != invocation.PlanStatusNeedsRevision || plan.MatchedRuleID == nil || *plan.MatchedRuleID != "deny-deploy" {
+		t.Fatalf("plan = %+v, want needs_revision from deny-deploy", plan)
+	}
+	if got := judge.request(); got.Goal != "" {
+		t.Fatalf("AI judge must not run after a deny match, got %+v", got)
+	}
+}
+
+func TestPlanHumanApprovalRulePreemptsAIEvaluationForAnyStep(t *testing.T) {
+	rules := []invocation.ApprovalRule{
+		{ID: "ai-plan", Action: invocation.RuleActionAIEvaluation, AppliesTo: invocation.RuleScopePlan, AtryumLLMConfigID: "llm-1", Enabled: true},
+		{ID: "human-deploy", Action: invocation.RuleActionHumanApproval, ToolPatterns: []string{"deploy"}, Enabled: true},
+	}
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "be careful"},
+	}}
+	judge := &planJudgeStub{resp: invocation.PlanEvaluateResponse{Verdict: "approved"}}
+	svc, _ := newPlanTestService(t, rules, agents, judge)
+	plan, err := svc.SubmitPlan(context.Background(), planSubmit("agent-a", "inspect", "deploy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != invocation.PlanStatusPendingApproval || plan.Approval == nil || plan.Approval.Status != "human_required" || plan.MatchedRuleID == nil || *plan.MatchedRuleID != "human-deploy" {
+		t.Fatalf("plan = %+v, want pending human approval from human-deploy", plan)
+	}
+	if got := judge.request(); got.Goal != "" {
+		t.Fatalf("AI judge must not run when a step requires human approval, got %+v", got)
+	}
+}
+
+func TestPlanStepRechecksInvocationAutoDenyBeforeAdherence(t *testing.T) {
+	rules := &mutableRulesStore{}
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "be careful"},
+	}}
+	judge := &planJudgeStub{adherenceResp: invocation.PlanAdherenceResponse{Verdict: "follows_plan"}}
+	svc, _ := newPlanTestServiceWithRuleStore(t, rules, agents, judge)
+	ctx := context.Background()
+
+	plan, err := svc.SubmitPlan(ctx, planSubmit("agent-a", "Bash"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApprovePlan(ctx, plan.PlanID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	// A deny rule added after approval must still block the concrete step
+	// before the adherence judge can approve it.
+	rules.rules = []invocation.ApprovalRule{{
+		ID: "deny-bash", Action: invocation.RuleActionAutoDeny,
+		ServerPatterns: []string{"external"}, ToolPatterns: []string{"Bash"}, Enabled: true,
+	}}
+	resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{Source: "external", Tool: "Bash", AgentID: "agent-a", Input: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusDenied || resp.Approval == nil || resp.Approval.Reason == nil || !strings.Contains(*resp.Approval.Reason, "deny-bash") {
+		t.Fatalf("response = %+v, want deny-bash to reject before adherence", resp)
+	}
+	if got := judge.adherenceRequest(); got.ToolName != "" {
+		t.Fatalf("adherence judge must not run after invocation auto deny, got %+v", got)
 	}
 }
 
