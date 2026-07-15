@@ -93,7 +93,10 @@ const envMs = (name: string, fallback: number) => {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 };
 const TOKEN_REFRESH_SKEW_MS = envMs("ATRYUM_TOKEN_REFRESH_SKEW_MS", 60000);
-const TOKEN_COMMAND_TIMEOUT_MS = envMs("ATRYUM_TOKEN_COMMAND_TIMEOUT_MS", 10000);
+const TOKEN_COMMAND_TIMEOUT_MS = envMs(
+  "ATRYUM_TOKEN_COMMAND_TIMEOUT_MS",
+  10000,
+);
 const STATE_DIR =
   process.env.ATRYUM_STATE_DIR ||
   join(homedir(), ".atryum", "amp-plugin-state");
@@ -313,7 +316,10 @@ function normalizeRole(role: unknown): string | undefined {
 }
 
 function trimMessage(text: string): string {
-  const compact = text.replace(/\s+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  const compact = text
+    .replace(/\s+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
   if (compact.length <= MAX_MESSAGE_CHARS) return compact;
   return `${compact.slice(0, MAX_MESSAGE_CHARS)}...`;
 }
@@ -441,6 +447,20 @@ function rulesEndpointHint(tool: string): string {
   return `atryum: to see the approval rules that apply to this call, GET ${url.toString()} (advisory only; Atryum re-checks policy during the actual gated call).`;
 }
 
+function planActionID(event: unknown): string | undefined {
+  const record = (event || {}) as Record<string, unknown>;
+  const metadata = (record.metadata ||
+    record.meta ||
+    record._meta ||
+    {}) as Record<string, unknown>;
+  const value =
+    record.plan_action_id ||
+    record.planActionId ||
+    metadata.plan_action_id ||
+    metadata.planActionId;
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
 function agentRulesURL(tool?: string): string {
   const url = new URL("/api/v1/agent/rules", API);
   url.searchParams.set("source", SOURCE);
@@ -449,8 +469,12 @@ function agentRulesURL(tool?: string): string {
   return url.toString();
 }
 
-async function loadAgentRules(tool?: string): Promise<AgentRulesResponse | undefined> {
-  const res = await fetch(agentRulesURL(tool), { headers: await atryumHeaders() });
+async function loadAgentRules(
+  tool?: string,
+): Promise<AgentRulesResponse | undefined> {
+  const res = await fetch(agentRulesURL(tool), {
+    headers: await atryumHeaders(),
+  });
   if (!res.ok) return undefined;
   return (await res.json()) as AgentRulesResponse;
 }
@@ -460,13 +484,14 @@ async function planHint(tool?: string): Promise<string> {
   const rules = await planSupport;
   if (!rules?.plan_submission?.enabled) return "";
   const endpoint = rules.plan_submission.endpoint || "/api/v1/external/plans";
-  return ` Atryum supports preapproval plans for risky work or dependent changes that could leave files, systems, or external state inconsistent if a later call is denied. Submit a batch plan to ${endpoint} before running tools, then wait for approval before executing the planned steps. The plan response gives every action an action_id; retain it and include it as plan_action_id on a later tool-call submission when multiple steps use the same tool and server. Once the plan is approved, matching tool calls are checked against it by an adherence judge (off-plan calls are denied); polling the plan's status URL is always allowed.`;
+  return ` Atryum supports preapproval plans for risky work or dependent changes that could leave files, systems, or external state inconsistent if a later call is denied. Submit a batch plan to ${endpoint} before running tools, then wait for approval before executing the planned steps. The plan response gives every action an action_id. When the harness exposes tool-call metadata, retain and send it as plan_action_id to deterministically select among steps using the same tool and server; otherwise Atryum's adherence judge will require a unique matching action. Once the plan is approved, matching tool calls are checked against it by an adherence judge (off-plan calls are denied); a plain poll of the plan's own status URL is always allowed.`;
 }
 
 async function submit(
-  tool: string,
-  toolUseID: string,
-  input: Record<string, unknown>,
+	tool: string,
+	toolUseID: string,
+	input: Record<string, unknown>,
+	selectedPlanActionID: string | undefined,
 ): Promise<InvocationResponse> {
   const threadID = activeThreadID() || undefined;
   const res = await atryumFetch(`${API}/api/v1/external/invocations`, {
@@ -475,14 +500,15 @@ async function submit(
     body: JSON.stringify({
       source: SOURCE,
       tool,
-      description: describe(input),
-      input,
-      request_id: toolUseID,
-      thread_id: threadID,
+		description: describe(input),
+		input,
+		request_id: toolUseID,
+		plan_action_id: selectedPlanActionID,
+		thread_id: threadID,
       // Amp's own thread id. Atryum resolves the internal session with
       // get-or-create keyed by (agent binding, client_session_id) — no mint,
-      // no persisted session id, no re-mint on expiry.
-      client_session_id: threadID,
+		// no persisted session id, no re-mint on expiry.
+		client_session_id: threadID,
       client_name: CLIENT_NAME,
       client_version: CLIENT_VERSION || undefined,
       agent_id: AGENT_ID || undefined,
@@ -541,9 +567,10 @@ export default function (amp: PluginAPI) {
   amp.on("tool.call", async (event, ctx) => {
     try {
       const submitted = await submit(
-        event.tool,
-        event.toolUseID,
-        event.input,
+			event.tool,
+			event.toolUseID,
+			event.input,
+			planActionID(event),
       );
       invocationMap.set(event.toolUseID, submitted.invocation_id);
 

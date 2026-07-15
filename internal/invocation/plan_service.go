@@ -638,6 +638,66 @@ func (s *Service) approvedPlanPass(ctx context.Context, match approvedPlanMatch,
 	return s.judgePlanAdherence(ctx, match.Plan, match.Action, agentRec, server, tool, input, extraContext)
 }
 
+// ambiguousApprovedPlanPass resolves a call when several actions in the same
+// approved plan use the same tool/server and the harness could not carry an
+// explicit plan_action_id. Each candidate is independently checked by the
+// adherence judge. Exactly one positive match is safe to select; multiple
+// matches or any uncertainty go to a human, while a call that is outside every
+// candidate is denied. This keeps integrations whose tool-call protocol has no
+// metadata channel usable without weakening the plan boundary.
+func (s *Service) ambiguousApprovedPlanPass(ctx context.Context, plan Plan, agentRec AgentRecord, server, tool string, input map[string]any, extraContext string) (approvedPlanMatch, string, *float64, planGateOutcome) {
+	if planStatusFastPass(s.planPollOrigins, plan.PlanID, input) {
+		return approvedPlanMatch{Plan: plan}, "matched approved plan " + plan.PlanID + ": accessing approved plan status", nil, planGateApprove
+	}
+	if rule, ok := s.matchInvocationAutoDeny(ctx, agentRec, server, tool); ok {
+		return approvedPlanMatch{Plan: plan}, "tool call denied by matching rule " + rule.ID + " before plan adherence review", nil, planGateDeny
+	}
+
+	highestStep, found, err := s.highestExecutedPlanStep(ctx, plan.PlanID)
+	if err != nil {
+		return approvedPlanMatch{Plan: plan}, "plan " + plan.PlanID + " requires execution-order review", nil, planGateHuman
+	}
+
+	var matches []approvedPlanMatch
+	var matchReason string
+	var matchConfidence *float64
+	uncertain := false
+	for i, action := range plan.Actions {
+		if action.Tool != tool || action.Server != server {
+			continue
+		}
+		if found && i < highestStep {
+			continue
+		}
+		candidate := approvedPlanMatch{Plan: plan, Action: action, ActionIndex: i}
+		reason, confidence, outcome := s.judgePlanAdherence(ctx, plan, action, agentRec, server, tool, input, extraContext)
+		switch outcome {
+		case planGateApprove:
+			matches = append(matches, candidate)
+			matchReason, matchConfidence = reason, confidence
+		case planGateHuman:
+			uncertain = true
+		case planGateDeny:
+			// A charter violation applies to the concrete call regardless of
+			// which plan action is considered, so it is safe to stop here.
+			if strings.HasPrefix(reason, "tool call violates agent charter:") {
+				return approvedPlanMatch{Plan: plan}, reason, confidence, planGateDeny
+			}
+		}
+	}
+
+	if len(matches) == 1 && !uncertain {
+		return matches[0], matchReason, matchConfidence, planGateApprove
+	}
+	if len(matches) > 1 {
+		return approvedPlanMatch{Plan: plan}, "multiple approved plan actions match this call; include plan_action_id to select the intended step", nil, planGateHuman
+	}
+	if uncertain {
+		return approvedPlanMatch{Plan: plan}, "plan adherence could not uniquely select an action; include plan_action_id or request human review", nil, planGateHuman
+	}
+	return approvedPlanMatch{Plan: plan}, "tool call is outside every matching action in approved plan " + plan.PlanID, nil, planGateDeny
+}
+
 // matchInvocationAutoDeny reapplies invocation-scoped deny rules at execution
 // time. Rules can change after a plan is approved, so an approved plan never
 // bypasses a current deny policy before its adherence judge runs.
@@ -719,7 +779,7 @@ func (s *Service) judgePlanAdherence(ctx context.Context, plan Plan, action Plan
 		ServerName:        server,
 		ToolName:          tool,
 		ToolArgs:          input,
-		Context:           extraContext,
+		Context:           combineEvaluationContext("", extraContext),
 	})
 	if err != nil {
 		slog.Error("plan adherence judge failed; escalating to human approval",

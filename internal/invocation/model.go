@@ -190,6 +190,7 @@ type InvocationResponse struct {
 	Approval      *Approval `json:"approval"`
 	MatchedRuleID *string   `json:"matched_rule_id,omitempty"`
 	PlanID        *string   `json:"plan_id,omitempty"`
+	PlanActionID  *string   `json:"plan_action_id,omitempty"`
 	AgentID       *string   `json:"agent_id,omitempty"`
 	// SessionID is the internal Atryum session (ses_...) this invocation was
 	// linked to, if any. Exposed for observability/debugging — clients never

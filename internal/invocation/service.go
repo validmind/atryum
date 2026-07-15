@@ -366,18 +366,26 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 			actionID := planMatch.Action.ActionID
 			inv.PlanActionID = &actionID
 		}
-		if ok && !planStatusFastPass(s.planPollOrigins, planID, req.Input) {
-			stepIndex := planMatch.ActionIndex
-			inv.PlanStepIndex = &stepIndex
-		}
 		var reason string
 		var confidence *float64
 		var outcome planGateOutcome
 		if ambiguous {
-			reason = "multiple approved plan actions match this tool; include plan_action_id to select the intended step"
-			outcome = planGateHuman
+			if req.PlanActionID != "" && !planStatusFastPass(s.planPollOrigins, planID, req.Input) {
+				reason = "plan_action_id does not select an action matching this tool and server"
+				outcome = planGateHuman
+			} else {
+				planMatch, reason, confidence, outcome = s.ambiguousApprovedPlanPass(ctx, planMatch.Plan, agentRec, upstream.Name, req.Tool, req.Input, "")
+			}
 		} else {
 			reason, confidence, outcome = s.approvedPlanPass(ctx, planMatch, agentRec, upstream.Name, req.Tool, req.Input, "")
+		}
+		if planMatch.Action.ActionID != "" {
+			actionID := planMatch.Action.ActionID
+			inv.PlanActionID = &actionID
+			if !planStatusFastPass(s.planPollOrigins, planID, req.Input) {
+				stepIndex := planMatch.ActionIndex
+				inv.PlanStepIndex = &stepIndex
+			}
 		}
 
 		planPayload := map[string]any{
@@ -1459,18 +1467,26 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 			actionID := planMatch.Action.ActionID
 			inv.PlanActionID = &actionID
 		}
-		if ok && !planStatusFastPass(s.planPollOrigins, planID, req.Input) {
-			stepIndex := planMatch.ActionIndex
-			inv.PlanStepIndex = &stepIndex
-		}
 		var reason string
 		var confidence *float64
 		var outcome planGateOutcome
 		if ambiguous {
-			reason = "multiple approved plan actions match this tool; include plan_action_id to select the intended step"
-			outcome = planGateHuman
+			if req.PlanActionID != "" && !planStatusFastPass(s.planPollOrigins, planID, req.Input) {
+				reason = "plan_action_id does not select an action matching this tool and server"
+				outcome = planGateHuman
+			} else {
+				planMatch, reason, confidence, outcome = s.ambiguousApprovedPlanPass(ctx, planMatch.Plan, agentRec, source, req.Tool, req.Input, sessionContext)
+			}
 		} else {
 			reason, confidence, outcome = s.approvedPlanPass(ctx, planMatch, agentRec, source, req.Tool, req.Input, sessionContext)
+		}
+		if planMatch.Action.ActionID != "" {
+			actionID := planMatch.Action.ActionID
+			inv.PlanActionID = &actionID
+			if !planStatusFastPass(s.planPollOrigins, planID, req.Input) {
+				stepIndex := planMatch.ActionIndex
+				inv.PlanStepIndex = &stepIndex
+			}
 		}
 
 		planPayload := map[string]any{"tool": req.Tool, "upstream": source, "request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "external": true, "plan_id": planID}
@@ -1917,7 +1933,7 @@ func (s *Service) SetSummary(ctx context.Context, invocationID string, summary s
 }
 
 func (s *Service) toResponse(inv Invocation) InvocationResponse {
-	resp := InvocationResponse{InvocationID: inv.InvocationID, ServerName: inv.Upstream, ToolName: inv.Tool, Status: inv.Status, Approval: inv.Approval, MatchedRuleID: inv.MatchedRuleID, PlanID: inv.PlanID, AgentID: inv.AgentID, RequestID: inv.RequestID, SubmittedAt: inv.SubmittedAt, CompletedAt: inv.CompletedAt}
+	resp := InvocationResponse{InvocationID: inv.InvocationID, ServerName: inv.Upstream, ToolName: inv.Tool, Status: inv.Status, Approval: inv.Approval, MatchedRuleID: inv.MatchedRuleID, PlanID: inv.PlanID, PlanActionID: inv.PlanActionID, AgentID: inv.AgentID, RequestID: inv.RequestID, SubmittedAt: inv.SubmittedAt, CompletedAt: inv.CompletedAt}
 	if inv.Summary != nil {
 		resp.Summary = *inv.Summary
 	}

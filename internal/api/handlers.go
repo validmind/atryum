@@ -1110,7 +1110,7 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 			resp.PlanSubmission = &AgentPlanSubmission{
 				Enabled:  true,
 				Endpoint: "/api/v1/external/plans",
-				Message:  "Plan-scoped rules apply to this agent. When work is risky or could leave systems, files, or external state inconsistent if a later call is denied, submit a plan before running tools. In particular, plan dependent changes whose safe completion requires every step to run, so they can be reviewed together before the first side effect. Wait for approval before executing the planned steps. The plan response gives every action an action_id; retain it. When multiple plan steps share a tool and server, include the selected action_id as plan_action_id on the later tool-call submission. Once the plan is approved, tool calls matching its declared actions are checked against both the plan and the agent charter — only calls that satisfy both are auto-approved; off-plan or charter-violating calls are denied. Polling the approved plan's own status is always auto-approved.",
+				Message:  "Plan-scoped rules apply to this agent. When work is risky or could leave systems, files, or external state inconsistent if a later call is denied, submit a plan before running tools. In particular, plan dependent changes whose safe completion requires every step to run, so they can be reviewed together before the first side effect. Wait for approval before executing the planned steps. The plan response gives every action an action_id; retain it. When multiple plan steps share a tool and server, pass the selected action_id as plan_action_id when the tool-call transport supports it; otherwise the adherence judge must identify exactly one matching action. Once the plan is approved, tool calls matching its declared actions are checked against both the plan and the agent charter — only calls that satisfy both are auto-approved; off-plan or charter-violating calls are denied. A plain poll of the approved plan's own status is always auto-approved.",
 			}
 		}
 		resp.Items = append(resp.Items, AgentRule{
@@ -1343,6 +1343,7 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		var params struct {
 			Name      string         `json:"name"`
 			Arguments map[string]any `json:"arguments"`
+			Meta      map[string]any `json:"_meta"`
 		}
 		if err := json.Unmarshal(req.Params, &params); err != nil {
 			h.writeRPCError(w, req.ID, -32602, "invalid params")
@@ -1360,7 +1361,20 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			h.handleMCPPlanGet(w, r, req.ID, params.Arguments)
 			return
 		}
-		toolReq := invocation.CreateInvocationRequest{Server: server, Tool: params.Name, Input: params.Arguments}
+		planActionID := ""
+		if value, ok := params.Meta["plan_action_id"].(string); ok {
+			planActionID = strings.TrimSpace(value)
+		}
+		// Atryum advertises plan_action_id in proxied tool schemas so models
+		// have a protocol-visible selector. It is routing metadata, not an
+		// upstream argument, and must never be forwarded to the real tool.
+		if value, ok := params.Arguments["plan_action_id"].(string); ok {
+			if planActionID == "" {
+				planActionID = strings.TrimSpace(value)
+			}
+			delete(params.Arguments, "plan_action_id")
+		}
+		toolReq := invocation.CreateInvocationRequest{Server: server, Tool: params.Name, Input: params.Arguments, PlanActionID: planActionID}
 		if requestID != "" {
 			toolReq.RequestID = stringPtr(requestID)
 		}
@@ -1758,7 +1772,8 @@ func (h *Handler) annotateToolsWithPolicy(ctx context.Context, agentID, server s
 		return append(out, atryumRulesTool)
 	}
 	agentCUID := h.resolveAgentRecordForRules(ctx, agentID)
-	if planSubmissionEnabledForRules(rules, server, agentCUID) {
+	planEnabled := planSubmissionEnabledForRules(rules, server, agentCUID)
+	if planEnabled {
 		out = append(out, atryumPlanSubmitMCPTool())
 		out = append(out, atryumPlanGetMCPTool())
 	}
@@ -1776,10 +1791,15 @@ func (h *Handler) annotateToolsWithPolicy(ctx context.Context, agentID, server s
 				desc = prefix + desc
 			}
 		}
+		inputSchema := t.InputSchema
+		if planEnabled {
+			inputSchema = withPlanActionIDSchema(inputSchema)
+			desc += " [Atryum: when selecting among approved plan actions that use this same tool, pass that action's action_id as plan_action_id; Atryum removes it before calling the upstream tool.]"
+		}
 		out = append(out, annotatedTool{
 			Name:        t.Name,
 			Description: desc,
-			InputSchema: t.InputSchema,
+			InputSchema: inputSchema,
 			Annotations: &atryumAnnotations{Atryum: atryumToolPolicy{
 				EffectiveAction: action,
 				MatchedRuleID:   matched,
@@ -1793,6 +1813,32 @@ var atryumRulesTool = mcp.Tool{
 	Name:        atryumRulesToolName,
 	Description: "Return the current static Atryum approval rules visible to this agent. Optional arguments: server/source and tool preview a specific disposition. The response is advisory only; AI evaluation and human approval are decided during the actual gated tool call.",
 	InputSchema: json.RawMessage(`{"type":"object","properties":{"server":{"type":"string","description":"MCP server name to preview."},"source":{"type":"string","description":"Alias for server, useful for non-MCP harness terminology."},"tool":{"type":"string","description":"Tool name to preview."},"agent_id":{"type":"string","description":"Agent identity for no-auth local development only; ignored when inbound auth is enabled."},"request_id":{"type":"string","description":"Deprecated compatibility alias for agent_id in no-auth local development only; ignored when inbound auth is enabled."}},"additionalProperties":false}`),
+}
+
+// withPlanActionIDSchema adds Atryum's routing-only selector to object schemas.
+// Invalid and non-object upstream schemas are left untouched and still benefit
+// from judge-based disambiguation.
+func withPlanActionIDSchema(raw json.RawMessage) json.RawMessage {
+	var schema map[string]any
+	if len(raw) == 0 || json.Unmarshal(raw, &schema) != nil || schema["type"] != "object" {
+		return raw
+	}
+	properties, _ := schema["properties"].(map[string]any)
+	if properties == nil {
+		properties = map[string]any{}
+		schema["properties"] = properties
+	}
+	if _, exists := properties["plan_action_id"]; !exists {
+		properties["plan_action_id"] = map[string]any{
+			"type":        "string",
+			"description": "Atryum routing metadata: action_id from an approved plan when this tool appears more than once. Removed before upstream execution.",
+		}
+	}
+	encoded, err := json.Marshal(schema)
+	if err != nil {
+		return raw
+	}
+	return encoded
 }
 
 // effectiveActionForTool returns the action of the first enabled rule that

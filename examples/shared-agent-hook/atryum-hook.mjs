@@ -83,7 +83,10 @@ const envMs = (name, fallback) => {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 };
 const TOKEN_REFRESH_SKEW_MS = envMs("ATRYUM_TOKEN_REFRESH_SKEW_MS", 60000);
-const TOKEN_COMMAND_TIMEOUT_MS = envMs("ATRYUM_TOKEN_COMMAND_TIMEOUT_MS", 10000);
+const TOKEN_COMMAND_TIMEOUT_MS = envMs(
+  "ATRYUM_TOKEN_COMMAND_TIMEOUT_MS",
+  10000,
+);
 const TOKEN_CACHE_FILE = TOKEN_COMMAND
   ? path.join(STATE_DIR, "token-cache.json")
   : "";
@@ -272,6 +275,16 @@ function toolUseID(event) {
   );
 }
 
+function planActionID(event) {
+  const metadata = event.metadata || event.meta || event._meta || {};
+  const value =
+    event.plan_action_id ||
+    event.planActionId ||
+    metadata.plan_action_id ||
+    metadata.planActionId;
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
 function eventName(event) {
   return String(
     process.env.ATRYUM_HOOK_EVENT ||
@@ -320,7 +333,9 @@ function agentRulesURL(tool) {
 }
 
 async function loadAgentRules(tool) {
-  const res = await fetch(agentRulesURL(tool), { headers: await atryumHeaders() });
+  const res = await fetch(agentRulesURL(tool), {
+    headers: await atryumHeaders(),
+  });
   if (!res.ok) return undefined;
   return res.json();
 }
@@ -330,7 +345,7 @@ async function planHint(tool) {
   const rules = await planSupport;
   if (!rules?.plan_submission?.enabled) return "";
   const endpoint = rules.plan_submission.endpoint || "/api/v1/external/plans";
-  return ` Atryum supports preapproval plans for risky work or dependent changes that could leave files, systems, or external state inconsistent if a later call is denied. Submit a batch plan to ${endpoint} before running tools, then wait for approval before executing the planned steps. The plan response gives every action an action_id; retain it and include it as plan_action_id on a later tool-call submission when multiple steps use the same tool and server. Once the plan is approved, matching tool calls are checked against it by an adherence judge (off-plan calls are denied); polling the plan's status URL is always allowed.`;
+  return ` Atryum supports preapproval plans for risky work or dependent changes that could leave files, systems, or external state inconsistent if a later call is denied. Submit a batch plan to ${endpoint} before running tools, then wait for approval before executing the planned steps. The plan response gives every action an action_id. When the harness exposes tool-call metadata, retain and send it as plan_action_id to deterministically select among steps using the same tool and server; otherwise Atryum's adherence judge will require a unique matching action. Once the plan is approved, matching tool calls are checked against it by an adherence judge (off-plan calls are denied); a plain poll of the plan's own status URL is always allowed.`;
 }
 
 function normalizeRole(value) {
@@ -367,7 +382,8 @@ function extractText(value) {
     return `[tool call: ${name}]`;
   }
   if (type === "tool_result" || type === "tool-result") {
-    const status = typeof record.status === "string" ? record.status : "completed";
+    const status =
+      typeof record.status === "string" ? record.status : "completed";
     return `[tool result: ${status}]`;
   }
   if (record.content !== undefined) return extractText(record.content);
@@ -382,18 +398,20 @@ function messageFromRecord(record) {
   if (codex) return codex;
 
   const nested =
-    record.message && typeof record.message === "object" ? record.message : undefined;
+    record.message && typeof record.message === "object"
+      ? record.message
+      : undefined;
   const role = normalizeRole(
     nested?.role ||
       record.role ||
       record.type ||
       record.sender ||
-      record.author
+      record.author,
   );
   if (!role) return undefined;
 
   const text = trimMessage(
-    extractText(nested?.content ?? record.content ?? nested ?? record)
+    extractText(nested?.content ?? record.content ?? nested ?? record),
   );
   if (!text) return undefined;
   return { role, text };
@@ -573,12 +591,13 @@ async function submit(event) {
     body: JSON.stringify({
       source: SOURCE,
       tool: name,
-      description: describe(input),
-      input,
-      request_id: id,
-      thread_id: clientSessionID,
-      client_session_id: clientSessionID,
-      client_name: clientName,
+		description: describe(input),
+		input,
+		request_id: id,
+		plan_action_id: planActionID(event),
+		thread_id: clientSessionID,
+		client_session_id: clientSessionID,
+		client_name: clientName,
       client_version: CLIENT_VERSION || undefined,
       agent_id: AGENT_ID || undefined,
     }),
