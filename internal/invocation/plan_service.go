@@ -61,12 +61,27 @@ func (s *Service) recordPlanEvent(ctx context.Context, planID, eventType string,
 	})
 }
 
-func clampPlanTTL(seconds int) int {
-	if seconds <= 0 {
-		return planDefaultTTLSeconds
+// SetPlanTTLBounds overrides the built-in plan TTL default and ceiling
+// (usually from the `[plans]` TOML section). Non-positive values keep the
+// built-in constants.
+func (s *Service) SetPlanTTLBounds(defaultSeconds, maxSeconds int) {
+	s.planDefaultTTL = defaultSeconds
+	s.planMaxTTL = maxSeconds
+}
+
+func (s *Service) clampPlanTTL(seconds int) int {
+	def, max := s.planDefaultTTL, s.planMaxTTL
+	if def <= 0 {
+		def = planDefaultTTLSeconds
 	}
-	if seconds > planMaxTTLSeconds {
-		return planMaxTTLSeconds
+	if max <= 0 {
+		max = planMaxTTLSeconds
+	}
+	if seconds <= 0 {
+		return def
+	}
+	if seconds > max {
+		return max
 	}
 	return seconds
 }
@@ -144,7 +159,7 @@ func (s *Service) SubmitPlan(ctx context.Context, req PlanSubmitRequest) (Plan, 
 		Actions:     req.Actions,
 		Status:      PlanStatusReceived,
 		Revision:    1,
-		TTLSeconds:  clampPlanTTL(req.TTLSeconds),
+		TTLSeconds:  s.clampPlanTTL(req.TTLSeconds),
 		SubmittedAt: now,
 	}
 	if parent != nil {
@@ -305,7 +320,7 @@ func (s *Service) runPlanAIEvaluation(ctx context.Context, rule *ApprovalRule, p
 		Source:            plan.Source,
 		Goal:              plan.Goal,
 		Rationale:         plan.Rationale,
-		Context:           chatContext,
+		Context:           combineEvaluationContext("", chatContext),
 		Actions:           plan.Actions,
 	})
 	if err != nil {
@@ -465,7 +480,7 @@ func (s *Service) ApprovePlan(ctx context.Context, id string, ttlSeconds int) (P
 		return Plan{}, fmt.Errorf("plan %s is not pending approval (status=%s)", id, plan.Status)
 	}
 	if ttlSeconds > 0 {
-		plan.TTLSeconds = clampPlanTTL(ttlSeconds)
+		plan.TTLSeconds = s.clampPlanTTL(ttlSeconds)
 	}
 	approval := &Approval{Status: humanDecisionStatus(plan.Approval, true), Reason: stringPtr("human")}
 	return s.finalizePlanDecision(ctx, plan, PlanStatusApproved, approval, "")

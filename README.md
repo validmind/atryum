@@ -133,7 +133,7 @@ Public (auth-protected when `[[auth]]` is configured):
 - `GET /mcp/{server}` — Streamable HTTP / legacy SSE channel for MCP clients that need a long-lived event stream.
 - `POST /api/v1/invocations` — direct invocation (Atryum executes).
 - `POST /api/v1/external/invocations`, `PATCH /api/v1/external/invocations/{id}` — hook path (harness executes, Atryum gates and records).
-- `POST /api/v1/external/plans`, `GET /api/v1/external/plans/{id}` — agent-submitted preapproval plans for batches of intended tool calls. Each action receives a unique `action_id`. Once a plan is approved, tool calls matching its declared actions are checked by an adherence judge against both the plan and the agent charter — only calls that satisfy both auto-approve; off-plan or charter-violating calls are denied. Send `plan_action_id` when the transport supports it to select among repeated tool/server steps; otherwise the judge must identify exactly one matching action. Steps may be skipped, but after a later step runs, earlier steps are denied; a plain poll of the plan's own status always passes.
+- `POST /api/v1/external/plans`, `GET /api/v1/external/plans/{id}` — agent-submitted preapproval plans for batches of intended tool calls. Each action receives a unique `action_id`. Once a plan is approved, tool calls matching its declared actions are checked by an adherence judge against both the plan and the agent charter — only calls that satisfy both auto-approve; off-plan or charter-violating calls are denied. Send `plan_action_id` when the transport supports it to select among repeated tool/server steps; otherwise the judge must identify exactly one matching action. Steps may be skipped, but after a later step runs, earlier steps are denied; a plain poll of the plan's own status always passes. An approved plan's pass expires after its `ttl_seconds`; the default and the hard ceiling are set by the `[plans]` TOML section (default 1h, ceiling 24h).
 - `GET /api/v1/agent/rules` — agent-facing rule introspection.
 - `GET /healthz` — liveness.
 
@@ -183,6 +183,10 @@ log_level       = "info"
 
 [defaults]
 request_timeout_seconds = 30
+
+[plans]                           # optional — approved-plan pass lifetime bounds
+default_ttl_seconds = 3600        # used when a submitted plan omits ttl_seconds
+max_ttl_seconds     = 86400       # hard ceiling; agent requests and human approval overrides are clamped to it
 
 [backend]                         # optional ValidMind backend credential check
 base_url = ""

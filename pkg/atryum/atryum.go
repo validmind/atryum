@@ -262,6 +262,7 @@ func runServer(args []string, o options) error {
 
 	service := invocation.NewService(invRepo, eventRepo, resolver, client, policyRegistry, time.Duration(cfg.Defaults.RequestTimeoutSeconds)*time.Second, rulesRepo, invAgents, invEvaluator, &syncSettingsAdapter{repo: agentSyncSettingsRepo})
 	service.SetPlanStore(plansRepo, planEventsRepo, localEvaluator, planStatusPollOrigins(cfg.Server))
+	service.SetPlanTTLBounds(cfg.Plans.DefaultTTLSeconds, cfg.Plans.MaxTTLSeconds)
 	if backendClient != nil {
 		service.SetInvocationSummarizer(&summaryAdapter{client: backendClient})
 	}

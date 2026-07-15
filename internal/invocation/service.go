@@ -199,6 +199,8 @@ type Service struct {
 	planEvents       planEventRepo
 	planJudge        PlanEvaluator
 	planPollOrigins  planOriginSet // hosts trusted by the plan-status fast pass
+	planDefaultTTL   int           // seconds; 0 = built-in default
+	planMaxTTL       int           // seconds; 0 = built-in ceiling
 	defaultTimeout   time.Duration
 	mu               sync.Mutex
 	pendingApprovals map[string]chan approvalDecision
@@ -362,10 +364,6 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	if planMatch, ok, ambiguous := s.matchApprovedPlan(ctx, agentID, upstream.Name, req.Tool, req.PlanActionID); ok || ambiguous {
 		planID := planMatch.Plan.PlanID
 		inv.PlanID = &planID
-		if ok {
-			actionID := planMatch.Action.ActionID
-			inv.PlanActionID = &actionID
-		}
 		var reason string
 		var confidence *float64
 		var outcome planGateOutcome
@@ -1463,10 +1461,6 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	if planMatch, ok, ambiguous := s.matchApprovedPlan(ctx, agentID, source, req.Tool, req.PlanActionID); ok || ambiguous {
 		planID := planMatch.Plan.PlanID
 		inv.PlanID = &planID
-		if ok {
-			actionID := planMatch.Action.ActionID
-			inv.PlanActionID = &actionID
-		}
 		var reason string
 		var confidence *float64
 		var outcome planGateOutcome
