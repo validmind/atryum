@@ -729,10 +729,11 @@ func (s *Service) approvedPlanPass(ctx context.Context, match approvedPlanMatch,
 // ambiguousApprovedPlanPass resolves a call when several actions in the same
 // approved plan use the same tool/server. Each candidate is independently
 // checked by the adherence judge. Any positive match establishes that the call
-// follows the approved plan; when several actions match, select the latest one
-// so execution-order tracking treats every earlier matching step as completed.
-// A call with no positive match is escalated when the judge is uncertain and
-// denied when it is outside every candidate.
+// follows the approved plan; when several actions match (typically identical
+// duplicate steps the judge cannot tell apart), the earliest un-executed one
+// is bound so duplicates progress in declared order and never complete the
+// plan early. A call with no positive match is escalated when the judge is
+// uncertain and denied when it is outside every candidate.
 func (s *Service) ambiguousApprovedPlanPass(ctx context.Context, plan Plan, agentRec AgentRecord, server, tool string, input map[string]any, extraContext string) (approvedPlanMatch, string, *float64, planGateOutcome) {
 	if planStatusFastPass(s.planPollOrigins, plan.PlanID, input) {
 		return approvedPlanMatch{Plan: plan}, "matched approved plan " + plan.PlanID + ": accessing approved plan status", nil, planGateApprove
@@ -758,7 +759,9 @@ func (s *Service) ambiguousApprovedPlanPass(ctx context.Context, plan Plan, agen
 		switch outcome {
 		case planGateApprove:
 			matches = append(matches, candidate)
-			matchReason, matchConfidence = reason, confidence
+			if len(matches) == 1 {
+				matchReason, matchConfidence = reason, confidence
+			}
 		case planGateApprovePoll:
 			// A status poll is a property of the concrete call, not of the
 			// candidate action under consideration — grant the pass without
@@ -776,10 +779,18 @@ func (s *Service) ambiguousApprovedPlanPass(ctx context.Context, plan Plan, agen
 	}
 
 	if len(matches) > 0 {
-		// Matches are collected in plan order. Recording the latest positive
-		// match prevents a later combined call from being followed by an
-		// earlier action that the same call already satisfied.
-		return matches[len(matches)-1], matchReason, matchConfidence, planGateApprove
+		// Matches are collected in plan order and every candidate is already
+		// at or above the executed high-water mark. When several candidates
+		// match — typically identical duplicate actions the judge cannot
+		// tell apart (the call text is the same for both) — bind the
+		// EARLIEST one: duplicates then progress in declared order, and a
+		// first occurrence can never bind to the final duplicate and
+		// complete the plan before the steps between them have run. The
+		// trade-off is that a single call genuinely combining several
+		// approved actions records only its earliest constituent, leaving
+		// the plan open until the later steps run individually — strictly
+		// safer than closing it early.
+		return matches[0], matchReason, matchConfidence, planGateApprove
 	}
 	if uncertain {
 		return approvedPlanMatch{Plan: plan}, "plan adherence could not confirm that the call follows an approved action", nil, planGateHuman

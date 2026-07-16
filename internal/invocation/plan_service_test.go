@@ -916,20 +916,121 @@ func TestAdherenceJudgeApprovesMultipleRepeatedToolMatches(t *testing.T) {
 		t.Fatalf("response = %+v, want approved when the call follows multiple plan actions", resp)
 	}
 
-	// Multiple positive matches record the latest matched step, so an earlier
-	// action cannot run after the combined call has completed it.
+	// Multiple positive matches bind the EARLIEST matched step: a combined
+	// call must not complete the plan through its final constituent — the
+	// remaining steps stay individually runnable until they actually run.
+	if _, err := svc.RecordExecution(ctx, resp.InvocationID, invocation.ExternalExecutionUpdate{ExecutionStatus: "completed"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.GetPlan(ctx, plan.PlanID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != invocation.PlanStatusApproved {
+		t.Fatalf("plan status after combined call = %s, want approved (combined call binds the earliest step)", got.Status)
+	}
+
 	judge.adherenceBySummary = map[string]invocation.PlanAdherenceResponse{
-		"make build":  {Verdict: "follows_plan", Reason: "matches build"},
-		"make deploy": {Verdict: "outside_plan", Reason: "not deployment"},
+		"make build":  {Verdict: "different_action", Reason: "the call deploys"},
+		"make deploy": {Verdict: "follows_plan", Reason: "matches deploy"},
 	}
 	resp, err = svc.Submit(ctx, invocation.ExternalSubmitRequest{
-		Tool: "Bash", AgentID: "agent-a", Input: map[string]any{"cmd": "make build"},
+		Tool: "Bash", AgentID: "agent-a", Input: map[string]any{"cmd": "make deploy"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Status != invocation.StatusDenied {
-		t.Fatalf("response = %+v, want earlier matched action denied after combined call", resp)
+	if resp.Status != invocation.StatusApproved {
+		t.Fatalf("response = %+v, want deploy approved after combined call", resp)
+	}
+	if _, err := svc.RecordExecution(ctx, resp.InvocationID, invocation.ExternalExecutionUpdate{ExecutionStatus: "completed"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = svc.GetPlan(ctx, plan.PlanID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != invocation.PlanStatusCompleted {
+		t.Fatalf("plan status after final action = %s, want completed", got.Status)
+	}
+}
+
+func TestDuplicateActionsBindEarliestUnexecutedStep(t *testing.T) {
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},
+	}}
+	// The plan repeats an identical action (uptime, sleep, uptime). The two
+	// uptime steps share an input summary, so the judge cannot tell them
+	// apart and matches BOTH candidates for an uptime call. The gate must
+	// bind the earliest un-executed duplicate: binding the latest would
+	// complete the plan on the FIRST uptime, unlinking the steps between.
+	judge := &planJudgeStub{adherenceBySummary: map[string]invocation.PlanAdherenceResponse{
+		"run uptime": {Verdict: "follows_plan", Reason: "matches an uptime step"},
+		"run sleep":  {Verdict: "different_action", Reason: "the call is an uptime step"},
+	}}
+	svc, _ := newPlanTestService(t, nil, agents, judge)
+	ctx := context.Background()
+	plan, err := svc.SubmitPlan(ctx, invocation.PlanSubmitRequest{
+		AgentID: "agent-a", Goal: "uptime, sleep, uptime",
+		Actions: []invocation.PlanAction{
+			{Tool: "bash", InputSummary: "run uptime"},
+			{Tool: "bash", InputSummary: "run sleep"},
+			{Tool: "bash", InputSummary: "run uptime"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApprovePlan(ctx, plan.PlanID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	step := func(input string) invocation.InvocationResponse {
+		t.Helper()
+		resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{
+			Tool: "bash", AgentID: "agent-a", Input: map[string]any{"command": input},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.Status != invocation.StatusApproved {
+			t.Fatalf("%s status = %s, want approved", input, resp.Status)
+		}
+		if _, err := svc.RecordExecution(ctx, resp.InvocationID, invocation.ExternalExecutionUpdate{ExecutionStatus: "completed"}); err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	planStatus := func() invocation.PlanStatus {
+		t.Helper()
+		got, err := svc.GetPlan(ctx, plan.PlanID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got.Status
+	}
+
+	step("uptime")
+	if got := planStatus(); got != invocation.PlanStatusApproved {
+		t.Fatalf("plan status after first uptime = %s, want approved (must bind step 1, not the final duplicate)", got)
+	}
+
+	judge.adherenceBySummary = map[string]invocation.PlanAdherenceResponse{
+		"run uptime": {Verdict: "different_action", Reason: "the call is the sleep step"},
+		"run sleep":  {Verdict: "follows_plan", Reason: "matches sleep"},
+	}
+	step("sleep 5")
+	if got := planStatus(); got != invocation.PlanStatusApproved {
+		t.Fatalf("plan status after sleep = %s, want approved", got)
+	}
+
+	judge.adherenceBySummary = map[string]invocation.PlanAdherenceResponse{
+		"run uptime": {Verdict: "follows_plan", Reason: "matches the final uptime step"},
+		"run sleep":  {Verdict: "different_action", Reason: "the call is an uptime step"},
+	}
+	step("uptime")
+	if got := planStatus(); got != invocation.PlanStatusCompleted {
+		t.Fatalf("plan status after final uptime = %s, want completed", got)
 	}
 }
 
