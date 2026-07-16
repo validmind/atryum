@@ -88,6 +88,7 @@ const TOKEN_COMMAND_TIMEOUT_MS = envMs(
   "ATRYUM_TOKEN_COMMAND_TIMEOUT_MS",
   10000,
 );
+const PLAN_SUPPORT_CACHE_TTL_MS = 30000;
 const TOKEN_CACHE_FILE = TOKEN_COMMAND
   ? path.join(STATE_DIR, "token-cache.json")
   : "";
@@ -103,7 +104,7 @@ const TOKEN_CACHE_KEY = TOKEN_COMMAND
 let cachedToken = TOKEN_COMMAND ? "" : ACCESS_TOKEN;
 let cachedTokenExpiresAt =
   ACCESS_TOKEN && !TOKEN_COMMAND ? Number.POSITIVE_INFINITY : 0;
-let planSupport;
+const planSupportCache = new Map();
 
 function parseTokenResponse(raw) {
   const text = String(raw || "").trim();
@@ -335,9 +336,32 @@ async function loadAgentRules(tool) {
   return res.json();
 }
 
+function cachedAgentRules(tool) {
+  const key = tool || "";
+  const cached = planSupportCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.promise;
+
+  let entry;
+  const promise = loadAgentRules(tool).then(
+    (rules) => {
+      if (planSupportCache.get(key) === entry) {
+        if (rules) entry.expiresAt = Date.now() + PLAN_SUPPORT_CACHE_TTL_MS;
+        else planSupportCache.delete(key);
+      }
+      return rules;
+    },
+    () => {
+      if (planSupportCache.get(key) === entry) planSupportCache.delete(key);
+      return undefined;
+    },
+  );
+  entry = { promise, expiresAt: Number.POSITIVE_INFINITY };
+  planSupportCache.set(key, entry);
+  return promise;
+}
+
 async function planHint(tool) {
-  planSupport ||= loadAgentRules(tool).catch(() => undefined);
-  const rules = await planSupport;
+  const rules = await cachedAgentRules(tool);
   if (!rules?.plan_submission?.enabled) return "";
   // The plan's actions are scoped to their source and only match later tool
   // calls from the same source, so the submission endpoint must carry it.

@@ -97,6 +97,7 @@ const TOKEN_COMMAND_TIMEOUT_MS = envMs(
   "ATRYUM_TOKEN_COMMAND_TIMEOUT_MS",
   10000,
 );
+const PLAN_SUPPORT_CACHE_TTL_MS = 30000;
 const STATE_DIR =
   process.env.ATRYUM_STATE_DIR ||
   join(homedir(), ".atryum", "amp-plugin-state");
@@ -306,7 +307,11 @@ type ChatMessage = {
 // toolUseID -> atryum invocation id, so tool.result can patch the right row.
 const invocationMap = new Map<string, string>();
 const activityContext: ChatMessage[] = [];
-let planSupport: Promise<AgentRulesResponse | undefined> | undefined;
+type PlanSupportCacheEntry = {
+  promise: Promise<AgentRulesResponse | undefined>;
+  expiresAt: number;
+};
+const planSupportCache = new Map<string, PlanSupportCacheEntry>();
 
 function normalizeRole(role: unknown): string | undefined {
   if (role !== "user" && role !== "assistant" && role !== "system") {
@@ -464,9 +469,34 @@ async function loadAgentRules(
   return (await res.json()) as AgentRulesResponse;
 }
 
+function cachedAgentRules(
+  tool?: string,
+): Promise<AgentRulesResponse | undefined> {
+  const key = tool || "";
+  const cached = planSupportCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.promise;
+
+  let entry: PlanSupportCacheEntry;
+  const promise = loadAgentRules(tool).then(
+    (rules) => {
+      if (planSupportCache.get(key) === entry) {
+        if (rules) entry.expiresAt = Date.now() + PLAN_SUPPORT_CACHE_TTL_MS;
+        else planSupportCache.delete(key);
+      }
+      return rules;
+    },
+    () => {
+      if (planSupportCache.get(key) === entry) planSupportCache.delete(key);
+      return undefined;
+    },
+  );
+  entry = { promise, expiresAt: Number.POSITIVE_INFINITY };
+  planSupportCache.set(key, entry);
+  return promise;
+}
+
 async function planHint(tool?: string): Promise<string> {
-  planSupport ||= loadAgentRules(tool).catch(() => undefined);
-  const rules = await planSupport;
+  const rules = await cachedAgentRules(tool);
   if (!rules?.plan_submission?.enabled) return "";
   // The plan's actions are scoped to their source and only match later tool
   // calls from the same source, so the submission endpoint must carry it.
