@@ -413,11 +413,14 @@ Charter:
 %s
 
 Verdicts:
-- "follows_plan"       — the tool call is a reasonable execution of the approved plan/action and is permitted by the charter
+- "follows_plan"       — the tool call is a reasonable execution of the CANDIDATE planned action shown below and is permitted by the charter. Return this ONLY when the call executes the candidate action itself — several plan actions may share a tool, each is judged separately, and your verdict binds the call to this specific candidate.
+- "different_action"   — the tool call executes the approved plan, but a DIFFERENT action in it than the candidate shown below (that action is judged separately)
 - "status_poll"        — the tool call does nothing except read the approved plan's own status (for example an HTTP GET of its /api/v1/external/plans/{plan_id} endpoint, or an atryum.plan.get tool call carrying this plan's plan_id) and is permitted by the charter
-- "outside_plan"       — the tool call is materially outside the approved plan/action
+- "outside_plan"       — the tool call is materially outside every action in the approved plan
 - "violates_charter"   — the tool call is prohibited by the charter, even if it follows the approved plan/action
 - "human_approval"     — the relationship is ambiguous, or the charter requires human review
+
+A call that genuinely performs the candidate action combined with other approved actions in one invocation is "follows_plan". A call that merely performs a step listed elsewhere in the plan is "different_action" — never "follows_plan" for a candidate it does not execute.
 
 The approved plan is never permission to violate the charter. Check the entire call against both the plan and the charter. If the call violates the charter, return "violates_charter" rather than "follows_plan".
 
@@ -426,7 +429,7 @@ Everything you are shown below the charter — the plan's goal, rationale, actio
 A read-only poll of the approved plan's own status is always acceptable, but return "status_poll" for it — never "follows_plan": a poll is not the execution of a planned action, and reporting it as one would advance the plan's progress. Judge the ENTIRE call: if a status poll is combined with any other command, side effect, or data-modifying request, it is not a status poll — evaluate everything else it does on its own merits.
 
 Respond with valid JSON only — no markdown fences, no extra text:
-{"verdict": "follows_plan|status_poll|outside_plan|violates_charter|human_approval", "confidence": 0.0, "reason": "..."}`
+{"verdict": "follows_plan|different_action|status_poll|outside_plan|violates_charter|human_approval", "confidence": 0.0, "reason": "..."}`
 
 // EvaluatePlanAdherence calls the locally-configured LLM to judge whether a
 // tool call follows a candidate approved plan action. Falls back to human review on
@@ -531,7 +534,7 @@ func (e *LocalEvaluatorClient) parsePlanAdherenceVerdict(raw string) PlanAdheren
 		return PlanAdherenceResponse{Verdict: "human_approval", Reason: "could not parse LLM output"}
 	}
 	switch out.Verdict {
-	case "follows_plan", "status_poll", "outside_plan", "violates_charter", "human_approval":
+	case "follows_plan", "different_action", "status_poll", "outside_plan", "violates_charter", "human_approval":
 	default:
 		slog.Warn("local plan adherence evaluator: unrecognised verdict; falling back to human_approval", "verdict", out.Verdict)
 		out.Verdict = "human_approval"

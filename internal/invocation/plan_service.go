@@ -889,6 +889,15 @@ func (s *Service) judgePlanAdherence(ctx context.Context, plan Plan, action Plan
 			reason += ": " + resp.Reason
 		}
 		return reason, resp.Confidence, planGateApprovePoll
+	case "different_action":
+		// The call belongs to the plan but not to this candidate: never a
+		// match for it. Escalate rather than deny — when another candidate
+		// is the right one, its own positive match wins over this.
+		reason := "tool call executes a different action of approved plan " + plan.PlanID
+		if strings.TrimSpace(resp.Reason) != "" {
+			reason += ": " + resp.Reason
+		}
+		return reason, resp.Confidence, planGateHuman
 	case "outside_plan", "violates_charter":
 		slog.Info("plan adherence judge rejected plan-gated call",
 			"plan_id", plan.PlanID, "tool", tool, "reason", resp.Reason)

@@ -1557,6 +1557,64 @@ func TestStatusPollVerdictGrantsPassWithoutBindingPlanStep(t *testing.T) {
 	}
 }
 
+func TestAdherenceBindsTheJudgedCandidateNotTheLatest(t *testing.T) {
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},
+	}}
+	// Candidate-specific judging: the pwd call executes only the first
+	// action; for the later same-tool candidates the judge answers
+	// different_action. Binding must follow the judged candidate — a
+	// first-step call bound to the final action would complete the plan
+	// before the remaining steps run.
+	judge := &planJudgeStub{
+		adherenceBySummary: map[string]invocation.PlanAdherenceResponse{
+			"run pwd":    {Verdict: "follows_plan", Reason: "executes the pwd action"},
+			"run uptime": {Verdict: "different_action", Reason: "the call is the pwd step"},
+			"run whoami": {Verdict: "different_action", Reason: "the call is the pwd step"},
+		},
+	}
+	svc, _ := newPlanTestService(t, nil, agents, judge)
+	ctx := context.Background()
+	plan, err := svc.SubmitPlan(ctx, invocation.PlanSubmitRequest{
+		AgentID: "agent-a", Goal: "pwd, uptime, whoami",
+		Actions: []invocation.PlanAction{
+			{Tool: "bash", InputSummary: "run pwd"},
+			{Tool: "bash", InputSummary: "run uptime"},
+			{Tool: "bash", InputSummary: "run whoami"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApprovePlan(ctx, plan.PlanID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{
+		Tool: "bash", AgentID: "agent-a", Input: map[string]any{"command": "pwd"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Status != invocation.StatusApproved {
+		t.Fatalf("pwd status = %s, want approved", first.Status)
+	}
+	if first.Approval == nil || first.Approval.Reason == nil || !strings.Contains(*first.Approval.Reason, "follows approved plan") {
+		t.Fatalf("pwd approval = %+v, want the matching candidate's follows-plan reason", first.Approval)
+	}
+	if _, err := svc.RecordExecution(ctx, first.InvocationID, invocation.ExternalExecutionUpdate{ExecutionStatus: "completed"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := svc.GetPlan(ctx, plan.PlanID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != invocation.PlanStatusApproved {
+		t.Fatalf("plan status after first step = %s, want approved (a first-step call must not complete the plan)", got.Status)
+	}
+}
+
 func TestFailedFinalExternalActionLeavesPlanApproved(t *testing.T) {
 	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
 		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},
