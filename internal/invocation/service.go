@@ -356,8 +356,8 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 
 	// An approved plan grants a scoped pass. On this MCP proxy path the
 	// tools/call arguments leave no channel for an explicit plan_id, so the
-	// association is implicit: a declared action of the agent's newest
-	// approved plan. A matched call is gated exclusively by the plan flow —
+	// association is implicit: an action on this server in the agent's newest
+	// approved plan. A scoped call is gated exclusively by the plan flow —
 	// a status poll auto-approves, the adherence judge confirms or denies
 	// everything else, and an unverifiable call goes straight to a human,
 	// bypassing rules/policy. Unmatched calls get normal gating.
@@ -1446,9 +1446,9 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	}
 
 	// An approved plan grants a scoped pass. The association is implicit —
-	// the agent's newest approved plan declaring this tool — because harness
+	// the agent's newest approved plan scoped to this source — because harness
 	// tool-input schemas leave the agent no channel to declare a plan id. A
-	// matched call is gated exclusively by the plan flow: a status poll
+	// scoped call is gated exclusively by the plan flow: a status poll
 	// auto-approves, the adherence judge confirms or denies everything else,
 	// and an unverifiable call goes straight to a human, bypassing approval
 	// rules. Unmatched calls get normal gating.

@@ -218,3 +218,21 @@ func TestPlanJudgePromptsMarkAgentContentUntrusted(t *testing.T) {
 		}
 	}
 }
+
+func TestPlanAdherencePromptAllowsHarnessToolNameMismatch(t *testing.T) {
+	evaluator := NewLocalEvaluatorClient(localLLMConfigStoreStub{})
+	message := evaluator.buildPlanAdherenceMessage(PlanAdherenceRequest{
+		Plan:     Plan{PlanID: "plan_x", Goal: "run a shell script", Actions: []PlanAction{{Tool: "zsh"}}},
+		Action:   PlanAction{Tool: "zsh", Description: "Run the approved script."},
+		ToolName: "bash",
+		ToolArgs: map[string]any{"command": "zsh approved-script.zsh"},
+	})
+	if !strings.Contains(planAdherenceSystemPrompt, "tool name may differ") {
+		t.Fatal("plan adherence system prompt must allow harness tool-name differences")
+	}
+	for _, want := range []string{"Candidate planned action:", "tool=zsh", "Tool: bash"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("adherence message missing %q:\n%s", want, message)
+		}
+	}
+}

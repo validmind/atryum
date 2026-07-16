@@ -555,16 +555,18 @@ func TestApprovedPlanGrantsPassToMatchingSubmit(t *testing.T) {
 		t.Fatalf("human-approved plan must be adherence-judged, got %+v", got)
 	}
 
-	// An undeclared tool does not match the plan and hits normal gating.
+	// An undeclared tool on the plan's source remains plan-gated. The judge
+	// rejects it and the plan association is retained for audit/UI display.
+	judge.adherenceResp = invocation.PlanAdherenceResponse{Verdict: "outside_plan", Reason: "not part of the approved work"}
 	resp, err = svc.Submit(ctx, invocation.ExternalSubmitRequest{Tool: "delete_everything", AgentID: "agent-a", Input: map[string]any{}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Status != invocation.StatusPendingApproval {
-		t.Fatalf("undeclared tool status = %s, want pending_approval", resp.Status)
+	if resp.Status != invocation.StatusDenied {
+		t.Fatalf("undeclared tool status = %s, want denied by plan adherence", resp.Status)
 	}
-	if resp.PlanID != nil {
-		t.Fatalf("undeclared tool should not carry plan_id, got %v", *resp.PlanID)
+	if resp.PlanID == nil || *resp.PlanID != plan.PlanID {
+		t.Fatalf("undeclared tool plan_id = %v, want %s", resp.PlanID, plan.PlanID)
 	}
 
 	// A different agent gets no pass.
@@ -574,6 +576,45 @@ func TestApprovedPlanGrantsPassToMatchingSubmit(t *testing.T) {
 	}
 	if resp.Status != invocation.StatusPendingApproval {
 		t.Fatalf("other agent status = %s, want pending_approval", resp.Status)
+	}
+}
+
+func TestApprovedPlanAttachesAcrossHarnessToolNameMismatch(t *testing.T) {
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},
+	}}
+	judge := &planJudgeStub{adherenceResp: invocation.PlanAdherenceResponse{
+		Verdict: "follows_plan", Reason: "bash is the harness name for the planned shell action",
+	}}
+	svc, _ := newPlanTestService(t, nil, agents, judge)
+	ctx := context.Background()
+
+	plan, err := svc.SubmitPlan(ctx, invocation.PlanSubmitRequest{
+		AgentID: "agent-a", Source: "pi", Goal: "run a shell script",
+		Actions: []invocation.PlanAction{{Tool: "zsh", Description: "Run the approved script."}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApprovePlan(ctx, plan.PlanID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{
+		AgentID: "agent-a", Source: "pi", Tool: "bash", Input: map[string]any{"command": "zsh approved-script.zsh"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusApproved {
+		t.Fatalf("status = %s, want approved", resp.Status)
+	}
+	if resp.PlanID == nil || *resp.PlanID != plan.PlanID {
+		t.Fatalf("plan_id = %v, want %s", resp.PlanID, plan.PlanID)
+	}
+	got := judge.adherenceRequest()
+	if got.Plan.PlanID != plan.PlanID || got.Action.Tool != "zsh" || got.ToolName != "bash" {
+		t.Fatalf("adherence request = %+v, want planned zsh action checked against reported bash call", got)
 	}
 }
 

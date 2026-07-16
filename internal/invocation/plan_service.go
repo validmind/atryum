@@ -615,12 +615,13 @@ type approvedPlanMatch struct {
 }
 
 // matchApprovedPlan returns the newest approved, unexpired plan of the agent
-// with a declared action matching (server, tool). It is the deterministic
-// plan-pass check run before rule matching in Invoke/Submit; it never matches
-// when the plan feature is unused or the caller is anonymous.
-// The third return value reports that a plan action matched the tool/server,
-// but could not be selected unambiguously. Callers must not fall through to
-// ordinary approval rules in that case.
+// that contains an action for the invocation's server. Exact tool matches are
+// preferred, but a tool-name mismatch still selects the active plan so aliases
+// and harness naming differences are resolved by the adherence judge instead
+// of falling through to ordinary approval rules.
+//
+// The third return value reports that more than one action could describe the
+// call. Callers must ask the adherence judge to select among those actions.
 func (s *Service) matchApprovedPlan(ctx context.Context, agentID, server, tool string) (approvedPlanMatch, bool, bool) {
 	if !s.plansEnabled() || agentID == "" || tool == "" {
 		return approvedPlanMatch{}, false, false
@@ -635,12 +636,7 @@ func (s *Service) matchApprovedPlan(ctx context.Context, agentID, server, tool s
 		if plan.Status != PlanStatusApproved {
 			continue
 		}
-		var candidates []approvedPlanMatch
-		for i, a := range plan.Actions {
-			if a.Tool == tool && a.Server == server {
-				candidates = append(candidates, approvedPlanMatch{Plan: plan, Action: a, ActionIndex: i})
-			}
-		}
+		candidates := planActionCandidates(plan, server, tool)
 		if len(candidates) == 0 {
 			continue
 		}
@@ -650,6 +646,30 @@ func (s *Service) matchApprovedPlan(ctx context.Context, agentID, server, tool s
 		return approvedPlanMatch{Plan: plan}, false, true
 	}
 	return approvedPlanMatch{}, false, false
+}
+
+// planActionCandidates returns actions on the invocation's server. Exact tool
+// matches take precedence. When none exist, all actions on that server remain
+// candidates so the adherence judge can handle tool aliases (for example, a
+// plan saying "zsh" when the harness reports its shell tool as "bash") and can
+// reject genuinely off-plan calls without losing the plan association.
+func planActionCandidates(plan Plan, server, tool string) []approvedPlanMatch {
+	var serverCandidates []approvedPlanMatch
+	var exactCandidates []approvedPlanMatch
+	for i, action := range plan.Actions {
+		if action.Server != server {
+			continue
+		}
+		candidate := approvedPlanMatch{Plan: plan, Action: action, ActionIndex: i}
+		serverCandidates = append(serverCandidates, candidate)
+		if action.Tool == tool {
+			exactCandidates = append(exactCandidates, candidate)
+		}
+	}
+	if len(exactCandidates) > 0 {
+		return exactCandidates
+	}
+	return serverCandidates
 }
 
 // planGateOutcome is the disposition the plan gate assigns to an invocation.
@@ -669,9 +689,9 @@ const (
 	planGateHuman
 )
 
-// approvedPlanPass gates an invocation that matched an approved plan: the
-// agent's newest approved plan declaring this tool. A status poll of the plan
-// fast-passes; everything else must be confirmed by the adherence judge.
+// approvedPlanPass gates an invocation against one candidate action from the
+// agent's active approved plan. A status poll of the plan fast-passes;
+// everything else must be confirmed by the adherence judge.
 func (s *Service) approvedPlanPass(ctx context.Context, match approvedPlanMatch, agentRec AgentRecord, server, tool string, input map[string]any, extraContext string) (string, *float64, planGateOutcome) {
 	if planStatusFastPass(s.planPollOrigins, match.Plan.PlanID, input) {
 		return "matched approved plan " + match.Plan.PlanID + ": accessing approved plan status", nil, planGateApprove
@@ -713,15 +733,11 @@ func (s *Service) ambiguousApprovedPlanPass(ctx context.Context, plan Plan, agen
 	var matchReason string
 	var matchConfidence *float64
 	uncertain := false
-	for i, action := range plan.Actions {
-		if action.Tool != tool || action.Server != server {
+	for _, candidate := range planActionCandidates(plan, server, tool) {
+		if found && candidate.ActionIndex < highestStep {
 			continue
 		}
-		if found && i < highestStep {
-			continue
-		}
-		candidate := approvedPlanMatch{Plan: plan, Action: action, ActionIndex: i}
-		reason, confidence, outcome := s.judgePlanAdherence(ctx, plan, action, agentRec, server, tool, input, extraContext)
+		reason, confidence, outcome := s.judgePlanAdherence(ctx, plan, candidate.Action, agentRec, server, tool, input, extraContext)
 		switch outcome {
 		case planGateApprove:
 			matches = append(matches, candidate)
