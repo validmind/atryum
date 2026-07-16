@@ -14,6 +14,7 @@ const (
 	PlanStatusDenied          PlanStatus = "denied"
 	PlanStatusNeedsRevision   PlanStatus = "needs_revision"
 	PlanStatusSuperseded      PlanStatus = "superseded"
+	PlanStatusCompleted       PlanStatus = "completed"
 	PlanStatusExpired         PlanStatus = "expired"
 	PlanStatusCancelled       PlanStatus = "cancelled"
 )

@@ -1337,6 +1337,120 @@ func TestCancelPlanRevokesPass(t *testing.T) {
 	}
 }
 
+func TestSuccessfulFinalExternalActionCompletesPlan(t *testing.T) {
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},
+	}}
+	judge := &planJudgeStub{adherenceResp: invocation.PlanAdherenceResponse{
+		Verdict: "follows_plan", Reason: "matches the declared action",
+	}}
+	svc, _ := newPlanTestService(t, nil, agents, judge)
+	ctx := context.Background()
+	plan, err := svc.SubmitPlan(ctx, invocation.PlanSubmitRequest{
+		AgentID: "agent-a", Goal: "read then write",
+		Actions: []invocation.PlanAction{
+			{Tool: "Read", InputSummary: "read input"},
+			{Tool: "Write", InputSummary: "write output"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApprovePlan(ctx, plan.PlanID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{
+		Tool: "Read", AgentID: "agent-a", Input: map[string]any{"path": "input.json"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RecordExecution(ctx, first.InvocationID, invocation.ExternalExecutionUpdate{ExecutionStatus: "completed"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.GetPlan(ctx, plan.PlanID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != invocation.PlanStatusApproved {
+		t.Fatalf("status after non-final action = %s, want approved", got.Status)
+	}
+
+	final, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{
+		Tool: "Write", AgentID: "agent-a", Input: map[string]any{"path": "output.json"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RecordExecution(ctx, final.InvocationID, invocation.ExternalExecutionUpdate{ExecutionStatus: "completed"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = svc.GetPlan(ctx, plan.PlanID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != invocation.PlanStatusCompleted {
+		t.Fatalf("status after final action = %s, want completed", got.Status)
+	}
+
+	// The completed plan no longer shadows later calls using the same tool.
+	next, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{
+		Tool: "Write", AgentID: "agent-a", Input: map[string]any{"path": "unrelated.json"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Status != invocation.StatusPendingApproval {
+		t.Fatalf("later call status = %s, want normal pending_approval gating", next.Status)
+	}
+
+	events, err := svc.PlanEvents(ctx, plan.PlanID, invocation.EventListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if events.Items[len(events.Items)-1].Type != "plan.completed" {
+		t.Fatalf("last plan event = %s, want plan.completed", events.Items[len(events.Items)-1].Type)
+	}
+}
+
+func TestFailedFinalExternalActionLeavesPlanApproved(t *testing.T) {
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},
+	}}
+	judge := &planJudgeStub{adherenceResp: invocation.PlanAdherenceResponse{Verdict: "follows_plan"}}
+	svc, _ := newPlanTestService(t, nil, agents, judge)
+	ctx := context.Background()
+	plan, err := svc.SubmitPlan(ctx, invocation.PlanSubmitRequest{
+		AgentID: "agent-a", Goal: "write output",
+		Actions: []invocation.PlanAction{{Tool: "Write", InputSummary: "write output"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApprovePlan(ctx, plan.PlanID, 0); err != nil {
+		t.Fatal(err)
+	}
+	final, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{
+		Tool: "Write", AgentID: "agent-a", Input: map[string]any{"path": "output.json"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RecordExecution(ctx, final.InvocationID, invocation.ExternalExecutionUpdate{
+		ExecutionStatus: "failed", Message: "disk full",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.GetPlan(ctx, plan.PlanID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != invocation.PlanStatusApproved {
+		t.Fatalf("status after failed final action = %s, want approved", got.Status)
+	}
+}
+
 func TestPlanDecisionGuards(t *testing.T) {
 	svc, _ := newPlanTestService(t, nil, nil, nil)
 	ctx := context.Background()

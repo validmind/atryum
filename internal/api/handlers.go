@@ -657,7 +657,7 @@ const atryumInitializeInstructions = "This MCP server is gated by the Atryum har
 	"the response is advisory only, as AI-evaluation and human-approval outcomes are decided during the actual gated call. " +
 	"When the atryum.plan.submit tool is listed and work is risky or could leave files, systems, or external state inconsistent if a later call is denied, submit a batch plan before running tools. " +
 	"Use plans for dependent changes whose safe completion requires every step to run. " +
-	"After submitting a plan, call atryum.plan.get until the plan is approved, denied, needs_revision, expired, cancelled, or superseded; only proceed with planned tool calls after approval."
+	"After submitting a plan, call atryum.plan.get until the plan is approved, denied, needs_revision, completed, expired, cancelled, or superseded; only proceed with planned tool calls after approval."
 
 // Dotted tool names are valid MCP names, but common harnesses have rejected
 // them in practice. Keep this synthetic helper underscore-only for compatibility.
@@ -1118,7 +1118,7 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 			resp.PlanSubmission = &AgentPlanSubmission{
 				Enabled:  true,
 				Endpoint: endpoint,
-				Message:  "Plan-scoped rules apply to this agent. When work is risky or could leave systems, files, or external state inconsistent if a later call is denied, submit a plan before running tools. In particular, plan dependent changes whose safe completion requires every step to run, so they can be reviewed together before the first side effect. Submit to the endpoint exactly as given — its source parameter scopes the plan's actions to this harness so later tool calls match. Wait for approval before executing the planned steps. Give repeated actions using the same tool and server precise, distinct descriptions and input summaries so the adherence judge can compare each call to its intended actions. Once the plan is approved, tool calls matching its declared actions are checked against both the plan and the agent charter — calls confirmed to follow one or more eligible actions are auto-approved; off-plan or charter-violating calls are denied. A plain poll of the approved plan's own status is always auto-approved.",
+				Message:  "Plan-scoped rules apply to this agent. When work is risky or could leave systems, files, or external state inconsistent if a later call is denied, submit a plan before running tools. In particular, plan dependent changes whose safe completion requires every step to run, so they can be reviewed together before the first side effect. Submit to the endpoint exactly as given — its source parameter scopes the plan's actions to this harness so later tool calls match. Wait for approval before executing the planned steps. Give repeated actions using the same tool and server precise, distinct descriptions and input summaries so the adherence judge can compare each call to its intended actions. Once the plan is approved, tool calls matching its declared actions are checked against both the plan and the agent charter — calls confirmed to follow one or more eligible actions are auto-approved; off-plan or charter-violating calls are denied. A successful final action completes the plan so later calls return to normal gating. A plain poll of the approved plan's own status is always auto-approved while the plan is active.",
 			}
 		}
 		resp.Items = append(resp.Items, AgentRule{
@@ -1724,7 +1724,7 @@ const (
 func atryumPlanSubmitMCPTool() annotatedTool {
 	return annotatedTool{
 		Name:        atryumPlanSubmitTool,
-		Description: "Submit an Atryum plan before running a batch of tools, especially when dependent calls could leave files, systems, or external state inconsistent if a later call is denied. Arguments: goal string, rationale optional string, actions array of {tool, server?, description?, input_summary?}; an omitted action server defaults to the submitting source. ttl_seconds optional number, thread_id optional string, chat_context optional string. After submission, call atryum.plan.get with the returned plan_id until the plan is approved, denied, or needs_revision. Approved plans can preapprove matching later tool calls until expires_at.",
+		Description: "Submit an Atryum plan before running a batch of tools, especially when dependent calls could leave files, systems, or external state inconsistent if a later call is denied. Arguments: goal string, rationale optional string, actions array of {tool, server?, description?, input_summary?}; an omitted action server defaults to the submitting source. ttl_seconds optional number, thread_id optional string, chat_context optional string. After submission, call atryum.plan.get with the returned plan_id until the plan is approved, denied, or needs_revision. Approved plans can preapprove matching later tool calls until the final action succeeds or expires_at is reached.",
 		InputSchema: json.RawMessage(`{"type":"object","required":["goal","actions"],"properties":{"goal":{"type":"string"},"rationale":{"type":"string"},"actions":{"type":"array","minItems":1,"items":{"type":"object","required":["tool"],"properties":{"tool":{"type":"string"},"server":{"type":"string"},"description":{"type":"string"},"input_summary":{"type":"string"}}}},"ttl_seconds":{"type":"integer","minimum":1},"thread_id":{"type":"string"},"chat_context":{"type":"string"},"revision_of":{"type":"string"}}}`),
 		Annotations: &atryumAnnotations{Atryum: atryumToolPolicy{
 			EffectiveAction: invocation.RuleActionHumanApproval,
@@ -1735,7 +1735,7 @@ func atryumPlanSubmitMCPTool() annotatedTool {
 func atryumPlanGetMCPTool() annotatedTool {
 	return annotatedTool{
 		Name:        atryumPlanGetTool,
-		Description: "Get the current status of an Atryum plan by plan_id. Use this after atryum.plan.submit while waiting for approved, denied, needs_revision, expired, cancelled, or superseded.",
+		Description: "Get the current status of an Atryum plan by plan_id. Use this after atryum.plan.submit while waiting for approved, denied, needs_revision, completed, expired, cancelled, or superseded.",
 		InputSchema: json.RawMessage(`{"type":"object","required":["plan_id"],"properties":{"plan_id":{"type":"string"}}}`),
 		Annotations: &atryumAnnotations{Atryum: atryumToolPolicy{
 			EffectiveAction: invocation.RuleActionHumanApproval,

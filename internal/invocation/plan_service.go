@@ -427,6 +427,34 @@ func (s *Service) expireIfStale(ctx context.Context, plan Plan) Plan {
 	return plan
 }
 
+// completePlanAfterSuccessfulFinalAction closes an approved plan once its
+// final declared action has successfully executed. PlanStepIndex is assigned
+// only after adherence review selects an action, so invocations without a
+// concrete plan match cannot complete a plan. Failures are logged instead of
+// changing the already-persisted successful invocation result.
+func (s *Service) completePlanAfterSuccessfulFinalAction(ctx context.Context, inv Invocation) {
+	if s.plans == nil || inv.PlanID == nil || inv.PlanStepIndex == nil {
+		return
+	}
+	plan, err := s.plans.Get(ctx, *inv.PlanID)
+	if err != nil {
+		slog.Warn("could not load plan after successful action", "plan_id", *inv.PlanID, "invocation_id", inv.InvocationID, "error", err)
+		return
+	}
+	if plan.Status != PlanStatusApproved || len(plan.Actions) == 0 || *inv.PlanStepIndex != len(plan.Actions)-1 {
+		return
+	}
+	plan.Status = PlanStatusCompleted
+	if err := s.plans.Update(ctx, plan); err != nil {
+		slog.Warn("could not complete plan after final action", "plan_id", plan.PlanID, "invocation_id", inv.InvocationID, "error", err)
+		return
+	}
+	s.recordPlanEvent(ctx, plan.PlanID, "plan.completed", map[string]any{
+		"completed_at":  time.Now().UTC().Format(time.RFC3339),
+		"invocation_id": inv.InvocationID,
+	})
+}
+
 func (s *Service) ListPlans(ctx context.Context, filter PlanListFilter) (PlanListResponse, error) {
 	if !s.plansEnabled() {
 		return PlanListResponse{Items: []Plan{}}, nil

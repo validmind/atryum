@@ -53,6 +53,7 @@ const STATUS_COLOR: Record<PlanStatus, string> = {
   denied: 'red',
   needs_revision: 'yellow',
   superseded: 'gray',
+  completed: 'blue',
   expired: 'gray',
   cancelled: 'gray',
 };
@@ -64,6 +65,7 @@ const STATUS_LABEL: Record<PlanStatus, string> = {
   denied: 'Denied',
   needs_revision: 'Needs Revision',
   superseded: 'Superseded',
+  completed: 'Completed',
   expired: 'Expired',
   cancelled: 'Cancelled',
 };

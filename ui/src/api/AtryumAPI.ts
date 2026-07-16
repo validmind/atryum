@@ -422,6 +422,7 @@ export type PlanStatus =
   | 'denied'
   | 'needs_revision'
   | 'superseded'
+  | 'completed'
   | 'expired'
   | 'cancelled';
 

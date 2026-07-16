@@ -1220,6 +1220,9 @@ func (s *Service) finishExecution(ctx context.Context, inv Invocation, upstream 
 	if err := s.invocations.UpdateResult(ctx, inv); err != nil {
 		return InvocationResponse{}, err
 	}
+	if inv.Status == StatusSucceeded {
+		s.completePlanAfterSuccessfulFinalAction(ctx, inv)
+	}
 	return s.toResponse(inv), nil
 }
 
@@ -1774,6 +1777,7 @@ func (s *Service) RecordExecution(ctx context.Context, invocationID string, upda
 			return InvocationResponse{}, err
 		}
 		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.succeeded", Payload: mustJSON(map[string]any{"upstream": inv.Upstream, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "body": json.RawMessage(nullableRaw(inv.Response)), "external": true}), CreatedAt: now})
+		s.completePlanAfterSuccessfulFinalAction(ctx, inv)
 	case "failed":
 		if inv.Status == StatusFailed {
 			return s.toResponse(inv), nil // idempotent retry
