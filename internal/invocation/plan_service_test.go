@@ -1464,15 +1464,20 @@ func TestSuccessfulFinalExternalActionCompletesPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	completionStarted := time.Now().UTC()
 	if _, err := svc.RecordExecution(ctx, final.InvocationID, invocation.ExternalExecutionUpdate{ExecutionStatus: "completed"}); err != nil {
 		t.Fatal(err)
 	}
+	completionFinished := time.Now().UTC()
 	got, err = svc.GetPlan(ctx, plan.PlanID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Status != invocation.PlanStatusCompleted {
 		t.Fatalf("status after final action = %s, want completed", got.Status)
+	}
+	if got.ExpiresAt == nil || got.ExpiresAt.Before(completionStarted) || got.ExpiresAt.After(completionFinished) {
+		t.Fatalf("expires_at after final action = %v, want completion time between %v and %v", got.ExpiresAt, completionStarted, completionFinished)
 	}
 
 	// The completed plan no longer shadows later calls using the same tool.

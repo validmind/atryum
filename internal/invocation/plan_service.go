@@ -450,13 +450,18 @@ func (s *Service) completePlanAfterSuccessfulFinalAction(ctx context.Context, in
 	if plan.Status != PlanStatusApproved || len(plan.Actions) == 0 || *inv.PlanStepIndex != len(plan.Actions)-1 {
 		return
 	}
+	completedAt := time.Now().UTC()
 	plan.Status = PlanStatusCompleted
+	// A completed plan can no longer grant a pass. Close its validity window
+	// at the same timestamp used for the completion event so the UI does not
+	// continue showing the original future TTL.
+	plan.ExpiresAt = &completedAt
 	if err := s.plans.Update(ctx, plan); err != nil {
 		slog.Warn("could not complete plan after final action", "plan_id", plan.PlanID, "invocation_id", inv.InvocationID, "error", err)
 		return
 	}
 	s.recordPlanEvent(ctx, plan.PlanID, "plan.completed", map[string]any{
-		"completed_at":  time.Now().UTC().Format(time.RFC3339),
+		"completed_at":  completedAt.Format(time.RFC3339),
 		"invocation_id": inv.InvocationID,
 	})
 }
