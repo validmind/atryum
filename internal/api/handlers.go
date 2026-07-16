@@ -687,8 +687,19 @@ type AgentPlanSubmission struct {
 // GET /api/v1/agent/rules. Harness hooks inject it into agent context
 // verbatim, so it is the single source of truth for how agents should submit
 // and follow plans — change plan semantics here, not in per-harness hook
-// scripts.
-func planSubmissionMessage(endpoint string) string {
+// scripts. source is the caller's harness source; when known, the action
+// server guidance names it concretely, since an action whose server does not
+// match the source of the tool call that later executes it can never grant
+// the plan pass.
+func planSubmissionMessage(endpoint, source string) string {
+	serverGuidance := "Set tool and server to the exact values this harness reports for the call " +
+		"that will execute it. "
+	if source != "" {
+		serverGuidance = "Set each action's server to \"" + source + "\" — the source this harness " +
+			"reports its tool calls under — unless the action targets a different Atryum-gated MCP " +
+			"server; an action whose server does not match the executing call's source can never " +
+			"grant the plan pass. Set tool to the exact tool name this harness reports for the call. "
+	}
 	return "Atryum accepts pre-approval plans from this agent. Submit a plan before risky or dependent work — " +
 		"anything that could leave files, systems, or external state inconsistent if a later call is denied — " +
 		"so the whole batch can be reviewed together before the first side effect. " +
@@ -696,8 +707,8 @@ func planSubmissionMessage(endpoint string) string {
 		"agent_id (a stable identifier for this agent; required when the harness is not authenticated). " +
 		"Keep the endpoint's source parameter exactly as given: it scopes the plan's actions to this " +
 		"harness so later tool calls match. " +
-		"Each action is {tool, server, description, input_summary}. Set tool and server to the exact " +
-		"values this harness reports for the call that will execute it. Make every description and " +
+		"Each action is {tool, server, description, input_summary}. " + serverGuidance +
+		"Make every description and " +
 		"input summary precise and distinct — command interpreter, working directory, exact paths read " +
 		"or written — so the adherence judge can tell which declared action a given call belongs to, " +
 		"especially when actions share a tool and server. " +
@@ -1145,7 +1156,7 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 		resp.PlanSubmission = &AgentPlanSubmission{
 			Enabled:  true,
 			Endpoint: endpoint,
-			Message:  planSubmissionMessage(endpoint),
+			Message:  planSubmissionMessage(endpoint, server),
 		}
 	}
 	if h.rulesRepo == nil {
@@ -1763,10 +1774,14 @@ const (
 	atryumPlanGetTool    = "atryum.plan.get"
 )
 
-func atryumPlanSubmitMCPTool() annotatedTool {
+func atryumPlanSubmitMCPTool(server string) annotatedTool {
+	submittingSource := "the submitting source"
+	if server != "" {
+		submittingSource = "this MCP server (\"" + server + "\")"
+	}
 	return annotatedTool{
 		Name:        atryumPlanSubmitTool,
-		Description: "Submit an Atryum plan before running a batch of tools, especially when dependent calls could leave files, systems, or external state inconsistent if a later call is denied. Arguments: goal string, rationale optional string, actions array of {tool, server?, description?, input_summary?}; an omitted action server defaults to the submitting source. Declare actions in the exact order they will execute — once a later action has been approved or started, calls matching an earlier action are denied, so declare an expected re-run as its own later action. Give actions sharing a tool and server precise, distinct descriptions and input summaries. ttl_seconds optional number, thread_id optional string, chat_context optional string. After submission, call atryum.plan.get with the returned plan_id until the plan is approved, denied, or needs_revision. Approved plans can preapprove matching later tool calls until the final action succeeds or expires_at is reached.",
+		Description: "Submit an Atryum plan before running a batch of tools, especially when dependent calls could leave files, systems, or external state inconsistent if a later call is denied. Arguments: goal string, rationale optional string, actions array of {tool, server?, description?, input_summary?}; an omitted action server defaults to " + submittingSource + ", which is only correct for actions that will be invoked through it — an action executed by your harness's own tools (reported via a hook) must set server to the source that harness reports, or the approved plan can never match the executing call. Declare actions in the exact order they will execute — once a later action has been approved or started, calls matching an earlier action are denied, so declare an expected re-run as its own later action. Give actions sharing a tool and server precise, distinct descriptions and input summaries. ttl_seconds optional number, thread_id optional string, chat_context optional string. After submission, call atryum.plan.get with the returned plan_id until the plan is approved, denied, or needs_revision. Approved plans can preapprove matching later tool calls until the final action succeeds or expires_at is reached.",
 		InputSchema: json.RawMessage(`{"type":"object","required":["goal","actions"],"properties":{"goal":{"type":"string"},"rationale":{"type":"string"},"actions":{"type":"array","minItems":1,"items":{"type":"object","required":["tool"],"properties":{"tool":{"type":"string"},"server":{"type":"string"},"description":{"type":"string"},"input_summary":{"type":"string"}}}},"ttl_seconds":{"type":"integer","minimum":1},"thread_id":{"type":"string"},"chat_context":{"type":"string"},"revision_of":{"type":"string"}}}`),
 		Annotations: &atryumAnnotations{Atryum: atryumToolPolicy{
 			EffectiveAction: invocation.RuleActionHumanApproval,
@@ -1794,7 +1809,7 @@ func (h *Handler) annotateToolsWithPolicy(ctx context.Context, agentID, server s
 	// plan-scoped rule is required: a plan matching no rule defaults to
 	// human review.
 	if h.svc != nil && h.svc.PlansEnabled() {
-		out = append(out, atryumPlanSubmitMCPTool())
+		out = append(out, atryumPlanSubmitMCPTool(strings.TrimSpace(server)))
 		out = append(out, atryumPlanGetMCPTool())
 	}
 	if h.rulesRepo == nil || strings.TrimSpace(server) == "" {

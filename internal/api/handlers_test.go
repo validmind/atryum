@@ -1474,6 +1474,9 @@ func TestAgentRulesListsApplicableRulesAndDisposition(t *testing.T) {
 	if !strings.Contains(resp.PlanSubmission.Message, "never move backwards") {
 		t.Fatalf("plan submission message must state the execution-order rule, got %q", resp.PlanSubmission.Message)
 	}
+	if !strings.Contains(resp.PlanSubmission.Message, `Set each action's server to "amp"`) {
+		t.Fatalf("plan submission message must name the caller's source for action servers, got %q", resp.PlanSubmission.Message)
+	}
 	if len(resp.Items) != 4 {
 		t.Fatalf("expected four applicable rules, got %#v", resp.Items)
 	}
