@@ -49,6 +49,12 @@ func (s *Service) SetPlanStore(plans planRepo, events planEventRepo, judge PlanE
 
 func (s *Service) plansEnabled() bool { return s.plans != nil }
 
+// PlansEnabled reports whether the plan-submission feature is wired
+// (SetPlanStore was called). Handlers use it to decide whether to advertise
+// plan submission to agents; no rule configuration is required — a plan that
+// matches no rule simply defaults to human review.
+func (s *Service) PlansEnabled() bool { return s.plansEnabled() }
+
 func (s *Service) recordPlanEvent(ctx context.Context, planID, eventType string, payload map[string]any) {
 	if s.planEvents == nil {
 		return

@@ -314,15 +314,11 @@ function cachedAgentRules(
 async function planHint(tool?: string): Promise<string> {
   const rules = await cachedAgentRules(tool);
   if (!rules?.plan_submission?.enabled) return "";
-  // The plan's actions are scoped to their source and only match later tool
-  // calls from the same source, so the submission endpoint must carry it.
-  let endpoint = rules.plan_submission.endpoint || "/api/v1/external/plans";
-  if (!endpoint.includes("source=")) {
-    endpoint +=
-      (endpoint.includes("?") ? "&" : "?") +
-      `source=${encodeURIComponent(SOURCE)}`;
-  }
-  return ` Atryum supports preapproval plans. If the user asks you to submit a plan to Atryum, you must submit a batch plan to ${endpoint} before running any of its actions and wait for approval before executing them. Also use a plan proactively for risky work or dependent changes that could leave files, systems, or external state inconsistent if a later call is denied. Keep the endpoint's source parameter: it scopes the plan's actions to this harness so later tool calls match. Give repeated actions using the same tool and server precise, distinct descriptions and input summaries so the adherence judge can compare each call to its intended actions. Once the plan is approved, calls confirmed to follow one or more eligible actions are allowed, while off-plan calls are denied. A successful final action completes the plan so later calls return to normal gating; a plain poll of the plan's own status URL is always allowed while the plan is active.`;
+  // The server-authored message is the single source of truth for the plan
+  // workflow (including the source-scoped submission endpoint), so guidance
+  // stays current when plan semantics change server-side.
+  const message = (rules.plan_submission.message || "").trim();
+  return message ? ` ${message}` : "";
 }
 
 // Pi's own session identifier, sent as client_session_id (and thread_id) on

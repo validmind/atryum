@@ -26,17 +26,18 @@ import (
 )
 
 type stubService struct {
-	tools    []mcp.Tool
-	invoke   invocation.InvocationResponse
-	invErr   error
-	getErr   error
-	setResp  invocation.InvocationResponse
-	setID    string
-	setText  string
-	listErr  error
-	upstream mcp.Upstream
-	forward  mcp.ForwardResult
-	fwdErr   error
+	tools         []mcp.Tool
+	invoke        invocation.InvocationResponse
+	invErr        error
+	getErr        error
+	setResp       invocation.InvocationResponse
+	setID         string
+	setText       string
+	listErr       error
+	upstream      mcp.Upstream
+	forward       mcp.ForwardResult
+	fwdErr        error
+	plansDisabled bool
 
 	invokedReq *invocation.CreateInvocationRequest
 	invokedCtx context.Context
@@ -156,6 +157,8 @@ func (s *stubService) CancelPlan(_ context.Context, id string) (invocation.Plan,
 	s.planCancelID = id
 	return s.plan, s.planErr
 }
+func (s *stubService) PlansEnabled() bool { return !s.plansDisabled }
+
 func (s *stubService) PlanEvents(context.Context, string, invocation.EventListFilter) (invocation.EventListResponse, error) {
 	return invocation.EventListResponse{}, nil
 }
@@ -1465,6 +1468,12 @@ func TestAgentRulesListsApplicableRulesAndDisposition(t *testing.T) {
 	if resp.PlanSubmission.Endpoint != "/api/v1/external/plans?source=amp" {
 		t.Fatalf("plan submission endpoint must carry the caller's source, got %q", resp.PlanSubmission.Endpoint)
 	}
+	if !strings.Contains(resp.PlanSubmission.Message, resp.PlanSubmission.Endpoint) {
+		t.Fatalf("plan submission message must contain the endpoint so hooks can inject it verbatim, got %q", resp.PlanSubmission.Message)
+	}
+	if !strings.Contains(resp.PlanSubmission.Message, "never move backwards") {
+		t.Fatalf("plan submission message must state the execution-order rule, got %q", resp.PlanSubmission.Message)
+	}
 	if len(resp.Items) != 4 {
 		t.Fatalf("expected four applicable rules, got %#v", resp.Items)
 	}
@@ -1514,6 +1523,55 @@ func TestAgentRulesFiltersOutRulesScopedToOtherAgents(t *testing.T) {
 		if item.ID == "other-agent" {
 			t.Fatalf("other-agent scoped rule leaked into response: %#v", resp.Items)
 		}
+	}
+}
+
+func TestAgentRulesAdvertisesPlanSubmissionWithoutPlanRules(t *testing.T) {
+	// No plan-scoped rules configured: plan submission is still advertised —
+	// a plan matching no rule defaults to human review.
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "fallback-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 0},
+	}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?agent_id=agent-007&source=cursor", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.PlanSubmission == nil || !resp.PlanSubmission.Enabled {
+		t.Fatalf("expected plan submission capability without plan rules, got %#v", resp.PlanSubmission)
+	}
+	if resp.PlanSubmission.Endpoint != "/api/v1/external/plans?source=cursor" {
+		t.Fatalf("plan submission endpoint must carry the caller's source, got %q", resp.PlanSubmission.Endpoint)
+	}
+}
+
+func TestAgentRulesOmitsPlanSubmissionWhenPlansDisabled(t *testing.T) {
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "plan-any", Action: invocation.RuleActionHumanApproval, AppliesTo: invocation.RuleScopePlan, Enabled: true, Order: 0},
+	}}
+	h := NewHandler(&stubService{plansDisabled: true}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?agent_id=agent-007&source=cursor", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.PlanSubmission != nil {
+		t.Fatalf("expected no plan submission capability when the plan feature is not wired, got %#v", resp.PlanSubmission)
 	}
 }
 
@@ -1715,10 +1773,17 @@ func TestMCPToolsListAnnotationsUseDefaultAgentScopedRules(t *testing.T) {
 	if len(rpcResp.Result.Tools) == 0 {
 		t.Fatalf("expected tools, got %#v", rpcResp.Result.Tools)
 	}
-	bashTool := rpcResp.Result.Tools[0]
-	if bashTool.Name != "Bash" {
-		t.Fatalf("expected Bash tool, got %q", bashTool.Name)
+	bashIdx := -1
+	for i, tool := range rpcResp.Result.Tools {
+		if tool.Name == "Bash" {
+			bashIdx = i
+			break
+		}
 	}
+	if bashIdx < 0 {
+		t.Fatalf("expected Bash tool, got %#v", rpcResp.Result.Tools)
+	}
+	bashTool := rpcResp.Result.Tools[bashIdx]
 	if bashTool.Annotations == nil || bashTool.Annotations.Atryum.EffectiveAction != invocation.RuleActionAutoApprove {
 		t.Fatalf("Bash tool annotations: %#v", bashTool.Annotations)
 	}

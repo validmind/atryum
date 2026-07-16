@@ -63,6 +63,7 @@ type service interface {
 	ExpirePlan(ctx context.Context, id string) (invocation.Plan, error)
 	CancelPlan(ctx context.Context, id string) (invocation.Plan, error)
 	PlanEvents(ctx context.Context, id string, filter invocation.EventListFilter) (invocation.EventListResponse, error)
+	PlansEnabled() bool
 }
 
 type mcpEnvelopeForwarder interface {
@@ -658,6 +659,7 @@ const atryumInitializeInstructions = "This MCP server is gated by the Atryum har
 	"the response is advisory only, as AI-evaluation and human-approval outcomes are decided during the actual gated call. " +
 	"When the atryum.plan.submit tool is listed and work is risky or could leave files, systems, or external state inconsistent if a later call is denied, submit a batch plan before running tools. " +
 	"Use plans for dependent changes whose safe completion requires every step to run. " +
+	"Declare a plan's actions in the exact order they will execute: plans may skip forward but never move backwards, so once a later step has run, calls matching an earlier step are denied — submit a revised plan instead of re-running an earlier step. " +
 	"After submitting a plan, call atryum.plan.get until the plan is approved, denied, needs_revision, completed, expired, cancelled, or superseded; only proceed with planned tool calls after approval."
 
 // Dotted tool names are valid MCP names, but common harnesses have rejected
@@ -679,6 +681,41 @@ type AgentPlanSubmission struct {
 	Enabled  bool   `json:"enabled"`
 	Endpoint string `json:"endpoint,omitempty"`
 	Message  string `json:"message,omitempty"`
+}
+
+// planSubmissionMessage is the plan-workflow guidance served to agents via
+// GET /api/v1/agent/rules. Harness hooks inject it into agent context
+// verbatim, so it is the single source of truth for how agents should submit
+// and follow plans — change plan semantics here, not in per-harness hook
+// scripts.
+func planSubmissionMessage(endpoint string) string {
+	return "Atryum accepts pre-approval plans from this agent. Submit a plan before risky or dependent work — " +
+		"anything that could leave files, systems, or external state inconsistent if a later call is denied — " +
+		"so the whole batch can be reviewed together before the first side effect. " +
+		"POST the plan as JSON to " + endpoint + " with: goal, rationale, actions, ttl_seconds, and " +
+		"agent_id (a stable identifier for this agent; required when the harness is not authenticated). " +
+		"Keep the endpoint's source parameter exactly as given: it scopes the plan's actions to this " +
+		"harness so later tool calls match. " +
+		"Each action is {tool, server, description, input_summary}. Set tool and server to the exact " +
+		"values this harness reports for the call that will execute it. Make every description and " +
+		"input summary precise and distinct — command interpreter, working directory, exact paths read " +
+		"or written — so the adherence judge can tell which declared action a given call belongs to, " +
+		"especially when actions share a tool and server. " +
+		"Declare actions in the exact order they will execute. Plans may skip forward but never move " +
+		"backwards: once a later step has been approved or started, calls matching an earlier step are " +
+		"denied. Declare an expected re-run as its own later action, and if an earlier step must " +
+		"unexpectedly be redone, submit a revision instead of retrying it under the current plan. " +
+		"Do not execute any declared action while the plan status is received, pending_approval, or " +
+		"needs_revision. Poll the plan's status URL until it is decided. If approved, execute the " +
+		"actions in declared order before the plan expires. If needs_revision, incorporate the returned " +
+		"feedback and submit a replacement plan with revision_of set to the prior plan_id, then wait on " +
+		"the replacement. If denied, cancelled, or expired, do not execute; report the final status and " +
+		"any feedback. " +
+		"Once the plan is approved, tool calls matching its declared actions are checked against both " +
+		"the plan and the agent charter — calls confirmed to follow an eligible action are " +
+		"auto-approved; off-plan or charter-violating calls are denied. A successful final action " +
+		"completes the plan so later calls return to normal gating. A plain poll of the approved " +
+		"plan's own status is always auto-approved while the plan is active."
 }
 
 type AgentRulesResponse struct {
@@ -1092,6 +1129,25 @@ func (h *Handler) agentRules(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, tool string) (AgentRulesResponse, error) {
 	resp := newAgentRulesResponse(agentID, server, tool)
+	if h.svc != nil && h.svc.PlansEnabled() {
+		// Plan submission is available whenever the feature is wired — no
+		// plan-scoped rule is required: a plan matching no rule defaults to
+		// human review.
+		//
+		// Bake the caller's source into the submission endpoint: plan
+		// actions are scoped to their source and only match later tool
+		// calls from the same source, and agents copy this endpoint
+		// verbatim from the hint.
+		endpoint := "/api/v1/external/plans"
+		if server != "" {
+			endpoint += "?source=" + url.QueryEscape(server)
+		}
+		resp.PlanSubmission = &AgentPlanSubmission{
+			Enabled:  true,
+			Endpoint: endpoint,
+			Message:  planSubmissionMessage(endpoint),
+		}
+	}
 	if h.rulesRepo == nil {
 		return resp, nil
 	}
@@ -1107,21 +1163,6 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 			continue
 		}
 		appliesTo := normalizeRuleScope(rule.AppliesTo)
-		if appliesTo == invocation.RuleScopePlan && resp.PlanSubmission == nil {
-			// Bake the caller's source into the submission endpoint: plan
-			// actions are scoped to their source and only match later tool
-			// calls from the same source, and agents copy this endpoint
-			// verbatim from the hint.
-			endpoint := "/api/v1/external/plans"
-			if server != "" {
-				endpoint += "?source=" + url.QueryEscape(server)
-			}
-			resp.PlanSubmission = &AgentPlanSubmission{
-				Enabled:  true,
-				Endpoint: endpoint,
-				Message:  "Plan-scoped rules apply to this agent. When work is risky or could leave systems, files, or external state inconsistent if a later call is denied, submit a plan before running tools. In particular, plan dependent changes whose safe completion requires every step to run, so they can be reviewed together before the first side effect. Submit to the endpoint exactly as given — its source parameter scopes the plan's actions to this harness so later tool calls match. Wait for approval before executing the planned steps. Give repeated actions using the same tool and server precise, distinct descriptions and input summaries so the adherence judge can compare each call to its intended actions. Once the plan is approved, tool calls matching its declared actions are checked against both the plan and the agent charter — calls confirmed to follow one or more eligible actions are auto-approved; off-plan or charter-violating calls are denied. A successful final action completes the plan so later calls return to normal gating. A plain poll of the approved plan's own status is always auto-approved while the plan is active.",
-			}
-		}
 		resp.Items = append(resp.Items, AgentRule{
 			ID:             rule.ID,
 			Action:         rule.Action,
@@ -1725,7 +1766,7 @@ const (
 func atryumPlanSubmitMCPTool() annotatedTool {
 	return annotatedTool{
 		Name:        atryumPlanSubmitTool,
-		Description: "Submit an Atryum plan before running a batch of tools, especially when dependent calls could leave files, systems, or external state inconsistent if a later call is denied. Arguments: goal string, rationale optional string, actions array of {tool, server?, description?, input_summary?}; an omitted action server defaults to the submitting source. ttl_seconds optional number, thread_id optional string, chat_context optional string. After submission, call atryum.plan.get with the returned plan_id until the plan is approved, denied, or needs_revision. Approved plans can preapprove matching later tool calls until the final action succeeds or expires_at is reached.",
+		Description: "Submit an Atryum plan before running a batch of tools, especially when dependent calls could leave files, systems, or external state inconsistent if a later call is denied. Arguments: goal string, rationale optional string, actions array of {tool, server?, description?, input_summary?}; an omitted action server defaults to the submitting source. Declare actions in the exact order they will execute — once a later action has been approved or started, calls matching an earlier action are denied, so declare an expected re-run as its own later action. Give actions sharing a tool and server precise, distinct descriptions and input summaries. ttl_seconds optional number, thread_id optional string, chat_context optional string. After submission, call atryum.plan.get with the returned plan_id until the plan is approved, denied, or needs_revision. Approved plans can preapprove matching later tool calls until the final action succeeds or expires_at is reached.",
 		InputSchema: json.RawMessage(`{"type":"object","required":["goal","actions"],"properties":{"goal":{"type":"string"},"rationale":{"type":"string"},"actions":{"type":"array","minItems":1,"items":{"type":"object","required":["tool"],"properties":{"tool":{"type":"string"},"server":{"type":"string"},"description":{"type":"string"},"input_summary":{"type":"string"}}}},"ttl_seconds":{"type":"integer","minimum":1},"thread_id":{"type":"string"},"chat_context":{"type":"string"},"revision_of":{"type":"string"}}}`),
 		Annotations: &atryumAnnotations{Atryum: atryumToolPolicy{
 			EffectiveAction: invocation.RuleActionHumanApproval,
@@ -1748,7 +1789,14 @@ func atryumPlanGetMCPTool() annotatedTool {
 // disposition for the current agent so the model sees the policy at the moment
 // it picks a tool. Annotation requires both rulesRepo and a concrete server.
 func (h *Handler) annotateToolsWithPolicy(ctx context.Context, agentID, server string, tools []mcp.Tool) []any {
-	out := make([]any, 0, len(tools)+1)
+	out := make([]any, 0, len(tools)+3)
+	// Plan tools are offered whenever the plan feature is wired — no
+	// plan-scoped rule is required: a plan matching no rule defaults to
+	// human review.
+	if h.svc != nil && h.svc.PlansEnabled() {
+		out = append(out, atryumPlanSubmitMCPTool())
+		out = append(out, atryumPlanGetMCPTool())
+	}
 	if h.rulesRepo == nil || strings.TrimSpace(server) == "" {
 		for _, t := range tools {
 			if t.Name != atryumRulesToolName {
@@ -1767,11 +1815,6 @@ func (h *Handler) annotateToolsWithPolicy(ctx context.Context, agentID, server s
 		return append(out, atryumRulesTool)
 	}
 	agentCUID := h.resolveAgentRecordForRules(ctx, agentID)
-	planEnabled := planSubmissionEnabledForRules(rules, server, agentCUID)
-	if planEnabled {
-		out = append(out, atryumPlanSubmitMCPTool())
-		out = append(out, atryumPlanGetMCPTool())
-	}
 	for _, t := range tools {
 		if t.Name == atryumRulesToolName {
 			continue
@@ -1819,22 +1862,6 @@ func effectiveActionForTool(rules []store.Rule, server, tool, agentCUID string) 
 		return r.Action, r.ID
 	}
 	return invocation.RuleActionHumanApproval, ""
-}
-
-func planSubmissionEnabledForRules(rules []store.Rule, server, agentCUID string) bool {
-	for _, r := range rules {
-		if normalizeRuleScope(r.AppliesTo) != invocation.RuleScopePlan {
-			continue
-		}
-		if !apiRuleMatches(r, server, "", agentCUID, false) {
-			continue
-		}
-		if !apiMatchPatterns(r.ServerPatterns, server) {
-			continue
-		}
-		return true
-	}
-	return false
 }
 
 // appendRulesContextToToolResult adds an extra text content block to a denied
