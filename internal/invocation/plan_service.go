@@ -691,6 +691,12 @@ type planGateOutcome int
 const (
 	// planGateApprove grants the plan pass: a status poll or a judged match.
 	planGateApprove planGateOutcome = iota
+	// planGateApprovePoll grants the plan pass for a judge-confirmed status
+	// poll. Unlike planGateApprove it must never bind a plan action or step
+	// index: a poll is not the execution of a planned action, and binding
+	// one would advance the execution-order high-water mark and could
+	// complete the plan before its real actions run.
+	planGateApprovePoll
 	// planGateDeny rejects the call outright: the adherence judge found it
 	// outside the approved plan.
 	planGateDeny
@@ -753,6 +759,11 @@ func (s *Service) ambiguousApprovedPlanPass(ctx context.Context, plan Plan, agen
 		case planGateApprove:
 			matches = append(matches, candidate)
 			matchReason, matchConfidence = reason, confidence
+		case planGateApprovePoll:
+			// A status poll is a property of the concrete call, not of the
+			// candidate action under consideration — grant the pass without
+			// binding an action so the poll cannot advance plan progress.
+			return approvedPlanMatch{Plan: plan}, reason, confidence, planGateApprovePoll
 		case planGateHuman:
 			uncertain = true
 		case planGateDeny:
@@ -872,6 +883,12 @@ func (s *Service) judgePlanAdherence(ctx context.Context, plan Plan, action Plan
 			reason += ": " + resp.Reason
 		}
 		return reason, resp.Confidence, planGateApprove
+	case "status_poll":
+		reason := "status poll of approved plan " + plan.PlanID
+		if strings.TrimSpace(resp.Reason) != "" {
+			reason += ": " + resp.Reason
+		}
+		return reason, resp.Confidence, planGateApprovePoll
 	case "outside_plan", "violates_charter":
 		slog.Info("plan adherence judge rejected plan-gated call",
 			"plan_id", plan.PlanID, "tool", tool, "reason", resp.Reason)

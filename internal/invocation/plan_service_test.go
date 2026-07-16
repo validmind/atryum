@@ -1500,6 +1500,63 @@ func TestSuccessfulFinalExternalActionCompletesPlan(t *testing.T) {
 	}
 }
 
+func TestStatusPollVerdictGrantsPassWithoutBindingPlanStep(t *testing.T) {
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},
+	}}
+	judge := &planJudgeStub{adherenceResp: invocation.PlanAdherenceResponse{
+		Verdict: "status_poll", Reason: "reads the plan's own status",
+	}}
+	svc, _ := newPlanTestService(t, nil, agents, judge)
+	ctx := context.Background()
+	plan, err := svc.SubmitPlan(ctx, invocation.PlanSubmitRequest{
+		AgentID: "agent-a", Goal: "read then write",
+		Actions: []invocation.PlanAction{
+			{Tool: "Read", InputSummary: "read input"},
+			{Tool: "Write", InputSummary: "write output"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApprovePlan(ctx, plan.PlanID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	// A status poll routed through an undeclared tool (e.g. an MCP meta-tool
+	// that the curl-shaped fast pass cannot recognize) hits the server-wide
+	// candidate fallback and reaches the judge, which identifies it as a
+	// poll. It must be approved under the plan WITHOUT binding a plan step:
+	// binding one would advance execution order — and, bound to the final
+	// action, complete the plan before its real actions run.
+	poll, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{
+		Tool: "mcp", AgentID: "agent-a",
+		Input: map[string]any{"tool": "atryum.plan.get", "args": `{"plan_id":"` + plan.PlanID + `"}`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if poll.Status != invocation.StatusApproved {
+		t.Fatalf("poll status = %s, want approved", poll.Status)
+	}
+	if poll.PlanID == nil || *poll.PlanID != plan.PlanID {
+		t.Fatalf("poll plan_id = %v, want %s", poll.PlanID, plan.PlanID)
+	}
+	if poll.Approval == nil || poll.Approval.Reason == nil || !strings.Contains(*poll.Approval.Reason, "status poll") {
+		t.Fatalf("poll approval = %+v, want status-poll reason", poll.Approval)
+	}
+	if _, err := svc.RecordExecution(ctx, poll.InvocationID, invocation.ExternalExecutionUpdate{ExecutionStatus: "completed"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.GetPlan(ctx, plan.PlanID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != invocation.PlanStatusApproved {
+		t.Fatalf("plan status after poll = %s, want approved (a poll must never complete the plan)", got.Status)
+	}
+}
+
 func TestFailedFinalExternalActionLeavesPlanApproved(t *testing.T) {
 	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
 		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},

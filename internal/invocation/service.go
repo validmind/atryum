@@ -372,7 +372,13 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		} else {
 			reason, confidence, outcome = s.approvedPlanPass(ctx, planMatch, agentRec, upstream.Name, req.Tool, req.Input, "")
 		}
-		if planMatch.Action.Tool != "" && !planStatusFastPass(s.planPollOrigins, planID, req.Input) {
+		if outcome == planGateApprovePoll {
+			// A judged status poll grants the pass without binding a plan
+			// step: binding one would advance the execution-order high-water
+			// mark and could complete the plan before its real actions run.
+			// Downstream handling is identical to a plan approval.
+			outcome = planGateApprove
+		} else if planMatch.Action.Tool != "" && !planStatusFastPass(s.planPollOrigins, planID, req.Input) {
 			stepIndex := planMatch.ActionIndex
 			inv.PlanStepIndex = &stepIndex
 		}
@@ -1463,7 +1469,13 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		} else {
 			reason, confidence, outcome = s.approvedPlanPass(ctx, planMatch, agentRec, source, req.Tool, req.Input, sessionContext)
 		}
-		if planMatch.Action.Tool != "" && !planStatusFastPass(s.planPollOrigins, planID, req.Input) {
+		if outcome == planGateApprovePoll {
+			// A judged status poll grants the pass without binding a plan
+			// step: binding one would advance the execution-order high-water
+			// mark and could complete the plan before its real actions run.
+			// Downstream handling is identical to a plan approval.
+			outcome = planGateApprove
+		} else if planMatch.Action.Tool != "" && !planStatusFastPass(s.planPollOrigins, planID, req.Input) {
 			stepIndex := planMatch.ActionIndex
 			inv.PlanStepIndex = &stepIndex
 		}
