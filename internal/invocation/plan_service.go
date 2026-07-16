@@ -646,9 +646,11 @@ func (s *Service) approvedPlanPass(ctx context.Context, match approvedPlanMatch,
 
 // ambiguousApprovedPlanPass resolves a call when several actions in the same
 // approved plan use the same tool/server. Each candidate is independently
-// checked by the adherence judge. Exactly one positive match is safe to select;
-// multiple matches or any uncertainty go to a human, while a call that is
-// outside every candidate is denied.
+// checked by the adherence judge. Any positive match establishes that the call
+// follows the approved plan; when several actions match, select the latest one
+// so execution-order tracking treats every earlier matching step as completed.
+// A call with no positive match is escalated when the judge is uncertain and
+// denied when it is outside every candidate.
 func (s *Service) ambiguousApprovedPlanPass(ctx context.Context, plan Plan, agentRec AgentRecord, server, tool string, input map[string]any, extraContext string) (approvedPlanMatch, string, *float64, planGateOutcome) {
 	if planStatusFastPass(s.planPollOrigins, plan.PlanID, input) {
 		return approvedPlanMatch{Plan: plan}, "matched approved plan " + plan.PlanID + ": accessing approved plan status", nil, planGateApprove
@@ -690,14 +692,14 @@ func (s *Service) ambiguousApprovedPlanPass(ctx context.Context, plan Plan, agen
 		}
 	}
 
-	if len(matches) == 1 && !uncertain {
-		return matches[0], matchReason, matchConfidence, planGateApprove
-	}
-	if len(matches) > 1 {
-		return approvedPlanMatch{Plan: plan}, "multiple approved plan actions match this call; make repeated actions more specific or request human review", nil, planGateHuman
+	if len(matches) > 0 {
+		// Matches are collected in plan order. Recording the latest positive
+		// match prevents a later combined call from being followed by an
+		// earlier action that the same call already satisfied.
+		return matches[len(matches)-1], matchReason, matchConfidence, planGateApprove
 	}
 	if uncertain {
-		return approvedPlanMatch{Plan: plan}, "plan adherence could not uniquely select an action; make repeated actions more specific or request human review", nil, planGateHuman
+		return approvedPlanMatch{Plan: plan}, "plan adherence could not confirm that the call follows an approved action", nil, planGateHuman
 	}
 	return approvedPlanMatch{Plan: plan}, "tool call is outside every matching action in approved plan " + plan.PlanID, nil, planGateDeny
 }

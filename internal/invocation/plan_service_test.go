@@ -844,15 +844,94 @@ func TestAdherenceJudgeSelectsUniqueRepeatedToolAction(t *testing.T) {
 	}
 }
 
-func TestAdherenceJudgeEscalatesAmbiguousRepeatedToolActions(t *testing.T) {
+func TestAdherenceJudgeApprovesMultipleRepeatedToolMatches(t *testing.T) {
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},
+	}}
+	judge := &planJudgeStub{adherenceResp: invocation.PlanAdherenceResponse{Verdict: "follows_plan"}}
+	svc, _ := newPlanTestService(t, nil, agents, judge)
+	ctx := context.Background()
+	plan, err := svc.SubmitPlan(ctx, invocation.PlanSubmitRequest{
+		AgentID: "agent-a", Goal: "build then deploy",
+		Actions: []invocation.PlanAction{
+			{Tool: "Bash", InputSummary: "make build"},
+			{Tool: "Bash", InputSummary: "make deploy"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApprovePlan(ctx, plan.PlanID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{
+		Tool: "Bash", AgentID: "agent-a", Input: map[string]any{"cmd": "make build && make deploy"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusApproved {
+		t.Fatalf("response = %+v, want approved when the call follows multiple plan actions", resp)
+	}
+
+	// Multiple positive matches record the latest matched step, so an earlier
+	// action cannot run after the combined call has completed it.
+	judge.adherenceBySummary = map[string]invocation.PlanAdherenceResponse{
+		"make build":  {Verdict: "follows_plan", Reason: "matches build"},
+		"make deploy": {Verdict: "outside_plan", Reason: "not deployment"},
+	}
+	resp, err = svc.Submit(ctx, invocation.ExternalSubmitRequest{
+		Tool: "Bash", AgentID: "agent-a", Input: map[string]any{"cmd": "make build"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusDenied {
+		t.Fatalf("response = %+v, want earlier matched action denied after combined call", resp)
+	}
+}
+
+func TestAdherenceJudgeApprovesPositiveRepeatedToolMatchDespiteOtherUncertainty(t *testing.T) {
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},
+	}}
+	judge := &planJudgeStub{adherenceBySummary: map[string]invocation.PlanAdherenceResponse{
+		"make build":  {Verdict: "follows_plan", Reason: "matches build"},
+		"make deploy": {Verdict: "human_approval", Reason: "unclear whether this deploys"},
+	}}
+	svc, _ := newPlanTestService(t, nil, agents, judge)
+	ctx := context.Background()
+	plan, err := svc.SubmitPlan(ctx, invocation.PlanSubmitRequest{
+		AgentID: "agent-a", Goal: "build then deploy",
+		Actions: []invocation.PlanAction{
+			{Tool: "Bash", InputSummary: "make build"},
+			{Tool: "Bash", InputSummary: "make deploy"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApprovePlan(ctx, plan.PlanID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{
+		Tool: "Bash", AgentID: "agent-a", Input: map[string]any{"cmd": "make build"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusApproved {
+		t.Fatalf("response = %+v, want approved when at least one action positively matches", resp)
+	}
+}
+
+func TestAdherenceJudgeEscalatesUncertainRepeatedToolActions(t *testing.T) {
 	tests := []struct {
 		name  string
 		judge *planJudgeStub
 	}{
-		{
-			name:  "multiple matches",
-			judge: &planJudgeStub{adherenceResp: invocation.PlanAdherenceResponse{Verdict: "follows_plan"}},
-		},
 		{
 			name: "uncertain candidate",
 			judge: &planJudgeStub{adherenceBySummary: map[string]invocation.PlanAdherenceResponse{
