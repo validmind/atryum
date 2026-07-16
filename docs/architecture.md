@@ -122,8 +122,29 @@ human review; missing charter context denies; and an unknown verdict is treated 
 ## Atryum-executed calls
 
 `Invoke` owns the complete execution lifecycle. A human-gated HTTP request remains
-blocked on an in-memory channel until an admin decision, caller cancellation, or
-timeout. The durable invocation is still visible while the request is blocked.
+blocked on an in-memory channel until an admin decision or until the caller's request
+context is cancelled (a client disconnect or a client-side timeout). Atryum imposes no
+approval deadline of its own: the configured `request_timeout_seconds` bounds upstream
+tool execution, not the human wait. The durable invocation is still visible while the
+request is blocked.
+
+Human-approval coordination for Atryum-executed calls is process-local. PostgreSQL
+persists the invocation but does not provide distributed signaling for the in-memory
+waiter (the blocked request goroutine), so these calls require a single active Atryum
+process. Concretely:
+
+- With multiple replicas, an approval handled by a different process updates the row
+  without waking the original request; when that request's context is later cancelled,
+  it overwrites the approved state as failed.
+- Caller cancellation marks the invocation failed. The stored error text says
+  "cancelled", but the persisted status is `failed`, not `cancelled`.
+- An abrupt process exit drops the waiter and caller while the durable invocation can
+  remain `pending_approval`. Nothing resumes pending invocations at startup, so a
+  later approval updates that row but does not execute the tool.
+
+Multi-replica or crash-resumable execution requires durable coordination — for
+example a work queue, or an outbox table that a worker drains — which is not
+implemented.
 
 ```mermaid
 sequenceDiagram
@@ -195,9 +216,10 @@ stateDiagram-v2
     executing --> cancelled: PATCH cancelled
 ```
 
-The state diagram shows the supported caller contract. `RecordExecution` currently
-checks the transition to `running`; callers must not report a terminal outcome before
-approval. When inbound auth supplies an agent identity, the service also checks that
+The state diagram shows the supported caller contract, not enforced transitions.
+`RecordExecution` currently validates only the transition to `running`; the terminal
+reports (`completed`, `failed`, `cancelled`) are applied without checking the prior
+status, so callers must not report a terminal outcome before approval. When inbound auth supplies an agent identity, the service also checks that
 the invocation belongs to that agent. In no-auth mode, ownership cannot be verified.
 
 ## Managed Agents bridge
@@ -247,20 +269,30 @@ The core tables are:
 | Table | Architectural role |
 |---|---|
 | `invocations` | Current state and request/result material for each governed call |
-| `invocation_events` | Ordered audit history for an invocation |
+| `invocation_events` | Ordered, best-effort event history for an invocation |
 | `approval_rules` | Ordered match criteria and decision action |
 | `agents` | Mapping from runtime identities to named governance records |
 | `mcp_servers` | Runtime upstream definitions and connection state |
 | `oauth_credentials` and `oauth_connect_sessions` | Upstream OAuth credentials and browser-flow state |
 | `llm_configs` | Local AI-evaluation providers |
 | `managed_agent_bindings`, `managed_agent_sessions` | Anthropic agent/session ownership and replay state |
+| `external_sessions` | Atryum-minted harness sessions linking external invocations for cross-call evaluation context |
 | `agent_sync_settings` | Optional ValidMind inventory and evaluator settings |
 
 Schema changes are ordered migrations under `internal/store/migrations/` and are
 applied at startup for both SQLite and PostgreSQL.
 
-An invocation's row is the current-state projection; `invocation_events` is the audit
-history. Code that adds a status transition must update both representations.
+An invocation's row is the authoritative record of current state;
+`invocation_events` is best-effort event history. The two writes are separate
+statements, not one transaction, so parity can fail in either direction: a status
+update can commit while its event append fails, and — where code appends the event
+before updating the row — an event can exist for a status update that never
+committed. Event-append errors are currently discarded without a log line. Code that
+adds a transition must attempt to update both representations, but consumers must not
+reconstruct current state solely from events or assume complete parity. Deployments
+that require a transactionally complete compliance audit need to wrap both writes in
+one transaction (or adopt an outbox design) before treating the event history as
+such.
 
 ## Configuration and ownership
 

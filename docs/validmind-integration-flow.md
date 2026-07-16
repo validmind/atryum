@@ -2,7 +2,7 @@
 
 This document covers only the optional integration between Atryum and the ValidMind
 platform. Standalone Atryum architecture is described in
-[ARCHITECTURE.md](ARCHITECTURE.md); installation and general operation remain in the
+[architecture.md](architecture.md); installation and general operation remain in the
 [README](../README.md).
 
 The integration is bidirectional:
@@ -103,13 +103,24 @@ sequenceDiagram
     VM-->>Sync: Active inventory records and custom fields
     Sync->>Store: Upsert returned agents and selected charter
     Sync->>Store: Remove stale synchronized agents without managed bindings
-    API-->>Trigger: Updated agent list or sync error
+    API-->>Trigger: Updated agent list or fetch/configuration error
 ```
 
 The same sync function is used at startup when sync settings are complete and when
 settings are saved. A ValidMind-side task may call the admin sync endpoint after
 inventory changes; Atryum does not depend on that task for eventual recovery because a
 later startup or manual sync reconciles the full configured set.
+
+Reconciliation is best-effort rather than atomic:
+
+- Failures before any write — fetching inventory or loading required settings — fail
+  the sync and leave the prior local agent data unchanged.
+- After a fetch succeeds, individual agent upsert and stale-removal failures are
+  logged but are not returned to the caller, so the agent set can be partially
+  reconciled even when the endpoint or startup sync appears successful.
+
+Operators should inspect Atryum logs and retry a full sync after a row-level
+persistence failure.
 
 ## Charter-backed AI evaluation
 
@@ -205,8 +216,10 @@ the platform proxy.
 
 - Atryum startup fails when a configured ValidMind backend cannot pass its connection
   check. With no backend configured, the standalone service starts normally.
-- Agent synchronization is a full reconciliation. A failed sync leaves the prior local
-  data available and can be retried.
+- Agent synchronization attempts a full reconciliation. Fetch or configuration errors
+  fail before writes and leave prior local data available. Row-level persistence errors
+  are logged and can leave partial state even when the sync appears successful; inspect
+  logs and retry the full reconciliation.
 - Evaluation has a dedicated client timeout because it includes an LLM call, plus the
   invocation service's 60-second context bound.
 - Backend failures escalate to human review, missing charter data denies, and unknown
