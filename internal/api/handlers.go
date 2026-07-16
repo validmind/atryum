@@ -60,6 +60,7 @@ type service interface {
 	ApprovePlan(ctx context.Context, id string, ttlSeconds int) (invocation.Plan, error)
 	DenyPlan(ctx context.Context, id string, message string) (invocation.Plan, error)
 	RequestPlanRevision(ctx context.Context, id string, feedback string) (invocation.Plan, error)
+	ExpirePlan(ctx context.Context, id string) (invocation.Plan, error)
 	CancelPlan(ctx context.Context, id string) (invocation.Plan, error)
 	PlanEvents(ctx context.Context, id string, filter invocation.EventListFilter) (invocation.EventListResponse, error)
 }
@@ -3966,7 +3967,7 @@ func (h *Handler) adminPlans(w http.ResponseWriter, r *http.Request) {
 }
 
 // adminPlanDetail handles GET /api/v1/admin/plans/{id}, GET .../{id}/events,
-// and POST .../{id}/approve|deny|revise.
+// and POST .../{id}/approve|deny|revise|expire.
 func (h *Handler) adminPlanDetail(w http.ResponseWriter, r *http.Request) {
 	trimmed := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/admin/plans/"), "/")
 	if trimmed == "" {
@@ -4033,6 +4034,20 @@ func (h *Handler) adminPlanDetail(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		plan, err := h.svc.RequestPlanRevision(r.Context(), id, req.Feedback)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, plan)
+		return
+	}
+	if strings.HasSuffix(trimmed, "/expire") {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimSuffix(trimmed, "/expire"), "/")
+		plan, err := h.svc.ExpirePlan(r.Context(), id)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return

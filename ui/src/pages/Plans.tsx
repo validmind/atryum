@@ -42,6 +42,7 @@ import {
   usePlanDetail,
   useApprovePlan,
   useDenyPlan,
+  useExpirePlan,
   useRevisePlan,
 } from '../hooks/usePlans';
 import { apiErrorMessage, type Plan, type PlanStatus } from '../api/AtryumAPI';
@@ -94,14 +95,16 @@ const PlanDetailModal: React.FC<PlanDetailModalProps> = ({ planId, onClose, onSe
   const { data: plan, isLoading } = usePlanDetail(planId);
   const approvePlan = useApprovePlan();
   const denyPlan = useDenyPlan();
+  const expirePlan = useExpirePlan();
   const revisePlan = useRevisePlan();
 
-  const [mode, setMode] = useState<'view' | 'deny' | 'revise'>('view');
+  const [mode, setMode] = useState<'view' | 'deny' | 'revise' | 'expire'>('view');
   const [message, setMessage] = useState('');
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
-  const isBusy = approvePlan.isLoading || denyPlan.isLoading || revisePlan.isLoading;
+  const isBusy = approvePlan.isLoading || denyPlan.isLoading || revisePlan.isLoading || expirePlan.isLoading;
   const isPending = plan?.status === 'pending_approval';
+  const isApproved = plan?.status === 'approved';
 
   const handleApprove = useCallback(async () => {
     try {
@@ -137,6 +140,16 @@ const PlanDetailModal: React.FC<PlanDetailModalProps> = ({ planId, onClose, onSe
       setStatusMsg(apiErrorMessage(err, 'Revision request failed.'));
     }
   }, [message, planId, revisePlan]);
+
+  const handleExpire = useCallback(async () => {
+    try {
+      await expirePlan.mutateAsync({ id: planId });
+      setMode('view');
+      setStatusMsg(null);
+    } catch (err: unknown) {
+      setStatusMsg(apiErrorMessage(err, 'Expire failed.'));
+    }
+  }, [expirePlan, planId]);
 
   return (
     <Modal size="2xl" isCentered closeOnEsc closeOnOverlayClick isOpen onClose={onClose}>
@@ -297,6 +310,15 @@ const PlanDetailModal: React.FC<PlanDetailModalProps> = ({ planId, onClose, onSe
                   )}
                 </FormControl>
               )}
+
+              {isApproved && mode === 'expire' && (
+                <Alert status="warning" borderRadius="md" py={2}>
+                  <AlertIcon />
+                  <AlertDescription fontSize="sm">
+                    Expiring this plan immediately revokes its pass. This cannot be undone.
+                  </AlertDescription>
+                </Alert>
+              )}
             </VStack>
           )}
         </ModalBody>
@@ -363,7 +385,39 @@ const PlanDetailModal: React.FC<PlanDetailModalProps> = ({ planId, onClose, onSe
               </Button>
             </>
           )}
-          {!isPending && (
+          {isApproved && mode === 'view' && (
+            <>
+              <Button
+                variant="outlineDanger"
+                size="sm"
+                isDisabled={isBusy}
+                onClick={() => setMode('expire')}
+                mr="auto"
+              >
+                Mark as Expired
+              </Button>
+              <Button variant="ghost" size="sm" onClick={onClose}>
+                Close
+              </Button>
+            </>
+          )}
+          {isApproved && mode === 'expire' && (
+            <>
+              <Button variant="ghost" size="sm" isDisabled={isBusy} onClick={() => setMode('view')}>
+                Back
+              </Button>
+              <Button
+                variant="outlineDanger"
+                size="sm"
+                isLoading={expirePlan.isLoading}
+                isDisabled={isBusy}
+                onClick={handleExpire}
+              >
+                Confirm Expire
+              </Button>
+            </>
+          )}
+          {!isPending && !isApproved && (
             <Button variant="ghost" size="sm" onClick={onClose}>
               Close
             </Button>

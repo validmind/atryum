@@ -59,3 +59,9 @@ export const useRevisePlan = () =>
     ({ id, feedback }: { id: string; feedback: string }) => plansApi.revise(id, feedback),
     (v) => v.id,
   );
+
+export const useExpirePlan = () =>
+  usePlanMutation(
+    ({ id }: { id: string }) => plansApi.expire(id),
+    (v) => v.id,
+  );

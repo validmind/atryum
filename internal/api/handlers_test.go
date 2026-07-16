@@ -58,6 +58,7 @@ type stubService struct {
 	planDenyMsg          string
 	planReviseID         string
 	planFeedback         string
+	planExpireID         string
 	planCancelID         string
 }
 
@@ -145,6 +146,10 @@ func (s *stubService) DenyPlan(_ context.Context, id string, message string) (in
 func (s *stubService) RequestPlanRevision(_ context.Context, id string, feedback string) (invocation.Plan, error) {
 	s.planReviseID = id
 	s.planFeedback = feedback
+	return s.plan, s.planErr
+}
+func (s *stubService) ExpirePlan(_ context.Context, id string) (invocation.Plan, error) {
+	s.planExpireID = id
 	return s.plan, s.planErr
 }
 func (s *stubService) CancelPlan(_ context.Context, id string) (invocation.Plan, error) {

@@ -553,6 +553,23 @@ func (s *Service) RequestPlanRevision(ctx context.Context, id string, feedback s
 	return s.finalizePlanDecision(ctx, plan, PlanStatusNeedsRevision, approval, feedback)
 }
 
+// ExpirePlan immediately revokes an approved plan's pass.
+func (s *Service) ExpirePlan(ctx context.Context, id string) (Plan, error) {
+	if !s.plansEnabled() {
+		return Plan{}, fmt.Errorf("plan submission is not enabled")
+	}
+	plan, err := s.plans.Get(ctx, id)
+	if err != nil {
+		return Plan{}, err
+	}
+	if plan.Status != PlanStatusApproved {
+		return Plan{}, fmt.Errorf("plan %s cannot be expired from status %s", id, plan.Status)
+	}
+	now := time.Now().UTC()
+	plan.ExpiresAt = &now
+	return s.finalizePlanDecision(ctx, plan, PlanStatusExpired, plan.Approval, plan.Feedback)
+}
+
 // CancelPlan lets the submitting agent withdraw a plan. Cancelling an
 // approved plan revokes its pass.
 func (s *Service) CancelPlan(ctx context.Context, id string) (Plan, error) {

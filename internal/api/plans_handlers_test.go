@@ -225,6 +225,16 @@ func TestAdminPlanDecisions(t *testing.T) {
 		t.Fatalf("revise call = id %q feedback %q", stub.planReviseID, stub.planFeedback)
 	}
 
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/plans/plan_123/expire", nil)
+	w = httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expire: expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if stub.planExpireID != "plan_123" {
+		t.Fatalf("expire call = id %q", stub.planExpireID)
+	}
+
 	// Revise without feedback is rejected before hitting the service.
 	stub.planReviseID = ""
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/plans/plan_123/revise", strings.NewReader(`{}`))

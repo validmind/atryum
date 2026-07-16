@@ -518,6 +518,13 @@ export const plansApi = {
     );
     return data;
   },
+
+  expire: async (id: string): Promise<Plan> => {
+    const { data } = await atryumApi.post(
+      `/api/v1/admin/plans/${encodeURIComponent(id)}/expire`,
+    );
+    return data;
+  },
 };
 
 // ─── Agents ───────────────────────────────────────────────────────────────────

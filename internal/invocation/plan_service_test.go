@@ -1337,6 +1337,46 @@ func TestCancelPlanRevokesPass(t *testing.T) {
 	}
 }
 
+func TestExpirePlanRevokesPass(t *testing.T) {
+	svc, plansRepo := newPlanTestService(t, nil, nil, nil)
+	ctx := context.Background()
+
+	plan, err := svc.SubmitPlan(ctx, planSubmit("agent-a", "Bash"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ExpirePlan(ctx, plan.PlanID); err == nil {
+		t.Fatal("expected an unapproved plan to be rejected")
+	}
+	if _, err := svc.ApprovePlan(ctx, plan.PlanID, 0); err != nil {
+		t.Fatal(err)
+	}
+	expired, err := svc.ExpirePlan(ctx, plan.PlanID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if expired.Status != invocation.PlanStatusExpired {
+		t.Fatalf("status = %s, want expired", expired.Status)
+	}
+	if expired.ExpiresAt == nil || expired.ExpiresAt.After(time.Now().UTC()) {
+		t.Fatalf("expires_at = %v, want current or past time", expired.ExpiresAt)
+	}
+	stored, err := plansRepo.Get(ctx, plan.PlanID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != invocation.PlanStatusExpired {
+		t.Fatalf("persisted status = %s, want expired", stored.Status)
+	}
+	resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{Tool: "Bash", AgentID: "agent-a", Input: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusPendingApproval {
+		t.Fatalf("status = %s, want pending_approval after expiry", resp.Status)
+	}
+}
+
 func TestSuccessfulFinalExternalActionCompletesPlan(t *testing.T) {
 	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
 		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},
