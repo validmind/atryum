@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Atryum command hook for agents that expose PreToolUse/PostToolUse style hooks.
+// Atryum command hook for agents that expose SessionStart and
+// PreToolUse/PostToolUse style hooks.
 //
 // Supported host modes:
 //   ATRYUM_HOOK_HOST=claude  Claude Code settings hooks
@@ -275,16 +276,6 @@ function toolUseID(event) {
   );
 }
 
-function planActionID(event) {
-  const metadata = event.metadata || event.meta || event._meta || {};
-  const value =
-    event.plan_action_id ||
-    event.planActionId ||
-    metadata.plan_action_id ||
-    metadata.planActionId;
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
 function eventName(event) {
   return String(
     process.env.ATRYUM_HOOK_EVENT ||
@@ -302,6 +293,10 @@ function isPreToolUse(event) {
 
 function isPostToolUse(event) {
   return /posttooluse/i.test(eventName(event));
+}
+
+function isSessionStart(event) {
+  return /sessionstart/i.test(eventName(event));
 }
 
 function describe(input) {
@@ -352,7 +347,7 @@ async function planHint(tool) {
       (endpoint.includes("?") ? "&" : "?") +
       `source=${encodeURIComponent(SOURCE)}`;
   }
-  return ` Atryum supports preapproval plans for risky work or dependent changes that could leave files, systems, or external state inconsistent if a later call is denied. Submit a batch plan to ${endpoint} before running tools (keep the endpoint's source parameter — it scopes the plan's actions to this harness so your later tool calls match), then wait for approval before executing the planned steps. The plan response gives every action an action_id. When the harness exposes tool-call metadata, retain and send it as plan_action_id to deterministically select among steps using the same tool and server; otherwise Atryum's adherence judge will require a unique matching action. Once the plan is approved, matching tool calls are checked against it by an adherence judge (off-plan calls are denied); a plain poll of the plan's own status URL is always allowed.`;
+  return ` Atryum supports preapproval plans. If the user asks you to submit a plan to Atryum, you must submit a batch plan to ${endpoint} before running any of its actions and wait for approval before executing them. Also use a plan proactively for risky work or dependent changes that could leave files, systems, or external state inconsistent if a later call is denied. Keep the endpoint's source parameter: it scopes the plan's actions to this harness so later tool calls match. Give repeated actions using the same tool and server precise, distinct descriptions and input summaries: Atryum's adherence judge must identify exactly one matching action or the call requires human review. Once the plan is approved, matching tool calls are checked against it by an adherence judge (off-plan calls are denied); a plain poll of the plan's own status URL is always allowed.`;
 }
 
 function normalizeRole(value) {
@@ -595,16 +590,15 @@ async function submit(event) {
   const res = await atryumFetch(`${API}/api/v1/external/invocations`, {
     method: "POST",
     contentType: true,
-    body: JSON.stringify({
-      source: SOURCE,
-      tool: name,
-		description: describe(input),
-		input,
-		request_id: id,
-		plan_action_id: planActionID(event),
-		thread_id: clientSessionID,
-		client_session_id: clientSessionID,
-		client_name: clientName,
+      body: JSON.stringify({
+        source: SOURCE,
+        tool: name,
+        description: describe(input),
+        input,
+        request_id: id,
+        thread_id: clientSessionID,
+        client_session_id: clientSessionID,
+        client_name: clientName,
       client_version: CLIENT_VERSION || undefined,
       agent_id: AGENT_ID || undefined,
     }),
@@ -686,6 +680,16 @@ function allowOutput() {
   };
 }
 
+function sessionStartOutput(guidance) {
+  if (HOST === "cursor") return { additional_context: guidance };
+  return {
+    hookSpecificOutput: {
+      hookEventName: "SessionStart",
+      additionalContext: guidance,
+    },
+  };
+}
+
 function denyOutput(reason) {
   if (HOST === "cursor") {
     return { permission: "deny", message: reason };
@@ -743,6 +747,11 @@ async function handlePreToolUse(event) {
   );
 }
 
+async function handleSessionStart() {
+  const guidance = (await planHint()).trim();
+  jsonOut(guidance ? sessionStartOutput(guidance) : {});
+}
+
 async function handlePostToolUse(event) {
   const id = toolUseID(event);
   const invocationId = await loadInvocation(id);
@@ -771,7 +780,9 @@ async function main() {
   const raw = await readStdin();
   const event = raw.trim() ? JSON.parse(raw) : {};
 
-  if (isPreToolUse(event)) {
+  if (isSessionStart(event)) {
+    await handleSessionStart();
+  } else if (isPreToolUse(event)) {
     await handlePreToolUse(event);
   } else if (isPostToolUse(event)) {
     await handlePostToolUse(event);

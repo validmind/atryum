@@ -1,5 +1,11 @@
 {
   "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "command": "ATRYUM_HOOK_HOST=cursor ATRYUM_HOOK_EVENT=sessionStart ATRYUM_SOURCE=cursor node ~/.atryum/hooks/atryum-hook.mjs"
+      }
+    ],
     "preToolUse": [
       {
         "type": "command",

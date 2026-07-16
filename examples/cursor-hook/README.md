@@ -4,7 +4,7 @@ A Cursor command-hook adapter that gates Cursor agent tool calls through Atryum
 before execution, then reports successful results back for audit.
 
 Cursor's hook surface is still evolving. This adapter targets the current
-`preToolUse` / `postToolUse` command hook shape used by Cursor plugins and
+`sessionStart` / `preToolUse` / `postToolUse` command hook shape used by Cursor plugins and
 `.cursor/hooks.json`.
 
 ## Install
@@ -23,6 +23,12 @@ Then add this to `~/.cursor/hooks.json` for all projects, or to
 ```json
 {
   "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "command": "ATRYUM_HOOK_HOST=cursor ATRYUM_HOOK_EVENT=sessionStart ATRYUM_SOURCE=cursor node ~/.atryum/hooks/atryum-hook.mjs"
+      }
+    ],
     "preToolUse": [
       {
         "type": "command",
@@ -135,8 +141,9 @@ gated, just without prior-call context).
 ## Preapproval plans
 
 When plan-scoped rules apply to the current agent, the shared hook discovers
-that via `GET /api/v1/agent/rules` and includes a hint in the agent-visible
-blocked tool message. The agent can submit a batch plan to
+that via `GET /api/v1/agent/rules` and injects plan-submission guidance at
+`sessionStart`. It also includes the guidance in a blocked tool message as a
+fallback. The agent can submit a batch plan to
 `POST /api/v1/external/plans?source=<source>` (the hint provides the exact
 endpoint; the source parameter scopes the plan's actions to this harness so
 later tool calls match), wait for approval, and then continue with normal
@@ -148,5 +155,5 @@ status URL is always allowed.
 ## Plugin packaging
 
 For a Cursor plugin, point the plugin manifest at a hooks file that contains
-the same `preToolUse` and `postToolUse` entries. Cursor plugin manifests support
-a `hooks` path or inline hooks object.
+the same `sessionStart`, `preToolUse`, and `postToolUse` entries. Cursor plugin
+manifests support a `hooks` path or inline hooks object.

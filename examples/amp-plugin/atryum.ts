@@ -446,21 +446,6 @@ function rulesEndpointHint(tool: string): string {
   if (AGENT_ID && !ACCESS_TOKEN) url.searchParams.set("agent_id", AGENT_ID);
   return `atryum: to see the approval rules that apply to this call, GET ${url.toString()} (advisory only; Atryum re-checks policy during the actual gated call).`;
 }
-
-function planActionID(event: unknown): string | undefined {
-  const record = (event || {}) as Record<string, unknown>;
-  const metadata = (record.metadata ||
-    record.meta ||
-    record._meta ||
-    {}) as Record<string, unknown>;
-  const value =
-    record.plan_action_id ||
-    record.planActionId ||
-    metadata.plan_action_id ||
-    metadata.planActionId;
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
 function agentRulesURL(tool?: string): string {
   const url = new URL("/api/v1/agent/rules", API);
   url.searchParams.set("source", SOURCE);
@@ -491,14 +476,13 @@ async function planHint(tool?: string): Promise<string> {
       (endpoint.includes("?") ? "&" : "?") +
       `source=${encodeURIComponent(SOURCE)}`;
   }
-  return ` Atryum supports preapproval plans for risky work or dependent changes that could leave files, systems, or external state inconsistent if a later call is denied. Submit a batch plan to ${endpoint} before running tools (keep the endpoint's source parameter — it scopes the plan's actions to this harness so your later tool calls match), then wait for approval before executing the planned steps. The plan response gives every action an action_id. When the harness exposes tool-call metadata, retain and send it as plan_action_id to deterministically select among steps using the same tool and server; otherwise Atryum's adherence judge will require a unique matching action. Once the plan is approved, matching tool calls are checked against it by an adherence judge (off-plan calls are denied); a plain poll of the plan's own status URL is always allowed.`;
+  return ` Atryum supports preapproval plans. If the user asks you to submit a plan to Atryum, you must submit a batch plan to ${endpoint} before running any of its actions and wait for approval before executing them. Also use a plan proactively for risky work or dependent changes that could leave files, systems, or external state inconsistent if a later call is denied. Keep the endpoint's source parameter: it scopes the plan's actions to this harness so later tool calls match. Give repeated actions using the same tool and server precise, distinct descriptions and input summaries: Atryum's adherence judge must identify exactly one matching action or the call requires human review. Once the plan is approved, matching tool calls are checked against it by an adherence judge (off-plan calls are denied); a plain poll of the plan's own status URL is always allowed.`;
 }
 
 async function submit(
-	tool: string,
-	toolUseID: string,
-	input: Record<string, unknown>,
-	selectedPlanActionID: string | undefined,
+  tool: string,
+  toolUseID: string,
+  input: Record<string, unknown>,
 ): Promise<InvocationResponse> {
   const threadID = activeThreadID() || undefined;
   const res = await atryumFetch(`${API}/api/v1/external/invocations`, {
@@ -507,15 +491,14 @@ async function submit(
     body: JSON.stringify({
       source: SOURCE,
       tool,
-		description: describe(input),
-		input,
-		request_id: toolUseID,
-		plan_action_id: selectedPlanActionID,
-		thread_id: threadID,
+      description: describe(input),
+      input,
+      request_id: toolUseID,
+      thread_id: threadID,
       // Amp's own thread id. Atryum resolves the internal session with
       // get-or-create keyed by (agent binding, client_session_id) — no mint,
-		// no persisted session id, no re-mint on expiry.
-		client_session_id: threadID,
+      // no persisted session id, no re-mint on expiry.
+      client_session_id: threadID,
       client_name: CLIENT_NAME,
       client_version: CLIENT_VERSION || undefined,
       agent_id: AGENT_ID || undefined,
@@ -571,13 +554,34 @@ async function patchExecution(
 }
 
 export default function (amp: PluginAPI) {
+  // Amp's session.start event cannot add model context itself. Mark the thread
+  // unguided and inject into its first agent turn instead. Tracking completed
+  // threads also covers runtimes that load the plugin after session.start.
+  const sessionsWithPlanGuidance = new Set<string>();
+
+  amp.on("session.start", async (event) => {
+    sessionsWithPlanGuidance.delete(event.thread.id);
+  });
+
+  amp.on("agent.start", async (event) => {
+    if (sessionsWithPlanGuidance.has(event.thread.id)) return {};
+    sessionsWithPlanGuidance.add(event.thread.id);
+    const guidance = (await planHint()).trim();
+    if (!guidance) return {};
+    return {
+      message: {
+        content: guidance,
+        display: false,
+      },
+    };
+  });
+
   amp.on("tool.call", async (event, ctx) => {
     try {
       const submitted = await submit(
-			event.tool,
-			event.toolUseID,
-			event.input,
-			planActionID(event),
+        event.tool,
+        event.toolUseID,
+        event.input,
       );
       invocationMap.set(event.toolUseID, submitted.invocation_id);
 

@@ -22,6 +22,17 @@ Then add this to `~/.claude/settings.json` for all projects, or to
 ```json
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ATRYUM_HOOK_HOST=claude ATRYUM_HOOK_EVENT=SessionStart ATRYUM_SOURCE=claude-code node ~/.atryum/hooks/atryum-hook.mjs"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "*",
@@ -159,8 +170,9 @@ before.
 ## Preapproval plans
 
 When plan-scoped rules apply to the current agent, the shared hook discovers
-that via `GET /api/v1/agent/rules` and includes a hint in the agent-visible
-blocked tool message. The agent can submit a batch plan to
+that via `GET /api/v1/agent/rules` and injects plan-submission guidance at
+`SessionStart`. It also includes the guidance in a blocked tool message as a
+fallback. The agent can submit a batch plan to
 `POST /api/v1/external/plans?source=<source>` (the hint provides the exact
 endpoint; the source parameter scopes the plan's actions to this harness so
 later tool calls match), wait for approval, and then continue with normal
@@ -171,6 +183,7 @@ status URL is always allowed.
 
 ## Notes
 
-Claude Code hook support is documented around `PreToolUse` and `PostToolUse`.
+Claude Code hook support is documented around `SessionStart`, `PreToolUse`,
+and `PostToolUse`.
 `PreToolUse` receives `tool_name`, `tool_input`, and `tool_use_id`; the hook
 returns a permission decision before the tool executes.

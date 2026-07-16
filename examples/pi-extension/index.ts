@@ -262,21 +262,6 @@ function rulesEndpointHint(tool: string): string {
   if (AGENT_ID && !ACCESS_TOKEN) url.searchParams.set("agent_id", AGENT_ID);
   return `atryum: to see the approval rules that apply to this call, GET ${url.toString()} (advisory only; Atryum re-checks policy during the actual gated call).`;
 }
-
-function planActionID(event: unknown): string | undefined {
-  const record = (event || {}) as Record<string, unknown>;
-  const metadata = (record.metadata ||
-    record.meta ||
-    record._meta ||
-    {}) as Record<string, unknown>;
-  const value =
-    record.plan_action_id ||
-    record.planActionId ||
-    metadata.plan_action_id ||
-    metadata.planActionId;
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
 function agentRulesURL(tool?: string): string {
   const url = new URL("/api/v1/agent/rules", API);
   url.searchParams.set("source", SOURCE);
@@ -307,7 +292,7 @@ async function planHint(tool?: string): Promise<string> {
       (endpoint.includes("?") ? "&" : "?") +
       `source=${encodeURIComponent(SOURCE)}`;
   }
-  return ` Atryum supports preapproval plans for risky work or dependent changes that could leave files, systems, or external state inconsistent if a later call is denied. Submit a batch plan to ${endpoint} before running tools (keep the endpoint's source parameter — it scopes the plan's actions to this harness so your later tool calls match), then wait for approval before executing the planned steps. The plan response gives every action an action_id. When the harness exposes tool-call metadata, retain and send it as plan_action_id to deterministically select among steps using the same tool and server; otherwise Atryum's adherence judge will require a unique matching action. Once the plan is approved, matching tool calls are checked against it by an adherence judge (off-plan calls are denied); a plain poll of the plan's own status URL is always allowed.`;
+  return ` Atryum supports preapproval plans. If the user asks you to submit a plan to Atryum, you must submit a batch plan to ${endpoint} before running any of its actions and wait for approval before executing them. Also use a plan proactively for risky work or dependent changes that could leave files, systems, or external state inconsistent if a later call is denied. Keep the endpoint's source parameter: it scopes the plan's actions to this harness so later tool calls match. Give repeated actions using the same tool and server precise, distinct descriptions and input summaries: Atryum's adherence judge must identify exactly one matching action or the call requires human review. Once the plan is approved, matching tool calls are checked against it by an adherence judge (off-plan calls are denied); a plain poll of the plan's own status URL is always allowed.`;
 }
 
 // Pi's own session identifier, sent as client_session_id (and thread_id) on
@@ -329,10 +314,9 @@ function piClientSessionID(ctx: unknown): string | undefined {
 
 async function submit(
   tool: string,
-	toolCallID: string,
-	input: ToolInput,
-	threadID: string | undefined,
-	selectedPlanActionID: string | undefined,
+  toolCallID: string,
+  input: ToolInput,
+  threadID: string | undefined,
 ): Promise<InvocationResponse> {
   const res = await atryumFetch(`${API}/api/v1/external/invocations`, {
     method: "POST",
@@ -343,7 +327,6 @@ async function submit(
       description: describe(input),
       input,
       request_id: toolCallID,
-      plan_action_id: selectedPlanActionID,
       thread_id: threadID,
       // Pi's own session id. Atryum resolves the internal session with
       // get-or-create keyed by (agent binding, client_session_id).
@@ -403,15 +386,38 @@ async function patchExecution(
 }
 
 export default function (pi: ExtensionAPI) {
+  // session_start also fires for resumed, forked, and reloaded sessions. Pi
+  // permits context injection immediately before the first agent turn, so arm
+  // it here and consume it exactly once in before_agent_start. Start armed as
+  // a fallback for runtimes that load an extension after session_start.
+  let planGuidancePending = true;
+
+  pi.on("session_start", async () => {
+    planGuidancePending = true;
+  });
+
+  pi.on("before_agent_start", async () => {
+    if (!planGuidancePending) return;
+    planGuidancePending = false;
+    const guidance = (await planHint()).trim();
+    if (!guidance) return;
+    return {
+      message: {
+        customType: "atryum-plan-guidance",
+        content: guidance,
+        display: false,
+      },
+    };
+  });
+
   pi.on("tool_call", async (event, ctx) => {
     try {
       const input = (event.input || {}) as ToolInput;
       const submitted = await submit(
         event.toolName,
-			event.toolCallId,
-			input,
-			piClientSessionID(ctx),
-			planActionID(event),
+        event.toolCallId,
+        input,
+        piClientSessionID(ctx),
       );
       invocationMap.set(event.toolCallId, submitted.invocation_id);
 

@@ -17,14 +17,14 @@ import (
 )
 
 type planJudgeStub struct {
-	mu            sync.Mutex
-	req           invocation.PlanEvaluateRequest
-	resp          invocation.PlanEvaluateResponse
-	err           error
-	adherenceReq  invocation.PlanAdherenceRequest
-	adherenceResp invocation.PlanAdherenceResponse
-	adherenceByID map[string]invocation.PlanAdherenceResponse
-	adherenceErr  error
+	mu                 sync.Mutex
+	req                invocation.PlanEvaluateRequest
+	resp               invocation.PlanEvaluateResponse
+	err                error
+	adherenceReq       invocation.PlanAdherenceRequest
+	adherenceResp      invocation.PlanAdherenceResponse
+	adherenceBySummary map[string]invocation.PlanAdherenceResponse
+	adherenceErr       error
 }
 
 func (s *planJudgeStub) EvaluatePlan(_ context.Context, req invocation.PlanEvaluateRequest) (invocation.PlanEvaluateResponse, error) {
@@ -38,7 +38,7 @@ func (s *planJudgeStub) EvaluatePlanAdherence(_ context.Context, req invocation.
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.adherenceReq = req
-	if resp, ok := s.adherenceByID[req.Action.ActionID]; ok {
+	if resp, ok := s.adherenceBySummary[req.Action.InputSummary]; ok {
 		return resp, s.adherenceErr
 	}
 	return s.adherenceResp, s.adherenceErr
@@ -387,7 +387,7 @@ func TestPlanStepRechecksInvocationAutoDenyBeforeAdherence(t *testing.T) {
 	svc, _ := newPlanTestServiceWithRuleStore(t, rules, agents, judge)
 	ctx := context.Background()
 
-	plan, err := svc.SubmitPlan(ctx, planSubmit("agent-a", "Bash"))
+	plan, err := svc.SubmitPlan(ctx, planSubmit("agent-a", "Bash", "Bash"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -792,73 +792,13 @@ func TestPlanStepsMaySkipForwardButCannotGoBackwards(t *testing.T) {
 	}
 }
 
-func TestPlanActionIDSelectsRepeatedToolStepsForOrdering(t *testing.T) {
+func TestAdherenceJudgeSelectsUniqueRepeatedToolAction(t *testing.T) {
 	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
 		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},
 	}}
-	judge := &planJudgeStub{adherenceResp: invocation.PlanAdherenceResponse{Verdict: "follows_plan"}}
-	svc, _ := newPlanTestService(t, nil, agents, judge)
-	ctx := context.Background()
-
-	plan, err := svc.SubmitPlan(ctx, invocation.PlanSubmitRequest{
-		AgentID: "agent-a",
-		Goal:    "build then deploy",
-		Actions: []invocation.PlanAction{
-			{ActionID: "action_build", Tool: "Bash", Description: "build"},
-			{ActionID: "action_deploy", Tool: "Bash", Description: "deploy"},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := svc.ApprovePlan(ctx, plan.PlanID, 0); err != nil {
-		t.Fatal(err)
-	}
-
-	// Without an ID, the repeated Bash actions are not safely distinguishable.
-	resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{Tool: "Bash", AgentID: "agent-a", Input: map[string]any{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.Status != invocation.StatusPendingApproval {
-		t.Fatalf("ambiguous Bash status = %s, want pending approval", resp.Status)
-	}
-
-	// A supplied but unknown ID must not silently fall back to judge-based
-	// selection; malformed routing metadata is escalated.
-	resp, err = svc.Submit(ctx, invocation.ExternalSubmitRequest{Tool: "Bash", AgentID: "agent-a", PlanActionID: "action_missing", Input: map[string]any{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.Status != invocation.StatusPendingApproval || resp.Approval == nil || resp.Approval.Reason == nil || !strings.Contains(*resp.Approval.Reason, "does not select") {
-		t.Fatalf("invalid plan action response = %+v, want human escalation", resp)
-	}
-
-	// Explicitly selecting deploy records step two, even though step one was skipped.
-	resp, err = svc.Submit(ctx, invocation.ExternalSubmitRequest{Tool: "Bash", AgentID: "agent-a", PlanActionID: "action_deploy", Input: map[string]any{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.Status != invocation.StatusApproved {
-		t.Fatalf("deploy status = %s, want approved", resp.Status)
-	}
-
-	resp, err = svc.Submit(ctx, invocation.ExternalSubmitRequest{Tool: "Bash", AgentID: "agent-a", PlanActionID: "action_build", Input: map[string]any{}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.Status != invocation.StatusDenied || resp.Approval == nil || resp.Approval.Reason == nil || !strings.Contains(*resp.Approval.Reason, "step 1 after step 2") {
-		t.Fatalf("build response = %+v, want denied for backwards repeated-tool step", resp)
-	}
-}
-
-func TestAdherenceJudgeSelectsUniqueRepeatedToolActionWithoutID(t *testing.T) {
-	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
-		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},
-	}}
-	judge := &planJudgeStub{adherenceByID: map[string]invocation.PlanAdherenceResponse{
-		"action_build":  {Verdict: "outside_plan", Reason: "not the build command"},
-		"action_deploy": {Verdict: "follows_plan", Reason: "matches deploy"},
+	judge := &planJudgeStub{adherenceBySummary: map[string]invocation.PlanAdherenceResponse{
+		"make build":  {Verdict: "outside_plan", Reason: "not the build command"},
+		"make deploy": {Verdict: "follows_plan", Reason: "matches deploy"},
 	}}
 	svc, _ := newPlanTestService(t, nil, agents, judge)
 	ctx := context.Background()
@@ -866,8 +806,8 @@ func TestAdherenceJudgeSelectsUniqueRepeatedToolActionWithoutID(t *testing.T) {
 	plan, err := svc.SubmitPlan(ctx, invocation.PlanSubmitRequest{
 		AgentID: "agent-a", Goal: "build then deploy",
 		Actions: []invocation.PlanAction{
-			{ActionID: "action_build", Tool: "Bash", InputSummary: "make build"},
-			{ActionID: "action_deploy", Tool: "Bash", InputSummary: "make deploy"},
+			{Tool: "Bash", InputSummary: "make build"},
+			{Tool: "Bash", InputSummary: "make deploy"},
 		},
 	})
 	if err != nil {
@@ -883,12 +823,80 @@ func TestAdherenceJudgeSelectsUniqueRepeatedToolActionWithoutID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Status != invocation.StatusApproved || resp.PlanActionID == nil || *resp.PlanActionID != "action_deploy" {
+	if resp.Status != invocation.StatusApproved {
 		t.Fatalf("response = %+v, want uniquely selected deploy action", resp)
+	}
+
+	// The selected action's position is recorded for ordering: once deploy has
+	// run, the earlier build action is no longer eligible.
+	judge.adherenceBySummary = map[string]invocation.PlanAdherenceResponse{
+		"make build":  {Verdict: "follows_plan", Reason: "matches build"},
+		"make deploy": {Verdict: "outside_plan", Reason: "not the deploy command"},
+	}
+	resp, err = svc.Submit(ctx, invocation.ExternalSubmitRequest{
+		Tool: "Bash", AgentID: "agent-a", Input: map[string]any{"cmd": "make build"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusDenied {
+		t.Fatalf("response = %+v, want earlier build action denied after deploy", resp)
 	}
 }
 
-func TestRepeatedToolPlanStatusPollFastPassesWithoutActionID(t *testing.T) {
+func TestAdherenceJudgeEscalatesAmbiguousRepeatedToolActions(t *testing.T) {
+	tests := []struct {
+		name  string
+		judge *planJudgeStub
+	}{
+		{
+			name:  "multiple matches",
+			judge: &planJudgeStub{adherenceResp: invocation.PlanAdherenceResponse{Verdict: "follows_plan"}},
+		},
+		{
+			name: "uncertain candidate",
+			judge: &planJudgeStub{adherenceBySummary: map[string]invocation.PlanAdherenceResponse{
+				"make build":  {Verdict: "human_approval", Reason: "unclear command"},
+				"make deploy": {Verdict: "outside_plan", Reason: "not deployment"},
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+				"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},
+			}}
+			svc, _ := newPlanTestService(t, nil, agents, tt.judge)
+			ctx := context.Background()
+			plan, err := svc.SubmitPlan(ctx, invocation.PlanSubmitRequest{
+				AgentID: "agent-a", Goal: "build then deploy",
+				Actions: []invocation.PlanAction{
+					{Tool: "Bash", InputSummary: "make build"},
+					{Tool: "Bash", InputSummary: "make deploy"},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := svc.ApprovePlan(ctx, plan.PlanID, 0); err != nil {
+				t.Fatal(err)
+			}
+
+			resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{
+				Tool: "Bash", AgentID: "agent-a", Input: map[string]any{"cmd": "ambiguous"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.Status != invocation.StatusPendingApproval {
+				t.Fatalf("response = %+v, want human approval", resp)
+			}
+		})
+	}
+}
+
+func TestRepeatedToolPlanStatusPollFastPasses(t *testing.T) {
 	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
 		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},
 	}}

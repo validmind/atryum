@@ -23,6 +23,17 @@ Then add this to `~/.codex/hooks.json`:
 ```json
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ATRYUM_HOOK_HOST=codex ATRYUM_HOOK_EVENT=SessionStart ATRYUM_SOURCE=codex node ~/.atryum/hooks/atryum-hook.mjs"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "*",
@@ -87,8 +98,9 @@ gated, just without prior-call context).
 ## Preapproval plans
 
 When plan-scoped rules apply to the current agent, the shared hook discovers
-that via `GET /api/v1/agent/rules` and includes a hint in the agent-visible
-blocked tool message. The agent can submit a batch plan to
+that via `GET /api/v1/agent/rules` and injects plan-submission guidance at
+`SessionStart`. It also includes the guidance in a blocked tool message as a
+fallback. The agent can submit a batch plan to
 `POST /api/v1/external/plans?source=<source>` (the hint provides the exact
 endpoint; the source parameter scopes the plan's actions to this harness so
 later tool calls match), wait for approval, and then continue with normal

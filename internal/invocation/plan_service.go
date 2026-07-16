@@ -114,21 +114,13 @@ func (s *Service) SubmitPlan(ctx context.Context, req PlanSubmitRequest) (Plan, 
 	if source == "" {
 		source = "external"
 	}
-	actionIDs := make(map[string]struct{}, len(req.Actions))
 	for i, a := range req.Actions {
 		if strings.TrimSpace(a.Tool) == "" {
 			return Plan{}, fmt.Errorf("actions[%d].tool is required", i)
 		}
-		if strings.TrimSpace(a.ActionID) == "" {
-			req.Actions[i].ActionID = "action_" + uuid.NewString()
-		}
 		if strings.TrimSpace(a.Server) == "" {
 			req.Actions[i].Server = source
 		}
-		if _, exists := actionIDs[req.Actions[i].ActionID]; exists {
-			return Plan{}, fmt.Errorf("actions[%d].action_id duplicates an earlier action", i)
-		}
-		actionIDs[req.Actions[i].ActionID] = struct{}{}
 	}
 	var parent *Plan
 	if req.RevisionOf != "" {
@@ -584,7 +576,7 @@ type approvedPlanMatch struct {
 // The third return value reports that a plan action matched the tool/server,
 // but could not be selected unambiguously. Callers must not fall through to
 // ordinary approval rules in that case.
-func (s *Service) matchApprovedPlan(ctx context.Context, agentID, server, tool, actionID string) (approvedPlanMatch, bool, bool) {
+func (s *Service) matchApprovedPlan(ctx context.Context, agentID, server, tool string) (approvedPlanMatch, bool, bool) {
 	if !s.plansEnabled() || agentID == "" || tool == "" {
 		return approvedPlanMatch{}, false, false
 	}
@@ -606,14 +598,6 @@ func (s *Service) matchApprovedPlan(ctx context.Context, agentID, server, tool, 
 		}
 		if len(candidates) == 0 {
 			continue
-		}
-		if actionID != "" {
-			for _, candidate := range candidates {
-				if candidate.Action.ActionID == actionID {
-					return candidate, true, false
-				}
-			}
-			return approvedPlanMatch{Plan: plan}, false, true
 		}
 		if len(candidates) == 1 {
 			return candidates[0], true, false
@@ -661,12 +645,10 @@ func (s *Service) approvedPlanPass(ctx context.Context, match approvedPlanMatch,
 }
 
 // ambiguousApprovedPlanPass resolves a call when several actions in the same
-// approved plan use the same tool/server and the harness could not carry an
-// explicit plan_action_id. Each candidate is independently checked by the
-// adherence judge. Exactly one positive match is safe to select; multiple
-// matches or any uncertainty go to a human, while a call that is outside every
-// candidate is denied. This keeps integrations whose tool-call protocol has no
-// metadata channel usable without weakening the plan boundary.
+// approved plan use the same tool/server. Each candidate is independently
+// checked by the adherence judge. Exactly one positive match is safe to select;
+// multiple matches or any uncertainty go to a human, while a call that is
+// outside every candidate is denied.
 func (s *Service) ambiguousApprovedPlanPass(ctx context.Context, plan Plan, agentRec AgentRecord, server, tool string, input map[string]any, extraContext string) (approvedPlanMatch, string, *float64, planGateOutcome) {
 	if planStatusFastPass(s.planPollOrigins, plan.PlanID, input) {
 		return approvedPlanMatch{Plan: plan}, "matched approved plan " + plan.PlanID + ": accessing approved plan status", nil, planGateApprove
@@ -712,10 +694,10 @@ func (s *Service) ambiguousApprovedPlanPass(ctx context.Context, plan Plan, agen
 		return matches[0], matchReason, matchConfidence, planGateApprove
 	}
 	if len(matches) > 1 {
-		return approvedPlanMatch{Plan: plan}, "multiple approved plan actions match this call; include plan_action_id to select the intended step", nil, planGateHuman
+		return approvedPlanMatch{Plan: plan}, "multiple approved plan actions match this call; make repeated actions more specific or request human review", nil, planGateHuman
 	}
 	if uncertain {
-		return approvedPlanMatch{Plan: plan}, "plan adherence could not uniquely select an action; include plan_action_id or request human review", nil, planGateHuman
+		return approvedPlanMatch{Plan: plan}, "plan adherence could not uniquely select an action; make repeated actions more specific or request human review", nil, planGateHuman
 	}
 	return approvedPlanMatch{Plan: plan}, "tool call is outside every matching action in approved plan " + plan.PlanID, nil, planGateDeny
 }

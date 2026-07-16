@@ -44,11 +44,8 @@ type Invocation struct {
 	// PlanStepIndex is the zero-based position of the declared plan action
 	// matched by this invocation. It is internal state used to prevent a plan
 	// from moving backwards after a later step has run.
-	PlanStepIndex *int `json:"-"`
-	// PlanActionID identifies the declared plan action selected for this
-	// invocation, including when multiple actions use the same tool/server.
-	PlanActionID *string `json:"plan_action_id,omitempty"`
-	AgentID      *string `json:"agent_id,omitempty"`
+	PlanStepIndex *int    `json:"-"`
+	AgentID       *string `json:"agent_id,omitempty"`
 	// SessionID links this invocation to an external harness session (see
 	// ExternalSession). Set on the Invocations API path so the judge can be
 	// given the session's prior tool calls as context.
@@ -106,7 +103,6 @@ type CreateInvocationRequest struct {
 	Input          map[string]any `json:"input"`
 	RequestID      *string        `json:"request_id,omitempty"`
 	IdempotencyKey *string        `json:"idempotency_key,omitempty"`
-	PlanActionID   string         `json:"plan_action_id,omitempty"`
 	// ClientName / ClientVersion let the caller pass through the harness's
 	// MCP `initialize.clientInfo` for this specific call. Used to populate
 	// the per-row fallback for anonymous (no agent_id) invocations.
@@ -125,7 +121,6 @@ type ExternalSubmitRequest struct {
 	Input          map[string]any `json:"input"`
 	RequestID      *string        `json:"request_id,omitempty"`
 	IdempotencyKey *string        `json:"idempotency_key,omitempty"`
-	PlanActionID   string         `json:"plan_action_id,omitempty"`
 	ThreadID       string         `json:"thread_id,omitempty"`
 	// ClientSessionID is the harness's own session/thread identifier (the id it
 	// already tracks for its host conversation). When set and no SessionID is
@@ -190,7 +185,6 @@ type InvocationResponse struct {
 	Approval      *Approval `json:"approval"`
 	MatchedRuleID *string   `json:"matched_rule_id,omitempty"`
 	PlanID        *string   `json:"plan_id,omitempty"`
-	PlanActionID  *string   `json:"plan_action_id,omitempty"`
 	AgentID       *string   `json:"agent_id,omitempty"`
 	// SessionID is the internal Atryum session (ses_...) this invocation was
 	// linked to, if any. Exposed for observability/debugging — clients never

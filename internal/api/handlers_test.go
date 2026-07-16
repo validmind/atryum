@@ -1236,7 +1236,7 @@ func TestMCPToolsCallInterceptsInvocation(t *testing.T) {
 	now := time.Now().UTC()
 	svc := &stubService{invoke: invocation.InvocationResponse{InvocationID: "inv_123", ServerName: "demo", ToolName: "demo_tool", Status: invocation.StatusSucceeded, Input: json.RawMessage(`{"a":1}`), SubmittedAt: now, CompletedAt: &now, Result: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`)}}
 	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
-	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"demo_tool","arguments":{"a":1,"plan_action_id":"action_1"}}}`))
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"demo_tool","arguments":{"a":1}}}`))
 	w := httptest.NewRecorder()
 
 	h.Routes().ServeHTTP(w, req)
@@ -1249,12 +1249,6 @@ func TestMCPToolsCallInterceptsInvocation(t *testing.T) {
 	}
 	if svc.invokedReq.RequestID == nil || *svc.invokedReq.RequestID != "7" {
 		t.Fatalf("expected request id 7, got %#v", svc.invokedReq.RequestID)
-	}
-	if svc.invokedReq.PlanActionID != "action_1" {
-		t.Fatalf("expected plan action id action_1, got %q", svc.invokedReq.PlanActionID)
-	}
-	if _, leaked := svc.invokedReq.Input["plan_action_id"]; leaked {
-		t.Fatalf("plan_action_id must not be forwarded upstream: %#v", svc.invokedReq.Input)
 	}
 	if !strings.Contains(w.Body.String(), `"text":"ok"`) {
 		t.Fatalf("expected tool result, got %s", w.Body.String())
@@ -1302,24 +1296,6 @@ func TestMCPRulesToolReturnsAgentRulesWithoutInvocation(t *testing.T) {
 		t.Fatalf("expected read-auto match, got %#v", rulesResp.MatchedRuleID)
 	}
 }
-
-func TestWithPlanActionIDSchemaAdvertisesRoutingMetadata(t *testing.T) {
-	raw := withPlanActionIDSchema(json.RawMessage(`{"type":"object","properties":{"cmd":{"type":"string"}},"required":["cmd"]}`))
-	var schema struct {
-		Properties map[string]json.RawMessage `json:"properties"`
-		Required   []string                   `json:"required"`
-	}
-	if err := json.Unmarshal(raw, &schema); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := schema.Properties["plan_action_id"]; !ok {
-		t.Fatalf("schema does not advertise plan_action_id: %s", raw)
-	}
-	if len(schema.Required) != 1 || schema.Required[0] != "cmd" {
-		t.Fatalf("upstream required fields changed: %v", schema.Required)
-	}
-}
-
 func TestMCPPlanSubmitToolSubmitsPlan(t *testing.T) {
 	now := time.Now().UTC()
 	svc := &stubService{plan: invocation.Plan{

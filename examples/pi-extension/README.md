@@ -106,9 +106,10 @@ prior-call context) rather than blocking the agent.
 
 ## Preapproval plans
 
-When plan-scoped rules apply to the current agent, the extension discovers that
-via `GET /api/v1/agent/rules` and includes a hint in the agent-visible blocked
-tool message. The agent can submit a batch plan to
+When plan-scoped rules apply to the current agent, the extension injects plan
+submission guidance before the first agent turn after every `session_start`
+and also repeats it in blocked tool messages as a fallback. It discovers
+support via `GET /api/v1/agent/rules`. The agent can submit a batch plan to
 `POST /api/v1/external/plans?source=<source>` (the hint provides the exact
 endpoint; the source parameter scopes the plan's actions to this harness so
 later tool calls match), wait for approval, and then continue with normal

@@ -361,29 +361,20 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	// a status poll auto-approves, the adherence judge confirms or denies
 	// everything else, and an unverifiable call goes straight to a human,
 	// bypassing rules/policy. Unmatched calls get normal gating.
-	if planMatch, ok, ambiguous := s.matchApprovedPlan(ctx, agentID, upstream.Name, req.Tool, req.PlanActionID); ok || ambiguous {
+	if planMatch, ok, ambiguous := s.matchApprovedPlan(ctx, agentID, upstream.Name, req.Tool); ok || ambiguous {
 		planID := planMatch.Plan.PlanID
 		inv.PlanID = &planID
 		var reason string
 		var confidence *float64
 		var outcome planGateOutcome
 		if ambiguous {
-			if req.PlanActionID != "" && !planStatusFastPass(s.planPollOrigins, planID, req.Input) {
-				reason = "plan_action_id does not select an action matching this tool and server"
-				outcome = planGateHuman
-			} else {
-				planMatch, reason, confidence, outcome = s.ambiguousApprovedPlanPass(ctx, planMatch.Plan, agentRec, upstream.Name, req.Tool, req.Input, "")
-			}
+			planMatch, reason, confidence, outcome = s.ambiguousApprovedPlanPass(ctx, planMatch.Plan, agentRec, upstream.Name, req.Tool, req.Input, "")
 		} else {
 			reason, confidence, outcome = s.approvedPlanPass(ctx, planMatch, agentRec, upstream.Name, req.Tool, req.Input, "")
 		}
-		if planMatch.Action.ActionID != "" {
-			actionID := planMatch.Action.ActionID
-			inv.PlanActionID = &actionID
-			if !planStatusFastPass(s.planPollOrigins, planID, req.Input) {
-				stepIndex := planMatch.ActionIndex
-				inv.PlanStepIndex = &stepIndex
-			}
+		if planMatch.Action.Tool != "" && !planStatusFastPass(s.planPollOrigins, planID, req.Input) {
+			stepIndex := planMatch.ActionIndex
+			inv.PlanStepIndex = &stepIndex
 		}
 
 		planPayload := map[string]any{
@@ -1458,29 +1449,20 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	// auto-approves, the adherence judge confirms or denies everything else,
 	// and an unverifiable call goes straight to a human, bypassing approval
 	// rules. Unmatched calls get normal gating.
-	if planMatch, ok, ambiguous := s.matchApprovedPlan(ctx, agentID, source, req.Tool, req.PlanActionID); ok || ambiguous {
+	if planMatch, ok, ambiguous := s.matchApprovedPlan(ctx, agentID, source, req.Tool); ok || ambiguous {
 		planID := planMatch.Plan.PlanID
 		inv.PlanID = &planID
 		var reason string
 		var confidence *float64
 		var outcome planGateOutcome
 		if ambiguous {
-			if req.PlanActionID != "" && !planStatusFastPass(s.planPollOrigins, planID, req.Input) {
-				reason = "plan_action_id does not select an action matching this tool and server"
-				outcome = planGateHuman
-			} else {
-				planMatch, reason, confidence, outcome = s.ambiguousApprovedPlanPass(ctx, planMatch.Plan, agentRec, source, req.Tool, req.Input, sessionContext)
-			}
+			planMatch, reason, confidence, outcome = s.ambiguousApprovedPlanPass(ctx, planMatch.Plan, agentRec, source, req.Tool, req.Input, sessionContext)
 		} else {
 			reason, confidence, outcome = s.approvedPlanPass(ctx, planMatch, agentRec, source, req.Tool, req.Input, sessionContext)
 		}
-		if planMatch.Action.ActionID != "" {
-			actionID := planMatch.Action.ActionID
-			inv.PlanActionID = &actionID
-			if !planStatusFastPass(s.planPollOrigins, planID, req.Input) {
-				stepIndex := planMatch.ActionIndex
-				inv.PlanStepIndex = &stepIndex
-			}
+		if planMatch.Action.Tool != "" && !planStatusFastPass(s.planPollOrigins, planID, req.Input) {
+			stepIndex := planMatch.ActionIndex
+			inv.PlanStepIndex = &stepIndex
 		}
 
 		planPayload := map[string]any{"tool": req.Tool, "upstream": source, "request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "external": true, "plan_id": planID}
@@ -1927,7 +1909,7 @@ func (s *Service) SetSummary(ctx context.Context, invocationID string, summary s
 }
 
 func (s *Service) toResponse(inv Invocation) InvocationResponse {
-	resp := InvocationResponse{InvocationID: inv.InvocationID, ServerName: inv.Upstream, ToolName: inv.Tool, Status: inv.Status, Approval: inv.Approval, MatchedRuleID: inv.MatchedRuleID, PlanID: inv.PlanID, PlanActionID: inv.PlanActionID, AgentID: inv.AgentID, RequestID: inv.RequestID, SubmittedAt: inv.SubmittedAt, CompletedAt: inv.CompletedAt}
+	resp := InvocationResponse{InvocationID: inv.InvocationID, ServerName: inv.Upstream, ToolName: inv.Tool, Status: inv.Status, Approval: inv.Approval, MatchedRuleID: inv.MatchedRuleID, PlanID: inv.PlanID, AgentID: inv.AgentID, RequestID: inv.RequestID, SubmittedAt: inv.SubmittedAt, CompletedAt: inv.CompletedAt}
 	if inv.Summary != nil {
 		resp.Summary = *inv.Summary
 	}
