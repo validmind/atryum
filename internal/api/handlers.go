@@ -7,6 +7,7 @@ import (
 	"embed"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -3622,8 +3623,13 @@ func (h *Handler) externalInvocationDetail(w http.ResponseWriter, r *http.Reques
 		resp, err := h.svc.RecordExecution(r.Context(), id, update)
 		if err != nil {
 			status := http.StatusBadRequest
-			if err == sql.ErrNoRows {
+			switch {
+			case err == sql.ErrNoRows:
 				status = http.StatusNotFound
+			case errors.Is(err, invocation.ErrNotOwner):
+				status = http.StatusForbidden
+			case errors.Is(err, invocation.ErrInvalidTransition):
+				status = http.StatusConflict
 			}
 			writeError(w, status, err.Error())
 			return

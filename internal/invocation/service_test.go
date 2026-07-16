@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -727,11 +728,15 @@ func TestRecordExecutionRejectsMismatchedAuthenticatedCaller(t *testing.T) {
 	attacker := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "attacker"})
 	if _, err := service.RecordExecution(attacker, inv.InvocationID, invocation.ExternalExecutionUpdate{
 		ExecutionStatus: "completed", Result: json.RawMessage(`{"stdout":"pwned"}`),
-	}); err == nil || !strings.Contains(err.Error(), "does not belong") {
-		t.Fatalf("expected ownership rejection, got %v", err)
+	}); err == nil || !errors.Is(err, invocation.ErrNotOwner) {
+		t.Fatalf("expected ErrNotOwner, got %v", err)
 	}
 
-	// The owning agent succeeds.
+	if err := service.Approve(context.Background(), inv.InvocationID, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// The owning agent succeeds once the invocation is approved.
 	if _, err := service.RecordExecution(owner, inv.InvocationID, invocation.ExternalExecutionUpdate{
 		ExecutionStatus: "completed", Result: json.RawMessage(`{"stdout":"file.txt"}`),
 	}); err != nil {
@@ -746,10 +751,13 @@ func TestRecordExecutionRejectsMismatchedAuthenticatedCaller(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := service.Approve(context.Background(), noauth.InvocationID, ""); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := service.RecordExecution(context.Background(), noauth.InvocationID, invocation.ExternalExecutionUpdate{
 		ExecutionStatus: "completed", Result: json.RawMessage(`{"stdout":"ok"}`),
 	}); err != nil {
-		t.Fatalf("no-auth RecordExecution should be unchanged: %v", err)
+		t.Fatalf("no-auth RecordExecution should succeed after approval: %v", err)
 	}
 }
 
