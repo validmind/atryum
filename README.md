@@ -7,12 +7,16 @@
         <p align="center">
         </p>
     </p>
-<h4 align="center"> <a href="https://atryum.org/documentation/1_quickstart.html" target="_blank"> QuickStart</a> | <a href="https://atryum.org" target="_blank">Website</a></h4>
+<h4 align="center"> <a href="https://atryum.org/documentation/1_quickstart.html" target="_blank"> QuickStart</a> | <a href="https://validmind.com/platform/agent-authority/">ValidMind Agent Authority</a> | <a href="https://atryum.org" target="_blank">Website</a></h4>
 <h4 align="center">
 
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square" alt="License: Apache 2.0" />
 <img src="https://img.shields.io/badge/version-0.0.5-green?style=flat-square" alt="Version 0.0.5" />
 <img src="https://img.shields.io/badge/MCP%20spec-2025--11--25-orange?style=flat-square" alt="MCP spec 2025-11-25" />
+    <a href="https://github.com/validmind/atryum" target="_blank">
+        <img src="https://img.shields.io/github/stars/validmind/atryum.svg?style=social" alt="GitHub Stars">
+    </a>
+
 </h4>
 
 
@@ -77,6 +81,8 @@ Auth is OIDC-based and supports multiple authorization servers concurrently (Key
 For local no-auth runtime calls, when no `[[auth]]` blocks are configured, callers may provide a best-effort agent identity with `?agent_id=` on `/mcp/{server}`, `/api/v1/invocations`, and `/api/v1/agent/rules`, or with `agent_id` in external invocation API payloads. For example: `http://localhost:8080/mcp/shortcut?agent_id=hunners-codex`. This ID is ignored as soon as inbound auth is configured.
 
 When inbound auth is configured, all agent runtime surfaces require OAuth bearer tokens: `/mcp/{server}`, `/api/v1/invocations`, `/api/v1/external/invocations`, `/api/v1/external/invocations/{id}`, and `/api/v1/agent/rules`. The Amp and Pi examples, plus the shared hook script installed for agent hooks, read `ATRYUM_ACCESS_TOKEN` and send it as `Authorization: Bearer ...` — the token is used as-is and never refreshed. For short-lived tokens, set `ATRYUM_TOKEN_COMMAND` instead: a shell command that mints a fresh token (raw, or OAuth token JSON with `access_token` plus optional `expires_in`) — typically a client credentials request against your identity provider's token endpoint. The integrations run it on the first request, cache the token, run it again shortly before expiry, and retry once with a freshly minted token after a `401`. If both are set, `ATRYUM_TOKEN_COMMAND` wins and `ATRYUM_ACCESS_TOKEN` is ignored.
+
+The Settings UI can also select a default ValidMind agent record. AI Evaluation uses that record when an incoming runtime agent ID is missing or does not map to a synced agent, allowing local no-auth runs to evaluate against a known charter without adding TOML.
 
 ## Admin authentication
 
@@ -177,6 +183,12 @@ log_level       = "info"
 [defaults]
 request_timeout_seconds = 30
 
+[backend]                         # optional ValidMind backend credential check
+base_url = ""
+machine_key = ""
+machine_secret = ""
+connection_timeout_seconds = 5
+
 [[managed_agents]]                 # optional, repeatable — one per Anthropic account/workspace key
 name     = "default"               # unique label; the session-registration "account" targets it
 workspace = ""                     # required label when api_key is set; used for display/metadata
@@ -198,6 +210,8 @@ enabled      = true
 After first-run bootstrap, edit MCP servers through the UI/API; TOML `[[upstreams]]` is ignored once `mcp_servers` has rows. Disabled servers remain visible in the UI so disabling a server does not make it disappear.
 
 `server.database_url` selects the storage provider by URL scheme. `postgres://` and `postgresql://` use PostgreSQL via pgx stdlib; `sqlite://`, `file:`, an empty URL, or a bare path use SQLite. Normal tests do not require PostgreSQL; run the optional store integration test with `ATRYUM_POSTGRES_TESTS=1 go test ./internal/store`.
+
+When `backend.base_url` is empty, the ValidMind backend connection check is skipped for local standalone runs. When it is set, startup fails if credentials are missing or `GET /api/atryum/unstable/connection` is rejected. Environment variables override TOML: `VM_BASE_URL`, `VM_MACHINE_KEY`, `VM_MACHINE_SECRET`, and `VM_CONNECTION_TIMEOUT_SECONDS`.
 
 ## Running
 
