@@ -2,8 +2,7 @@
 
 This document describes Atryum's internal boundaries, control flow, and durable state.
 For installation, configuration examples, endpoint details, and operator workflows, see
-the [README](../README.md). The optional ValidMind platform connection is documented
-separately in [ValidMind integration](validmind-integration-flow.md).
+the [README](../README.md).
 
 ## System context
 
@@ -68,7 +67,6 @@ or audit records are evaluated.
 | `internal/mcp` | Server resolution, MCP forwarding, upstream authentication and OAuth | Approval policy |
 | `internal/auth` | Inbound OIDC/JWT validation and authenticated identity context | Upstream MCP credentials |
 | `internal/managedagents` | Anthropic session discovery, event replay, confirmation delivery | Independent rule evaluation |
-| `internal/backend` | Optional ValidMind backend client | Core standalone behavior |
 
 The React application in `ui/` is compiled into `internal/api/web/` for the production
 binary. During development it can run separately, but it still uses the same admin API.
@@ -110,13 +108,9 @@ flowchart TD
 Atryum falls back to human approval. The global policy provider is used only when no
 rule matches; it is not evaluated after a matching rule defers.
 
-An `ai_evaluation` rule selects exactly one evaluator:
-
-- a local LLM configuration stored in `llm_configs`; or
-- the optional ValidMind evaluator identified by `model_config_cuid`.
-
-Both evaluators return the same decision vocabulary. Evaluation errors escalate to
-human review; missing charter context denies; and an unknown verdict is treated as
+An `ai_evaluation` rule selects one configured evaluator. Standalone deployments use
+a local LLM configuration stored in `llm_configs`. Evaluation errors escalate to human
+review; missing charter context denies; and an unknown verdict is treated as
 `next_rule`, eventually reaching human review if no later rule decides.
 
 ## Atryum-executed calls
@@ -277,7 +271,6 @@ The core tables are:
 | `llm_configs` | Local AI-evaluation providers |
 | `managed_agent_bindings`, `managed_agent_sessions` | Anthropic agent/session ownership and replay state |
 | `external_sessions` | Atryum-minted harness sessions linking external invocations for cross-call evaluation context |
-| `agent_sync_settings` | Optional ValidMind inventory and evaluator settings |
 
 Schema changes are ordered migrations under `internal/store/migrations/` and are
 applied at startup for both SQLite and PostgreSQL.
@@ -318,11 +311,3 @@ Inbound and upstream authentication are separate trust boundaries:
   OAuth tokens are never returned to the agent caller.
 - No-auth mode is a local deployment option. Identity supplied by a caller in this mode
   is attribution, not a cryptographic ownership guarantee.
-
-## ValidMind boundary
-
-The ValidMind connection is an optional adapter around the standalone architecture.
-It supplies inventory-backed agent records, charters, model configurations, and an
-external evaluator; Atryum remains the owner of invocation, rule, approval, and audit
-state. See [ValidMind integration](validmind-integration-flow.md) for its topology,
-credentials, synchronization, and failure behavior.
