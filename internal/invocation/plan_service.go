@@ -199,14 +199,15 @@ func (s *Service) SubmitPlan(ctx context.Context, req PlanSubmitRequest) (Plan, 
 	return s.evaluatePlanRules(ctx, plan, req.ChatContext)
 }
 
-// evaluatePlanRules runs matching approval rules in priority order and
-// persists the first decisive result. Invocation-scoped rules match when they
-// cover any declared action; plan-scoped rules retain their whole-plan match
-// semantics. An invocation-scoped AI rule judges the complete plan rather
-// than one action because concrete tool arguments do not exist yet.
+// evaluatePlanRules runs matching rules in priority order within their scopes.
+// Invocation-scoped rules match when they cover any declared action and may
+// veto or escalate the plan, but only a matching plan-scoped rule may approve
+// the batch. Plan-scoped grants retain their whole-plan match semantics. An
+// invocation-scoped AI rule judges the complete plan rather than one action
+// because concrete tool arguments do not exist yet.
 //
-// Plans never silently auto-approve: with no decisive matching rule the plan
-// waits for a human.
+// With no decisive plan-scoped grant, the plan waits for a human even when an
+// invocation rule would auto-approve the corresponding individual call.
 func (s *Service) evaluatePlanRules(ctx context.Context, plan Plan, chatContext string) (Plan, error) {
 	agentRec := s.resolveAgentRecord(ctx, plan.AgentID)
 
@@ -243,37 +244,75 @@ func (s *Service) evaluatePlanRules(ctx context.Context, plan Plan, chatContext 
 				break
 			}
 
+			// Invocation and plan rules are ordered independently within their
+			// scopes. Invocation rules may veto or escalate a plan, but they are
+			// never approval authority for the batch: only a matching plan-scoped
+			// rule may grant PlanStatusApproved.
+			var invocationResult, planResult planRuleSequenceResult
 			for i, rule := range matchingRules {
-				plan.MatchedRuleID = ruleIDPtr(rule.ID)
+				target := &invocationResult
+				if rule.AppliesTo == RuleScopePlan {
+					target = &planResult
+				}
+				if target.Decided {
+					continue
+				}
+
+				result := planAIEvaluationResult{}
 				switch rule.Action {
 				case RuleActionAutoApprove:
-					return s.finalizePlanDecision(ctx, plan, PlanStatusApproved,
-						newApproval("auto_approved", "matched approval rule (auto_approve)", nil), "")
+					result = planAIEvaluationResult{Status: PlanStatusApproved,
+						Approval: newApproval("auto_approved", "matched approval rule (auto_approve)", nil)}
 				case RuleActionAutoDeny:
 					feedback := "A planned action matches a deny rule. Revise the plan to remove or replace that action."
-					return s.finalizePlanDecision(ctx, plan, PlanStatusNeedsRevision,
-						newApproval("auto_denied", "plan requires revision: matched deny rule", nil), feedback)
+					result = planAIEvaluationResult{Status: PlanStatusNeedsRevision,
+						Approval: newApproval("auto_denied", "plan requires revision: matched deny rule", nil), Feedback: feedback}
 				case RuleActionAIEvaluation:
-					result, ok := aiResults[i]
+					var ok bool
+					result, ok = aiResults[i]
 					if !ok {
 						result, _ = s.evaluatePlanWithAI(ctx, &rule, plan, agentRec, chatContext)
 					}
-					done := result.Status != ""
-					if !done {
-						plan.MatchedRuleID = nil
-						continue // next_rule: keep iterating
+					if result.Status == "" {
+						continue // next_rule: keep iterating within this scope
 					}
-					return s.finalizePlanDecision(ctx, plan, result.Status, result.Approval, result.Feedback)
 				default: // human_approval (and unknown actions, failing closed)
-					return s.finalizePlanDecision(ctx, plan, PlanStatusPendingApproval,
-						newApproval("human_required", "plan includes an action requiring human approval", nil), "")
+					result = planAIEvaluationResult{Status: PlanStatusPendingApproval,
+						Approval: newApproval("human_required", "plan includes an action requiring human approval", nil)}
 				}
+				target.Decided = true
+				target.Index = i
+				target.RuleID = rule.ID
+				target.Result = result
+			}
+
+			// A denial from either scope is authoritative. When both scopes deny,
+			// retain the earlier configured rule for auditability.
+			if denied, ok := firstPlanDenial(invocationResult, planResult); ok {
+				plan.MatchedRuleID = ruleIDPtr(denied.RuleID)
+				return s.finalizePlanDecision(ctx, plan, denied.Result.Status, denied.Result.Approval, denied.Result.Feedback)
+			}
+
+			// Human/AI escalation in either scope cannot be bypassed by a plan
+			// grant. Keep the earliest such gate as the plan's matched rule.
+			if pending, ok := firstPlanPending(invocationResult, planResult); ok {
+				plan.MatchedRuleID = ruleIDPtr(pending.RuleID)
+				return s.finalizePlanDecision(ctx, plan, PlanStatusPendingApproval, pending.Result.Approval, pending.Result.Feedback)
+			}
+
+			// Invocation approval only means the per-call layer has no objection.
+			// The plan itself is approved only by a decisive plan-scoped grant.
+			if planResult.Decided && planResult.Result.Status == PlanStatusApproved {
+				plan.MatchedRuleID = ruleIDPtr(planResult.RuleID)
+				return s.finalizePlanDecision(ctx, plan, PlanStatusApproved, planResult.Result.Approval, planResult.Result.Feedback)
 			}
 		}
 	}
-	// No matching rule: default to human review.
+	// No matching plan-scoped grant: default to human review. Invocation rules
+	// may allow individual calls, but they cannot approve a batch plan.
 	plan.MatchedRuleID = nil
-	return s.finalizePlanDecision(ctx, plan, PlanStatusPendingApproval, nil, "")
+	return s.finalizePlanDecision(ctx, plan, PlanStatusPendingApproval,
+		newApproval("human_required", "plan requires human approval because no matching plan rule approved it", nil), "")
 }
 
 func ruleIDPtr(id string) *string {
@@ -310,6 +349,40 @@ type planAIEvaluationResult struct {
 	Status   PlanStatus
 	Approval *Approval
 	Feedback string
+}
+
+type planRuleSequenceResult struct {
+	Decided bool
+	Index   int
+	RuleID  string
+	Result  planAIEvaluationResult
+}
+
+func firstPlanDenial(results ...planRuleSequenceResult) (planRuleSequenceResult, bool) {
+	return firstPlanSequenceResult(func(status PlanStatus) bool {
+		return status == PlanStatusDenied || status == PlanStatusNeedsRevision
+	}, results...)
+}
+
+func firstPlanPending(results ...planRuleSequenceResult) (planRuleSequenceResult, bool) {
+	return firstPlanSequenceResult(func(status PlanStatus) bool {
+		return status == PlanStatusPendingApproval
+	}, results...)
+}
+
+func firstPlanSequenceResult(matches func(PlanStatus) bool, results ...planRuleSequenceResult) (planRuleSequenceResult, bool) {
+	var first planRuleSequenceResult
+	found := false
+	for _, result := range results {
+		if !result.Decided || !matches(result.Result.Status) {
+			continue
+		}
+		if !found || result.Index < first.Index {
+			first = result
+			found = true
+		}
+	}
+	return first, found
 }
 
 // evaluatePlanWithAI judges the complete plan with the locally-configured LLM.

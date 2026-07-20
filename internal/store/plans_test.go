@@ -122,6 +122,34 @@ func TestPlansRepo_ListAndFilters(t *testing.T) {
 		t.Fatalf("agent-a list = %d items total %d", len(items), total)
 	}
 
+	// The Plans tab uses an unfiltered list by default. Terminal denials must
+	// remain in that result and in the explicit Denied filter; only the active
+	// plan lookup below is allowed to exclude them.
+	items, total, err = repo.List(ctx, invocation.PlanListFilter{})
+	if err != nil {
+		t.Fatalf("List all plans: %v", err)
+	}
+	if total != 4 || len(items) != 4 {
+		t.Fatalf("all-status list = %d items total %d, want denied plan included", len(items), total)
+	}
+	deniedFound := false
+	for _, item := range items {
+		if item.PlanID == "plan_a3" && item.Status == invocation.PlanStatusDenied {
+			deniedFound = true
+			break
+		}
+	}
+	if !deniedFound {
+		t.Fatalf("all-status list omitted denied plan: %+v", items)
+	}
+	items, total, err = repo.List(ctx, invocation.PlanListFilter{Status: string(invocation.PlanStatusDenied)})
+	if err != nil {
+		t.Fatalf("List denied plans: %v", err)
+	}
+	if total != 1 || len(items) != 1 || items[0].PlanID != "plan_a3" {
+		t.Fatalf("denied list = %+v total %d", items, total)
+	}
+
 	active, err := repo.ListActiveByAgent(ctx, []string{"agent-a"})
 	if err != nil {
 		t.Fatalf("ListActiveByAgent: %v", err)
