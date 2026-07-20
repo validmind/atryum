@@ -692,7 +692,16 @@ type AgentPlanSubmission struct {
 // server guidance names it concretely, since an action whose server does not
 // match the source of the tool call that later executes it can never grant
 // the plan pass.
-func planSubmissionMessage(endpoint, source string) string {
+//
+// agentID is whatever identity this same request already resolved to
+// (verified OAuth, or the no-auth agent_id hint the calling harness sent
+// alongside this GET). Left generic ("invent a stable identifier"), agents
+// reliably invent a fresh one per plan that never matches the identity their
+// harness separately reports for the tool calls that execute it — the plan
+// then never binds to those invocations and just expires. Embedding the
+// already-established value here instead means a plan submitted from this
+// same harness session is self-consistent without any extra configuration.
+func planSubmissionMessage(endpoint, source, agentID string) string {
 	serverGuidance := "Set tool and server to the exact values this harness reports for the call " +
 		"that will execute it. "
 	if source != "" {
@@ -701,6 +710,13 @@ func planSubmissionMessage(endpoint, source string) string {
 			"server; an action whose server does not match the executing call's source can never " +
 			"grant the plan pass. Set tool to the exact tool name this harness reports for the call. "
 	}
+	agentGuidance := "agent_id (a stable identifier for this agent, reused for every plan and tool " +
+		"call this session; required when the harness is not authenticated). "
+	if agentID != "" {
+		agentGuidance = "agent_id set to exactly \"" + agentID + "\" — the identity already " +
+			"established for this request — so the plan matches the invocations that execute it. " +
+			"Do not invent a different value. "
+	}
 	return "Atryum accepts optional pre-approval plans from this agent. A plan is never required: " +
 		"tool calls made without one simply go through Atryum's normal approval flow (rules, AI " +
 		"evaluation, or human review) — do not refuse to work just because no plan is active. " +
@@ -708,7 +724,7 @@ func planSubmissionMessage(endpoint, source string) string {
 		"anything that could leave files, systems, or external state inconsistent if a later call is denied — " +
 		"so the whole batch can be reviewed together before the first side effect. " +
 		"POST the plan as JSON to " + endpoint + " with: goal, rationale, actions, ttl_seconds, and " +
-		"agent_id (a stable identifier for this agent; required when the harness is not authenticated). " +
+		agentGuidance +
 		"Keep the endpoint's source parameter exactly as given: it scopes the plan's actions to this " +
 		"harness so later tool calls match. " +
 		"Each action is {tool, server, description, input_summary}. " + serverGuidance +
@@ -1118,8 +1134,17 @@ func (h *Handler) agentRules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agentID := auth.AgentIDFromContext(r.Context())
+	// stableAgentID is safe to hand back to the agent as an identity to
+	// reuse (e.g. echoed verbatim into plan-submission guidance): it is
+	// either a verified identity or an explicit agent_id hint. agentID may
+	// additionally fall back to request_id below — a single in-flight tool
+	// call's id, useful for previewing that one call's rule disposition, but
+	// not a stable identity a plan could be submitted under and expect a
+	// later, differently-request_id'd invocation to match.
+	stableAgentID := agentID
 	if agentID == "" && h.authValidator == nil {
 		agentID = normalizeNoAuthAgentID(r.URL.Query().Get("agent_id"))
+		stableAgentID = agentID
 	}
 	if agentID == "" && h.authValidator == nil {
 		agentID = strings.TrimSpace(r.URL.Query().Get("request_id"))
@@ -1130,12 +1155,7 @@ func (h *Handler) agentRules(w http.ResponseWriter, r *http.Request) {
 	}
 	tool := strings.TrimSpace(r.URL.Query().Get("tool"))
 
-	if h.rulesRepo == nil {
-		writeJSON(w, http.StatusOK, newAgentRulesResponse(agentID, server, tool))
-		return
-	}
-
-	resp, err := h.buildAgentRulesResponse(r.Context(), agentID, server, tool)
+	resp, err := h.buildAgentRulesResponse(r.Context(), agentID, stableAgentID, server, tool)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1143,7 +1163,13 @@ func (h *Handler) agentRules(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, tool string) (AgentRulesResponse, error) {
+// buildAgentRulesResponse builds the agent-facing rules/plan-submission
+// response. agentID is used for rule matching and echoed back as
+// AgentRulesResponse.AgentID (may be a request-scoped fallback, useful only
+// for previewing that one call's disposition). planAgentID is what the plan
+// submission message may safely present as a stable, reusable identity —
+// pass "" (or agentID itself, when it's already known stable) accordingly.
+func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, planAgentID, server, tool string) (AgentRulesResponse, error) {
 	resp := newAgentRulesResponse(agentID, server, tool)
 	if h.svc != nil && h.svc.PlansEnabled() {
 		// Plan submission is available whenever the feature is wired — no
@@ -1161,7 +1187,7 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 		resp.PlanSubmission = &AgentPlanSubmission{
 			Enabled:  true,
 			Endpoint: endpoint,
-			Message:  planSubmissionMessage(endpoint, server),
+			Message:  planSubmissionMessage(endpoint, server, planAgentID),
 		}
 	}
 	if h.rulesRepo == nil {
@@ -1207,8 +1233,10 @@ func (h *Handler) handleAtryumRulesToolCall(w http.ResponseWriter, r *http.Reque
 		arguments = map[string]any{}
 	}
 	agentID := auth.AgentIDFromContext(r.Context())
+	stableAgentID := agentID
 	if agentID == "" && h.authValidator == nil {
 		agentID = normalizeNoAuthAgentID(stringArgument(arguments, "agent_id"))
+		stableAgentID = agentID
 	}
 	if agentID == "" && h.authValidator == nil {
 		agentID = strings.TrimSpace(stringArgument(arguments, "request_id"))
@@ -1222,7 +1250,7 @@ func (h *Handler) handleAtryumRulesToolCall(w http.ResponseWriter, r *http.Reque
 	}
 	tool := strings.TrimSpace(stringArgument(arguments, "tool"))
 
-	resp, err := h.buildAgentRulesResponse(r.Context(), agentID, server, tool)
+	resp, err := h.buildAgentRulesResponse(r.Context(), agentID, stableAgentID, server, tool)
 	if err != nil {
 		h.writeRPCError(w, id, -32000, err.Error())
 		return
@@ -1890,7 +1918,7 @@ func (h *Handler) appendRulesContextToToolResult(ctx context.Context, result any
 	if h.rulesRepo == nil {
 		return result
 	}
-	rulesResp, err := h.buildAgentRulesResponse(ctx, agentID, server, tool)
+	rulesResp, err := h.buildAgentRulesResponse(ctx, agentID, agentID, server, tool)
 	if err != nil {
 		return result
 	}

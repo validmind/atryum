@@ -1477,6 +1477,13 @@ func TestAgentRulesListsApplicableRulesAndDisposition(t *testing.T) {
 	if !strings.Contains(resp.PlanSubmission.Message, `Set each action's server to "amp"`) {
 		t.Fatalf("plan submission message must name the caller's source for action servers, got %q", resp.PlanSubmission.Message)
 	}
+	// The caller's already-known identity (query-hinted here; verified OAuth
+	// in auth mode) must be echoed verbatim so an agent submitting a plan
+	// doesn't invent a different agent_id that its own tool calls can never
+	// match.
+	if !strings.Contains(resp.PlanSubmission.Message, `agent_id set to exactly "agent-007"`) {
+		t.Fatalf("plan submission message must echo the caller's resolved agent id, got %q", resp.PlanSubmission.Message)
+	}
 	if len(resp.Items) != 4 {
 		t.Fatalf("expected four applicable rules, got %#v", resp.Items)
 	}
@@ -1553,6 +1560,76 @@ func TestAgentRulesAdvertisesPlanSubmissionWithoutPlanRules(t *testing.T) {
 	}
 	if resp.PlanSubmission.Endpoint != "/api/v1/external/plans?source=cursor" {
 		t.Fatalf("plan submission endpoint must carry the caller's source, got %q", resp.PlanSubmission.Endpoint)
+	}
+}
+
+// TestAgentRulesPlanSubmissionFallsBackToGenericAgentIDGuidanceWhenAnonymous
+// covers a caller with no resolvable identity at all (no auth, no agent_id
+// hint): the message can't echo an identity that doesn't exist, so it must
+// fall back to telling the agent to invent and reuse a stable one.
+func TestAgentRulesPlanSubmissionFallsBackToGenericAgentIDGuidanceWhenAnonymous(t *testing.T) {
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "fallback-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 0},
+	}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?source=cursor", nil) // no agent_id
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.PlanSubmission == nil {
+		t.Fatalf("expected plan submission capability, got %#v", resp.PlanSubmission)
+	}
+	if strings.Contains(resp.PlanSubmission.Message, "agent_id set to exactly") {
+		t.Fatalf("message must not fabricate an identity to echo when none is known, got %q", resp.PlanSubmission.Message)
+	}
+	if !strings.Contains(resp.PlanSubmission.Message, "a stable identifier for this agent") {
+		t.Fatalf("message must fall back to generic agent_id guidance, got %q", resp.PlanSubmission.Message)
+	}
+}
+
+// TestAgentRulesPlanSubmissionDoesNotEchoRequestIDAsStableIdentity covers a
+// caller identified only by request_id — a single in-flight tool call's id,
+// meant for previewing that one call's disposition, not a stable agent
+// identity. It must still surface as AgentID (existing rule-preview
+// behavior), but the plan message must not tell the agent to submit a plan
+// under it: a later invocation carries a different request_id and would
+// never match, so the plan would silently expire unactioned.
+func TestAgentRulesPlanSubmissionDoesNotEchoRequestIDAsStableIdentity(t *testing.T) {
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "fallback-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 0},
+	}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?source=cursor&request_id=req-12345", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.AgentID != "req-12345" {
+		t.Fatalf("expected existing request_id fallback preserved in AgentID, got %q", resp.AgentID)
+	}
+	if resp.PlanSubmission == nil {
+		t.Fatalf("expected plan submission capability, got %#v", resp.PlanSubmission)
+	}
+	if strings.Contains(resp.PlanSubmission.Message, "req-12345") {
+		t.Fatalf("message must not present the request-scoped id as a stable identity to submit a plan under, got %q", resp.PlanSubmission.Message)
+	}
+	if !strings.Contains(resp.PlanSubmission.Message, "a stable identifier for this agent") {
+		t.Fatalf("message must fall back to generic agent_id guidance, got %q", resp.PlanSubmission.Message)
 	}
 }
 
