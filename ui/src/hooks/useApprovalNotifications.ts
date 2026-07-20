@@ -12,8 +12,8 @@ interface PlansPayload {
 
 const NOTIFICATION_TITLE = 'Atryum approval needed';
 const NOTIFICATION_ICON = '/ui/atryum-notification-icon.svg';
-const PENDING_PLANS_URL = '/api/v1/admin/plans?status=pending_approval&limit=50';
-const PLAN_POLL_INTERVAL_MS = 5000;
+const PENDING_PLANS_STREAM_URL =
+  '/api/v1/admin/plans/stream?status=pending_approval&limit=50';
 
 const buildNotificationBody = (invocation: Invocation): string => {
   const parts = [invocation.agent_id, invocation.server_name, invocation.tool_name]
@@ -271,7 +271,9 @@ export const useApprovalNotifications = () => {
 
   useEffect(() => {
     let isClosed = false;
-    let pollTimer: ReturnType<typeof window.setTimeout> | null = null;
+    let retryDelayMs = 1000;
+    let retryTimer: ReturnType<typeof window.setTimeout> | null = null;
+    let controller: AbortController | null = null;
 
     const updatePendingPlans = (plans: Plan[]) => {
       const pendingItems = plans.filter((plan) => plan.status === 'pending_approval');
@@ -286,43 +288,104 @@ export const useApprovalNotifications = () => {
       notifyPendingApprovals();
     };
 
-    const fetchPendingPlans = async (didRefresh: boolean): Promise<void> => {
-      let token = await getAdminAccessToken();
-      const headers: HeadersInit = { Accept: 'application/json' };
-      if (token) headers.Authorization = `Bearer ${token}`;
-
-      let response = await fetch(PENDING_PLANS_URL, { headers });
-      if (response.status === 401 && !didRefresh) {
-        token = await refreshAdminAccessToken();
-        if (token) {
-          response = await fetch(PENDING_PLANS_URL, {
-            headers: { Accept: 'application/json', Authorization: `Bearer ${token}` },
-          });
-        }
-      }
-      if (!response.ok) return;
-
-      const payload = (await response.json()) as PlansPayload;
-      updatePendingPlans(payload.items ?? []);
-    };
-
-    const poll = async () => {
+    const dispatchEvent = (eventName: string, dataLines: string[]) => {
+      if (eventName !== 'plans' || dataLines.length === 0) return;
       try {
-        await fetchPendingPlans(false);
+        const payload = JSON.parse(dataLines.join('\n')) as PlansPayload;
+        updatePendingPlans(payload.items ?? []);
       } catch {
-        // Notification polling is best-effort; the Plans page remains the source of truth.
-      } finally {
-        if (!isClosed) {
-          pollTimer = window.setTimeout(poll, PLAN_POLL_INTERVAL_MS);
+        // Ignore malformed events and keep the stream open.
+      }
+    };
+
+    const scheduleReconnect = () => {
+      if (isClosed) return;
+      const delay = retryDelayMs;
+      retryDelayMs = Math.min(retryDelayMs * 2, 15000);
+      retryTimer = window.setTimeout(() => {
+        retryTimer = null;
+        void connect(false);
+      }, delay);
+    };
+
+    const connect = async (didRefresh: boolean) => {
+      if (isClosed) return;
+      controller = new AbortController();
+      try {
+        let token = await getAdminAccessToken();
+        const headers: HeadersInit = { Accept: 'text/event-stream' };
+        if (token) headers.Authorization = `Bearer ${token}`;
+
+        let response = await fetch(PENDING_PLANS_STREAM_URL, {
+          headers,
+          signal: controller.signal,
+        });
+        if (response.status === 401 && !didRefresh) {
+          token = await refreshAdminAccessToken();
+          if (token) {
+            response = await fetch(PENDING_PLANS_STREAM_URL, {
+              headers: {
+                Accept: 'text/event-stream',
+                Authorization: `Bearer ${token}`,
+              },
+              signal: controller.signal,
+            });
+          }
+        }
+
+        if (response.status === 401) return;
+        if (!response.ok || !response.body) {
+          scheduleReconnect();
+          return;
+        }
+
+        retryDelayMs = 1000;
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let eventName = 'message';
+        let dataLines: string[] = [];
+
+        const processLine = (rawLine: string) => {
+          const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+          if (line === '') {
+            dispatchEvent(eventName, dataLines);
+            eventName = 'message';
+            dataLines = [];
+            return;
+          }
+          if (line.startsWith(':')) return;
+          const separator = line.indexOf(':');
+          const field = separator === -1 ? line : line.slice(0, separator);
+          const rawValue = separator === -1 ? '' : line.slice(separator + 1);
+          const value = rawValue.startsWith(' ') ? rawValue.slice(1) : rawValue;
+          if (field === 'event') eventName = value;
+          if (field === 'data') dataLines.push(value);
+        };
+
+        while (!isClosed) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+          for (const line of lines) processLine(line);
+        }
+        if (buffer !== '') processLine(buffer);
+        scheduleReconnect();
+      } catch (err) {
+        if (!isClosed && !(err instanceof DOMException && err.name === 'AbortError')) {
+          scheduleReconnect();
         }
       }
     };
 
-    void poll();
+    void connect(false);
 
     return () => {
       isClosed = true;
-      if (pollTimer) window.clearTimeout(pollTimer);
+      if (retryTimer) window.clearTimeout(retryTimer);
+      controller?.abort();
     };
   }, [notifyPendingApprovals]);
 };

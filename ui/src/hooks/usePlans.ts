@@ -5,14 +5,10 @@ export const PLANS_KEY = 'atryum-plans';
 export const PLAN_DETAIL_KEY = 'atryum-plan-detail';
 export const PLAN_EVENTS_KEY = 'atryum-plan-events';
 
-// Plans have no SSE stream — poll every 5s so pending submissions show up.
-const PLAN_POLL_INTERVAL_MS = 5000;
-
 export const usePlans = (filters: PlanFilters = {}) =>
   useQuery([PLANS_KEY, filters], () => plansApi.list(filters), {
     keepPreviousData: true,
     refetchOnWindowFocus: false,
-    refetchInterval: PLAN_POLL_INTERVAL_MS,
   });
 
 export const usePlanDetail = (id: string | null) =>

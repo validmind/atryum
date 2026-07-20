@@ -931,6 +931,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("/api/v1/external/plans", h.agentRuntimeHandler(http.HandlerFunc(h.externalPlans)))
 	mux.Handle("/api/v1/external/plans/", h.agentRuntimeHandler(http.HandlerFunc(h.externalPlanDetail)))
 	mux.Handle("/api/v1/admin/plans", admin(h.adminPlans))
+	mux.Handle("/api/v1/admin/plans/stream", admin(h.adminPlanStream))
 	mux.Handle("/api/v1/admin/plans/", admin(h.adminPlanDetail))
 	apiKeyMW := auth.APIKeyMiddleware(h.apiKeyAuth)
 	mux.Handle("/agent_ids", apiKeyMW(http.HandlerFunc(h.agentIDs)))
@@ -4039,6 +4040,48 @@ func (h *Handler) adminPlans(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) adminPlanStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	filter := invocation.PlanListFilter{
+		Offset:  readUintQuery(r, "offset", 0),
+		Limit:   readUintQuery(r, "limit", 50),
+		Status:  strings.TrimSpace(r.URL.Query().Get("status")),
+		AgentID: strings.TrimSpace(r.URL.Query().Get("agent_id")),
+	}
+	ctx := r.Context()
+	lastPayload := ""
+	for {
+		resp, err := h.svc.ListPlans(ctx, filter)
+		if err != nil {
+			fmt.Fprintf(w, "event: error\ndata: %s\n\n", mustJSONString(map[string]any{"message": err.Error()}))
+			flusher.Flush()
+			return
+		}
+		payload := mustJSONString(resp)
+		if payload != lastPayload {
+			fmt.Fprintf(w, "event: plans\ndata: %s\n\n", payload)
+			flusher.Flush()
+			lastPayload = payload
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+	}
 }
 
 // adminPlanDetail handles GET /api/v1/admin/plans/{id}, GET .../{id}/events,

@@ -45,6 +45,7 @@ import {
   useExpirePlan,
   useRevisePlan,
 } from '../hooks/usePlans';
+import { usePlanStream } from '../hooks/usePlanStream';
 import { apiErrorMessage, type Plan, type PlanStatus } from '../api/AtryumAPI';
 
 const STATUS_COLOR: Record<PlanStatus, string> = {
@@ -438,7 +439,12 @@ const Plans: React.FC = () => {
     searchParams.get('focus'),
   );
 
-  const { data, isLoading } = usePlans({ status: statusFilter || undefined });
+  const filters = useMemo(
+    () => ({ status: statusFilter || undefined }),
+    [statusFilter],
+  );
+  const { data, isLoading } = usePlans(filters);
+  usePlanStream(filters, selectedId);
   const plans = useMemo(() => {
     const items = data?.items ?? [];
     // A revision supersedes its parent but both remain persisted for audit and
