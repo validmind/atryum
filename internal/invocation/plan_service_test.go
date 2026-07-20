@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"atryum/internal/auth"
 	"atryum/internal/config"
 	"atryum/internal/invocation"
 	"atryum/internal/mcp"
@@ -579,6 +580,53 @@ func TestApprovedPlanGrantsPassToMatchingSubmit(t *testing.T) {
 	}
 }
 
+// TestApprovedPlanMatchesForAuthenticatedAgentWithNoRegisteredAliases is the
+// ordinary authenticated-mode case: the agent record resolved for the
+// verified identity has no agent_ids aliases at all (nothing to widen to),
+// and the verified OAuth identity from the context — not a self-declared
+// body/tool-argument value — is used for both plan submission and the
+// invocation that executes it, exactly as it always was. This must keep
+// working unchanged: the widening added for the no-auth alias case must
+// never be required for the plain authenticated path.
+func TestApprovedPlanMatchesForAuthenticatedAgentWithNoRegisteredAliases(t *testing.T) {
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"verified-client-id": {ID: "agent-rec", Charter: "Only run planned safe commands."}, // no AgentIDs set
+	}}
+	judge := &planJudgeStub{adherenceResp: invocation.PlanAdherenceResponse{Verdict: "follows_plan", Reason: "matches human-approved plan"}}
+	svc, _ := newPlanTestService(t, nil, agents, judge)
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "verified-client-id", Issuer: "https://idp.test"})
+
+	// SubmitPlan must use the verified identity, not a self-declared one:
+	// pass a different AgentID in the body to prove it's ignored.
+	plan, err := svc.SubmitPlan(ctx, invocation.PlanSubmitRequest{
+		AgentID: "ignored-self-declared-id",
+		Goal:    "achieve x",
+		Actions: []invocation.PlanAction{{Tool: "Bash"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.AgentID != "verified-client-id" {
+		t.Fatalf("plan.AgentID = %q, want verified-client-id (context identity must win over self-declared body field)", plan.AgentID)
+	}
+	if _, err := svc.ApprovePlan(ctx, plan.PlanID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	// The invocation carries no self-declared AgentID at all — with auth, the
+	// context identity is the only thing that must line up with the plan.
+	resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{Tool: "Bash", Input: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Approval == nil || resp.Approval.Status != "plan_approved" {
+		t.Fatalf("approval = %+v, want plan_approved via authenticated identity match", resp.Approval)
+	}
+	if resp.PlanID == nil || *resp.PlanID != plan.PlanID {
+		t.Fatalf("plan_id = %v, want %s", resp.PlanID, plan.PlanID)
+	}
+}
+
 // TestApprovedPlanMatchesRegisteredAgentAlias covers the no-auth case where a
 // plan submission and the invocation reporting its execution self-declare (or
 // get hinted) different runtime agent ids for what is really the same agent
@@ -628,6 +676,41 @@ func TestApprovedPlanMatchesRegisteredAgentAlias(t *testing.T) {
 	}
 	if resp.Status != invocation.StatusPendingApproval {
 		t.Fatalf("unrelated agent status = %s, want pending_approval", resp.Status)
+	}
+}
+
+// TestApprovedPlanMatchesWhenResolvedRecordOmitsAuthenticatedID covers an
+// authenticated (e.g. Claude managed-agent binding) identity that resolves to
+// an agent record whose own agent_ids array doesn't list that identity — a
+// managed-agent binding is looked up in a separate table keyed on its own id,
+// not mirrored into agents.agent_ids. The same authenticated id is used to
+// both submit and execute the plan, so the exact-id candidate must survive
+// alongside whatever aliases the resolved record does list.
+func TestApprovedPlanMatchesWhenResolvedRecordOmitsAuthenticatedID(t *testing.T) {
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"claude-managed-x": {ID: "agent-rec-managed", Charter: "Only run planned safe commands.", AgentIDs: []string{"shortcut-vm-alias-1"}},
+	}}
+	judge := &planJudgeStub{adherenceResp: invocation.PlanAdherenceResponse{Verdict: "follows_plan", Reason: "matches human-approved plan"}}
+	svc, _ := newPlanTestService(t, nil, agents, judge)
+	ctx := context.Background()
+
+	plan, err := svc.SubmitPlan(ctx, planSubmit("claude-managed-x", "Bash", "read_file"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApprovePlan(ctx, plan.PlanID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{Tool: "Bash", AgentID: "claude-managed-x", Input: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusApproved {
+		t.Fatalf("status = %s, want approved", resp.Status)
+	}
+	if resp.PlanID == nil || *resp.PlanID != plan.PlanID {
+		t.Fatalf("plan_id = %v, want %s", resp.PlanID, plan.PlanID)
 	}
 }
 

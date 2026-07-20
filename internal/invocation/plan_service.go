@@ -653,10 +653,17 @@ func (s *Service) matchApprovedPlan(ctx context.Context, agentID, server, tool s
 	// unrecognized id. Widening off that fallback would let two unrelated
 	// anonymous callers land on the same default record and cross-match each
 	// other's plans.
+	//
+	// The exact agentID is always kept alongside any resolved aliases rather
+	// than replaced: GetByAgentID can resolve a Claude managed-agent binding
+	// (a separate table keyed on claude_agent_id) to an agent record whose
+	// own agent_ids array doesn't happen to list that binding id. Dropping
+	// agentID in that case would make an authenticated managed agent unable
+	// to match its own just-submitted plan.
 	agentIDs := []string{agentID}
 	if s.agents != nil {
 		if rec, err := s.agents.GetByAgentID(ctx, agentID); err == nil && len(rec.AgentIDs) > 0 {
-			agentIDs = rec.AgentIDs
+			agentIDs = dedupeAgentIDs(agentIDs, rec.AgentIDs)
 		}
 	}
 	plans, err := s.plans.ListActiveByAgent(ctx, agentIDs)
@@ -679,6 +686,22 @@ func (s *Service) matchApprovedPlan(ctx context.Context, agentID, server, tool s
 		return approvedPlanMatch{Plan: plan}, false, true
 	}
 	return approvedPlanMatch{}, false, false
+}
+
+// dedupeAgentIDs merges id lists while preserving order and dropping repeats.
+func dedupeAgentIDs(lists ...[]string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, list := range lists {
+		for _, id := range list {
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // planActionCandidates returns actions on the invocation's server. Exact tool
