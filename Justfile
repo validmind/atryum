@@ -137,8 +137,8 @@ release tag:
         just release-build "{{tag}}"
         just release-push "{{tag}}"
 
-# Build release artifacts into releases/<tag>/
-release-build tag: third-party-notices build-ui
+# Build release artifacts into releases/<tag>/ from a pristine worktree of the tag
+release-build tag:
         #!/usr/bin/env bash
         set -euo pipefail
 
@@ -147,36 +147,41 @@ release-build tag: third-party-notices build-ui
           exit 1
         fi
 
+        if ! git rev-parse -q --verify "refs/tags/{{tag}}" >/dev/null; then
+          echo "Tag {{tag}} does not exist. Commit the release (including CHANGELOG.md), then: git tag {{tag}}"
+          exit 1
+        fi
+
         repo_dir="$(pwd)"
         release_dir="$repo_dir/{{release_dir}}/{{tag}}"
+        build_dir="$repo_dir/../atryum-release-{{tag}}"
+
+        # Build from a pristine local clone of the tag: only tracked, tagged
+        # content can reach the artifacts, and go stamps the tag's commit into
+        # the binaries as VCS provenance. A clone, not a worktree — go's repo
+        # detection needs a .git directory; a worktree's .git file makes it
+        # walk up and stamp (or choke on) whatever repo encloses the parent.
+        rm -rf "$build_dir"
+        git clone --quiet --branch "{{tag}}" "$repo_dir" "$build_dir"
+        trap 'rm -rf "$build_dir"' EXIT
+
+        (cd "$build_dir" && just third-party-notices build-ui)
+
         rm -rf "$release_dir"
         mkdir -p "$release_dir"
-        cp LICENSE NOTICE "$release_dir/"
-        cp "{{license_dir}}/third-party/THIRD_PARTY_NOTICES" "$release_dir/"
-        cp -R "{{license_dir}}/third-party/licenses" "$release_dir/third_party_licenses"
-        cp "{{license_dir}}/third-party/go-licenses.csv" "$release_dir/"
-        cp "{{license_dir}}/third-party/npm-production-licenses.json" "$release_dir/"
-        cp "{{license_dir}}/third-party/npm-production-license-files.tsv" "$release_dir/"
+        cp "$build_dir/LICENSE" "$build_dir/NOTICE" "$release_dir/"
+        cp "$build_dir/{{license_dir}}/third-party/THIRD_PARTY_NOTICES" "$release_dir/"
+        cp -R "$build_dir/{{license_dir}}/third-party/licenses" "$release_dir/third_party_licenses"
+        cp "$build_dir/{{license_dir}}/third-party/go-licenses.csv" "$release_dir/"
+        cp "$build_dir/{{license_dir}}/third-party/npm-production-licenses.json" "$release_dir/"
+        cp "$build_dir/{{license_dir}}/third-party/npm-production-license-files.tsv" "$release_dir/"
 
         build_target() {
           local goos="$1"
           local goarch="$2"
           local out="atryum-${goos}-${goarch}"
 
-          tmp_dir="$(mktemp -d)"
-          trap 'rm -rf "$tmp_dir"' RETURN
-
-          mkdir -p "$tmp_dir/atryum"
-          rsync -a --delete \
-            --exclude .git \
-            --exclude /atryum \
-            --exclude /atryum.db \
-            --exclude /{{release_dir}} \
-            --exclude /ui/node_modules \
-            --exclude /ui/dist \
-            "$repo_dir/" "$tmp_dir/atryum/"
-
-          (cd "$tmp_dir/atryum" && GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build -tags release_notices -o "$release_dir/$out" ./cmd/atryum)
+          (cd "$build_dir" && GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build -trimpath -tags release_notices -ldflags "-X atryum/internal/version.Version={{tag}}" -o "$release_dir/$out" ./cmd/atryum)
         }
 
         # Build targets
@@ -184,6 +189,27 @@ release-build tag: third-party-notices build-ui
         build_target darwin arm64
         build_target linux amd64
         build_target linux arm64
+
+        # The stamp is the release's provenance: fail if the binaries don't
+        # carry the tag's commit. vcs.modified is not asserted — build-ui may
+        # regenerate tracked UI files in the clone before compiling.
+        tag_commit="$(git rev-parse "{{tag}}^{commit}")"
+        if ! go version -m "$release_dir/atryum-linux-amd64" | grep -q "vcs.revision=$tag_commit"; then
+          echo "Release binary VCS stamp does not match tag {{tag}} ($tag_commit):"
+          go version -m "$release_dir/atryum-linux-amd64" | grep vcs || true
+          exit 1
+        fi
+
+        # Run the host-platform binary and check it self-reports the tag —
+        # -ldflags -X silently no-ops if the version symbol is ever renamed.
+        host_bin="$release_dir/atryum-$(go env GOHOSTOS)-$(go env GOHOSTARCH)"
+        if [ -x "$host_bin" ]; then
+          reported="$("$host_bin" version 2>&1 || true)"
+          if [[ "$reported" != "{{tag}} "* && "$reported" != "{{tag}}" ]]; then
+            echo "Release binary reports version \"$reported\", expected \"{{tag}}\". Check the -ldflags -X path against internal/version."
+            exit 1
+          fi
+        fi
 
 # Create or update a GitHub release from releases/<tag>/
 release-push tag:
@@ -204,12 +230,64 @@ release-push tag:
           exit 1
         fi
 
+        # The GitHub release tag must exist on origin and match the local tag,
+        # or the published release would point at a different commit than the
+        # artifacts were built from.
+        local_sha="$(git rev-parse "refs/tags/{{tag}}")"
+        remote_sha="$(git ls-remote origin "refs/tags/{{tag}}" | cut -f1)"
+        if [ -z "$remote_sha" ]; then
+          echo "Tag {{tag}} is not on origin. Push it first: git push origin {{tag}}"
+          exit 1
+        fi
+        if [ "$remote_sha" != "$local_sha" ]; then
+          echo "Tag {{tag}} differs between local ($local_sha) and origin ($remote_sha). Reconcile before releasing."
+          exit 1
+        fi
+
+        # Curated notes: the CHANGELOG.md section for this version as of the
+        # tagged commit, if present. gh prepends --notes-file content to the
+        # --generate-notes PR list.
+        version="{{tag}}"
+        version="${version#v}"
+        notes_file="$(mktemp)"
+        trap 'rm -f "$notes_file"' EXIT
+        git show "{{tag}}:CHANGELOG.md" 2>/dev/null | awk -v ver="$version" '
+          $0 ~ "^## \\[" ver "\\]" {found=1; next}
+          found && /^## \[/ {exit}
+          found {print}
+        ' > "$notes_file" || true
+
         # Create or upload to release
         if gh release view "{{tag}}" >/dev/null 2>&1; then
           gh release upload "{{tag}}" "${artifacts[@]}" --clobber
+        elif [ -s "$notes_file" ]; then
+          gh release create "{{tag}}" "${artifacts[@]}" --title "{{tag}}" --notes-file "$notes_file" --generate-notes
         else
+          echo "No CHANGELOG.md section found for {{tag}}; falling back to generated notes only."
           gh release create "{{tag}}" "${artifacts[@]}" --generate-notes
         fi
+
+# Run the LLM-as-judge grounding eval against any OpenAI-compatible endpoint.
+# Session history is always reconstructed and fenced, matching production.
+# base_url is the server ROOT — no /v1; the runner appends /v1/chat/completions.
+# api_key may be empty for keyless local servers (e.g. Ollama).
+# Examples:
+#   just judge-eval                                                       # litellm at :4000, gpt-5.4-mini
+#   just judge-eval model=llama3.1 base_url=http://localhost:11434        # Ollama, keyless
+#   just judge-eval model=gpt-4o base_url=https://api.openai.com api_key="$OPENAI_API_KEY"
+# Results land in internal/invocation/testdata/judge_evals/results/<model>.{json,md}
+judge-eval model="gpt-5.4-mini" base_url="http://localhost:4000" api_key="" trials="1":
+	ATRYUM_JUDGE_EVAL_MODEL="{{model}}" \
+	ATRYUM_JUDGE_EVAL_BASE_URL="{{base_url}}" \
+	ATRYUM_JUDGE_EVAL_API_KEY="{{api_key}}" \
+	ATRYUM_JUDGE_EVAL_TRIALS="{{trials}}" \
+	  go test -tags judgeeval ./internal/invocation -run TestJudgeGrounding -v
+
+# Verify the eval harness and corpus load with no LLM or API key (fail-closed
+# contract tests + the constant-verdict baseline floor). Fast, offline, deterministic.
+judge-eval-check:
+	go test -tags judgeeval ./internal/invocation \
+	  -run 'TestJudge(GarbageOutput|MarkdownFenced|Request|UnrecognizedVerdict)|TestConstantVerdictBaselines' -v
 
 # List registered harnesses, auth protocols, and MCP targets
 integration-list:

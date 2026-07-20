@@ -48,6 +48,8 @@ func main() {
 		err = runHooks(os.Args[2:])
 	case "licenses":
 		err = runLicenses()
+	case "version", "--version", "-v":
+		fmt.Println(versionString())
 	default:
 		err = fmt.Errorf("unknown command %q\n%s", os.Args[1], globalUsage())
 	}

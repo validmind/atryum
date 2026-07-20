@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"atryum/internal/config"
+	"atryum/internal/version"
 )
 
 type UpstreamMode string
@@ -893,7 +894,7 @@ func (c *Client) initializeHTTPSession(ctx context.Context, upstream Upstream, p
 		Method:  "initialize",
 		Params: mustRawJSON(map[string]any{
 			"protocolVersion": protocolVersion,
-			"clientInfo":      map[string]any{"name": "atryum", "version": "0.1.0"},
+			"clientInfo":      map[string]any{"name": "atryum", "version": version.Version},
 			"capabilities":    map[string]any{},
 		}),
 	})
@@ -1001,7 +1002,7 @@ func (c *Client) invokeStdio(ctx context.Context, upstream Upstream, tool string
 	reader := bufio.NewReader(stdout)
 	if err := writeRPC(stdin, c.nextRPCID(), "initialize", map[string]any{
 		"protocolVersion": DefaultMCPProtocolVersion,
-		"clientInfo":      map[string]any{"name": "atryum", "version": "0.1.0"},
+		"clientInfo":      map[string]any{"name": "atryum", "version": version.Version},
 		"capabilities":    map[string]any{},
 	}); err != nil {
 		return InvokeResult{}, err
@@ -1062,7 +1063,7 @@ func (c *Client) listToolsStdio(ctx context.Context, upstream Upstream) ([]Tool,
 	reader := bufio.NewReader(stdout)
 	if err := writeRPC(stdin, c.nextRPCID(), "initialize", map[string]any{
 		"protocolVersion": DefaultMCPProtocolVersion,
-		"clientInfo":      map[string]any{"name": "atryum", "version": "0.1.0"},
+		"clientInfo":      map[string]any{"name": "atryum", "version": version.Version},
 		"capabilities":    map[string]any{},
 	}); err != nil {
 		return nil, err
@@ -1272,7 +1273,7 @@ func (c *Client) testStdio(ctx context.Context, upstream Upstream) ConnectionTes
 	reader := bufio.NewReader(stdout)
 	if err := writeRPC(stdin, c.nextRPCID(), "initialize", map[string]any{
 		"protocolVersion": DefaultMCPProtocolVersion,
-		"clientInfo":      map[string]any{"name": "atryum", "version": "0.1.0"},
+		"clientInfo":      map[string]any{"name": "atryum", "version": version.Version},
 		"capabilities":    map[string]any{},
 	}); err != nil {
 		message := err.Error()

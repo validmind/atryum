@@ -31,6 +31,7 @@ import (
 	"atryum/internal/mcp"
 	authprovider "atryum/internal/mcp/auth_provider"
 	"atryum/internal/store"
+	"atryum/internal/version"
 )
 
 //go:embed web/*
@@ -1261,7 +1262,7 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			"protocolVersion": protocolVersion,
 			"serverInfo": map[string]any{
 				"name":    "atryum",
-				"version": "0.1.0",
+				"version": version.Version,
 			},
 			"capabilities": map[string]any{
 				"tools": map[string]any{},
