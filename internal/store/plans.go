@@ -138,12 +138,15 @@ func (r *PlansRepo) List(ctx context.Context, filter invocation.PlanListFilter) 
 	return out, total, nil
 }
 
-// ListActiveByAgent returns the agent's approved plans, newest first.
-// Expiry is enforced lazily by the caller.
-func (r *PlansRepo) ListActiveByAgent(ctx context.Context, agentID string) ([]invocation.Plan, error) {
+// ListActiveByAgent returns the approved plans owned by any of the given
+// agent ids, newest first. Expiry is enforced lazily by the caller.
+func (r *PlansRepo) ListActiveByAgent(ctx context.Context, agentIDs []string) ([]invocation.Plan, error) {
+	if len(agentIDs) == 0 {
+		return nil, nil
+	}
 	query, args, err := r.sb.Select(planColumns...).
 		From("plans").
-		Where(sq.Eq{"agent_id": agentID, "status": invocation.PlanStatusApproved}).
+		Where(sq.Eq{"agent_id": agentIDs, "status": invocation.PlanStatusApproved}).
 		OrderBy("submitted_at DESC").
 		ToSql()
 	if err != nil {

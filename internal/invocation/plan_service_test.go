@@ -579,6 +579,58 @@ func TestApprovedPlanGrantsPassToMatchingSubmit(t *testing.T) {
 	}
 }
 
+// TestApprovedPlanMatchesRegisteredAgentAlias covers the no-auth case where a
+// plan submission and the invocation reporting its execution self-declare (or
+// get hinted) different runtime agent ids for what is really the same agent
+// — e.g. an MCP client's self-declared agent_id for atryum.plan.submit vs. a
+// separately-configured hook identity. Registering both ids on one agent
+// record (agents.agent_ids) is how an operator makes them match without
+// requiring auth; an unrelated id must still get no pass.
+func TestApprovedPlanMatchesRegisteredAgentAlias(t *testing.T) {
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"plan-submitter":  {ID: "agent-rec-a", Charter: "Only run planned safe commands.", AgentIDs: []string{"plan-submitter", "hook-reporter"}},
+		"hook-reporter":   {ID: "agent-rec-a", Charter: "Only run planned safe commands.", AgentIDs: []string{"plan-submitter", "hook-reporter"}},
+		"unrelated-agent": {ID: "agent-rec-b", Charter: "Different agent."},
+	}}
+	judge := &planJudgeStub{adherenceResp: invocation.PlanAdherenceResponse{Verdict: "follows_plan", Reason: "matches human-approved plan"}}
+	svc, _ := newPlanTestService(t, nil, agents, judge)
+	ctx := context.Background()
+
+	plan, err := svc.SubmitPlan(ctx, planSubmit("plan-submitter", "Bash", "read_file"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ApprovePlan(ctx, plan.PlanID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	// The execution is reported under the sibling alias, not the id the plan
+	// was submitted with, and still gets the plan pass.
+	resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{Tool: "Bash", AgentID: "hook-reporter", Input: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusApproved {
+		t.Fatalf("status = %s, want approved", resp.Status)
+	}
+	if resp.Approval == nil || resp.Approval.Status != "plan_approved" {
+		t.Fatalf("approval = %+v", resp.Approval)
+	}
+	if resp.PlanID == nil || *resp.PlanID != plan.PlanID {
+		t.Fatalf("plan_id = %v, want %s", resp.PlanID, plan.PlanID)
+	}
+
+	// An agent id that isn't registered as an alias of the same record still
+	// gets no pass.
+	resp, err = svc.Submit(ctx, invocation.ExternalSubmitRequest{Tool: "Bash", AgentID: "unrelated-agent", Input: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusPendingApproval {
+		t.Fatalf("unrelated agent status = %s, want pending_approval", resp.Status)
+	}
+}
+
 func TestApprovedPlanAttachesAcrossHarnessToolNameMismatch(t *testing.T) {
 	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
 		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},

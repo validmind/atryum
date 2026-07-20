@@ -6,6 +6,7 @@ package atryum
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -581,10 +582,25 @@ type agentsLookupAdapter struct {
 	managedBindings *store.ManagedAgentBindingRepo
 }
 
+// parseAgentIDs decodes the agents.agent_ids JSON array column. Malformed or
+// empty input yields nil rather than an error: the column is Atryum-managed
+// (never user-supplied free text at this layer), and a lookup miss here
+// should widen matching to nothing extra, not fail the caller.
+func parseAgentIDs(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	var ids []string
+	if err := json.Unmarshal([]byte(raw), &ids); err != nil {
+		return nil
+	}
+	return ids
+}
+
 func (a *agentsLookupAdapter) GetByAgentID(ctx context.Context, agentID string) (invocation.AgentRecord, error) {
 	rec, err := a.repo.GetByAgentID(ctx, agentID)
 	if err == nil {
-		return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Charter: rec.Charter}, nil
+		return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Charter: rec.Charter, AgentIDs: parseAgentIDs(rec.AgentIDs)}, nil
 	}
 	if a.managedBindings == nil {
 		return invocation.AgentRecord{}, err
@@ -597,7 +613,7 @@ func (a *agentsLookupAdapter) GetByAgentID(ctx context.Context, agentID string) 
 	if err != nil {
 		return invocation.AgentRecord{}, err
 	}
-	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Charter: rec.Charter}, nil
+	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Charter: rec.Charter, AgentIDs: parseAgentIDs(rec.AgentIDs)}, nil
 }
 
 func (a *agentsLookupAdapter) GetByVMCUID(ctx context.Context, vmCUID string) (invocation.AgentRecord, error) {
@@ -605,7 +621,7 @@ func (a *agentsLookupAdapter) GetByVMCUID(ctx context.Context, vmCUID string) (i
 	if err != nil {
 		return invocation.AgentRecord{}, err
 	}
-	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Charter: rec.Charter}, nil
+	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Charter: rec.Charter, AgentIDs: parseAgentIDs(rec.AgentIDs)}, nil
 }
 
 // llmConfigsLookupAdapter bridges store.LLMConfigsRepo → invocation.LLMConfigProvider.

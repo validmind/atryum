@@ -72,6 +72,13 @@ type AgentRecord struct {
 	VMCUID             string // VM inventory model CUID (used for charter lookup)
 	VMOrganizationCUID string // VM organization CUID (used for cross-tenant validation)
 	Charter            string // governing text for local LLM-as-judge evaluation
+	// AgentIDs lists every runtime identity string registered to this same
+	// agent record (agents.agent_ids). Different channels reporting the same
+	// logical agent under no-auth (e.g. an MCP client's self-declared
+	// agent_id vs. a hook's ATRYUM_AGENT_ID) end up with different runtime
+	// ids; grouping them under one record lets plan matching treat them as
+	// the same agent instead of requiring the exact same string everywhere.
+	AgentIDs []string
 }
 
 // EvaluatorClient is the minimal interface required by the invocation service

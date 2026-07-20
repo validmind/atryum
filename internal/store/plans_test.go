@@ -122,7 +122,7 @@ func TestPlansRepo_ListAndFilters(t *testing.T) {
 		t.Fatalf("agent-a list = %d items total %d", len(items), total)
 	}
 
-	active, err := repo.ListActiveByAgent(ctx, "agent-a")
+	active, err := repo.ListActiveByAgent(ctx, []string{"agent-a"})
 	if err != nil {
 		t.Fatalf("ListActiveByAgent: %v", err)
 	}
@@ -132,6 +132,16 @@ func TestPlansRepo_ListAndFilters(t *testing.T) {
 	// Newest first.
 	if active[0].PlanID != "plan_a2" || active[1].PlanID != "plan_a1" {
 		t.Fatalf("active order = %s, %s", active[0].PlanID, active[1].PlanID)
+	}
+
+	// Widening the lookup to several ids at once (an agent record's
+	// registered aliases) returns approved plans owned by any of them.
+	widened, err := repo.ListActiveByAgent(ctx, []string{"agent-a", "agent-b"})
+	if err != nil {
+		t.Fatalf("ListActiveByAgent widened: %v", err)
+	}
+	if len(widened) != 3 {
+		t.Fatalf("widened active count = %d, want 3", len(widened))
 	}
 }
 

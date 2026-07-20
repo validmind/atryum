@@ -24,7 +24,7 @@ type planRepo interface {
 	Update(ctx context.Context, p Plan) error
 	Get(ctx context.Context, id string) (Plan, error)
 	List(ctx context.Context, filter PlanListFilter) ([]Plan, int, error)
-	ListActiveByAgent(ctx context.Context, agentID string) ([]Plan, error)
+	ListActiveByAgent(ctx context.Context, agentIDs []string) ([]Plan, error)
 	ListRevisions(ctx context.Context, parentID string) ([]Plan, error)
 }
 
@@ -631,13 +631,35 @@ type approvedPlanMatch struct {
 // and harness naming differences are resolved by the adherence judge instead
 // of falling through to ordinary approval rules.
 //
+// The lookup widens beyond the exact runtime agentID to every id registered
+// on the same agent record (agents.agent_ids). Without auth, a plan
+// submission and the invocation reporting its execution can arrive tagged
+// with different self-declared or hinted agent ids for what is really the
+// same agent (e.g. an MCP client's self-declared agent_id for atryum.plan.submit
+// vs. a hook's separately-configured ATRYUM_AGENT_ID). Requiring byte-for-byte
+// equality between those two would leave every plan submitted this way
+// unmatchable; registering both ids on one agent record (or authenticating,
+// where the verified identity is used consistently everywhere) is how an
+// operator makes them the same agent for this purpose.
+//
 // The third return value reports that more than one action could describe the
 // call. Callers must ask the adherence judge to select among those actions.
 func (s *Service) matchApprovedPlan(ctx context.Context, agentID, server, tool string) (approvedPlanMatch, bool, bool) {
 	if !s.plansEnabled() || agentID == "" || tool == "" {
 		return approvedPlanMatch{}, false, false
 	}
-	plans, err := s.plans.ListActiveByAgent(ctx, agentID)
+	// Widen only on a direct agent_ids hit for this exact agentID — never via
+	// resolveAgentRecord's "default agent" fallback, which activates for any
+	// unrecognized id. Widening off that fallback would let two unrelated
+	// anonymous callers land on the same default record and cross-match each
+	// other's plans.
+	agentIDs := []string{agentID}
+	if s.agents != nil {
+		if rec, err := s.agents.GetByAgentID(ctx, agentID); err == nil && len(rec.AgentIDs) > 0 {
+			agentIDs = rec.AgentIDs
+		}
+	}
+	plans, err := s.plans.ListActiveByAgent(ctx, agentIDs)
 	if err != nil {
 		slog.Warn("plan pass lookup failed; falling back to normal gating", "agent_id", agentID, "error", err)
 		return approvedPlanMatch{}, false, false
