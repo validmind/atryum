@@ -290,52 +290,14 @@ function describe(input) {
   return parts.join(" | ") || "(no string params)";
 }
 
-const RULES_CACHE_TTL_MS = 5 * 60 * 1000;
-const rulesCache = new Map();
-
-function formatRulesContext(rules) {
-  if (!rules || typeof rules !== "object") return "";
-  const lines = [
-    "Atryum advisory rules visible to this harness before the gated call:",
-    `- server: ${rules.server || SOURCE}`,
-    `- tool: ${rules.tool || "unknown"}`,
-    `- effective action: ${rules.action || rules.default_action || "unknown"}`,
-  ];
-  if (rules.matched_rule_id) lines.push(`- matched rule: ${rules.matched_rule_id}`);
-  if (rules.generated_at) lines.push(`- as of: ${rules.generated_at}`);
-  if (Array.isArray(rules.items) && rules.items.length > 0) {
-    lines.push("- visible rules:");
-    for (const rule of rules.items.slice(0, 20)) {
-      const guidance = rule.guidance ? ` (${rule.guidance})` : "";
-      lines.push(`  - ${rule.id || "(unnamed)"}: ${rule.action}${guidance}`);
-    }
-  }
-  lines.push("- advisory only; Atryum re-checks policy during the actual gated call.");
-  return lines.join("\n");
-}
-
-async function rulesContext(tool) {
-  const cacheKey = [SOURCE, tool, ACCESS_TOKEN ? "auth" : "no-auth", AGENT_ID].join("\x00");
-  const cached = rulesCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) return cached.value;
-  if (cached) rulesCache.delete(cacheKey);
+// Points the agent at the rules endpoint rather than pre-fetching and
+// embedding rule content, so the model can query it directly when useful.
+function rulesEndpointHint(tool) {
   const url = new URL("/api/v1/agent/rules", API);
   url.searchParams.set("server", SOURCE);
   url.searchParams.set("tool", tool);
   if (AGENT_ID && !ACCESS_TOKEN) url.searchParams.set("agent_id", AGENT_ID);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 3000);
-  try {
-    const res = await atryumFetch(url.toString(), { signal: controller.signal });
-    if (!res.ok) return "";
-    const value = formatRulesContext(await res.json());
-    rulesCache.set(cacheKey, { value, expiresAt: Date.now() + RULES_CACHE_TTL_MS });
-    return value;
-  } catch {
-    return "";
-  } finally {
-    clearTimeout(timer);
-  }
+  return `atryum: to see the approval rules that apply to this call, GET ${url.toString()} (advisory only; Atryum re-checks policy during the actual gated call).`;
 }
 
 // The host's own session/thread identifier. Used only for cross-referencing:
@@ -448,7 +410,6 @@ async function submitOnce(event, sessionIDValue) {
   const name = toolName(event);
   const input = toolInput(event);
   const id = toolUseID(event);
-  const context = await rulesContext(name);
   return atryumFetch(`${API}/api/v1/external/invocations`, {
     method: "POST",
     contentType: true,
@@ -460,8 +421,6 @@ async function submitOnce(event, sessionIDValue) {
       request_id: id,
       thread_id: sessionId(event) || undefined,
       session_id: sessionIDValue || undefined,
-      chat_context: context || undefined,
-      context: context || undefined,
       client_name: CLIENT_NAME,
       client_version: CLIENT_VERSION || undefined,
       agent_id: AGENT_ID || undefined,
@@ -615,7 +574,7 @@ async function handlePreToolUse(event) {
   await deleteInvocation(id);
   jsonOut(
     denyOutput(
-      `atryum: tool call '${toolName(event)}' was ${decided.status} by reviewer.`,
+      `atryum: tool call '${toolName(event)}' was ${decided.status} by reviewer. ${rulesEndpointHint(toolName(event))}`,
     ),
   );
 }
