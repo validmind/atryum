@@ -199,61 +199,74 @@ func (s *Service) SubmitPlan(ctx context.Context, req PlanSubmitRequest) (Plan, 
 	return s.evaluatePlanRules(ctx, plan, req.ChatContext)
 }
 
-// evaluatePlanRules runs plan-scoped approval rules in priority order and
-// persists the resulting status. Plans never silently auto-approve: with no
-// matching rule the plan waits for a human.
+// evaluatePlanRules runs matching approval rules in priority order and
+// persists the first decisive result. Invocation-scoped rules match when they
+// cover any declared action; plan-scoped rules retain their whole-plan match
+// semantics. An invocation-scoped AI rule judges the complete plan rather
+// than one action because concrete tool arguments do not exist yet.
+//
+// Plans never silently auto-approve: with no decisive matching rule the plan
+// waits for a human.
 func (s *Service) evaluatePlanRules(ctx context.Context, plan Plan, chatContext string) (Plan, error) {
 	agentRec := s.resolveAgentRecord(ctx, plan.AgentID)
 
 	if s.rules != nil {
 		if approvalRules, err := s.rules.ListApprovalRules(ctx); err == nil {
-			// A plan cannot use an AI (or an auto-approve rule) to bypass a
-			// deny rule that applies to any of its individual steps. A denial
-			// asks the agent to revise the batch before any side effect occurs.
+			matchingRules := make([]ApprovalRule, 0, len(approvalRules))
 			for _, rule := range approvalRules {
-				if rule.Action != RuleActionAutoDeny || !planSafetyRuleMatches(rule, plan.Source, plan.Actions, agentRec.ID) {
+				if !planSubmissionRuleMatches(rule, plan.Source, plan.Actions, agentRec.ID) {
 					continue
 				}
-				plan.MatchedRuleID = ruleIDPtr(rule.ID)
-				feedback := "A planned action matches a deny rule. Revise the plan to remove or replace that action."
-				return s.finalizePlanDecision(ctx, plan, PlanStatusNeedsRevision,
-					newApproval("auto_denied", "plan requires revision: matched deny rule", nil), feedback)
+				matchingRules = append(matchingRules, rule)
 			}
 
-			// Likewise, if any step requires human approval, the entire plan
-			// waits for a human. AI evaluation may still be useful for plans
-			// without such steps, but it must not approve around this gate.
-			for _, rule := range approvalRules {
-				if rule.Action != RuleActionHumanApproval || !planSafetyRuleMatches(rule, plan.Source, plan.Actions, agentRec.ID) {
+			// A matching AI rule always receives the complete plan, even when an
+			// earlier human rule will ultimately gate it. This preserves the
+			// independent charter safety check: a hard denial or revision cannot
+			// be bypassed by approving an earlier workflow gate. Non-hard AI
+			// results are cached and applied only when rule iteration reaches
+			// that AI rule, preserving ordinary priority semantics.
+			aiResults := make(map[int]planAIEvaluationResult)
+			for i, rule := range matchingRules {
+				if rule.Action != RuleActionAIEvaluation {
 					continue
 				}
-				plan.MatchedRuleID = ruleIDPtr(rule.ID)
-				return s.finalizePlanDecision(ctx, plan, PlanStatusPendingApproval,
-					newApproval("human_required", "plan includes an action requiring human approval", nil), "")
+				result, done := s.evaluatePlanWithAI(ctx, &rule, plan, agentRec, chatContext)
+				aiResults[i] = result
+				if !done {
+					continue
+				}
+				if result.Status == PlanStatusDenied || result.Status == PlanStatusNeedsRevision {
+					plan.MatchedRuleID = ruleIDPtr(rule.ID)
+					return s.finalizePlanDecision(ctx, plan, result.Status, result.Approval, result.Feedback)
+				}
+				break
 			}
 
-			for _, rule := range matchPlanRules(approvalRules, plan.Source, plan.Actions, agentRec.ID) {
-				r := rule
-				if r.ID != "" {
-					id := r.ID
-					plan.MatchedRuleID = &id
-				}
-				switch r.Action {
+			for i, rule := range matchingRules {
+				plan.MatchedRuleID = ruleIDPtr(rule.ID)
+				switch rule.Action {
 				case RuleActionAutoApprove:
 					return s.finalizePlanDecision(ctx, plan, PlanStatusApproved,
 						newApproval("auto_approved", "matched approval rule (auto_approve)", nil), "")
 				case RuleActionAutoDeny:
-					return s.finalizePlanDecision(ctx, plan, PlanStatusDenied,
-						newApproval("auto_denied", "matched approval rule (auto_deny)", nil), "")
+					feedback := "A planned action matches a deny rule. Revise the plan to remove or replace that action."
+					return s.finalizePlanDecision(ctx, plan, PlanStatusNeedsRevision,
+						newApproval("auto_denied", "plan requires revision: matched deny rule", nil), feedback)
 				case RuleActionAIEvaluation:
-					verdict, done := s.runPlanAIEvaluation(ctx, &r, &plan, agentRec, chatContext)
+					result, ok := aiResults[i]
+					if !ok {
+						result, _ = s.evaluatePlanWithAI(ctx, &rule, plan, agentRec, chatContext)
+					}
+					done := result.Status != ""
 					if !done {
 						plan.MatchedRuleID = nil
 						continue // next_rule: keep iterating
 					}
-					return verdict, nil
-				default: // human_approval
-					return s.finalizePlanDecision(ctx, plan, PlanStatusPendingApproval, nil, "")
+					return s.finalizePlanDecision(ctx, plan, result.Status, result.Approval, result.Feedback)
+				default: // human_approval (and unknown actions, failing closed)
+					return s.finalizePlanDecision(ctx, plan, PlanStatusPendingApproval,
+						newApproval("human_required", "plan includes an action requiring human approval", nil), "")
 				}
 			}
 		}
@@ -270,20 +283,18 @@ func ruleIDPtr(id string) *string {
 	return &id
 }
 
-// planSafetyRuleMatches reports whether a deny or human-approval rule applies
-// to at least one planned action. Invocation-scoped rules use each action's
-// server (or the plan source when omitted); plan-scoped rules use the plan
-// source. Grants remain governed by matchPlanRules, which requires a rule to
-// cover the whole plan before it can approve it.
-func planSafetyRuleMatches(rule ApprovalRule, source string, actions []PlanAction, agentCUID string) bool {
+// planSubmissionRuleMatches applies each scope's matching semantics to a
+// submitted plan. Invocation rules match when they cover at least one declared
+// action. Plan-scoped deny and human rules retain the same per-action safety
+// coverage, while plan-scoped grants must cover the complete plan.
+func planSubmissionRuleMatches(rule ApprovalRule, source string, actions []PlanAction, agentCUID string) bool {
+	if rule.AppliesTo == RuleScopePlan && rule.Action != RuleActionAutoDeny && rule.Action != RuleActionHumanApproval {
+		return len(matchPlanRules([]ApprovalRule{rule}, source, actions, agentCUID)) == 1
+	}
 	if !rule.Enabled || !matchAgentCUIDs(rule.AgentCUIDs, agentCUID) {
 		return false
 	}
 	for _, action := range actions {
-		// Judge each action by the server it actually targets, whatever the
-		// rule's scope: a deny/human rule scoped to server B must catch an
-		// action explicitly declared on B even when the plan was submitted
-		// through another source.
 		server := action.Server
 		if server == "" {
 			server = source
@@ -295,23 +306,29 @@ func planSafetyRuleMatches(rule ApprovalRule, source string, actions []PlanActio
 	return false
 }
 
-// runPlanAIEvaluation judges the plan with the locally-configured LLM.
-// Returns done=false when the verdict defers to the next rule.
-func (s *Service) runPlanAIEvaluation(ctx context.Context, rule *ApprovalRule, plan *Plan, agentRec AgentRecord, chatContext string) (Plan, bool) {
+type planAIEvaluationResult struct {
+	Status   PlanStatus
+	Approval *Approval
+	Feedback string
+}
+
+// evaluatePlanWithAI judges the complete plan with the locally-configured LLM.
+// A zero Status means the verdict deferred to the next rule. Persistence is
+// deliberately left to evaluatePlanRules so a whole-plan charter check can run
+// without disturbing the configured rule order.
+func (s *Service) evaluatePlanWithAI(ctx context.Context, rule *ApprovalRule, plan Plan, agentRec AgentRecord, chatContext string) (planAIEvaluationResult, bool) {
 	if rule.AtryumLLMConfigID == "" || s.planJudge == nil {
 		// VM-backend plan judging is not supported yet; fail open to a human.
 		slog.Warn("plan ai_evaluation: no local LLM config on rule (VM backend not supported for plans); falling back to human_approval",
 			"rule_id", rule.ID, "plan_id", plan.PlanID)
-		p, _ := s.finalizePlanDecision(ctx, *plan, PlanStatusPendingApproval,
-			newApproval("ai_escalated", "plan ai_evaluation unavailable (falling back to human_approval)", nil), "")
-		return p, true
+		return planAIEvaluationResult{Status: PlanStatusPendingApproval,
+			Approval: newApproval("ai_escalated", "plan ai_evaluation unavailable (falling back to human_approval)", nil)}, true
 	}
 	if agentRec.Charter == "" {
 		slog.Error("plan ai_evaluation: agent has no charter configured; denying plan",
 			"rule_id", rule.ID, "plan_id", plan.PlanID, "agent_id", plan.AgentID)
-		p, _ := s.finalizePlanDecision(ctx, *plan, PlanStatusDenied,
-			newApproval("auto_denied", "plan ai_evaluation denied: no charter configured for this agent", nil), "")
-		return p, true
+		return planAIEvaluationResult{Status: PlanStatusDenied,
+			Approval: newApproval("auto_denied", "plan ai_evaluation denied: no charter configured for this agent", nil)}, true
 	}
 
 	evalCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
@@ -328,35 +345,30 @@ func (s *Service) runPlanAIEvaluation(ctx context.Context, rule *ApprovalRule, p
 	if err != nil {
 		slog.Error("plan ai_evaluation: LLM call failed; falling back to human_approval",
 			"rule_id", rule.ID, "plan_id", plan.PlanID, "error", err)
-		p, _ := s.finalizePlanDecision(ctx, *plan, PlanStatusPendingApproval,
-			newApproval("ai_escalated", "plan ai_evaluation: LLM call failed (falling back to human_approval)", nil), "")
-		return p, true
+		return planAIEvaluationResult{Status: PlanStatusPendingApproval,
+			Approval: newApproval("ai_escalated", "plan ai_evaluation: LLM call failed (falling back to human_approval)", nil)}, true
 	}
 
 	switch resp.Verdict {
 	case "approved":
-		p, _ := s.finalizePlanDecision(ctx, *plan, PlanStatusApproved,
-			newApproval("auto_approved", "plan ai_evaluation approved: "+resp.Reason, resp.Confidence), "")
-		return p, true
+		return planAIEvaluationResult{Status: PlanStatusApproved,
+			Approval: newApproval("auto_approved", "plan ai_evaluation approved: "+resp.Reason, resp.Confidence)}, true
 	case "denied":
-		p, _ := s.finalizePlanDecision(ctx, *plan, PlanStatusDenied,
-			newApproval("auto_denied", "plan ai_evaluation denied: "+resp.Reason, resp.Confidence), "")
-		return p, true
+		return planAIEvaluationResult{Status: PlanStatusDenied,
+			Approval: newApproval("auto_denied", "plan ai_evaluation denied: "+resp.Reason, resp.Confidence)}, true
 	case "revise":
 		feedback := resp.Feedback
 		if feedback == "" {
 			feedback = resp.Reason
 		}
-		p, _ := s.finalizePlanDecision(ctx, *plan, PlanStatusNeedsRevision,
-			newApproval("ai_revise", "plan ai_evaluation requested revision: "+resp.Reason, resp.Confidence), feedback)
-		return p, true
+		return planAIEvaluationResult{Status: PlanStatusNeedsRevision,
+			Approval: newApproval("ai_revise", "plan ai_evaluation requested revision: "+resp.Reason, resp.Confidence), Feedback: feedback}, true
 	case "human_approval":
-		p, _ := s.finalizePlanDecision(ctx, *plan, PlanStatusPendingApproval,
-			newApproval("ai_escalated", "plan ai_evaluation requires human approval: "+resp.Reason, resp.Confidence), "")
-		return p, true
+		return planAIEvaluationResult{Status: PlanStatusPendingApproval,
+			Approval: newApproval("ai_escalated", "plan ai_evaluation requires human approval: "+resp.Reason, resp.Confidence)}, true
 	default: // "next_rule"
 		slog.Info("plan ai_evaluation: LLM deferred to next rule", "rule_id", rule.ID, "plan_id", plan.PlanID)
-		return Plan{}, false
+		return planAIEvaluationResult{}, false
 	}
 }
 
@@ -729,8 +741,11 @@ func planActionCandidates(plan Plan, server, tool string) []approvedPlanMatch {
 }
 
 // planGateOutcome is the disposition the plan gate assigns to an invocation.
-// The plan flow is exclusive: approval rules are never consulted for a call
-// gated by a plan.
+// The plan flow is exclusive: ordinary invocation gating does not run again
+// for a call governed by an approved plan. The first current invocation rule
+// is consulted only to preserve ordered policy semantics (a leading deny still
+// blocks; a leading approval/human/AI gate was satisfied by plan approval),
+// then the independent adherence/charter judge decides the concrete call.
 type planGateOutcome int
 
 const (
@@ -758,7 +773,7 @@ func (s *Service) approvedPlanPass(ctx context.Context, match approvedPlanMatch,
 	if planStatusFastPass(s.planPollOrigins, match.Plan.PlanID, input) {
 		return "matched approved plan " + match.Plan.PlanID + ": accessing approved plan status", nil, planGateApprove
 	}
-	if rule, ok := s.matchInvocationAutoDeny(ctx, agentRec, server, tool); ok {
+	if rule, denied := s.matchPlanExecutionRule(ctx, agentRec, server, tool); denied {
 		return "tool call denied by matching rule " + rule.ID + " before plan adherence review", nil, planGateDeny
 	}
 	highestStep, found, err := s.highestExecutedPlanStep(ctx, match.Plan.PlanID)
@@ -783,7 +798,7 @@ func (s *Service) ambiguousApprovedPlanPass(ctx context.Context, plan Plan, agen
 	if planStatusFastPass(s.planPollOrigins, plan.PlanID, input) {
 		return approvedPlanMatch{Plan: plan}, "matched approved plan " + plan.PlanID + ": accessing approved plan status", nil, planGateApprove
 	}
-	if rule, ok := s.matchInvocationAutoDeny(ctx, agentRec, server, tool); ok {
+	if rule, denied := s.matchPlanExecutionRule(ctx, agentRec, server, tool); denied {
 		return approvedPlanMatch{Plan: plan}, "tool call denied by matching rule " + rule.ID + " before plan adherence review", nil, planGateDeny
 	}
 
@@ -843,22 +858,24 @@ func (s *Service) ambiguousApprovedPlanPass(ctx context.Context, plan Plan, agen
 	return approvedPlanMatch{Plan: plan}, "tool call is outside every matching action in approved plan " + plan.PlanID, nil, planGateDeny
 }
 
-// matchInvocationAutoDeny reapplies invocation-scoped deny rules at execution
-// time. Rules can change after a plan is approved, so an approved plan never
-// bypasses a current deny policy before its adherence judge runs.
-func (s *Service) matchInvocationAutoDeny(ctx context.Context, agentRec AgentRecord, server, tool string) (ApprovalRule, bool) {
+// matchPlanExecutionRule reapplies the first matching invocation rule at
+// execution time using ordinary priority order. A leading auto-deny still
+// blocks a plan action (including a deny added after plan approval). Any other
+// leading rule has already been satisfied by the approved plan: auto-approve
+// needs no further gate, while human-approval and AI-evaluation were resolved
+// during plan submission. The independent adherence judge still checks the
+// concrete call against both the approved action and the charter afterward.
+func (s *Service) matchPlanExecutionRule(ctx context.Context, agentRec AgentRecord, server, tool string) (ApprovalRule, bool) {
 	if s.rules == nil {
 		return ApprovalRule{}, false
 	}
 	rules, err := s.rules.ListApprovalRules(ctx)
 	if err != nil {
-		slog.Warn("could not evaluate invocation deny rules before plan adherence", "server", server, "tool", tool, "error", err)
+		slog.Warn("could not evaluate invocation rules before plan adherence", "server", server, "tool", tool, "error", err)
 		return ApprovalRule{}, false
 	}
 	for _, rule := range matchRules(rules, server, tool, agentRec.ID) {
-		if rule.Action == RuleActionAutoDeny {
-			return rule, true
-		}
+		return rule, rule.Action == RuleActionAutoDeny
 	}
 	return ApprovalRule{}, false
 }

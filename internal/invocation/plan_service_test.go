@@ -335,47 +335,128 @@ func TestPlanEvaluationChatContextIsFencedAgainstInjection(t *testing.T) {
 	}
 }
 
-func TestPlanDenyRulePreemptsAIEvaluationForAnyStep(t *testing.T) {
+func TestPlanInvocationAIEvaluationCanApproveBeforeLaterDeny(t *testing.T) {
 	rules := []invocation.ApprovalRule{
-		{ID: "ai-plan", Action: invocation.RuleActionAIEvaluation, AppliesTo: invocation.RuleScopePlan, AtryumLLMConfigID: "llm-1", Enabled: true},
+		{ID: "ai-invocation", Action: invocation.RuleActionAIEvaluation, AtryumLLMConfigID: "llm-1", ToolPatterns: []string{"inspect"}, Enabled: true},
 		{ID: "deny-deploy", Action: invocation.RuleActionAutoDeny, ToolPatterns: []string{"deploy"}, Enabled: true},
 	}
 	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
 		"agent-a": {ID: "agent-rec-a", Charter: "be careful"},
 	}}
-	judge := &planJudgeStub{resp: invocation.PlanEvaluateResponse{Verdict: "approved"}}
+	judge := &planJudgeStub{
+		resp:          invocation.PlanEvaluateResponse{Verdict: "approved"},
+		adherenceResp: invocation.PlanAdherenceResponse{Verdict: "follows_plan", Reason: "matches AI-approved plan"},
+	}
 	svc, _ := newPlanTestService(t, rules, agents, judge)
 	plan, err := svc.SubmitPlan(context.Background(), planSubmit("agent-a", "inspect", "deploy"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Status != invocation.PlanStatusNeedsRevision || plan.MatchedRuleID == nil || *plan.MatchedRuleID != "deny-deploy" {
-		t.Fatalf("plan = %+v, want needs_revision from deny-deploy", plan)
+	if plan.Status != invocation.PlanStatusApproved || plan.MatchedRuleID == nil || *plan.MatchedRuleID != "ai-invocation" {
+		t.Fatalf("plan = %+v, want approval from the earlier AI rule", plan)
 	}
-	if got := judge.request(); got.Goal != "" {
-		t.Fatalf("AI judge must not run after a deny match, got %+v", got)
+	if got := judge.request(); got.Goal != plan.Goal || len(got.Actions) != 2 {
+		t.Fatalf("AI rule must judge the complete plan, got %+v", got)
+	}
+	resp, err := svc.Submit(context.Background(), invocation.ExternalSubmitRequest{
+		Source: "external", Tool: "inspect", AgentID: "agent-a", Input: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusApproved || resp.Approval == nil || resp.Approval.Status != "plan_approved" {
+		t.Fatalf("response = %+v, want plan-phase AI approval to satisfy execution gate", resp)
+	}
+	if got := judge.adherenceRequest(); got.ToolName != "inspect" || got.Charter == "" {
+		t.Fatalf("execution must still run charter/adherence review, got %+v", got)
 	}
 }
 
-func TestPlanHumanApprovalRulePreemptsAIEvaluationForAnyStep(t *testing.T) {
+func TestPlanInvocationRulesStopAtEarlierHumanApproval(t *testing.T) {
 	rules := []invocation.ApprovalRule{
-		{ID: "ai-plan", Action: invocation.RuleActionAIEvaluation, AppliesTo: invocation.RuleScopePlan, AtryumLLMConfigID: "llm-1", Enabled: true},
 		{ID: "human-deploy", Action: invocation.RuleActionHumanApproval, ToolPatterns: []string{"deploy"}, Enabled: true},
+		{ID: "ai-deploy", Action: invocation.RuleActionAIEvaluation, AtryumLLMConfigID: "llm-1", ToolPatterns: []string{"deploy"}, Enabled: true},
+		{ID: "deny-all", Action: invocation.RuleActionAutoDeny, Enabled: true},
 	}
 	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
 		"agent-a": {ID: "agent-rec-a", Charter: "be careful"},
 	}}
-	judge := &planJudgeStub{resp: invocation.PlanEvaluateResponse{Verdict: "approved"}}
+	judge := &planJudgeStub{
+		resp:          invocation.PlanEvaluateResponse{Verdict: "approved"},
+		adherenceResp: invocation.PlanAdherenceResponse{Verdict: "follows_plan", Reason: "matches human-approved action"},
+	}
 	svc, _ := newPlanTestService(t, rules, agents, judge)
-	plan, err := svc.SubmitPlan(context.Background(), planSubmit("agent-a", "inspect", "deploy"))
+	ctx := context.Background()
+	plan, err := svc.SubmitPlan(ctx, planSubmit("agent-a", "inspect", "deploy"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if plan.Status != invocation.PlanStatusPendingApproval || plan.Approval == nil || plan.Approval.Status != "human_required" || plan.MatchedRuleID == nil || *plan.MatchedRuleID != "human-deploy" {
 		t.Fatalf("plan = %+v, want pending human approval from human-deploy", plan)
 	}
-	if got := judge.request(); got.Goal != "" {
-		t.Fatalf("AI judge must not run when a step requires human approval, got %+v", got)
+	if got := judge.request(); got.Goal != plan.Goal || len(got.Actions) != 2 {
+		t.Fatalf("matching AI rule must still charter-check the complete plan, got %+v", got)
+	}
+	if _, err := svc.ApprovePlan(ctx, plan.PlanID, 0); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{
+		Source: "external", Tool: "deploy", AgentID: "agent-a", Input: map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusApproved || resp.Approval == nil || resp.Approval.Status != "plan_approved" {
+		t.Fatalf("response = %+v, want approved plan to satisfy the human execution gate", resp)
+	}
+	if got := judge.adherenceRequest(); got.ToolName != "deploy" || got.Charter == "" {
+		t.Fatalf("execution must still run charter/adherence review, got %+v", got)
+	}
+}
+
+func TestPlanInvocationAIEvaluationCharterDenialRejectsWholePlan(t *testing.T) {
+	rules := []invocation.ApprovalRule{{
+		ID: "approve-inspect", Action: invocation.RuleActionAutoApprove,
+		ToolPatterns: []string{"inspect"}, Enabled: true,
+	}, {
+		ID: "ai-delete", Action: invocation.RuleActionAIEvaluation,
+		AtryumLLMConfigID: "llm-1", ToolPatterns: []string{"delete_file"}, Enabled: true,
+	}}
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "Never delete files."},
+	}}
+	judge := &planJudgeStub{resp: invocation.PlanEvaluateResponse{Verdict: "denied", Reason: "deletion violates charter"}}
+	svc, _ := newPlanTestService(t, rules, agents, judge)
+
+	plan, err := svc.SubmitPlan(context.Background(), planSubmit("agent-a", "inspect", "delete_file"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != invocation.PlanStatusDenied || plan.MatchedRuleID == nil || *plan.MatchedRuleID != "ai-delete" {
+		t.Fatalf("plan = %+v, want charter denial from whole-plan AI evaluation", plan)
+	}
+	if got := judge.request(); len(got.Actions) != 2 || got.Charter != "Never delete files." {
+		t.Fatalf("AI judge did not receive the complete charter-governed plan: %+v", got)
+	}
+}
+
+func TestPlanInvocationAIEvaluationNextRuleContinuesInOrder(t *testing.T) {
+	rules := []invocation.ApprovalRule{
+		{ID: "ai-first", Action: invocation.RuleActionAIEvaluation, AtryumLLMConfigID: "llm-1", Enabled: true},
+		{ID: "deny-next", Action: invocation.RuleActionAutoDeny, Enabled: true},
+	}
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "be careful"},
+	}}
+	judge := &planJudgeStub{resp: invocation.PlanEvaluateResponse{Verdict: "next_rule", Reason: "charter does not cover this"}}
+	svc, _ := newPlanTestService(t, rules, agents, judge)
+
+	plan, err := svc.SubmitPlan(context.Background(), planSubmit("agent-a", "Bash"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != invocation.PlanStatusNeedsRevision || plan.MatchedRuleID == nil || *plan.MatchedRuleID != "deny-next" {
+		t.Fatalf("plan = %+v, want next_rule to continue to deny-next", plan)
 	}
 }
 
@@ -411,6 +492,50 @@ func TestPlanStepRechecksInvocationAutoDenyBeforeAdherence(t *testing.T) {
 	}
 	if got := judge.adherenceRequest(); got.ToolName != "" {
 		t.Fatalf("adherence judge must not run after invocation auto deny, got %+v", got)
+	}
+}
+
+func TestHumanApprovedPlanSatisfiesAIEscalationAtExecution(t *testing.T) {
+	rules := []invocation.ApprovalRule{
+		{ID: "ai-delete", Action: invocation.RuleActionAIEvaluation, AtryumLLMConfigID: "llm-1", ServerPatterns: []string{"github"}, ToolPatterns: []string{"delete_file"}, Enabled: true},
+		{ID: "deny-all-later", Action: invocation.RuleActionAutoDeny, Enabled: true},
+	}
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "Allow deletion only when it follows a human-approved plan."},
+	}}
+	judge := &planJudgeStub{
+		resp:          invocation.PlanEvaluateResponse{Verdict: "human_approval", Reason: "deletion needs a person"},
+		adherenceResp: invocation.PlanAdherenceResponse{Verdict: "follows_plan", Reason: "matches the human-approved deletion"},
+	}
+	svc, _ := newPlanTestService(t, rules, agents, judge)
+	ctx := context.Background()
+
+	plan, err := svc.SubmitPlan(ctx, invocation.PlanSubmitRequest{
+		AgentID: "agent-a", Source: "github", Goal: "delete obsolete file",
+		Actions: []invocation.PlanAction{{Tool: "delete_file"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != invocation.PlanStatusPendingApproval || plan.MatchedRuleID == nil || *plan.MatchedRuleID != "ai-delete" || plan.Approval == nil || plan.Approval.Status != "ai_escalated" {
+		t.Fatalf("plan = %+v, want AI rule to escalate whole plan to a human", plan)
+	}
+	if _, err := svc.ApprovePlan(ctx, plan.PlanID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{
+		Source: "github", Tool: "delete_file", AgentID: "agent-a",
+		Input: map[string]any{"path": "obsolete.txt"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusApproved || resp.Approval == nil || resp.Approval.Status != "plan_approved" {
+		t.Fatalf("response = %+v, want human-approved plan to satisfy the AI execution gate", resp)
+	}
+	if got := judge.adherenceRequest(); got.ToolName != "delete_file" || got.Charter == "" {
+		t.Fatalf("execution must still run charter/adherence review, got %+v", got)
 	}
 }
 
