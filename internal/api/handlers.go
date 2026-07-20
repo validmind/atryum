@@ -1674,14 +1674,15 @@ func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) 
 				enabled = *req.CreateRule.Enabled
 			}
 			newRule := store.Rule{
-				ID:              "rule_" + newUUID(),
-				Action:          req.CreateRule.Action,
-				ServerPatterns:  normalizePatternSlice(req.CreateRule.ServerPatterns),
-				ToolPatterns:    normalizePatternSlice(req.CreateRule.ToolPatterns),
-				ModelConfigCUID: req.CreateRule.ModelConfigCUID,
-				AgentCUIDs:      normalizePatternSlice(req.CreateRule.AgentCUIDs),
-				Description:     req.CreateRule.Description,
-				Enabled:         enabled,
+				ID:                "rule_" + newUUID(),
+				Action:            req.CreateRule.Action,
+				ServerPatterns:    normalizePatternSlice(req.CreateRule.ServerPatterns),
+				ToolPatterns:      normalizePatternSlice(req.CreateRule.ToolPatterns),
+				ModelConfigCUID:   req.CreateRule.ModelConfigCUID,
+				AtryumLLMConfigID: req.CreateRule.AtryumLLMConfigID,
+				AgentCUIDs:        normalizePatternSlice(req.CreateRule.AgentCUIDs),
+				Description:       req.CreateRule.Description,
+				Enabled:           enabled,
 			}
 			if err := h.rulesRepo.InsertBefore(r.Context(), anchorID, newRule); err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
@@ -1733,14 +1734,15 @@ func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) 
 				enabled = *req.CreateRule.Enabled
 			}
 			newRule := store.Rule{
-				ID:              "rule_" + newUUID(),
-				Action:          req.CreateRule.Action,
-				ServerPatterns:  normalizePatternSlice(req.CreateRule.ServerPatterns),
-				ToolPatterns:    normalizePatternSlice(req.CreateRule.ToolPatterns),
-				ModelConfigCUID: req.CreateRule.ModelConfigCUID,
-				AgentCUIDs:      normalizePatternSlice(req.CreateRule.AgentCUIDs),
-				Description:     req.CreateRule.Description,
-				Enabled:         enabled,
+				ID:                "rule_" + newUUID(),
+				Action:            req.CreateRule.Action,
+				ServerPatterns:    normalizePatternSlice(req.CreateRule.ServerPatterns),
+				ToolPatterns:      normalizePatternSlice(req.CreateRule.ToolPatterns),
+				ModelConfigCUID:   req.CreateRule.ModelConfigCUID,
+				AtryumLLMConfigID: req.CreateRule.AtryumLLMConfigID,
+				AgentCUIDs:        normalizePatternSlice(req.CreateRule.AgentCUIDs),
+				Description:       req.CreateRule.Description,
+				Enabled:           enabled,
 			}
 			if err := h.rulesRepo.InsertBefore(r.Context(), anchorID, newRule); err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())

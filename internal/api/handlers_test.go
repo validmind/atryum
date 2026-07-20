@@ -1543,3 +1543,84 @@ func TestInvocationsByVMCUID(t *testing.T) {
 		}
 	})
 }
+
+// TestCreateRulePersistsAtryumLLMConfigID is a regression test for both the
+// approve and deny handlers' create_rule path: a local-LLM-only ai_evaluation
+// rule (atryum_llm_config_id set, model_config_cuid empty) must be persisted
+// with atryum_llm_config_id intact, not silently dropped.
+func TestCreateRulePersistsAtryumLLMConfigID(t *testing.T) {
+	cases := []struct {
+		name   string
+		suffix string
+		body   string
+	}{
+		{
+			name:   "approve",
+			suffix: "/approve",
+			body: `{
+				"actor_id": "reviewer-1",
+				"create_rule": {
+					"action": "ai_evaluation",
+					"server_patterns": ["*"],
+					"tool_patterns": ["*"],
+					"atryum_llm_config_id": "local-llm-1",
+					"agent_cuids": ["*"]
+				}
+			}`,
+		},
+		{
+			name:   "deny",
+			suffix: "/deny",
+			body: `{
+				"actor_id": "reviewer-1",
+				"create_rule": {
+					"action": "ai_evaluation",
+					"server_patterns": ["*"],
+					"tool_patterns": ["*"],
+					"atryum_llm_config_id": "local-llm-1",
+					"agent_cuids": ["*"]
+				}
+			}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db, err := sql.Open("sqlite", ":memory:")
+			if err != nil {
+				t.Fatalf("open db: %v", err)
+			}
+			defer db.Close()
+			if err := store.InitDB(db); err != nil {
+				t.Fatalf("InitDB: %v", err)
+			}
+			rulesRepo := store.NewRulesRepo(db)
+
+			svc := &stubService{} // Get() returns a zero-value invocation (MatchedRuleID == nil)
+			h := NewHandler(svc, stubServerService{}, nil, rulesRepo, nil, nil, nil, nil, nil, nil)
+
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/invocations/inv-123"+tc.suffix, strings.NewReader(tc.body))
+			rec := httptest.NewRecorder()
+
+			h.adminInvocationDetail(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("%s returned status %d, body=%s", tc.name, rec.Code, rec.Body.String())
+			}
+
+			rules, err := rulesRepo.List(context.Background())
+			if err != nil {
+				t.Fatalf("List rules: %v", err)
+			}
+			if len(rules) != 1 {
+				t.Fatalf("expected 1 rule to be created, got %d", len(rules))
+			}
+
+			got := rules[0]
+			if got.AtryumLLMConfigID != "local-llm-1" {
+				t.Errorf("AtryumLLMConfigID = %q, want %q (the reviewer's chosen local LLM was silently dropped)",
+					got.AtryumLLMConfigID, "local-llm-1")
+			}
+		})
+	}
+}
