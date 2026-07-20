@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
   Alert,
   AlertDescription,
@@ -439,7 +439,19 @@ const Plans: React.FC = () => {
   );
 
   const { data, isLoading } = usePlans({ status: statusFilter || undefined });
-  const plans = data?.items ?? [];
+  const plans = useMemo(() => {
+    const items = data?.items ?? [];
+    // A revision supersedes its parent but both remain persisted for audit and
+    // detail navigation. Show only the newest loaded revision in the table so
+    // one logical plan occupies one row; the modal still exposes the complete
+    // previous/next revision chain.
+    const supersededPlanIds = new Set(
+      items
+        .map((plan) => plan.parent_plan_id)
+        .filter((id): id is string => !!id),
+    );
+    return items.filter((plan) => !supersededPlanIds.has(plan.plan_id));
+  }, [data?.items]);
 
   const openPlan = useCallback(
     (id: string) => {
