@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -117,6 +118,73 @@ func TestBusinessToolErrorMarksInvocationFailed(t *testing.T) {
 	}
 	if len(resp.Error) == 0 {
 		t.Fatal("expected error payload")
+	}
+}
+
+// TestInvokeFailsClosedWhenRuleLoadFails verifies that a failure loading
+// approval rules (e.g. a locked SQLite connection) is not treated as "no
+// rules matched" and does not fall through to the permissive global policy.
+// It must fail closed, matching Submit's behavior on the same error.
+func TestInvokeFailsClosedWhenRuleLoadFails(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		switch body["method"] {
+		case "initialize":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0", "id": body["id"],
+				"result": map[string]any{"serverInfo": map[string]any{"name": "fake", "version": "0.1.0"}, "capabilities": map[string]any{}},
+			})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/call":
+			// Should never be reached: a failed-closed invocation waits for a
+			// human and never executes the tool.
+			t.Error("tool executed despite the rule load failure; should have failed closed")
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"content": []map[string]any{{"type": "text", "text": "ok"}}}})
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer upstream.Close()
+
+	db := newSQLiteTestDB(t)
+	serverRepo := store.NewServerRepo(db)
+	resolver := mcp.NewResolver(serverRepo, config.Config{
+		Upstreams: []config.UpstreamConfig{{Name: "shortcut", Mode: "http", BaseURL: upstream.URL, Enabled: true, TimeoutSeconds: 5}},
+	})
+	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	service := invocation.NewService(
+		store.NewInvocationRepo(db),
+		store.NewEventRepo(db),
+		resolver,
+		mcp.NewHTTPClient(),
+		policy.AlwaysApproveProvider{}, // the operator's permissive global fallback
+		5*time.Second,
+		rulesStoreStub{err: errors.New("database is locked")}, // simulates the transient DB hiccup
+		nil, nil, nil,
+	)
+
+	// If Invoke correctly fails closed, it blocks in waitForHumanApproval, so
+	// this goroutine denies the invocation once it shows up pending — proving
+	// it reached human review rather than the permissive global policy. If
+	// Invoke instead falls through to the bug's auto-approve path, Invoke
+	// returns before this goroutine ever finds a pending invocation to act on.
+	go denyNextInvocation(t, service, 50*time.Millisecond)
+
+	resp, err := service.Invoke(context.Background(), invocation.CreateInvocationRequest{
+		Server: "shortcut",
+		Tool:   "dangerous-tool",
+		Input:  map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusDenied {
+		t.Fatalf("status = %q, want denied (a rule-load failure must fail closed to human review, not fall through to the global policy)", resp.Status)
 	}
 }
 
@@ -1086,10 +1154,11 @@ func (s summarySettingsStub) SummarySettings(context.Context) (string, string) {
 
 type rulesStoreStub struct {
 	rules []invocation.ApprovalRule
+	err   error
 }
 
 func (s rulesStoreStub) ListApprovalRules(context.Context) ([]invocation.ApprovalRule, error) {
-	return s.rules, nil
+	return s.rules, s.err
 }
 
 type agentLookupStub struct {
@@ -1149,6 +1218,25 @@ func approveNextInvocation(t *testing.T, service *invocation.Service, delay time
 	}
 	if err := service.Approve(context.Background(), pending.InvocationID, ""); err != nil {
 		t.Errorf("approve invocation: %v", err)
+	}
+}
+
+func denyNextInvocation(t *testing.T, service *invocation.Service, delay time.Duration) {
+	time.Sleep(delay)
+	list, err := service.List(context.Background(), invocation.InvocationListFilter{Limit: 10})
+	// Return silently when there's nothing pending — this is expected when the
+	// invocation completed (auto-approved) before this goroutine runs, which
+	// is exactly the failure mode this test is checking for. Calling
+	// t.Errorf after the test has completed causes a panic.
+	if err != nil || len(list.Items) == 0 {
+		return
+	}
+	pending := list.Items[0]
+	if pending.Status != invocation.StatusPendingApproval {
+		return
+	}
+	if err := service.Deny(context.Background(), pending.InvocationID, "test: proving fail-closed behavior", ""); err != nil {
+		t.Errorf("deny invocation: %v", err)
 	}
 }
 

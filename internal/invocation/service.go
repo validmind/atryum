@@ -347,7 +347,13 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	var aiConfidence *float64
 	ruleMatched := false
 	if s.rules != nil {
-		if approvalRules, err := s.rules.ListApprovalRules(ctx); err == nil {
+		approvalRules, err := s.rules.ListApprovalRules(ctx)
+		if err != nil {
+			slog.Error("failed to load approval rules; failing closed to human review",
+				"error", err, "server", upstream.Name, "tool", req.Tool)
+			ruleMatched = true
+			decision = policy.Decision{Disposition: policy.DispositionHuman, Reason: "rule lookup failed: " + err.Error()}
+		} else {
 			for _, rule := range matchRules(approvalRules, upstream.Name, req.Tool, agentRec.ID) {
 				r := rule
 				ruleMatched = true
