@@ -1288,7 +1288,12 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	var resolvedAIDecision *policy.Decision
 	var resolvedAIConfidence *float64
 	if s.rules != nil {
-		if approvalRules, err := s.rules.ListApprovalRules(ctx); err == nil {
+		approvalRules, err := s.rules.ListApprovalRules(ctx)
+		if err != nil {
+			slog.Error("failed to load approval rules; failing closed to human review",
+				"error", err, "source", source, "tool", req.Tool)
+			s.emitRuleEvaluatedEvent(ctx, inv.InvocationID, "", "", policy.Decision{Disposition: policy.DispositionHuman, Reason: "rule lookup failed: " + err.Error()}, nil)
+		} else {
 			for _, rule := range matchRules(approvalRules, source, req.Tool, agentRec.ID) {
 				r := rule
 				if r.ID != "" {
