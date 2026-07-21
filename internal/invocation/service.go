@@ -14,11 +14,18 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"atryum/internal/auth"
 	"atryum/internal/invocation/policy"
 	"atryum/internal/mcp"
 )
+
+// tracer is a no-op until telemetry.Setup installs a real provider, so the
+// spans below cost nothing when OTEL is disabled.
+var tracer = otel.Tracer("atryum/invocation")
 
 // dispositionContinue is an internal sentinel returned by runAIEvaluation when the
 // LLM verdict is "next_rule". It is never persisted or returned to clients — the
@@ -290,6 +297,11 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	if req.Tool == "" {
 		return InvocationResponse{}, fmt.Errorf("tool is required")
 	}
+	ctx, span := tracer.Start(ctx, "atryum.invocation", trace.WithAttributes(
+		attribute.String("atryum.server", req.Server),
+		attribute.String("atryum.tool", req.Tool),
+	))
+	defer span.End()
 	if req.IdempotencyKey != nil && *req.IdempotencyKey != "" {
 		existing, err := s.invocations.GetByIdempotencyKey(ctx, *req.IdempotencyKey)
 		if err == nil {
@@ -338,6 +350,10 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	}
 	if err := s.invocations.Create(ctx, inv); err != nil {
 		return InvocationResponse{}, err
+	}
+	span.SetAttributes(attribute.String("atryum.invocation.id", inv.InvocationID))
+	if agentID != "" {
+		span.SetAttributes(attribute.String("atryum.agent.id", agentID))
 	}
 
 	// Determine disposition: check rules first (fine-grained), then fall back to policy (global).
@@ -400,6 +416,14 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 			inv.Approval = newApproval("ai_escalated", decision.Reason, aiConfidence)
 		}
 		_ = s.invocations.UpdateResult(ctx, inv)
+	}
+
+	span.SetAttributes(attribute.String("atryum.disposition", string(decision.Disposition)))
+	if matchedRuleID != nil {
+		span.SetAttributes(attribute.String("atryum.rule.id", *matchedRuleID))
+	}
+	if aiConfidence != nil {
+		span.SetAttributes(attribute.Float64("atryum.ai.confidence", *aiConfidence))
 	}
 
 	receivedPayload := map[string]any{
@@ -558,6 +582,12 @@ func combineEvaluationContext(toolContext, historyContext string) string {
 // rule.AtryumLLMConfigID is set). Falls back to DispositionHuman on any error
 // so no invocation is silently lost.
 func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serverName, toolName string, toolArgs map[string]any, agentID string, agentRec AgentRecord, sessionContext string, sessionContextMessages int) (policy.Decision, *float64) {
+	ctx, span := tracer.Start(ctx, "atryum.ai_evaluation", trace.WithAttributes(
+		attribute.String("atryum.rule.id", rule.ID),
+		attribute.String("atryum.server", serverName),
+		attribute.String("atryum.tool", toolName),
+	))
+	defer span.End()
 	if s.evaluator == nil {
 		slog.Warn("ai_evaluation rule matched but no evaluator configured; falling back to human_approval",
 			"rule_id", rule.ID, "tool", toolName, "server", serverName)
@@ -620,6 +650,7 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 			"confidence", resp.Confidence,
 		)
 
+		setJudgeSpanAttrs(span, "local", rule.AtryumLLMConfigID, resp)
 		return toDecision(resp), resp.Confidence
 	}
 
@@ -687,7 +718,22 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 		"confidence", resp.Confidence,
 	)
 
+	setJudgeSpanAttrs(span, "vm", rule.ModelConfigCUID, resp)
 	return toDecision(resp), resp.Confidence
+}
+
+// setJudgeSpanAttrs records the judge verdict/confidence on the ai_evaluation span.
+func setJudgeSpanAttrs(span trace.Span, evaluator, configID string, resp EvaluateResponse) {
+	span.SetAttributes(
+		attribute.String("atryum.evaluator", evaluator),
+		attribute.String("atryum.judge.verdict", resp.Verdict),
+	)
+	if configID != "" {
+		span.SetAttributes(attribute.String("atryum.llm_config.id", configID))
+	}
+	if resp.Confidence != nil {
+		span.SetAttributes(attribute.Float64("atryum.judge.confidence", *resp.Confidence))
+	}
 }
 
 // toDecision converts an EvaluateResponse verdict into a policy.Decision.
@@ -1198,6 +1244,14 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	if source == "" {
 		source = "external"
 	}
+	// Same span as Invoke: the external path is the harness-hook twin, and rules
+	// match on source the way Invoke matches on the upstream name.
+	ctx, span := tracer.Start(ctx, "atryum.invocation", trace.WithAttributes(
+		attribute.String("atryum.server", source),
+		attribute.String("atryum.tool", req.Tool),
+		attribute.Bool("atryum.external", true),
+	))
+	defer span.End()
 	if req.IdempotencyKey != nil && *req.IdempotencyKey != "" {
 		existing, err := s.invocations.GetByIdempotencyKey(ctx, *req.IdempotencyKey)
 		if err == nil {
@@ -1279,6 +1333,10 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	if err := s.invocations.Create(ctx, inv); err != nil {
 		return InvocationResponse{}, err
 	}
+	span.SetAttributes(attribute.String("atryum.invocation.id", inv.InvocationID))
+	if agentID != "" {
+		span.SetAttributes(attribute.String("atryum.agent.id", agentID))
+	}
 	if sessionID != "" {
 		_ = s.sessions.TouchSession(ctx, sessionID, now.Add(externalSessionTTL)) // best-effort last-seen/expiry bump
 	}
@@ -1322,6 +1380,23 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		}
 	}
 	inv.MatchedRuleID = matchedRuleID
+
+	// Record the outcome once, here, rather than in each terminal branch below:
+	// every return path from the switch flows through this point. With no
+	// matching rule the external path always lands on human approval.
+	spanDisposition := policy.DispositionHuman
+	if resolvedAIDecision != nil {
+		spanDisposition = resolvedAIDecision.Disposition
+	} else if ruleAction != "" {
+		spanDisposition = decisionForRuleAction(ruleAction).Disposition
+	}
+	span.SetAttributes(attribute.String("atryum.disposition", string(spanDisposition)))
+	if matchedRuleID != nil {
+		span.SetAttributes(attribute.String("atryum.rule.id", *matchedRuleID))
+	}
+	if resolvedAIConfidence != nil {
+		span.SetAttributes(attribute.Float64("atryum.ai.confidence", *resolvedAIConfidence))
+	}
 
 	receivedPayload := map[string]any{"tool": req.Tool, "upstream": source, "request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "external": true}
 	if agentID != "" {

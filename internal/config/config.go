@@ -29,6 +29,40 @@ type Config struct {
 	// repeated `[[managed_agents]]` table. An entry with an empty api_key is
 	// skipped.
 	ManagedAgents []ManagedAgentsConfig `toml:"managed_agents"`
+	// OTEL configures OpenTelemetry trace export. Disabled by default.
+	OTEL OTELConfig `toml:"otel"`
+}
+
+// OTELConfig configures OpenTelemetry trace export over OTLP. When Enabled is
+// false the tracer provider is a no-op and instrumentation has zero cost.
+type OTELConfig struct {
+	Enabled bool `toml:"enabled"`
+	// Environment sets the deployment.environment resource attribute (Datadog
+	// reads it as the `env` tag). Empty → atryum's instance identity
+	// (atryum_instance, else public_base_url).
+	Environment string `toml:"environment"`
+	// Exporters lists the OTLP/HTTP destinations. Multiple entries push the same
+	// spans to several backends at once (e.g. Langfuse + Datadog). Vendor-neutral:
+	// each carries a raw endpoint + headers, no per-vendor code.
+	Exporters []OTLPExporterConfig `toml:"exporters"`
+}
+
+// OTLPExporterConfig is one OTLP/HTTP trace destination. The endpoint's scheme
+// decides transport security (http → plaintext, https → TLS).
+type OTLPExporterConfig struct {
+	// Name labels the exporter in logs and error messages only, e.g. "langfuse"
+	// or "datadog".
+	Name     string `toml:"name"`
+	Endpoint string `toml:"endpoint"`
+	// Headers are sent verbatim on every export, e.g. a Datadog "DD-API-KEY".
+	Headers map[string]string `toml:"headers"`
+	// PublicKey/SecretKey are a convenience for backends that authenticate with a
+	// Basic-auth key pair (Langfuse): when both are set, Atryum sends
+	// Authorization: Basic base64(public_key:secret_key). The key pair selects the
+	// Langfuse project, so a different pair per deployment routes per environment.
+	// An explicit Authorization header in Headers wins over these.
+	PublicKey string `toml:"public_key"`
+	SecretKey string `toml:"secret_key"`
 }
 
 // ManagedAgentsConfig configures one outbound connection to Anthropic's Claude

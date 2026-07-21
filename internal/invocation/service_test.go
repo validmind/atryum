@@ -394,6 +394,61 @@ func TestSubmitMatchesApprovalRuleByExternalToolName(t *testing.T) {
 	}
 }
 
+// TestSubmitEmitsInvocationSpan covers the external/harness path (the agent-hook
+// twin of Invoke): one atryum.invocation span carrying the source, tool, minted
+// invocation id, agent id, matched rule and resulting disposition.
+func TestSubmitEmitsInvocationSpan(t *testing.T) {
+	db := newSQLiteTestDB(t)
+	rulesRepo := store.NewRulesRepo(db)
+	if err := rulesRepo.Create(context.Background(), store.Rule{
+		ID:             "rule-deny-prod",
+		Action:         invocation.RuleActionAutoDeny,
+		ServerPatterns: []string{"*"},
+		ToolPatterns:   []string{"delete_prod"},
+		Enabled:        true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service := invocation.NewService(
+		store.NewInvocationRepo(db), store.NewEventRepo(db), nil, nil, nil,
+		5*time.Second, rulesRepo, nil, nil, nil,
+	)
+
+	sr := spanRecorder(t)
+
+	resp, err := service.Submit(context.Background(), invocation.ExternalSubmitRequest{
+		Source:  "demo-harness",
+		Tool:    "delete_prod",
+		AgentID: "coding-agent-1",
+		Input:   map[string]any{"env": "production"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusDenied {
+		t.Fatalf("status = %q, want denied", resp.Status)
+	}
+
+	span := lastSpanNamed(sr, "atryum.invocation")
+	if span == nil {
+		t.Fatal("no atryum.invocation span recorded")
+	}
+	attrs, _ := spanAttrs(span)
+	for key, want := range map[string]string{
+		"atryum.server":        "demo-harness",
+		"atryum.tool":          "delete_prod",
+		"atryum.external":      "true",
+		"atryum.agent.id":      "coding-agent-1",
+		"atryum.rule.id":       "rule-deny-prod",
+		"atryum.disposition":   string(policy.DispositionNever),
+		"atryum.invocation.id": resp.InvocationID,
+	} {
+		if attrs[key] != want {
+			t.Errorf("span attr %s = %q, want %q", key, attrs[key], want)
+		}
+	}
+}
+
 func TestSubmitAIEvaluationUsesDefaultAgentRecordForUnmappedAgentID(t *testing.T) {
 	db := newSQLiteTestDB(t)
 	invRepo := store.NewInvocationRepo(db)

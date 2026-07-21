@@ -27,6 +27,9 @@ import (
 	"atryum/internal/managedagents"
 	"atryum/internal/mcp"
 	"atryum/internal/store"
+	"atryum/internal/telemetry"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
@@ -56,6 +59,17 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+// resolveInstanceIdentity returns atryum's stable per-deployment identity: the
+// configured atryum_instance, falling back to public_base_url. It is the shared
+// source for the managed-agents ownership tag and the OTEL deployment.environment
+// attribute, so both name the same deployment.
+func resolveInstanceIdentity(s config.ServerConfig) string {
+	if s.AtryumInstance != "" {
+		return s.AtryumInstance
+	}
+	return s.PublicBaseURL
 }
 
 func runServer(args []string) error {
@@ -103,6 +117,26 @@ func runServer(args []string) error {
 		}
 	} else {
 		log.Printf("backend connection check skipped (backend.base_url not configured)")
+	}
+
+	// OpenTelemetry: deployment.environment reuses atryum's existing instance
+	// identity — atryum_instance, falling back to public_base_url (the same
+	// identity the managed-agents bridge uses). An explicit [otel].environment
+	// overrides it. Install the tracer provider; no-op when [otel].enabled=false.
+	environment := resolveInstanceIdentity(cfg.Server)
+	if cfg.OTEL.Environment != "" {
+		environment = cfg.OTEL.Environment
+	}
+	if environment == "" {
+		environment = "unknown"
+	}
+	shutdownOtel, err := telemetry.Setup(context.Background(), cfg.OTEL, environment)
+	if err != nil {
+		return fmt.Errorf("telemetry setup: %w", err)
+	}
+	defer func() { _ = shutdownOtel(context.Background()) }()
+	if cfg.OTEL.Enabled {
+		log.Printf("otel tracing enabled: environment=%q exporters=%d", environment, len(cfg.OTEL.Exporters))
 	}
 
 	db, dialect, err := store.OpenDatabase(cfg.Server.DatabaseURL, cfg.Server.DatabasePath)
@@ -321,11 +355,7 @@ func runServer(args []string) error {
 		if err != nil {
 			return fmt.Errorf("configure managed agents bridge: %w", err)
 		}
-		instanceName := cfg.Server.AtryumInstance
-		if instanceName == "" {
-			instanceName = cfg.Server.PublicBaseURL
-		}
-		managedSvc.SetInstanceName(instanceName)
+		managedSvc.SetInstanceName(resolveInstanceIdentity(cfg.Server))
 		managedSvc.SetBindings(&managedBindingStoreAdapter{repo: managedAgentBindingRepo})
 		if err := managedSvc.Start(context.Background()); err != nil {
 			return fmt.Errorf("start managed agents bridge: %w", err)
@@ -336,9 +366,11 @@ func runServer(args []string) error {
 		log.Printf("claude managed agents bridge disabled (no [[managed_agents]] entry with api_key)")
 	}
 
+	// Wrap the router so every request opens a root span (no-op when otel is
+	// disabled). Invocation and judge spans nest under it via request context.
 	srv := &http.Server{
 		Addr:              cfg.Server.ListenAddr,
-		Handler:           handler.Routes(),
+		Handler:           otelhttp.NewHandler(handler.Routes(), "atryum.http"),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

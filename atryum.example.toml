@@ -103,6 +103,40 @@ api_key = ""          # Anthropic API key created in that workspace
 key = ""
 secret = ""
 
+# OpenTelemetry trace export. Disabled by default. When enabled, Atryum emits a
+# span tree per invocation (atryum.invocation → atryum.ai_evaluation →
+# chat {model}) and pushes it to every exporter below at once — any OTLP-native
+# backend (Langfuse, Datadog, Arize, LangSmith, …) works with no vendor code.
+# service.name is always "atryum"; every span is sampled.
+#
+# environment → deployment.environment resource attr (Datadog `env` tag). Leave
+#               empty to reuse atryum's instance identity (atryum_instance, else
+#               public_base_url).
+#
+# Each [[otel.exporters]] endpoint must be the FULL OTLP traces URL including the
+# signal path (…/v1/traces) — it is used verbatim, no path is appended. The
+# endpoint scheme sets transport security (http → plaintext, https → TLS).
+# Routing is per environment: Langfuse selects the project by its key pair;
+# Datadog selects the env by the deployment.environment tag.
+#
+# [otel]
+# enabled = true
+# # environment = "prod-us5"   # omit → atryum_instance, else public_base_url
+#
+# # Langfuse — give the project's key pair directly (no base64). The pair selects
+# # the project, so a different pair per deployment routes per environment.
+# [[otel.exporters]]
+# name = "langfuse"
+# endpoint = "https://langfuse.flicker-godzilla.ts.net/api/public/otel/v1/traces"
+# public_key = "pk-lf-…"
+# secret_key = "sk-lf-…"
+#
+# # Datadog (and any other OTLP backend) — endpoint + raw headers.
+# [[otel.exporters]]
+# name = "datadog"
+# endpoint = "https://otlp.us5.datadoghq.com/v1/traces"  # or http://localhost:4318/v1/traces via a local DD agent
+# headers = { "DD-API-KEY" = "<DD_API_KEY>" }
+
 # Local-only auth debug mode. When true, the Authorization header is ignored
 # entirely on /mcp/: no bearer token is required and no identity is set on
 # the request context. Never enable outside local debugging.

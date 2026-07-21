@@ -10,7 +10,25 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
+
+// tokenUsage carries LLM token counts back from a provider call for gen_ai spans.
+type tokenUsage struct {
+	input  int
+	output int
+}
+
+// genAISystem maps an Atryum provider to an OTEL gen_ai.system value.
+func genAISystem(provider string) string {
+	if provider == "anthropic" {
+		return "anthropic"
+	}
+	return "openai"
+}
 
 // LLMConfigProvider is the minimal interface the local evaluator needs to look
 // up a stored LLM configuration. Satisfied by *store.LLMConfigsRepo via the
@@ -67,17 +85,29 @@ func (e *LocalEvaluatorClient) EvaluateToolCall(ctx context.Context, req Evaluat
 		return EvaluateResponse{}, fmt.Errorf("local evaluator: fetch llm config %q: %w", req.AtryumLLMConfigID, err)
 	}
 
+	// The judge LLM call as a gen_ai span — Langfuse renders this as a generation.
+	ctx, span := tracer.Start(ctx, "chat "+cfg.Model, trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("gen_ai.system", genAISystem(cfg.Provider)),
+			attribute.String("gen_ai.operation.name", "chat"),
+			attribute.String("gen_ai.request.model", cfg.Model),
+		))
+	defer span.End()
+
 	userContent := e.buildUserMessage(req)
 	systemContent := fmt.Sprintf(judgeSystemPrompt, req.Charter)
 
 	var rawResp string
+	var usage tokenUsage
 	switch cfg.Provider {
 	case "anthropic":
-		rawResp, err = e.callAnthropic(ctx, cfg, systemContent, userContent)
+		rawResp, usage, err = e.callAnthropic(ctx, cfg, systemContent, userContent)
 	default: // "openai" and "openai_compatible"
-		rawResp, err = e.callOpenAI(ctx, cfg, systemContent, userContent)
+		rawResp, usage, err = e.callOpenAI(ctx, cfg, systemContent, userContent)
 	}
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return EvaluateResponse{}, fmt.Errorf("local evaluator: llm call failed: %w", err)
 	}
 
@@ -88,6 +118,17 @@ func (e *LocalEvaluatorClient) EvaluateToolCall(ctx context.Context, req Evaluat
 		"provider", cfg.Provider,
 		"model", cfg.Model,
 		"reason", reason,
+	)
+
+	if usage.input > 0 {
+		span.SetAttributes(attribute.Int("gen_ai.usage.input_tokens", usage.input))
+	}
+	if usage.output > 0 {
+		span.SetAttributes(attribute.Int("gen_ai.usage.output_tokens", usage.output))
+	}
+	span.SetAttributes(
+		attribute.String("atryum.judge.verdict", verdict),
+		attribute.Float64("atryum.judge.confidence", confidence),
 	)
 
 	c := confidence
@@ -111,7 +152,7 @@ func (e *LocalEvaluatorClient) buildUserMessage(req EvaluateRequest) string {
 }
 
 // callOpenAI calls the OpenAI chat completions API (or any compatible endpoint).
-func (e *LocalEvaluatorClient) callOpenAI(ctx context.Context, cfg LocalLLMConfig, system, user string) (string, error) {
+func (e *LocalEvaluatorClient) callOpenAI(ctx context.Context, cfg LocalLLMConfig, system, user string) (string, tokenUsage, error) {
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = "https://api.openai.com"
@@ -131,7 +172,7 @@ func (e *LocalEvaluatorClient) callOpenAI(ctx context.Context, cfg LocalLLMConfi
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return "", err
+		return "", tokenUsage{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	if cfg.APIKey != "" {
@@ -140,12 +181,12 @@ func (e *LocalEvaluatorClient) callOpenAI(ctx context.Context, cfg LocalLLMConfi
 
 	resp, err := e.httpClient.Do(httpReq)
 	if err != nil {
-		return "", err
+		return "", tokenUsage{}, err
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("openai api error %d: %s", resp.StatusCode, truncate(string(respBody), 200))
+		return "", tokenUsage{}, fmt.Errorf("openai api error %d: %s", resp.StatusCode, truncate(string(respBody), 200))
 	}
 
 	var result struct {
@@ -154,18 +195,23 @@ func (e *LocalEvaluatorClient) callOpenAI(ctx context.Context, cfg LocalLLMConfi
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("parse openai response: %w", err)
+		return "", tokenUsage{}, fmt.Errorf("parse openai response: %w", err)
 	}
 	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("openai returned no choices")
+		return "", tokenUsage{}, fmt.Errorf("openai returned no choices")
 	}
-	return result.Choices[0].Message.Content, nil
+	usage := tokenUsage{input: result.Usage.PromptTokens, output: result.Usage.CompletionTokens}
+	return result.Choices[0].Message.Content, usage, nil
 }
 
 // callAnthropic calls the Anthropic messages API.
-func (e *LocalEvaluatorClient) callAnthropic(ctx context.Context, cfg LocalLLMConfig, system, user string) (string, error) {
+func (e *LocalEvaluatorClient) callAnthropic(ctx context.Context, cfg LocalLLMConfig, system, user string) (string, tokenUsage, error) {
 	endpoint := "https://api.anthropic.com/v1/messages"
 
 	payload := map[string]any{
@@ -181,7 +227,7 @@ func (e *LocalEvaluatorClient) callAnthropic(ctx context.Context, cfg LocalLLMCo
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return "", err
+		return "", tokenUsage{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
@@ -191,12 +237,12 @@ func (e *LocalEvaluatorClient) callAnthropic(ctx context.Context, cfg LocalLLMCo
 
 	resp, err := e.httpClient.Do(httpReq)
 	if err != nil {
-		return "", err
+		return "", tokenUsage{}, err
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("anthropic api error %d: %s", resp.StatusCode, truncate(string(respBody), 200))
+		return "", tokenUsage{}, fmt.Errorf("anthropic api error %d: %s", resp.StatusCode, truncate(string(respBody), 200))
 	}
 
 	var result struct {
@@ -204,16 +250,21 @@ func (e *LocalEvaluatorClient) callAnthropic(ctx context.Context, cfg LocalLLMCo
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"content"`
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("parse anthropic response: %w", err)
+		return "", tokenUsage{}, fmt.Errorf("parse anthropic response: %w", err)
 	}
+	usage := tokenUsage{input: result.Usage.InputTokens, output: result.Usage.OutputTokens}
 	for _, block := range result.Content {
 		if block.Type == "text" {
-			return block.Text, nil
+			return block.Text, usage, nil
 		}
 	}
-	return "", fmt.Errorf("anthropic returned no text content")
+	return "", usage, fmt.Errorf("anthropic returned no text content")
 }
 
 // parseVerdict extracts verdict/confidence/reason from the LLM JSON output.
@@ -265,9 +316,9 @@ func (e *LocalEvaluatorClient) SummarizeInvocation(ctx context.Context, llmConfi
 	var raw string
 	switch cfg.Provider {
 	case "anthropic":
-		raw, err = e.callAnthropic(ctx, cfg, summarizeSystemPrompt, userContent)
+		raw, _, err = e.callAnthropic(ctx, cfg, summarizeSystemPrompt, userContent)
 	default:
-		raw, err = e.callOpenAI(ctx, cfg, summarizeSystemPrompt, userContent)
+		raw, _, err = e.callOpenAI(ctx, cfg, summarizeSystemPrompt, userContent)
 	}
 	if err != nil {
 		return "", fmt.Errorf("local summarizer: llm call failed: %w", err)
