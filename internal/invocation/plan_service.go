@@ -341,11 +341,16 @@ func (s *Service) evaluatePlanRules(ctx context.Context, plan Plan, chatContext 
 // wins over an approval or human-review result from the rules. An unavailable
 // or inconclusive judge fails closed to human approval; it never auto-approves.
 func (s *Service) finalizePlanAfterCharterReview(ctx context.Context, plan Plan, charterResult planAIEvaluationResult, ruleStatus PlanStatus, ruleApproval *Approval, ruleFeedback string) (Plan, error) {
+	// A deterministic invocation-rule denial is absolute. In particular, an
+	// LLM "revise" verdict must not soften an auto_deny into needs_revision.
+	if ruleStatus == PlanStatusDenied {
+		return s.finalizePlanDecision(ctx, plan, ruleStatus, ruleApproval, ruleFeedback)
+	}
 	switch charterResult.Status {
 	case PlanStatusDenied, PlanStatusNeedsRevision:
 		return s.finalizePlanDecision(ctx, plan, charterResult.Status, charterResult.Approval, charterResult.Feedback)
 	case PlanStatusPendingApproval:
-		if ruleStatus == PlanStatusDenied || ruleStatus == PlanStatusNeedsRevision {
+		if ruleStatus == PlanStatusNeedsRevision {
 			return s.finalizePlanDecision(ctx, plan, ruleStatus, ruleApproval, ruleFeedback)
 		}
 		return s.finalizePlanDecision(ctx, plan, PlanStatusPendingApproval, charterResult.Approval, charterResult.Feedback)
