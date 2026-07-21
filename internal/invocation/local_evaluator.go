@@ -130,6 +130,11 @@ func (e *LocalEvaluatorClient) EvaluateToolCall(ctx context.Context, req Evaluat
 		attribute.String("atryum.judge.verdict", verdict),
 		attribute.Float64("atryum.judge.confidence", confidence),
 	)
+	promptJSON, _ := json.Marshal([]map[string]string{
+		{"role": "system", "content": systemContent},
+		{"role": "user", "content": userContent},
+	})
+	setGenAIContent(span, string(promptJSON), rawResp)
 
 	c := confidence
 	return EvaluateResponse{

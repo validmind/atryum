@@ -138,6 +138,7 @@ func runServer(args []string) error {
 	if cfg.OTEL.Enabled {
 		log.Printf("otel tracing enabled: environment=%q exporters=%d", environment, len(cfg.OTEL.Exporters))
 	}
+	invocation.SetContentCapture(cfg.OTEL.CaptureContent == nil || *cfg.OTEL.CaptureContent)
 
 	db, dialect, err := store.OpenDatabase(cfg.Server.DatabaseURL, cfg.Server.DatabasePath)
 	if err != nil {
@@ -658,11 +659,22 @@ func (e *evaluatorAdapter) EvaluateToolCall(ctx context.Context, req invocation.
 	if err != nil {
 		return invocation.EvaluateResponse{}, err
 	}
-	return invocation.EvaluateResponse{
+	out := invocation.EvaluateResponse{
 		Verdict:    resp.Verdict,
 		Reason:     resp.Reason,
 		Confidence: resp.Confidence,
-	}, nil
+		Model:      resp.Model,
+		LatencyMS:  resp.LatencyMS,
+		Prompt:     resp.Prompt,
+		Completion: resp.Completion,
+	}
+	if resp.Usage != nil {
+		out.Usage = &invocation.TokenUsage{
+			InputTokens:  resp.Usage.InputTokens,
+			OutputTokens: resp.Usage.OutputTokens,
+		}
+	}
+	return out, nil
 }
 
 // summaryAdapter bridges backendclient.Client → invocation.SummaryClient.

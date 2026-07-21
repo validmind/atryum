@@ -45,6 +45,12 @@ type OTELConfig struct {
 	// spans to several backends at once (e.g. Langfuse + Datadog). Vendor-neutral:
 	// each carries a raw endpoint + headers, no per-vendor code.
 	Exporters []OTLPExporterConfig `toml:"exporters"`
+	// CaptureContent gates whether the judge's prompt and completion TEXT is
+	// attached to gen_ai spans (nil → true). Token counts, model, latency and
+	// verdict are always emitted; this only controls the message content, which
+	// carries the charter chain and the agent's tool arguments. Set false to keep
+	// that content out of the external telemetry backend.
+	CaptureContent *bool `toml:"capture_content"`
 }
 
 // OTLPExporterConfig is one OTLP/HTTP trace destination. The endpoint's scheme
