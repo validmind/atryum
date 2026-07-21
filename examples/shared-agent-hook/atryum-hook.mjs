@@ -290,6 +290,16 @@ function describe(input) {
   return parts.join(" | ") || "(no string params)";
 }
 
+// Points the agent at the rules endpoint rather than pre-fetching and
+// embedding rule content, so the model can query it directly when useful.
+function rulesEndpointHint(tool) {
+  const url = new URL("/api/v1/agent/rules", API);
+  url.searchParams.set("server", SOURCE);
+  url.searchParams.set("tool", tool);
+  if (AGENT_ID && !ACCESS_TOKEN) url.searchParams.set("agent_id", AGENT_ID);
+  return `atryum: to see the approval rules that apply to this call, GET ${url.toString()} (advisory only; Atryum re-checks policy during the actual gated call).`;
+}
+
 // The host's own session/thread identifier. Used only for cross-referencing:
 // it becomes the invocation `thread_id` and the session's `client_session_id`.
 // Atryum keys the judge's context off the session_id it mints, not this value.
@@ -564,7 +574,7 @@ async function handlePreToolUse(event) {
   await deleteInvocation(id);
   jsonOut(
     denyOutput(
-      `atryum: tool call '${toolName(event)}' was ${decided.status} by reviewer.`,
+      `atryum: tool call '${toolName(event)}' was ${decided.status} by reviewer. ${rulesEndpointHint(toolName(event))}`,
     ),
   );
 }

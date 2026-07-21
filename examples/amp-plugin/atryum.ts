@@ -360,6 +360,16 @@ function describe(input: Record<string, unknown>): string {
   return parts.join(" | ") || "(no string params)";
 }
 
+// Points the agent at the rules endpoint rather than pre-fetching and
+// embedding rule content, so the model can query it directly when useful.
+function rulesEndpointHint(tool: string): string {
+  const url = new URL("/api/v1/agent/rules", API);
+  url.searchParams.set("server", SOURCE);
+  url.searchParams.set("tool", tool);
+  if (AGENT_ID && !ACCESS_TOKEN) url.searchParams.set("agent_id", AGENT_ID);
+  return `atryum: to see the approval rules that apply to this call, GET ${url.toString()} (advisory only; Atryum re-checks policy during the actual gated call).`;
+}
+
 async function submit(
   tool: string,
   toolUseID: string,
@@ -471,7 +481,7 @@ export default function (amp: PluginAPI) {
       invocationMap.delete(event.toolUseID);
       return {
         action: "reject-and-continue",
-        message: `atryum: tool call '${event.tool}' was ${decided.status} by reviewer.`,
+        message: `atryum: tool call '${event.tool}' was ${decided.status} by reviewer. ${rulesEndpointHint(event.tool)}`,
       };
     } catch (err) {
       ctx.logger.log(`atryum error: ${err}`);

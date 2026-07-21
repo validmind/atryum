@@ -1117,8 +1117,43 @@ func TestMCPToolsList(t *testing.T) {
 		t.Fatalf("expected tools list, got %s", w.Body.String())
 	}
 	if strings.Contains(w.Body.String(), `"atryum.rules.get"`) {
-		t.Fatalf("did not expect synthetic rules tool, got %s", w.Body.String())
+		t.Fatalf("did not expect dotted synthetic rules tool, got %s", w.Body.String())
 	}
+	if !strings.Contains(w.Body.String(), `"`+atryumRulesToolName+`"`) {
+		t.Fatalf("expected compatible synthetic rules tool, got %s", w.Body.String())
+	}
+}
+
+func TestMCPRulesToolSchemaIncludesRequestIDFallback(t *testing.T) {
+	h := NewHandler(&stubService{tools: []mcp.Tool{{Name: "demo_tool"}}}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	var rpcResp struct {
+		Result struct {
+			Tools []struct {
+				Name        string `json:"name"`
+				InputSchema struct {
+					Properties map[string]json.RawMessage `json:"properties"`
+				} `json:"inputSchema"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &rpcResp); err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range rpcResp.Result.Tools {
+		if tool.Name != atryumRulesToolName {
+			continue
+		}
+		if _, ok := tool.InputSchema.Properties["request_id"]; !ok {
+			t.Fatalf("expected request_id in %s schema properties, got %#v", atryumRulesToolName, tool.InputSchema.Properties)
+		}
+		return
+	}
+	t.Fatalf("expected %s in tools/list, got %#v", atryumRulesToolName, rpcResp.Result.Tools)
 }
 
 func TestMCPToolsCallInterceptsInvocation(t *testing.T) {
@@ -1141,6 +1176,48 @@ func TestMCPToolsCallInterceptsInvocation(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), `"text":"ok"`) {
 		t.Fatalf("expected tool result, got %s", w.Body.String())
+	}
+}
+
+func TestMCPRulesToolReturnsAgentRulesWithoutInvocation(t *testing.T) {
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "read-auto", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Read"}, Enabled: true, Order: 0},
+	}}
+	svc := &stubService{}
+	h := NewHandler(svc, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"atryum_rules_get","arguments":{"tool":"Read"}}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if svc.invokedReq != nil {
+		t.Fatalf("rules helper should not create a gated invocation, got %#v", svc.invokedReq)
+	}
+	var rpcResp struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &rpcResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(rpcResp.Result.Content) != 1 {
+		t.Fatalf("expected one content block, got %#v", rpcResp.Result.Content)
+	}
+	var rulesResp AgentRulesResponse
+	if err := json.Unmarshal([]byte(rpcResp.Result.Content[0].Text), &rulesResp); err != nil {
+		t.Fatal(err)
+	}
+	if rulesResp.Server != "demo" || rulesResp.Tool != "Read" {
+		t.Fatalf("expected demo/Read preview, got %#v", rulesResp)
+	}
+	if rulesResp.Action != invocation.RuleActionAutoApprove {
+		t.Fatalf("expected auto approve disposition, got %q", rulesResp.Action)
+	}
+	if rulesResp.MatchedRuleID == nil || *rulesResp.MatchedRuleID != "read-auto" {
+		t.Fatalf("expected read-auto match, got %#v", rulesResp.MatchedRuleID)
 	}
 }
 
@@ -1235,11 +1312,61 @@ func TestAgentRulesListsApplicableRulesAndDisposition(t *testing.T) {
 	if resp.MatchedRuleID == nil || *resp.MatchedRuleID != "read-auto" {
 		t.Fatalf("expected matched rule read-auto, got %#v", resp.MatchedRuleID)
 	}
+	if resp.GeneratedAt.IsZero() {
+		t.Fatal("expected generated_at to be populated")
+	}
+	if resp.EvaluationMode != "static_only" {
+		t.Fatalf("expected static_only evaluation mode, got %q", resp.EvaluationMode)
+	}
+	if !strings.Contains(resp.Explanation, "advisory") {
+		t.Fatalf("expected advisory explanation, got %q", resp.Explanation)
+	}
 	if len(resp.Items) != 3 {
 		t.Fatalf("expected three applicable rules, got %#v", resp.Items)
 	}
 	if resp.Items[0].ID != "bash-deny" || resp.Items[1].ID != "read-auto" || resp.Items[2].ID != "fallback-human" {
 		t.Fatalf("unexpected applicable rules order: %#v", resp.Items)
+	}
+	if resp.Items[1].Guidance == "" {
+		t.Fatalf("expected rule guidance, got %#v", resp.Items[1])
+	}
+}
+
+func TestAgentRulesFiltersOutRulesScopedToOtherAgents(t *testing.T) {
+	agent := store.AgentRecord{ID: "agent-cuid-007", AgentIDs: `["agent-007"]`}
+	other := store.AgentRecord{ID: "agent-cuid-other", AgentIDs: `["other-agent"]`}
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "other-agent", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentCUIDs: []string{other.ID}, Enabled: true, Order: 0},
+		{ID: "this-agent", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentCUIDs: []string{agent.ID}, Enabled: true, Order: 1},
+		{ID: "unscoped", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 2},
+	}}
+	agents := &stubAgentsRepo{records: []store.AgentRecord{agent, other}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, agents, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?agent_id=agent-007&source=amp&tool=Read", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Action != invocation.RuleActionAutoApprove {
+		t.Fatalf("expected this-agent auto approve disposition, got %q", resp.Action)
+	}
+	if resp.MatchedRuleID == nil || *resp.MatchedRuleID != "this-agent" {
+		t.Fatalf("expected matched rule this-agent, got %#v", resp.MatchedRuleID)
+	}
+	if len(resp.Items) != 2 {
+		t.Fatalf("expected two visible rules, got %#v", resp.Items)
+	}
+	for _, item := range resp.Items {
+		if item.ID == "other-agent" {
+			t.Fatalf("other-agent scoped rule leaked into response: %#v", resp.Items)
+		}
 	}
 }
 
@@ -1276,6 +1403,70 @@ func TestAgentRulesUsesDefaultAgentRecordForAgentScopedRules(t *testing.T) {
 	}
 	if resp.Items[0].ID != "default-agent" || resp.Items[1].ID != "fallback-human" {
 		t.Fatalf("unexpected applicable rules order: %#v", resp.Items)
+	}
+}
+
+func TestAgentRulesNoAuthAgentIDFiltering(t *testing.T) {
+	agent := store.AgentRecord{ID: "agent-cuid-007", AgentIDs: `["agent-007"]`}
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "scoped", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentCUIDs: []string{agent.ID}, Enabled: true, Order: 0},
+		{ID: "other", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentCUIDs: []string{"agent-other"}, Enabled: true, Order: 1},
+	}}
+	agents := &stubAgentsRepo{records: []store.AgentRecord{agent}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, agents, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?agent_id=agent-007&source=amp&tool=Read", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Action != invocation.RuleActionAutoApprove {
+		t.Fatalf("expected scoped auto approve disposition, got %q", resp.Action)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].ID != "scoped" {
+		t.Fatalf("expected only scoped visible rule, got %#v", resp.Items)
+	}
+}
+
+func TestAgentRulesGuidanceForEachAction(t *testing.T) {
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "auto-approve", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, Enabled: true, Order: 0},
+		{ID: "auto-deny", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Bash"}, Enabled: true, Order: 1},
+		{ID: "human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 2},
+		{ID: "ai", Action: invocation.RuleActionAIEvaluation, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Search"}, Enabled: true, Order: 3},
+	}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]string{}
+	for _, item := range resp.Items {
+		byID[item.ID] = item.Guidance
+	}
+	for id, want := range map[string]string{
+		"auto-approve": "Auto-approved",
+		"auto-deny":    "Auto-denied",
+		"human":        "Requires reviewer approval",
+		"ai":           "real gated call",
+	} {
+		if !strings.Contains(byID[id], want) {
+			t.Fatalf("expected %s guidance to contain %q, got %q", id, want, byID[id])
+		}
 	}
 }
 
@@ -1331,7 +1522,10 @@ func TestMCPToolsListAnnotatesEffectiveAction(t *testing.T) {
 		t.Fatalf("Other tool annotations: %#v", otherTool.Annotations)
 	}
 	if _, ok := byName["atryum.rules.get"]; ok {
-		t.Fatalf("did not expect synthetic rules tool in tools/list")
+		t.Fatalf("did not expect dotted synthetic rules tool in tools/list")
+	}
+	if _, ok := byName[atryumRulesToolName]; !ok {
+		t.Fatalf("expected compatible synthetic rules tool in tools/list")
 	}
 }
 
@@ -1389,6 +1583,68 @@ func TestMCPToolsListAnnotationsUseDefaultAgentScopedRules(t *testing.T) {
 	}
 }
 
+func TestMCPToolsListAnnotationsIgnoreJSONRPCIDForNoAuthAgent(t *testing.T) {
+	agent := store.AgentRecord{ID: "agent-cuid-007", AgentIDs: `["agent-007"]`}
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "agent-auto", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Bash"}, AgentCUIDs: []string{agent.ID}, Enabled: true, Order: 0},
+	}}
+	svc := &stubService{tools: []mcp.Tool{{Name: "Bash", Description: "run a shell command"}}}
+	agents := &stubAgentsRepo{records: []store.AgentRecord{agent}}
+	h := NewHandler(svc, stubServerService{}, nil, rules, agents, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":"agent-007","method":"tools/list","params":{}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var rpcResp struct {
+		Result struct {
+			Tools []struct {
+				Name        string `json:"name"`
+				Annotations *struct {
+					Atryum struct {
+						EffectiveAction string `json:"effective_action"`
+						MatchedRuleID   string `json:"matched_rule_id"`
+					} `json:"atryum"`
+				} `json:"annotations"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &rpcResp); err != nil {
+		t.Fatal(err)
+	}
+	var bashTool *struct {
+		Name        string `json:"name"`
+		Annotations *struct {
+			Atryum struct {
+				EffectiveAction string `json:"effective_action"`
+				MatchedRuleID   string `json:"matched_rule_id"`
+			} `json:"atryum"`
+		} `json:"annotations"`
+	}
+	for i := range rpcResp.Result.Tools {
+		if rpcResp.Result.Tools[i].Name == "Bash" {
+			bashTool = &rpcResp.Result.Tools[i]
+			break
+		}
+	}
+	if bashTool == nil {
+		t.Fatalf("expected Bash tool, got %#v", rpcResp.Result.Tools)
+	}
+	got := bashTool.Annotations
+	if got == nil {
+		t.Fatal("expected annotation")
+	}
+	if got.Atryum.EffectiveAction != invocation.RuleActionHumanApproval {
+		t.Fatalf("expected anonymous/default policy, got %#v", got.Atryum)
+	}
+	if got.Atryum.MatchedRuleID != "" {
+		t.Fatalf("json-rpc id should not match agent-scoped rule, got %q", got.Atryum.MatchedRuleID)
+	}
+}
+
 func TestMCPToolsCallDenialIncludesRulesContext(t *testing.T) {
 	now := time.Now().UTC()
 	rules := &stubRulesRepo{rules: []store.Rule{
@@ -1427,6 +1683,49 @@ func TestMCPToolsCallDenialIncludesRulesContext(t *testing.T) {
 	last := rpcResp.Result.Content[len(rpcResp.Result.Content)-1].Text
 	if !strings.Contains(last, "Atryum approval rules") || !strings.Contains(last, "bash-deny") {
 		t.Fatalf("expected rules context in denial result, got %q", last)
+	}
+}
+
+func TestMCPToolsCallDenialRulesContextFiltersAgentScopedRules(t *testing.T) {
+	now := time.Now().UTC()
+	agent := store.AgentRecord{ID: "agent-cuid-007", AgentIDs: `["agent-007"]`}
+	other := store.AgentRecord{ID: "agent-cuid-other", AgentIDs: `["other-agent"]`}
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "other-deny", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Bash"}, AgentCUIDs: []string{other.ID}, Enabled: true, Order: 0},
+		{ID: "agent-deny", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Bash"}, AgentCUIDs: []string{agent.ID}, Enabled: true, Order: 1},
+	}}
+	svc := &stubService{invoke: invocation.InvocationResponse{
+		InvocationID: "inv_denied", ServerName: "demo", ToolName: "Bash",
+		Status:      invocation.StatusDenied,
+		SubmittedAt: now, CompletedAt: &now,
+		Error: json.RawMessage(`{"content":[{"type":"text","text":"Tool call denied by approval rule (auto_deny)."}],"isError":true}`),
+	}}
+	agents := &stubAgentsRepo{records: []store.AgentRecord{agent, other}}
+	h := NewHandler(svc, stubServerService{}, nil, rules, agents, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo?agent_id=agent-007", strings.NewReader(`{"jsonrpc":"2.0","id":"request-1","method":"tools/call","params":{"name":"Bash","arguments":{"cmd":"ls"}}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	var rpcResp struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &rpcResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(rpcResp.Result.Content) < 2 {
+		t.Fatalf("expected denial text plus rules context, got %#v", rpcResp.Result.Content)
+	}
+	last := rpcResp.Result.Content[len(rpcResp.Result.Content)-1].Text
+	if !strings.Contains(last, "agent-deny") {
+		t.Fatalf("expected agent scoped rule in denial context, got %q", last)
+	}
+	if strings.Contains(last, "other-deny") {
+		t.Fatalf("other agent rule leaked into denial context: %q", last)
 	}
 }
 

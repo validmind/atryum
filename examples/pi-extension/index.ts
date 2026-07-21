@@ -246,6 +246,16 @@ function describe(input: ToolInput): string {
   return parts.join(" | ") || "(no string params)";
 }
 
+// Points the agent at the rules endpoint rather than pre-fetching and
+// embedding rule content, so the model can query it directly when useful.
+function rulesEndpointHint(tool: string): string {
+  const url = new URL("/api/v1/agent/rules", API);
+  url.searchParams.set("server", SOURCE);
+  url.searchParams.set("tool", tool);
+  if (AGENT_ID && !ACCESS_TOKEN) url.searchParams.set("agent_id", AGENT_ID);
+  return `atryum: to see the approval rules that apply to this call, GET ${url.toString()} (advisory only; Atryum re-checks policy during the actual gated call).`;
+}
+
 // Pi's own session identifier, used only for cross-referencing (thread_id and
 // client_session_id). Atryum keys off the session_id it mints, not this.
 function piClientSessionID(ctx: unknown): string | undefined {
@@ -408,7 +418,7 @@ export default function (pi: ExtensionAPI) {
         : "";
       return {
         block: true,
-        reason: `atryum: tool call '${event.toolName}' was ${decided.status} by reviewer.${reviewerReason}`,
+        reason: `atryum: tool call '${event.toolName}' was ${decided.status} by reviewer.${reviewerReason} ${rulesEndpointHint(event.toolName)}`,
       };
     } catch (err) {
       ctx.ui.setStatus("atryum", "gate failed");
