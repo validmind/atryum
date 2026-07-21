@@ -142,6 +142,20 @@ the bearer token (auth mode). With neither, the caller is anonymous and Atryum
 resolves no session, evaluating the call history-free (tool calls are still
 gated, just without prior-call context).
 
+### Subagent isolation
+
+When the Task tool spawns subagents (e.g. Explore, Plan), they inherit the
+parent's top-level `session_id` — Claude Code doesn't mint a new top-level
+session per subagent. Instead, hook events fired from inside a subagent carry
+the host's own subagent instance id on the same event (a field distinct from
+the session id, and unrelated to Atryum's `ATRYUM_AGENT_ID`/agent-binding
+concept). The hook folds that instance id into `client_session_id` as
+`<session-id>:<instance-id>`, so each subagent get-or-creates its own Atryum
+session distinct from its parent and from sibling subagents, instead of all of
+them sharing — and cross-contaminating — one judge context. Main-session hook
+calls are unaffected: `client_session_id` is just the session id, exactly as
+before.
+
 ## Notes
 
 Claude Code hook support is documented around `PreToolUse` and `PostToolUse`.

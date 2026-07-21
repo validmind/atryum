@@ -23,6 +23,17 @@
 // session state on disk — no mint call, no cache file, no re-mint/retry — even
 // though it runs as a fresh process per tool event.
 //
+// Subagents (e.g. Claude Code's Task tool spawning Explore/Plan-style workers)
+// share their parent's top-level session/thread id but carry their own
+// host-native subagent instance id on the same hook event. That instance id has
+// nothing to do with Atryum's own `agent_id` agent-binding concept below — it
+// identifies one subagent run within a session, not an authenticated caller —
+// so this hook folds it into `client_session_id` as `<session-id>:<instance-id>`
+// when present, giving each subagent its own get-or-create key distinct from
+// its parent and from sibling subagents. Main-session hook calls, and hosts
+// that never send a subagent instance id, are unaffected: `client_session_id`
+// is just the session id, exactly as before.
+//
 // A session still requires an agent binding (from ATRYUM_AGENT_ID in no-auth
 // mode, or the bearer token in auth mode). When neither is present the caller is
 // anonymous: the server simply resolves no session and evaluates the call
@@ -297,11 +308,36 @@ function rulesEndpointHint(tool) {
   return `atryum: to see the approval rules that apply to this call, GET ${url.toString()} (advisory only; Atryum re-checks policy during the actual gated call).`;
 }
 
-// The host's own session/thread identifier. Sent as the invocation `thread_id`
-// and `client_session_id`; Atryum resolves the internal session with
+// A host-native subagent instance id (e.g. Claude Code's Task-tool workers),
+// present on hook events fired from inside a subagent run. This is NOT
+// Atryum's `agent_id` agent-binding concept (see AGENT_ID above) — it does not
+// identify a caller, it disambiguates one subagent run from its parent
+// session and from sibling subagents. Hosts without a subagent concept
+// (cursor, codex) simply never send this field, so callers see "".
+function hostSubagentInstanceId(event) {
+  return (
+    event.agent_id ||
+    event.agentId ||
+    event.subagent_id ||
+    event.subagentId ||
+    ""
+  );
+}
+
+// Descriptive label for which named subagent produced the event (e.g.
+// "Explore", "Plan"). Observability metadata only — never part of the
+// get-or-create key.
+function hostSubagentType(event) {
+  return event.agent_type || event.agentType || "";
+}
+
+// The host's own session/thread identifier, composed with the host-native
+// subagent instance id (if any) so each subagent gets a distinct
+// `client_session_id`. Sent as the invocation `thread_id` and
+// `client_session_id`; Atryum resolves the internal session with
 // get-or-create keyed by (agent binding, client_session_id).
 function sessionId(event) {
-  return (
+  const base = (
     event.session_id ||
     event.sessionId ||
     event.thread_id ||
@@ -310,6 +346,9 @@ function sessionId(event) {
     event.conversationId ||
     ""
   );
+  const subagentInstanceId = hostSubagentInstanceId(event);
+  if (!subagentInstanceId) return base;
+  return base ? `${base}:${subagentInstanceId}` : subagentInstanceId;
 }
 
 // ---------------------------------------------------------------------------
@@ -322,6 +361,11 @@ async function submit(event) {
   const input = toolInput(event);
   const id = toolUseID(event);
   const clientSessionID = sessionId(event) || undefined;
+  // Descriptive-only: which named subagent (if any) produced this call, tacked
+  // onto client_name for observability. Never part of the get-or-create key —
+  // that's clientSessionID above.
+  const subagentType = hostSubagentType(event);
+  const clientName = subagentType ? `${CLIENT_NAME}:${subagentType}` : CLIENT_NAME;
   const res = await atryumFetch(`${API}/api/v1/external/invocations`, {
     method: "POST",
     contentType: true,
@@ -333,7 +377,7 @@ async function submit(event) {
       request_id: id,
       thread_id: clientSessionID,
       client_session_id: clientSessionID,
-      client_name: CLIENT_NAME,
+      client_name: clientName,
       client_version: CLIENT_VERSION || undefined,
       agent_id: AGENT_ID || undefined,
     }),
