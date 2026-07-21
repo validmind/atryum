@@ -240,6 +240,19 @@ func (s *Service) evaluatePlanRules(ctx context.Context, plan Plan, chatContext 
 	var deniedRuleID string
 	var deniedResult *planAIEvaluationResult
 
+	// recordDenial keeps the earliest (in declared action order) result at the
+	// highest severity seen: an outright PlanStatusDenied always wins — it is
+	// absolute (see finalizePlanAfterCharterReview) and can only be replaced by
+	// another Denied if none has been recorded yet. A softer NeedsRevision is
+	// recorded only when nothing is recorded yet, but must not block a later
+	// action's own, more severe Denied from taking over.
+	recordDenial := func(ruleID string, result planAIEvaluationResult) {
+		if deniedResult == nil || (deniedResult.Status != PlanStatusDenied && result.Status == PlanStatusDenied) {
+			deniedRuleID = ruleID
+			deniedResult = &result
+		}
+	}
+
 	for _, action := range plan.Actions {
 		server := action.Server
 		if server == "" {
@@ -263,10 +276,8 @@ func (s *Service) evaluatePlanRules(ctx context.Context, plan Plan, chatContext 
 				decided = true
 			case RuleActionAutoDeny:
 				feedback := "A planned action matches invocation deny rule " + rule.ID + ". Remove or replace that action before submitting another plan."
-				deniedRuleID = rule.ID
-				result := planAIEvaluationResult{Status: PlanStatusDenied,
-					Approval: newApproval("auto_denied", "plan rejected: matched invocation auto_deny rule", nil), Feedback: feedback}
-				deniedResult = &result
+				recordDenial(rule.ID, planAIEvaluationResult{Status: PlanStatusDenied,
+					Approval: newApproval("auto_denied", "plan rejected: matched invocation auto_deny rule", nil), Feedback: feedback})
 				decided = true
 			case RuleActionAIEvaluation:
 				if charterLLMConfigID == "" && rule.AtryumLLMConfigID != "" {
@@ -280,9 +291,7 @@ func (s *Service) evaluatePlanRules(ctx context.Context, plan Plan, chatContext 
 					continue // next_rule
 				}
 				if charterResult.Status == PlanStatusDenied || charterResult.Status == PlanStatusNeedsRevision {
-					deniedRuleID = rule.ID
-					resultCopy := *charterResult
-					deniedResult = &resultCopy
+					recordDenial(rule.ID, *charterResult)
 				}
 				if charterResult.Status == PlanStatusPendingApproval {
 					if pendingApproval == nil {
@@ -312,6 +321,16 @@ func (s *Service) evaluatePlanRules(ctx context.Context, plan Plan, chatContext 
 		if !decided && pendingApproval == nil {
 			pendingApproval = newApproval("human_required", "plan includes an action with no decisive invocation rule", nil)
 		}
+		// An outright Denied is absolute (see finalizePlanAfterCharterReview)
+		// and cannot be changed by anything later — stop evaluating remaining
+		// actions so neither a later action's own denial can override the
+		// recorded rule/reason, nor a later ai_evaluation rule pays for a
+		// charter review call whose answer can no longer change the outcome.
+		// A softer NeedsRevision keeps looking: a later action may still turn
+		// up an outright Denied, which must take priority over it.
+		if deniedResult != nil && deniedResult.Status == PlanStatusDenied {
+			break
+		}
 	}
 
 	if deniedResult != nil {
@@ -329,11 +348,18 @@ func (s *Service) evaluatePlanRules(ctx context.Context, plan Plan, chatContext 
 		ruleApproval = newApproval("auto_approved", "all planned actions were approved by invocation rules", nil)
 	}
 
-	if charterResult == nil {
+	// A rule denial is absolute (see finalizePlanAfterCharterReview) and
+	// already decided above — no charter opinion can change it, so skip the
+	// judge call entirely rather than pay for an answer that will be discarded.
+	if charterResult == nil && ruleStatus != PlanStatusDenied {
 		result := s.evaluateMandatoryPlanCharter(ctx, plan, agentRec, chatContext, charterLLMConfigID)
 		charterResult = &result
 	}
-	return s.finalizePlanAfterCharterReview(ctx, plan, *charterResult, ruleStatus, ruleApproval, ruleFeedback)
+	var finalCharterResult planAIEvaluationResult
+	if charterResult != nil {
+		finalCharterResult = *charterResult
+	}
+	return s.finalizePlanAfterCharterReview(ctx, plan, finalCharterResult, ruleStatus, ruleApproval, ruleFeedback)
 }
 
 // finalizePlanAfterCharterReview runs exactly one local-LLM review of the

@@ -249,7 +249,7 @@ func TestSubmitPlanAutoApproveWithoutCharterDenies(t *testing.T) {
 	}
 }
 
-func TestEverySubmittedPlanRunsOneMandatoryCharterReview(t *testing.T) {
+func TestPlanCharterReviewCallsByRuleOutcome(t *testing.T) {
 	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
 		"agent-a": {ID: "agent-rec-a", Charter: "Never run destructive plans."},
 	}}
@@ -257,10 +257,15 @@ func TestEverySubmittedPlanRunsOneMandatoryCharterReview(t *testing.T) {
 		name       string
 		ruleAction string
 		wantStatus invocation.PlanStatus
+		// wantCalls is 0 only for auto_deny: the rule pass alone already
+		// guarantees denial, so the charter review is skipped rather than
+		// paying for an answer that can't change the outcome (see
+		// TestPlanSubmissionSkipsCharterReviewWhenRuleAlreadyDenies).
+		wantCalls int
 	}{
-		{name: "auto approve", ruleAction: invocation.RuleActionAutoApprove, wantStatus: invocation.PlanStatusApproved},
-		{name: "auto deny", ruleAction: invocation.RuleActionAutoDeny, wantStatus: invocation.PlanStatusDenied},
-		{name: "human approval", ruleAction: invocation.RuleActionHumanApproval, wantStatus: invocation.PlanStatusPendingApproval},
+		{name: "auto approve", ruleAction: invocation.RuleActionAutoApprove, wantStatus: invocation.PlanStatusApproved, wantCalls: 1},
+		{name: "auto deny", ruleAction: invocation.RuleActionAutoDeny, wantStatus: invocation.PlanStatusDenied, wantCalls: 0},
+		{name: "human approval", ruleAction: invocation.RuleActionHumanApproval, wantStatus: invocation.PlanStatusPendingApproval, wantCalls: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			judge := &planJudgeStub{resp: invocation.PlanEvaluateResponse{Verdict: "approved", Reason: "charter permits it"}}
@@ -274,8 +279,8 @@ func TestEverySubmittedPlanRunsOneMandatoryCharterReview(t *testing.T) {
 			if plan.Status != tc.wantStatus {
 				t.Fatalf("status = %s, want %s", plan.Status, tc.wantStatus)
 			}
-			if judge.planCallCount() != 1 {
-				t.Fatalf("mandatory charter review calls = %d, want 1", judge.planCallCount())
+			if judge.planCallCount() != tc.wantCalls {
+				t.Fatalf("mandatory charter review calls = %d, want %d", judge.planCallCount(), tc.wantCalls)
 			}
 		})
 	}
@@ -291,10 +296,15 @@ func TestPlanRuleAndCharterDecisionMatrix(t *testing.T) {
 		rulesErr   error
 		baseOnPass invocation.PlanStatus
 		alwaysDeny bool
+		// skipsJudge is true when the rule pass alone already guarantees denial
+		// (no ai_evaluation rule ever runs), so the mandatory charter review is
+		// skipped entirely rather than paying for an answer that can't change
+		// the outcome.
+		skipsJudge bool
 	}
 	ruleCases := []ruleCase{
 		{name: "auto approve", rules: []invocation.ApprovalRule{{ID: "rule", Action: invocation.RuleActionAutoApprove, Enabled: true}}, baseOnPass: invocation.PlanStatusApproved},
-		{name: "auto deny", rules: []invocation.ApprovalRule{{ID: "rule", Action: invocation.RuleActionAutoDeny, Enabled: true}}, alwaysDeny: true},
+		{name: "auto deny", rules: []invocation.ApprovalRule{{ID: "rule", Action: invocation.RuleActionAutoDeny, Enabled: true}}, alwaysDeny: true, skipsJudge: true},
 		{name: "human", rules: []invocation.ApprovalRule{{ID: "rule", Action: invocation.RuleActionHumanApproval, Enabled: true}}, baseOnPass: invocation.PlanStatusPendingApproval},
 		{name: "ai", rules: []invocation.ApprovalRule{{ID: "rule", Action: invocation.RuleActionAIEvaluation, AtryumLLMConfigID: "llm", Enabled: true}}, baseOnPass: invocation.PlanStatusApproved},
 		{name: "unmatched", rules: []invocation.ApprovalRule{{ID: "rule", Action: invocation.RuleActionAutoApprove, ToolPatterns: []string{"other"}, Enabled: true}}, baseOnPass: invocation.PlanStatusPendingApproval},
@@ -334,8 +344,12 @@ func TestPlanRuleAndCharterDecisionMatrix(t *testing.T) {
 				if plan.Status != want {
 					t.Fatalf("status = %s, want %s", plan.Status, want)
 				}
-				if judge.planCallCount() != 1 {
-					t.Fatalf("judge calls = %d, want exactly 1", judge.planCallCount())
+				wantCalls := 1
+				if rc.skipsJudge {
+					wantCalls = 0
+				}
+				if judge.planCallCount() != wantCalls {
+					t.Fatalf("judge calls = %d, want exactly %d", judge.planCallCount(), wantCalls)
 				}
 			})
 		}
@@ -370,6 +384,56 @@ func TestFourStepPlanLaterAutoDenyAlwaysWins(t *testing.T) {
 				t.Fatalf("judge calls = %d, want exactly 1", judge.planCallCount())
 			}
 		})
+	}
+}
+
+// TestPlanDenialReportsEarliestViolatingAction covers two actions that each
+// independently match a different auto_deny rule. The recorded MatchedRuleID
+// (and the feedback the agent sees) must reflect the first one in declared
+// action order, not whichever the loop happened to process last — otherwise
+// an agent that "fixes" the reported action just walks into the other,
+// never-reported violation on resubmission.
+func TestPlanDenialReportsEarliestViolatingAction(t *testing.T) {
+	rules := []invocation.ApprovalRule{
+		{ID: "deny-one", Action: invocation.RuleActionAutoDeny, ToolPatterns: []string{"one"}, Enabled: true},
+		{ID: "deny-two", Action: invocation.RuleActionAutoDeny, ToolPatterns: []string{"two"}, Enabled: true},
+	}
+	svc, _ := newPlanTestService(t, rules, nil, nil)
+
+	plan, err := svc.SubmitPlan(context.Background(), planSubmit("agent-a", "one", "two"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != invocation.PlanStatusDenied || plan.MatchedRuleID == nil || *plan.MatchedRuleID != "deny-one" {
+		t.Fatalf("plan = %+v, want denial attributed to deny-one (the first violating action)", plan)
+	}
+	if !strings.Contains(plan.Feedback, "deny-one") {
+		t.Fatalf("feedback = %q, want it to name deny-one", plan.Feedback)
+	}
+}
+
+// TestPlanSubmissionSkipsCharterReviewWhenRuleAlreadyDenies covers a plan
+// denied by a plain rule with no ai_evaluation rule anywhere in the plan: the
+// outcome is already Denied and absolute (finalizePlanAfterCharterReview never
+// lets a charter opinion soften it), so the mandatory charter review must be
+// skipped entirely rather than spending an LLM call whose answer is discarded.
+func TestPlanSubmissionSkipsCharterReviewWhenRuleAlreadyDenies(t *testing.T) {
+	rules := []invocation.ApprovalRule{{ID: "deny-all", Action: invocation.RuleActionAutoDeny, Enabled: true}}
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "be careful"},
+	}}
+	judge := &planJudgeStub{resp: invocation.PlanEvaluateResponse{Verdict: "approved"}}
+	svc, _ := newPlanTestService(t, rules, agents, judge)
+
+	plan, err := svc.SubmitPlan(context.Background(), planSubmit("agent-a", "Bash"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != invocation.PlanStatusDenied {
+		t.Fatalf("status = %s, want denied", plan.Status)
+	}
+	if judge.planCallCount() != 0 {
+		t.Fatalf("judge calls = %d, want 0 because the plain rule already denied the plan", judge.planCallCount())
 	}
 }
 
