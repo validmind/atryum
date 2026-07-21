@@ -97,8 +97,8 @@ gated, just without prior-call context).
 
 ## Preapproval plans
 
-When plan-scoped rules apply to the current agent, the shared hook discovers
-that via `GET /api/v1/agent/rules` and injects plan-submission guidance at
+When plans are enabled, the shared hook discovers that via
+`GET /api/v1/agent/rules` and injects plan-submission guidance at
 `SessionStart`. It also includes the guidance in a blocked tool message as a
 fallback. The agent can submit a batch plan to
 `POST /api/v1/external/plans?source=<source>` (the hint provides the exact
@@ -126,7 +126,7 @@ args = [
 ```
 
 Replace `leanctx` with the Atryum MCP server name you configured in the Atryum
-server registry. When plan-scoped rules apply, `tools/list` also exposes
+server registry. When plans are enabled, `tools/list` also exposes
 `atryum.plan.submit` and `atryum.plan.get`; MCP agents can call those synthetic
 tools to submit and poll a plan without using the raw HTTP endpoint directly.
 

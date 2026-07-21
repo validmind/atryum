@@ -339,13 +339,9 @@ export const serversApi = {
 
 export type RuleAction = 'auto_approve' | 'auto_deny' | 'human_approval' | 'ai_evaluation';
 
-export type RuleScope = 'invocation' | 'plan';
-
 export interface Rule {
   id: string;
   action: RuleAction;
-  /** Whether the rule gates per-call invocations (default) or submitted plans. */
-  applies_to?: RuleScope;
   server_patterns: string[];
   tool_patterns: string[];
   /** Agent CUIDs this rule applies to; empty means all agents. */
@@ -361,7 +357,6 @@ export interface Rule {
 
 export interface RuleInput {
   action: RuleAction;
-  applies_to?: RuleScope;
   server_patterns: string[];
   tool_patterns: string[];
   agent_cuids?: string[];

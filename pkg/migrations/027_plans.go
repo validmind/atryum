@@ -83,7 +83,6 @@ func migration027() Definition {
 				CREATE INDEX IF NOT EXISTS idx_plan_events_lookup ON plan_events(plan_id, id)
 			`),
 			AddColumnIfMissing("invocations", "plan_id", "TEXT", "TEXT"),
-			AddColumnIfMissing("approval_rules", "applies_to", "TEXT NOT NULL DEFAULT 'invocation'", "TEXT NOT NULL DEFAULT 'invocation'"),
 		},
 	}
 }

@@ -57,6 +57,7 @@ func TestInitDB_FreshDatabase(t *testing.T) {
 			t.Errorf("table %s not found: %v", table, err)
 		}
 	}
+
 }
 
 func TestInitDB_Idempotent(t *testing.T) {

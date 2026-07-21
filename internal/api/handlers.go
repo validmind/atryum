@@ -320,7 +320,6 @@ type OAuthConnectStatusResponse struct {
 type AdminRule struct {
 	ID                string    `json:"id"`
 	Action            string    `json:"action"`
-	AppliesTo         string    `json:"applies_to"`
 	ServerPatterns    []string  `json:"server_patterns"`
 	ToolPatterns      []string  `json:"tool_patterns"`
 	ModelConfigCUID   string    `json:"model_config_cuid,omitempty"`
@@ -335,7 +334,6 @@ type AdminRule struct {
 
 type AdminRuleInput struct {
 	Action            string   `json:"action"`
-	AppliesTo         string   `json:"applies_to,omitempty"`
 	ServerPatterns    []string `json:"server_patterns"`
 	ToolPatterns      []string `json:"tool_patterns"`
 	ModelConfigCUID   string   `json:"model_config_cuid,omitempty"`
@@ -670,7 +668,6 @@ const atryumRulesToolName = "atryum_rules_get"
 type AgentRule struct {
 	ID             string   `json:"id"`
 	Action         string   `json:"action"`
-	AppliesTo      string   `json:"applies_to"`
 	ServerPatterns []string `json:"server_patterns"`
 	ToolPatterns   []string `json:"tool_patterns"`
 	Description    string   `json:"description,omitempty"`
@@ -723,6 +720,10 @@ func planSubmissionMessage(endpoint, source, agentID string) string {
 		"Submit a plan when work is risky or dependent — " +
 		"anything that could leave files, systems, or external state inconsistent if a later call is denied — " +
 		"so the whole batch can be reviewed together before the first side effect. " +
+		"Atryum evaluates every declared action against the same invocation rules used for tool calls, in priority order. " +
+		"After the rules are evaluated, one mandatory AI review checks the complete plan against the agent charter. " +
+		"A rule denial or charter violation rejects the plan; human-approval, an unmatched action, or an inconclusive " +
+		"charter review sends the complete plan to a reviewer. " +
 		"POST the plan as JSON to " + endpoint + " with: goal, rationale, actions, ttl_seconds, and " +
 		agentGuidance +
 		"Keep the endpoint's source parameter exactly as given: it scopes the plan's actions to this " +
@@ -1174,8 +1175,8 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, planAgen
 	resp := newAgentRulesResponse(agentID, server, tool)
 	if h.svc != nil && h.svc.PlansEnabled() {
 		// Plan submission is available whenever the feature is wired — no
-		// plan-scoped rule is required: a plan matching no rule defaults to
-		// human review.
+		// plan configuration is required: a plan with any unmatched action
+		// defaults to human review.
 		//
 		// Bake the caller's source into the submission endpoint: plan
 		// actions are scoped to their source and only match later tool
@@ -1205,11 +1206,9 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, planAgen
 		if !apiRuleVisibleToAgent(rule, agentCUID) {
 			continue
 		}
-		appliesTo := normalizeRuleScope(rule.AppliesTo)
 		resp.Items = append(resp.Items, AgentRule{
 			ID:             rule.ID,
 			Action:         rule.Action,
-			AppliesTo:      appliesTo,
 			ServerPatterns: rule.ServerPatterns,
 			ToolPatterns:   rule.ToolPatterns,
 			Description:    rule.Description,
@@ -1217,7 +1216,6 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, planAgen
 			Order:          rule.Order,
 		})
 		if resp.Action == "" && server != "" && tool != "" &&
-			appliesTo == invocation.RuleScopeInvocation &&
 			apiRuleMatches(rule, server, tool, agentCUID, true) {
 			resp.Action = rule.Action
 			if rule.ID != "" {
@@ -1293,13 +1291,6 @@ func newAgentRulesResponse(agentID, server, tool string) AgentRulesResponse {
 			"AI evaluation rules are decided only during the actual gated tool call.",
 		Items: []AgentRule{},
 	}
-}
-
-func normalizeRuleScope(scope string) string {
-	if scope == invocation.RuleScopePlan {
-		return invocation.RuleScopePlan
-	}
-	return invocation.RuleScopeInvocation
 }
 
 func (h *Handler) resolveAgentRecordForRules(ctx context.Context, agentID string) string {
@@ -1840,8 +1831,8 @@ func atryumPlanGetMCPTool() annotatedTool {
 func (h *Handler) annotateToolsWithPolicy(ctx context.Context, agentID, server string, tools []mcp.Tool) []any {
 	out := make([]any, 0, len(tools)+3)
 	// Plan tools are offered whenever the plan feature is wired — no
-	// plan-scoped rule is required: a plan matching no rule defaults to
-	// human review.
+	// plan configuration is required: a plan with any unmatched action
+	// defaults to human review.
 	if h.svc != nil && h.svc.PlansEnabled() {
 		out = append(out, atryumPlanSubmitMCPTool(strings.TrimSpace(server)))
 		out = append(out, atryumPlanGetMCPTool())
@@ -1902,9 +1893,6 @@ var atryumRulesTool = mcp.Tool{
 // When no rule matches, it returns RuleActionHumanApproval (the default).
 func effectiveActionForTool(rules []store.Rule, server, tool, agentCUID string) (string, string) {
 	for _, r := range rules {
-		if normalizeRuleScope(r.AppliesTo) != invocation.RuleScopeInvocation {
-			continue
-		}
 		if !apiRuleMatches(r, server, tool, agentCUID, true) {
 			continue
 		}
@@ -2536,7 +2524,6 @@ func (h *Handler) adminRules(w http.ResponseWriter, r *http.Request) {
 		rule := store.Rule{
 			ID:                "rule_" + newUUID(),
 			Action:            req.Action,
-			AppliesTo:         req.AppliesTo,
 			ServerPatterns:    normalizePatternSlice(req.ServerPatterns),
 			ToolPatterns:      normalizePatternSlice(req.ToolPatterns),
 			ModelConfigCUID:   req.ModelConfigCUID,
@@ -2650,9 +2637,6 @@ func (h *Handler) adminRuleDetail(w http.ResponseWriter, r *http.Request) {
 			enabled = *req.Enabled
 		}
 		existing.Action = req.Action
-		if req.AppliesTo != "" {
-			existing.AppliesTo = req.AppliesTo
-		}
 		existing.ServerPatterns = normalizePatternSlice(req.ServerPatterns)
 		existing.ToolPatterns = normalizePatternSlice(req.ToolPatterns)
 		existing.ModelConfigCUID = req.ModelConfigCUID
@@ -3139,14 +3123,9 @@ func toAdminRule(r store.Rule) AdminRule {
 	if ac == nil {
 		ac = []string{}
 	}
-	appliesTo := r.AppliesTo
-	if appliesTo == "" {
-		appliesTo = invocation.RuleScopeInvocation
-	}
 	return AdminRule{
 		ID:                r.ID,
 		Action:            r.Action,
-		AppliesTo:         appliesTo,
 		ServerPatterns:    sp,
 		ToolPatterns:      tp,
 		ModelConfigCUID:   r.ModelConfigCUID,
@@ -3452,11 +3431,6 @@ func validateRuleInput(req AdminRuleInput) error {
 		}
 	default:
 		return fmt.Errorf("action must be one of: auto_approve, auto_deny, human_approval, ai_evaluation")
-	}
-	switch req.AppliesTo {
-	case "", invocation.RuleScopeInvocation, invocation.RuleScopePlan:
-	default:
-		return fmt.Errorf("applies_to must be one of: invocation, plan")
 	}
 	return nil
 }

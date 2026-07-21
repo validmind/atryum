@@ -14,19 +14,11 @@ const (
 	RuleActionAIEvaluation = "ai_evaluation"
 )
 
-// Rule scopes: a rule applies either to individual tool-call invocations
-// (the default) or to agent-submitted plans.
-const (
-	RuleScopeInvocation = "invocation"
-	RuleScopePlan       = "plan"
-)
-
 // ApprovalRule is the invocation-layer view of a configured rule.
 // It is intentionally decoupled from the store layer to avoid import cycles.
 type ApprovalRule struct {
 	ID                string   // unique rule identifier
 	Action            string   // one of the RuleAction* constants
-	AppliesTo         string   // RuleScopeInvocation (default when empty) or RuleScopePlan
 	ServerPatterns    []string // empty slice = match any server
 	ToolPatterns      []string // empty slice = match any tool
 	ModelConfigCUID   string   // VM agent model config to use for ai_evaluation rules
@@ -53,9 +45,6 @@ func matchRules(rules []ApprovalRule, server, tool, agentCUID string) []Approval
 		if !r.Enabled {
 			continue
 		}
-		if r.AppliesTo == RuleScopePlan {
-			continue
-		}
 		if !matchPatterns(r.ServerPatterns, server) {
 			continue
 		}
@@ -63,44 +52,6 @@ func matchRules(rules []ApprovalRule, server, tool, agentCUID string) []Approval
 			continue
 		}
 		if !matchAgentCUIDs(r.AgentCUIDs, agentCUID) {
-			continue
-		}
-		matched = append(matched, r)
-	}
-	return matched
-}
-
-// matchPlanRules returns all enabled plan-scoped rules matching a submitted
-// plan, in stored priority order. A rule matches when its server patterns
-// match the plan's source, its agent CUIDs match, and EVERY declared action's
-// (server, tool) pair matches its patterns — a plan rule never fires on a
-// plan that mixes in tools outside the rule's scope, and a plan may not
-// escape the rule's server scope by explicitly declaring an action on
-// another server.
-func matchPlanRules(rules []ApprovalRule, source string, actions []PlanAction, agentCUID string) []ApprovalRule {
-	var matched []ApprovalRule
-	for _, r := range rules {
-		if !r.Enabled || r.AppliesTo != RuleScopePlan {
-			continue
-		}
-		if !matchPatterns(r.ServerPatterns, source) {
-			continue
-		}
-		if !matchAgentCUIDs(r.AgentCUIDs, agentCUID) {
-			continue
-		}
-		allActions := true
-		for _, a := range actions {
-			server := a.Server
-			if server == "" {
-				server = source
-			}
-			if !matchPatterns(r.ServerPatterns, server) || !matchPatterns(r.ToolPatterns, a.Tool) {
-				allActions = false
-				break
-			}
-		}
-		if !allActions {
 			continue
 		}
 		matched = append(matched, r)

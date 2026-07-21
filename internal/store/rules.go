@@ -21,11 +21,8 @@ import (
 // AgentCUIDs is a JSON-encoded list of Atryum agent CUIDs the rule applies to;
 // an empty slice means "match all agents".
 type Rule struct {
-	ID     string
-	Action string
-	// AppliesTo scopes the rule to per-call invocations ("invocation",
-	// the default) or agent-submitted plans ("plan").
-	AppliesTo         string
+	ID                string
+	Action            string
 	ServerPatterns    []string
 	ToolPatterns      []string
 	ModelConfigCUID   string
@@ -53,7 +50,7 @@ func NewRulesRepoWithDialect(db *sql.DB, dialect Dialect) *RulesRepo {
 }
 
 var ruleColumns = []string{
-	"id", "action", "applies_to", "server_pattern", "tool_pattern",
+	"id", "action", "server_pattern", "tool_pattern",
 	"model_config_cuid", "atryum_llm_config_id", "agent_cuids",
 	"description", "enabled", "rule_order", "created_at", "updated_at",
 }
@@ -67,7 +64,7 @@ func (r *RulesRepo) Create(ctx context.Context, rule Rule) error {
 	query, args, err := r.sb.Insert("approval_rules").
 		Columns(ruleColumns...).
 		Values(
-			rule.ID, rule.Action, normalizeAppliesTo(rule.AppliesTo), serverJSON, toolJSON,
+			rule.ID, rule.Action, serverJSON, toolJSON,
 			emptyToNil(rule.ModelConfigCUID), rule.AtryumLLMConfigID, agentCUIDsJSON,
 			emptyToNil(rule.Description), boolToInt(rule.Enabled), rule.Order, now, now,
 		).ToSql()
@@ -136,7 +133,6 @@ func (r *RulesRepo) Update(ctx context.Context, rule Rule) error {
 	}
 	query, args, err := r.sb.Update("approval_rules").
 		Set("action", rule.Action).
-		Set("applies_to", normalizeAppliesTo(rule.AppliesTo)).
 		Set("server_pattern", serverJSON).
 		Set("tool_pattern", toolJSON).
 		Set("model_config_cuid", emptyToNil(rule.ModelConfigCUID)).
@@ -282,13 +278,12 @@ func scanRule(scanner interface{ Scan(dest ...any) error }) (Rule, error) {
 	var modelConfigCUID, atryumLLMConfigID, description sql.NullString
 	var enabled int
 	if err := scanner.Scan(
-		&rule.ID, &rule.Action, &rule.AppliesTo, &serverJSON, &toolJSON,
+		&rule.ID, &rule.Action, &serverJSON, &toolJSON,
 		&modelConfigCUID, &atryumLLMConfigID, &agentCUIDsJSON,
 		&description, &enabled, &rule.Order, &rule.CreatedAt, &rule.UpdatedAt,
 	); err != nil {
 		return Rule{}, err
 	}
-	rule.AppliesTo = normalizeAppliesTo(rule.AppliesTo)
 	rule.Enabled = enabled == 1
 	rule.Description = description.String
 	rule.ModelConfigCUID = modelConfigCUID.String
@@ -335,7 +330,6 @@ func (r *RulesRepo) ListApprovalRules(ctx context.Context) ([]invocation.Approva
 		out = append(out, invocation.ApprovalRule{
 			ID:                rule.ID,
 			Action:            rule.Action,
-			AppliesTo:         rule.AppliesTo,
 			ServerPatterns:    rule.ServerPatterns,
 			ToolPatterns:      rule.ToolPatterns,
 			ModelConfigCUID:   rule.ModelConfigCUID,
@@ -393,7 +387,7 @@ func (r *RulesRepo) InsertBefore(ctx context.Context, anchorID string, rule Rule
 	insQ, insArgs, err := r.sb.Insert("approval_rules").
 		Columns(ruleColumns...).
 		Values(
-			rule.ID, rule.Action, normalizeAppliesTo(rule.AppliesTo), serverJSON, toolJSON,
+			rule.ID, rule.Action, serverJSON, toolJSON,
 			emptyToNil(rule.ModelConfigCUID), rule.AtryumLLMConfigID, agentCUIDsJSON,
 			emptyToNil(rule.Description), boolToInt(rule.Enabled), rule.Order, now, now,
 		).ToSql()
@@ -405,15 +399,6 @@ func (r *RulesRepo) InsertBefore(ctx context.Context, anchorID string, rule Rule
 	}
 
 	return tx.Commit()
-}
-
-// normalizeAppliesTo maps the empty string to the default "invocation" scope
-// so rows written before the applies_to column existed keep their behavior.
-func normalizeAppliesTo(v string) string {
-	if v == "" {
-		return "invocation"
-	}
-	return v
 }
 
 func encodeRulePatterns(rule Rule) (serverJSON string, toolJSON string, agentCUIDsJSON string, err error) {

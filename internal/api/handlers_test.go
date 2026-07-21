@@ -1428,7 +1428,7 @@ func TestAgentRulesListsApplicableRulesAndDisposition(t *testing.T) {
 		{ID: "bash-deny", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Bash"}, Enabled: true, Order: 0},
 		{ID: "read-auto", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, Description: "Read is safe", Enabled: true, Order: 1},
 		{ID: "fallback-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 2},
-		{ID: "plan-human", Action: invocation.RuleActionHumanApproval, AppliesTo: invocation.RuleScopePlan, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, Enabled: true, Order: 3},
+		{ID: "later-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, Enabled: true, Order: 3},
 		{ID: "disabled", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, Enabled: false, Order: 3},
 	}}
 	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
@@ -1487,14 +1487,11 @@ func TestAgentRulesListsApplicableRulesAndDisposition(t *testing.T) {
 	if len(resp.Items) != 4 {
 		t.Fatalf("expected four applicable rules, got %#v", resp.Items)
 	}
-	if resp.Items[0].ID != "bash-deny" || resp.Items[1].ID != "read-auto" || resp.Items[2].ID != "fallback-human" || resp.Items[3].ID != "plan-human" {
+	if resp.Items[0].ID != "bash-deny" || resp.Items[1].ID != "read-auto" || resp.Items[2].ID != "fallback-human" || resp.Items[3].ID != "later-human" {
 		t.Fatalf("unexpected applicable rules order: %#v", resp.Items)
 	}
 	if resp.Items[1].Guidance == "" {
 		t.Fatalf("expected rule guidance, got %#v", resp.Items[1])
-	}
-	if resp.Items[3].AppliesTo != invocation.RuleScopePlan {
-		t.Fatalf("expected plan applies_to, got %#v", resp.Items[3])
 	}
 }
 
@@ -1536,9 +1533,9 @@ func TestAgentRulesFiltersOutRulesScopedToOtherAgents(t *testing.T) {
 	}
 }
 
-func TestAgentRulesAdvertisesPlanSubmissionWithoutPlanRules(t *testing.T) {
-	// No plan-scoped rules configured: plan submission is still advertised —
-	// a plan matching no rule defaults to human review.
+func TestAgentRulesAdvertisesPlanSubmissionWithInvocationRules(t *testing.T) {
+	// Plan submission is advertised whenever the feature is enabled; the same
+	// invocation rules are used to evaluate submitted plans.
 	rules := &stubRulesRepo{rules: []store.Rule{
 		{ID: "fallback-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 0},
 	}}
@@ -1556,7 +1553,7 @@ func TestAgentRulesAdvertisesPlanSubmissionWithoutPlanRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	if resp.PlanSubmission == nil || !resp.PlanSubmission.Enabled {
-		t.Fatalf("expected plan submission capability without plan rules, got %#v", resp.PlanSubmission)
+		t.Fatalf("expected plan submission capability, got %#v", resp.PlanSubmission)
 	}
 	if resp.PlanSubmission.Endpoint != "/api/v1/external/plans?source=cursor" {
 		t.Fatalf("plan submission endpoint must carry the caller's source, got %q", resp.PlanSubmission.Endpoint)
@@ -1635,7 +1632,7 @@ func TestAgentRulesPlanSubmissionDoesNotEchoRequestIDAsStableIdentity(t *testing
 
 func TestAgentRulesOmitsPlanSubmissionWhenPlansDisabled(t *testing.T) {
 	rules := &stubRulesRepo{rules: []store.Rule{
-		{ID: "plan-any", Action: invocation.RuleActionHumanApproval, AppliesTo: invocation.RuleScopePlan, Enabled: true, Order: 0},
+		{ID: "human-any", Action: invocation.RuleActionHumanApproval, Enabled: true, Order: 0},
 	}}
 	h := NewHandler(&stubService{plansDisabled: true}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?agent_id=agent-007&source=cursor", nil)

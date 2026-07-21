@@ -249,21 +249,6 @@ func TestAdminPlanDecisions(t *testing.T) {
 	}
 }
 
-func TestAdminRuleValidationAcceptsAppliesTo(t *testing.T) {
-	if err := validateRuleInput(AdminRuleInput{Action: "human_approval", AppliesTo: "plan"}); err != nil {
-		t.Fatalf("plan scope rejected: %v", err)
-	}
-	if err := validateRuleInput(AdminRuleInput{Action: "human_approval", AppliesTo: "invocation"}); err != nil {
-		t.Fatalf("invocation scope rejected: %v", err)
-	}
-	if err := validateRuleInput(AdminRuleInput{Action: "human_approval"}); err != nil {
-		t.Fatalf("empty scope rejected: %v", err)
-	}
-	if err := validateRuleInput(AdminRuleInput{Action: "human_approval", AppliesTo: "bogus"}); err == nil {
-		t.Fatal("bogus scope accepted")
-	}
-}
-
 func TestExternalPlanSubmitSourceQueryParam(t *testing.T) {
 	stub := &stubService{plan: newPlanStub()}
 	h := NewHandler(stub, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)

@@ -140,8 +140,8 @@ gated, just without prior-call context).
 
 ## Preapproval plans
 
-When plan-scoped rules apply to the current agent, the shared hook discovers
-that via `GET /api/v1/agent/rules` and injects plan-submission guidance at
+When plans are enabled, the shared hook discovers that via
+`GET /api/v1/agent/rules` and injects plan-submission guidance at
 `sessionStart`. It also includes the guidance in a blocked tool message as a
 fallback. The agent can submit a batch plan to
 `POST /api/v1/external/plans?source=<source>` (the hint provides the exact

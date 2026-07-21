@@ -129,7 +129,7 @@ The frontend fetches `/api/v1/admin-auth/config`, shows a sign-in screen, redire
 
 Public (auth-protected when `[[auth]]` is configured):
 
-- `POST /mcp/{server}` — MCP JSON-RPC. `tools/list` annotates each tool with its policy disposition for the calling agent; a synthetic `atryum_rules_get` tool lets an agent inspect its applicable rules before deciding what to call, and when plan-scoped rules apply it also lists synthetic `atryum.plan.submit` and `atryum.plan.get` tools so the agent can submit and poll a batch plan before running tools. The rules helper uses an underscore because dotted MCP tool names are spec-compliant, but some common harness implementations reject them.
+- `POST /mcp/{server}` — MCP JSON-RPC. `tools/list` annotates each tool with its policy disposition for the calling agent; a synthetic `atryum_rules_get` tool lets an agent inspect its applicable invocation rules before deciding what to call, and when plans are enabled it also lists synthetic `atryum.plan.submit` and `atryum.plan.get` tools so the agent can submit and poll a batch plan before running tools. Submitted plans are evaluated action-by-action against the same ordered invocation rules, then receive one mandatory whole-plan AI review for charter compliance. The rules helper uses an underscore because dotted MCP tool names are spec-compliant, but some common harness implementations reject them.
 - `GET /mcp/{server}` — Streamable HTTP / legacy SSE channel for MCP clients that need a long-lived event stream.
 - `POST /api/v1/invocations` — direct invocation (Atryum executes).
 - `POST /api/v1/external/invocations`, `PATCH /api/v1/external/invocations/{id}` — hook path (harness executes, Atryum gates and records).

@@ -20,19 +20,28 @@ import (
 type planJudgeStub struct {
 	mu                 sync.Mutex
 	req                invocation.PlanEvaluateRequest
+	planCalls          int
 	resp               invocation.PlanEvaluateResponse
 	err                error
 	adherenceReq       invocation.PlanAdherenceRequest
 	adherenceResp      invocation.PlanAdherenceResponse
 	adherenceBySummary map[string]invocation.PlanAdherenceResponse
 	adherenceErr       error
+	toolReq            invocation.EvaluateRequest
+	toolResp           invocation.EvaluateResponse
+	toolErr            error
 }
 
 func (s *planJudgeStub) EvaluatePlan(_ context.Context, req invocation.PlanEvaluateRequest) (invocation.PlanEvaluateResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.req = req
-	return s.resp, s.err
+	s.planCalls++
+	resp := s.resp
+	if resp.Verdict == "" {
+		resp.Verdict = "approved"
+	}
+	return resp, s.err
 }
 
 func (s *planJudgeStub) EvaluatePlanAdherence(_ context.Context, req invocation.PlanAdherenceRequest) (invocation.PlanAdherenceResponse, error) {
@@ -45,10 +54,23 @@ func (s *planJudgeStub) EvaluatePlanAdherence(_ context.Context, req invocation.
 	return s.adherenceResp, s.adherenceErr
 }
 
+func (s *planJudgeStub) EvaluateToolCall(_ context.Context, req invocation.EvaluateRequest) (invocation.EvaluateResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.toolReq = req
+	return s.toolResp, s.toolErr
+}
+
 func (s *planJudgeStub) request() invocation.PlanEvaluateRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.req
+}
+
+func (s *planJudgeStub) planCallCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.planCalls
 }
 
 func (s *planJudgeStub) adherenceRequest() invocation.PlanAdherenceRequest {
@@ -56,6 +78,18 @@ func (s *planJudgeStub) adherenceRequest() invocation.PlanAdherenceRequest {
 	defer s.mu.Unlock()
 	return s.adherenceReq
 }
+
+func (s *planJudgeStub) toolRequest() invocation.EvaluateRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.toolReq
+}
+
+type planSyncSettingsStub struct{}
+
+func (planSyncSettingsStub) CharterFieldKey(context.Context) string           { return "charter" }
+func (planSyncSettingsStub) DefaultAgentVMCUID(context.Context) string        { return "" }
+func (planSyncSettingsStub) SummarySettings(context.Context) (string, string) { return "", "" }
 
 // newPlanTestService builds a Service backed by real sqlite repos with the
 // plan feature installed. Returns the service and the plans repo for direct
@@ -84,6 +118,10 @@ func newPlanTestServiceWithRuleStore(t *testing.T, rules interface {
 	}
 	var rulesStore invocation.ApprovalRule
 	_ = rulesStore
+	var evaluator invocation.EvaluatorClient
+	if candidate, ok := judge.(invocation.EvaluatorClient); ok {
+		evaluator = candidate
+	}
 	svc := invocation.NewService(
 		store.NewInvocationRepo(db),
 		store.NewEventRepo(db),
@@ -93,8 +131,8 @@ func newPlanTestServiceWithRuleStore(t *testing.T, rules interface {
 		5*time.Second,
 		rules,
 		agents,
-		nil,
-		nil,
+		evaluator,
+		planSyncSettingsStub{},
 	)
 	plansRepo := store.NewPlansRepo(db)
 	svc.SetPlanStore(plansRepo, store.NewPlanEventsRepo(db), judge, []string{"localhost:8080"})
@@ -142,14 +180,16 @@ func TestSubmitPlanDefaultsToHumanApproval(t *testing.T) {
 	}
 }
 
-func TestSubmitPlanAutoApproveRule(t *testing.T) {
+func TestSubmitPlanAutoApproveInvocationRule(t *testing.T) {
 	rules := []invocation.ApprovalRule{{
-		ID:        "rule-1",
-		Action:    invocation.RuleActionAutoApprove,
-		AppliesTo: invocation.RuleScopePlan,
-		Enabled:   true,
+		ID:      "rule-1",
+		Action:  invocation.RuleActionAutoApprove,
+		Enabled: true,
 	}}
-	svc, _ := newPlanTestService(t, rules, nil, nil)
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "Only run permitted plans."},
+	}}
+	svc, _ := newPlanTestService(t, rules, agents, &planJudgeStub{})
 	plan, err := svc.SubmitPlan(context.Background(), planSubmit("agent-a", "Bash", "read_file"))
 	if err != nil {
 		t.Fatal(err)
@@ -168,35 +208,105 @@ func TestSubmitPlanAutoApproveRule(t *testing.T) {
 	}
 }
 
-func TestSubmitPlanAutoDenyRule(t *testing.T) {
+func TestEverySubmittedPlanRunsOneMandatoryCharterReview(t *testing.T) {
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "Never run destructive plans."},
+	}}
+	for _, tc := range []struct {
+		name       string
+		ruleAction string
+		wantStatus invocation.PlanStatus
+	}{
+		{name: "auto approve", ruleAction: invocation.RuleActionAutoApprove, wantStatus: invocation.PlanStatusApproved},
+		{name: "auto deny", ruleAction: invocation.RuleActionAutoDeny, wantStatus: invocation.PlanStatusDenied},
+		{name: "human approval", ruleAction: invocation.RuleActionHumanApproval, wantStatus: invocation.PlanStatusPendingApproval},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			judge := &planJudgeStub{resp: invocation.PlanEvaluateResponse{Verdict: "approved", Reason: "charter permits it"}}
+			rules := []invocation.ApprovalRule{{ID: "rule-1", Action: tc.ruleAction, Enabled: true}}
+			svc, _ := newPlanTestService(t, rules, agents, judge)
+
+			plan, err := svc.SubmitPlan(context.Background(), planSubmit("agent-a", "Bash"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan.Status != tc.wantStatus {
+				t.Fatalf("status = %s, want %s", plan.Status, tc.wantStatus)
+			}
+			if judge.planCallCount() != 1 {
+				t.Fatalf("mandatory charter review calls = %d, want 1", judge.planCallCount())
+			}
+		})
+	}
+}
+
+func TestMandatoryCharterReviewRejectsRuleApprovedPlan(t *testing.T) {
+	rules := []invocation.ApprovalRule{{ID: "approve", Action: invocation.RuleActionAutoApprove, Enabled: true}}
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "Never delete files."},
+	}}
+	judge := &planJudgeStub{resp: invocation.PlanEvaluateResponse{Verdict: "denied", Reason: "the plan deletes files"}}
+	svc, _ := newPlanTestService(t, rules, agents, judge)
+
+	plan, err := svc.SubmitPlan(context.Background(), planSubmit("agent-a", "delete_file"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != invocation.PlanStatusDenied || plan.Approval == nil || plan.Approval.Status != "auto_denied" {
+		t.Fatalf("plan = %+v, want mandatory charter rejection", plan)
+	}
+	if judge.planCallCount() != 1 {
+		t.Fatalf("mandatory charter review calls = %d, want 1", judge.planCallCount())
+	}
+}
+
+func TestSubmitPlanAutoDenyInvocationRule(t *testing.T) {
 	rules := []invocation.ApprovalRule{{
-		ID:        "rule-1",
-		Action:    invocation.RuleActionAutoDeny,
-		AppliesTo: invocation.RuleScopePlan,
-		Enabled:   true,
+		ID:      "rule-1",
+		Action:  invocation.RuleActionAutoDeny,
+		Enabled: true,
 	}}
 	svc, _ := newPlanTestService(t, rules, nil, nil)
 	plan, err := svc.SubmitPlan(context.Background(), planSubmit("agent-a", "Bash"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Status != invocation.PlanStatusNeedsRevision {
-		t.Fatalf("status = %s, want needs_revision", plan.Status)
+	if plan.Status != invocation.PlanStatusDenied {
+		t.Fatalf("status = %s, want denied", plan.Status)
 	}
 	if plan.Approval == nil || plan.Approval.Status != "auto_denied" || plan.Feedback == "" {
-		t.Fatalf("plan = %+v, want automatic denial feedback for revision", plan)
+		t.Fatalf("plan = %+v, want automatic denial feedback", plan)
 	}
 }
 
-func TestPlanRuleServerScopeCoversExplicitCrossServerActions(t *testing.T) {
+func TestPlanSubmissionStopsAtFirstDecisiveInvocationRulePerAction(t *testing.T) {
+	rules := []invocation.ApprovalRule{
+		{ID: "approve-first", Action: invocation.RuleActionAutoApprove, ToolPatterns: []string{"Bash"}, Enabled: true},
+		{ID: "deny-later", Action: invocation.RuleActionAutoDeny, ToolPatterns: []string{"Bash"}, Enabled: true},
+	}
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "Only run permitted plans."},
+	}}
+	svc, _ := newPlanTestService(t, rules, agents, &planJudgeStub{})
+
+	plan, err := svc.SubmitPlan(context.Background(), planSubmit("agent-a", "Bash"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != invocation.PlanStatusApproved || plan.MatchedRuleID == nil || *plan.MatchedRuleID != "approve-first" {
+		t.Fatalf("plan = %+v, want first decisive invocation rule to win", plan)
+	}
+}
+
+func TestPlanSubmissionEvaluatesEachActionsServerAgainstInvocationRules(t *testing.T) {
 	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
 		"agent-a": {ID: "agent-rec-a", Charter: "be careful"},
 	}}
 
-	// An auto-approve plan rule scoped to srv-a must not approve a plan that
+	// An auto-approve invocation rule scoped to srv-a must not approve a plan that
 	// explicitly declares an action on srv-b, even when submitted via srv-a.
 	rules := []invocation.ApprovalRule{
-		{ID: "grant-a", Action: invocation.RuleActionAutoApprove, AppliesTo: invocation.RuleScopePlan, ServerPatterns: []string{"srv-a"}, Enabled: true},
+		{ID: "grant-a", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"srv-a"}, Enabled: true},
 	}
 	svc, _ := newPlanTestService(t, rules, agents, &planJudgeStub{})
 	plan, err := svc.SubmitPlan(context.Background(), invocation.PlanSubmitRequest{
@@ -213,7 +323,7 @@ func TestPlanRuleServerScopeCoversExplicitCrossServerActions(t *testing.T) {
 		t.Fatalf("status = %s, want pending_approval — grant must not cover srv-b action", plan.Status)
 	}
 
-	// A same-server plan still matches the grant.
+	// A same-server plan has every action covered and is auto-approved.
 	plan, err = svc.SubmitPlan(context.Background(), invocation.PlanSubmitRequest{
 		AgentID: "agent-a", Source: "srv-a", Goal: "same server",
 		Actions: []invocation.PlanAction{{Tool: "Bash"}, {Tool: "Bash", Server: "srv-a"}},
@@ -225,10 +335,10 @@ func TestPlanRuleServerScopeCoversExplicitCrossServerActions(t *testing.T) {
 		t.Fatalf("status = %s, want approved for actions inside the rule's server scope", plan.Status)
 	}
 
-	// A plan-scoped deny rule on srv-b must catch an explicit srv-b action
+	// An invocation deny rule on srv-b must catch an explicit srv-b action
 	// submitted through another source.
 	rules = []invocation.ApprovalRule{
-		{ID: "deny-b", Action: invocation.RuleActionAutoDeny, AppliesTo: invocation.RuleScopePlan, ServerPatterns: []string{"srv-b"}, Enabled: true},
+		{ID: "deny-b", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"srv-b"}, Enabled: true},
 	}
 	svc, _ = newPlanTestService(t, rules, agents, &planJudgeStub{})
 	plan, err = svc.SubmitPlan(context.Background(), invocation.PlanSubmitRequest{
@@ -238,8 +348,8 @@ func TestPlanRuleServerScopeCoversExplicitCrossServerActions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Status != invocation.PlanStatusNeedsRevision || plan.MatchedRuleID == nil || *plan.MatchedRuleID != "deny-b" {
-		t.Fatalf("plan = %+v, want needs_revision from deny-b", plan)
+	if plan.Status != invocation.PlanStatusDenied || plan.MatchedRuleID == nil || *plan.MatchedRuleID != "deny-b" {
+		t.Fatalf("plan = %+v, want denial from deny-b", plan)
 	}
 }
 
@@ -312,7 +422,7 @@ func TestApprovePlanReclampsStoredTTLToCurrentCeiling(t *testing.T) {
 
 func TestPlanEvaluationChatContextIsFencedAgainstInjection(t *testing.T) {
 	rules := []invocation.ApprovalRule{
-		{ID: "ai-plan", Action: invocation.RuleActionAIEvaluation, AppliesTo: invocation.RuleScopePlan, AtryumLLMConfigID: "llm-1", Enabled: true},
+		{ID: "ai-plan", Action: invocation.RuleActionAIEvaluation, AtryumLLMConfigID: "llm-1", Enabled: true},
 	}
 	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
 		"agent-a": {ID: "agent-rec-a", Charter: "be careful"},
@@ -335,11 +445,66 @@ func TestPlanEvaluationChatContextIsFencedAgainstInjection(t *testing.T) {
 	}
 }
 
-func TestPlanInvocationAIEvaluationAllowsMatchingPlanRuleToApprove(t *testing.T) {
+func TestPlanVMAIEvaluationRuleReusesMandatoryPlanJudge(t *testing.T) {
+	rules := []invocation.ApprovalRule{{
+		ID: "vm-ai", Action: invocation.RuleActionAIEvaluation,
+		ModelConfigCUID: "model-1", ToolPatterns: []string{"inspect"}, Enabled: true,
+	}}
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", VMCUID: "vm-agent-a", VMOrganizationCUID: "org-a", Charter: "Only run permitted plans."},
+	}}
+	judge := &planJudgeStub{resp: invocation.PlanEvaluateResponse{Verdict: "approved", Reason: "charter permits the batch"}}
+	svc, _ := newPlanTestService(t, rules, agents, judge)
+
+	plan, err := svc.SubmitPlan(context.Background(), planSubmit("agent-a", "inspect", "inspect"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != invocation.PlanStatusApproved {
+		t.Fatalf("plan = %+v, want approved", plan)
+	}
+	got := judge.request()
+	if got.Goal != plan.Goal || len(got.Actions) != 2 {
+		t.Fatalf("mandatory judge did not receive the complete plan: %+v", got)
+	}
+	if judge.planCallCount() != 1 {
+		t.Fatalf("mandatory charter review calls = %d, want 1", judge.planCallCount())
+	}
+	if toolReq := judge.toolRequest(); toolReq.ToolName != "" {
+		t.Fatalf("plan rule triggered an additional VM evaluation: %+v", toolReq)
+	}
+}
+
+func TestMultipleAIEvaluationRulesShareOnePlanJudgeCall(t *testing.T) {
+	rules := []invocation.ApprovalRule{
+		{ID: "ai-inspect", Action: invocation.RuleActionAIEvaluation, AtryumLLMConfigID: "llm-first", ToolPatterns: []string{"inspect"}, Enabled: true},
+		{ID: "ai-deploy", Action: invocation.RuleActionAIEvaluation, AtryumLLMConfigID: "llm-second", ToolPatterns: []string{"deploy"}, Enabled: true},
+	}
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-a": {ID: "agent-rec-a", Charter: "Only run permitted plans."},
+	}}
+	judge := &planJudgeStub{resp: invocation.PlanEvaluateResponse{Verdict: "approved", Reason: "compliant"}}
+	svc, _ := newPlanTestService(t, rules, agents, judge)
+
+	plan, err := svc.SubmitPlan(context.Background(), planSubmit("agent-a", "inspect", "deploy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != invocation.PlanStatusApproved {
+		t.Fatalf("status = %s, want approved", plan.Status)
+	}
+	if judge.planCallCount() != 1 {
+		t.Fatalf("mandatory charter review calls = %d, want exactly 1", judge.planCallCount())
+	}
+	if got := judge.request(); got.AtryumLLMConfigID != "llm-first" || len(got.Actions) != 2 {
+		t.Fatalf("judge request = %+v, want first AI config and complete plan", got)
+	}
+}
+
+func TestPlanInvocationRulesApproveEveryActionAndAIEvaluatesWholePlan(t *testing.T) {
 	rules := []invocation.ApprovalRule{
 		{ID: "ai-invocation", Action: invocation.RuleActionAIEvaluation, AtryumLLMConfigID: "llm-1", ToolPatterns: []string{"inspect"}, Enabled: true},
-		{ID: "deny-deploy", Action: invocation.RuleActionAutoDeny, ToolPatterns: []string{"deploy"}, Enabled: true},
-		{ID: "approve-plan", Action: invocation.RuleActionAutoApprove, AppliesTo: invocation.RuleScopePlan, Enabled: true},
+		{ID: "approve-deploy", Action: invocation.RuleActionAutoApprove, ToolPatterns: []string{"deploy"}, Enabled: true},
 	}
 	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
 		"agent-a": {ID: "agent-rec-a", Charter: "be careful"},
@@ -353,8 +518,8 @@ func TestPlanInvocationAIEvaluationAllowsMatchingPlanRuleToApprove(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Status != invocation.PlanStatusApproved || plan.MatchedRuleID == nil || *plan.MatchedRuleID != "approve-plan" {
-		t.Fatalf("plan = %+v, want approval authority to come from the plan-scoped rule", plan)
+	if plan.Status != invocation.PlanStatusApproved || plan.MatchedRuleID == nil || *plan.MatchedRuleID != "ai-invocation" {
+		t.Fatalf("plan = %+v, want all invocation rules to approve with the AI rule retained for adherence", plan)
 	}
 	if got := judge.request(); got.Goal != plan.Goal || len(got.Actions) != 2 {
 		t.Fatalf("AI rule must judge the complete plan, got %+v", got)
@@ -373,19 +538,22 @@ func TestPlanInvocationAIEvaluationAllowsMatchingPlanRuleToApprove(t *testing.T)
 	}
 }
 
-func TestInvocationApprovalCannotApprovePlanWithoutPlanRule(t *testing.T) {
+func TestInvocationRulesCanApprovePlan(t *testing.T) {
 	t.Run("auto approve", func(t *testing.T) {
 		rules := []invocation.ApprovalRule{{
 			ID: "approve-invocation", Action: invocation.RuleActionAutoApprove, Enabled: true,
 		}}
-		svc, _ := newPlanTestService(t, rules, nil, nil)
+		agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+			"agent-a": {ID: "agent-rec-a", Charter: "Only run permitted plans."},
+		}}
+		svc, _ := newPlanTestService(t, rules, agents, &planJudgeStub{})
 
 		plan, err := svc.SubmitPlan(context.Background(), planSubmit("agent-a", "inspect"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if plan.Status != invocation.PlanStatusPendingApproval || plan.MatchedRuleID != nil {
-			t.Fatalf("plan = %+v, want human approval without a matching plan rule", plan)
+		if plan.Status != invocation.PlanStatusApproved || plan.MatchedRuleID == nil || *plan.MatchedRuleID != "approve-invocation" {
+			t.Fatalf("plan = %+v, want invocation auto-approve to approve plan", plan)
 		}
 	})
 
@@ -404,8 +572,8 @@ func TestInvocationApprovalCannotApprovePlanWithoutPlanRule(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if plan.Status != invocation.PlanStatusPendingApproval || plan.MatchedRuleID != nil {
-			t.Fatalf("plan = %+v, want human approval despite invocation AI approval", plan)
+		if plan.Status != invocation.PlanStatusApproved || plan.MatchedRuleID == nil || *plan.MatchedRuleID != "ai-invocation" {
+			t.Fatalf("plan = %+v, want whole-plan AI approval", plan)
 		}
 		if got := judge.request(); got.Goal != plan.Goal || len(got.Actions) != 1 {
 			t.Fatalf("invocation AI must still charter-check the whole plan, got %+v", got)
@@ -415,6 +583,7 @@ func TestInvocationApprovalCannotApprovePlanWithoutPlanRule(t *testing.T) {
 
 func TestPlanInvocationRulesStopAtEarlierHumanApproval(t *testing.T) {
 	rules := []invocation.ApprovalRule{
+		{ID: "approve-inspect", Action: invocation.RuleActionAutoApprove, ToolPatterns: []string{"inspect"}, Enabled: true},
 		{ID: "human-deploy", Action: invocation.RuleActionHumanApproval, ToolPatterns: []string{"deploy"}, Enabled: true},
 		{ID: "ai-deploy", Action: invocation.RuleActionAIEvaluation, AtryumLLMConfigID: "llm-1", ToolPatterns: []string{"deploy"}, Enabled: true},
 		{ID: "deny-all", Action: invocation.RuleActionAutoDeny, Enabled: true},
@@ -435,8 +604,11 @@ func TestPlanInvocationRulesStopAtEarlierHumanApproval(t *testing.T) {
 	if plan.Status != invocation.PlanStatusPendingApproval || plan.Approval == nil || plan.Approval.Status != "human_required" || plan.MatchedRuleID == nil || *plan.MatchedRuleID != "human-deploy" {
 		t.Fatalf("plan = %+v, want pending human approval from human-deploy", plan)
 	}
-	if got := judge.request(); got.Goal != plan.Goal || len(got.Actions) != 2 {
-		t.Fatalf("matching AI rule must still charter-check the complete plan, got %+v", got)
+	if got := judge.request(); got.Goal != plan.Goal || len(got.Actions) != 2 || got.AtryumLLMConfigID != "" {
+		t.Fatalf("mandatory charter review must run once without selecting the later AI rule, got %+v", got)
+	}
+	if judge.planCallCount() != 1 {
+		t.Fatalf("mandatory charter review calls = %d, want 1", judge.planCallCount())
 	}
 	if _, err := svc.ApprovePlan(ctx, plan.PlanID, 0); err != nil {
 		t.Fatal(err)
@@ -452,6 +624,22 @@ func TestPlanInvocationRulesStopAtEarlierHumanApproval(t *testing.T) {
 	}
 	if got := judge.adherenceRequest(); got.ToolName != "deploy" || got.Charter == "" {
 		t.Fatalf("execution must still run charter/adherence review, got %+v", got)
+	}
+}
+
+func TestPlanAutoDenyOnLaterActionOverridesEarlierHumanReview(t *testing.T) {
+	rules := []invocation.ApprovalRule{
+		{ID: "human-inspect", Action: invocation.RuleActionHumanApproval, ToolPatterns: []string{"inspect"}, Enabled: true},
+		{ID: "deny-delete", Action: invocation.RuleActionAutoDeny, ToolPatterns: []string{"delete_file"}, Enabled: true},
+	}
+	svc, _ := newPlanTestService(t, rules, nil, nil)
+
+	plan, err := svc.SubmitPlan(context.Background(), planSubmit("agent-a", "inspect", "delete_file"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != invocation.PlanStatusDenied || plan.MatchedRuleID == nil || *plan.MatchedRuleID != "deny-delete" {
+		t.Fatalf("plan = %+v, want later matching auto-deny to reject the whole plan", plan)
 	}
 }
 
@@ -496,7 +684,7 @@ func TestPlanInvocationAIEvaluationNextRuleContinuesInOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Status != invocation.PlanStatusNeedsRevision || plan.MatchedRuleID == nil || *plan.MatchedRuleID != "deny-next" {
+	if plan.Status != invocation.PlanStatusDenied || plan.MatchedRuleID == nil || *plan.MatchedRuleID != "deny-next" {
 		t.Fatalf("plan = %+v, want next_rule to continue to deny-next", plan)
 	}
 }
@@ -580,17 +768,16 @@ func TestHumanApprovedPlanSatisfiesAIEscalationAtExecution(t *testing.T) {
 	}
 }
 
-func TestPlanRuleRequiresEveryActionToolCovered(t *testing.T) {
+func TestPlanAutoApprovalRequiresEveryActionCovered(t *testing.T) {
 	rules := []invocation.ApprovalRule{{
 		ID:           "rule-1",
 		Action:       invocation.RuleActionAutoApprove,
-		AppliesTo:    invocation.RuleScopePlan,
 		ToolPatterns: []string{"Bash"},
 		Enabled:      true,
 	}}
 	svc, _ := newPlanTestService(t, rules, nil, nil)
-	// One action (read_file) is outside the rule's tool patterns: the rule
-	// must not fire and the plan falls back to human review.
+	// One action (read_file) is outside the rule's tool patterns, so the whole
+	// plan falls back to human review.
 	plan, err := svc.SubmitPlan(context.Background(), planSubmit("agent-a", "Bash", "read_file"))
 	if err != nil {
 		t.Fatal(err)
@@ -600,13 +787,11 @@ func TestPlanRuleRequiresEveryActionToolCovered(t *testing.T) {
 	}
 }
 
-func TestInvocationRulesIgnorePlanScopedRules(t *testing.T) {
-	// A plan-scoped auto_deny rule must not affect regular invocation gating.
+func TestSameInvocationRuleAppliesToPlanAndRegularInvocation(t *testing.T) {
 	rules := []invocation.ApprovalRule{{
-		ID:        "rule-1",
-		Action:    invocation.RuleActionAutoDeny,
-		AppliesTo: invocation.RuleScopePlan,
-		Enabled:   true,
+		ID:      "rule-1",
+		Action:  invocation.RuleActionAutoDeny,
+		Enabled: true,
 	}}
 	svc, _ := newPlanTestService(t, rules, nil, nil)
 	resp, err := svc.Submit(context.Background(), invocation.ExternalSubmitRequest{
@@ -617,8 +802,15 @@ func TestInvocationRulesIgnorePlanScopedRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Status != invocation.StatusPendingApproval {
-		t.Fatalf("status = %s, want pending_approval (plan rule must not deny invocations)", resp.Status)
+	if resp.Status != invocation.StatusDenied {
+		t.Fatalf("status = %s, want denied by the same invocation rule", resp.Status)
+	}
+	plan, err := svc.SubmitPlan(context.Background(), planSubmit("agent-a", "Bash"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != invocation.PlanStatusDenied || plan.MatchedRuleID == nil || *plan.MatchedRuleID != "rule-1" {
+		t.Fatalf("plan = %+v, want denied by the same invocation rule", plan)
 	}
 }
 
@@ -628,7 +820,6 @@ func TestSubmitPlanAIEvaluationVerdicts(t *testing.T) {
 	rules := []invocation.ApprovalRule{{
 		ID:                "rule-ai",
 		Action:            invocation.RuleActionAIEvaluation,
-		AppliesTo:         invocation.RuleScopePlan,
 		AtryumLLMConfigID: "llm-1",
 		Enabled:           true,
 	}}
@@ -672,7 +863,6 @@ func TestSubmitPlanAIEvaluationWithoutCharterDenies(t *testing.T) {
 	rules := []invocation.ApprovalRule{{
 		ID:                "rule-ai",
 		Action:            invocation.RuleActionAIEvaluation,
-		AppliesTo:         invocation.RuleScopePlan,
 		AtryumLLMConfigID: "llm-1",
 		Enabled:           true,
 	}}
@@ -952,8 +1142,7 @@ func TestPlanActionWithoutServerIsScopedToSubmittingSource(t *testing.T) {
 
 func TestAutoApprovedPlanRequiresAdherenceJudgeForMatchingSubmit(t *testing.T) {
 	rules := []invocation.ApprovalRule{{
-		ID: "rule-auto", Action: invocation.RuleActionAutoApprove,
-		AppliesTo: invocation.RuleScopePlan, Enabled: true,
+		ID: "rule-auto", Action: invocation.RuleActionAutoApprove, Enabled: true,
 	}}
 	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
 		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},
@@ -985,7 +1174,6 @@ func TestAIEvaluatedPlanRequiresAdherenceJudgeForMatchingSubmit(t *testing.T) {
 	rules := []invocation.ApprovalRule{{
 		ID:                "rule-plan-ai",
 		Action:            invocation.RuleActionAIEvaluation,
-		AppliesTo:         invocation.RuleScopePlan,
 		AtryumLLMConfigID: "llm-1",
 		Enabled:           true,
 	}}
@@ -1027,7 +1215,6 @@ func TestPlanGatedCallDeniedWhenAdherenceJudgeRejects(t *testing.T) {
 	rules := []invocation.ApprovalRule{{
 		ID:                "rule-plan-ai",
 		Action:            invocation.RuleActionAIEvaluation,
-		AppliesTo:         invocation.RuleScopePlan,
 		AtryumLLMConfigID: "llm-1",
 		Enabled:           true,
 	}}
@@ -1485,7 +1672,6 @@ func TestAIEvaluatedPlanAllowsReadingOwnPlanStatus(t *testing.T) {
 	rules := []invocation.ApprovalRule{{
 		ID:                "rule-plan-ai",
 		Action:            invocation.RuleActionAIEvaluation,
-		AppliesTo:         invocation.RuleScopePlan,
 		AtryumLLMConfigID: "llm-1",
 		Enabled:           true,
 	}}
@@ -1526,7 +1712,6 @@ func TestPlanStatusPollWithExtraCommandGoesToJudge(t *testing.T) {
 	rules := []invocation.ApprovalRule{{
 		ID:                "rule-plan-ai",
 		Action:            invocation.RuleActionAIEvaluation,
-		AppliesTo:         invocation.RuleScopePlan,
 		AtryumLLMConfigID: "llm-1",
 		Enabled:           true,
 	}}

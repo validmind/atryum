@@ -113,8 +113,8 @@ prior-call context) rather than blocking the agent.
 
 ## Preapproval plans
 
-When plan-scoped rules apply to the current agent, the plugin injects plan
-submission guidance into the first agent turn after every `session.start` and
+When plans are enabled, the plugin injects plan submission guidance into the
+first agent turn after every `session.start` and
 also repeats it in blocked tool messages as a fallback. It discovers support
 via `GET /api/v1/agent/rules`. The agent can submit a batch plan to
 `POST /api/v1/external/plans?source=<source>` (the hint provides the exact
