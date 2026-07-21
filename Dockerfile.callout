@@ -1,0 +1,19 @@
+# Lean build of the Atryum ext_authz callout for the Google Agent Gateway spike.
+# Skips the UI/license machinery of Dockerfile.prod: the callout only needs the
+# atryum binary (ext_authz server + invocation engine + admin API). web/index.html
+# is committed so the //go:embed web/* in internal/api still resolves.
+FROM golang:1.25-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+# .dockerignore excludes internal/api/web (the prod build injects the real UI
+# there); the callout doesn't serve the UI, so drop in a placeholder so the
+# //go:embed web/* in internal/api/handlers.go resolves.
+RUN mkdir -p internal/api/web && printf '<!doctype html><title>atryum</title>' > internal/api/web/index.html
+RUN CGO_ENABLED=0 GOOS=linux go build -o /atryum ./cmd/atryum
+
+FROM gcr.io/distroless/static-debian12
+COPY --from=build /atryum /usr/local/bin/atryum
+WORKDIR /app
+ENTRYPOINT ["atryum", "run", "-config", "/app/atryum.toml"]

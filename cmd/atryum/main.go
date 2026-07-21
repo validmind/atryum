@@ -22,6 +22,8 @@ import (
 	"atryum/internal/auth"
 	backendclient "atryum/internal/backend"
 	"atryum/internal/config"
+	"atryum/internal/googlegateway"
+	"atryum/internal/googlegateway/extauthz"
 	"atryum/internal/invocation"
 	"atryum/internal/invocation/policy"
 	"atryum/internal/managedagents"
@@ -351,6 +353,33 @@ func runServer(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// Optional Google Agent Gateway authorization callout(s). Enabled per
+	// [[google_gateway]] entry with a listen_addr. Agent Gateway's authorization
+	// extension dials this gRPC ext_authz service for every agent tool call, and
+	// Atryum answers allow/deny through the same approval rules used everywhere
+	// else — no per-agent wiring. See examples/google-agent-gateway/.
+	for _, gg := range cfg.GoogleGateway {
+		if gg.ListenAddr == "" {
+			continue
+		}
+		ggSvc := googlegateway.NewService(service, googlegateway.Config{
+			ListenAddr:      gg.ListenAddr,
+			Source:          gg.Source,
+			PollInterval:    time.Duration(gg.PollIntervalMillis) * time.Millisecond,
+			DecisionTimeout: time.Duration(gg.DecisionTimeoutSeconds) * time.Second,
+			ClientName:      gg.ClientName,
+			ClientVersion:   gg.ClientVersion,
+		})
+		callout := extauthz.New(ggSvc, gg.ListenAddr)
+		go func(addr string) {
+			if err := callout.Serve(ctx); err != nil {
+				log.Printf("google agent gateway callout on %s stopped: %v", addr, err)
+			}
+		}(gg.ListenAddr)
+		log.Printf("google agent gateway ext_authz callout enabled on %s", gg.ListenAddr)
+	}
+
 	<-ctx.Done()
 
 	if managedSvc != nil {
