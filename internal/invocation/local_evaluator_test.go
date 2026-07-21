@@ -99,6 +99,36 @@ func TestLocalEvaluatorPlanAdherenceUsesDefaultConfigWhenIDEmpty(t *testing.T) {
 	}
 }
 
+func TestLocalEvaluatorPlanUsesDefaultConfigWhenIDEmpty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]any{"content": `{"verdict":"approved","confidence":1,"reason":"compliant"}`},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	evaluator := NewLocalEvaluatorClient(defaultOnlyLLMConfigStoreStub{cfg: LocalLLMConfig{
+		ID:       "llm-default",
+		Provider: "openai_compatible",
+		Model:    "judge-model",
+		BaseURL:  server.URL,
+	}})
+
+	resp, err := evaluator.EvaluatePlan(context.Background(), PlanEvaluateRequest{
+		Charter: "Only run compliant plans.",
+		Goal:    "Perform safe work",
+		Actions: []PlanAction{{Tool: "Bash", InputSummary: "echo ok"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Verdict != "approved" {
+		t.Fatalf("verdict = %q, want approved", resp.Verdict)
+	}
+}
+
 func TestParsePlanAdherenceVerdictAcceptsCharterViolation(t *testing.T) {
 	evaluator := NewLocalEvaluatorClient(localLLMConfigStoreStub{})
 	resp := evaluator.parsePlanAdherenceVerdict(`{"verdict":"violates_charter","confidence":0.98,"reason":"deletion is forbidden"}`)

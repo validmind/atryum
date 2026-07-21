@@ -317,7 +317,13 @@ type PlanEvaluator interface {
 // EvaluatePlan calls the locally-configured LLM to judge a submitted plan.
 // Falls back to denied on unparseable output; returns an error on HTTP failure.
 func (e *LocalEvaluatorClient) EvaluatePlan(ctx context.Context, req PlanEvaluateRequest) (PlanEvaluateResponse, error) {
-	cfg, err := e.store.GetLLMConfig(ctx, req.AtryumLLMConfigID)
+	var cfg LocalLLMConfig
+	var err error
+	if req.AtryumLLMConfigID == "" {
+		cfg, err = e.store.DefaultLLMConfig(ctx)
+	} else {
+		cfg, err = e.store.GetLLMConfig(ctx, req.AtryumLLMConfigID)
+	}
 	if err != nil {
 		return PlanEvaluateResponse{}, fmt.Errorf("local plan evaluator: fetch llm config %q: %w", req.AtryumLLMConfigID, err)
 	}

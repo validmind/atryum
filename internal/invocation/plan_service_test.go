@@ -208,6 +208,30 @@ func TestSubmitPlanAutoApproveInvocationRule(t *testing.T) {
 	}
 }
 
+func TestSubmitPlanAutoApproveWithoutCharterDenies(t *testing.T) {
+	rules := []invocation.ApprovalRule{{
+		ID:      "rule-auto",
+		Action:  invocation.RuleActionAutoApprove,
+		Enabled: true,
+	}}
+	judge := &planJudgeStub{resp: invocation.PlanEvaluateResponse{Verdict: "approved"}}
+	svc, _ := newPlanTestService(t, rules, agentLookupStub{}, judge)
+
+	plan, err := svc.SubmitPlan(context.Background(), planSubmit("agent-a", "Bash"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Status != invocation.PlanStatusDenied {
+		t.Fatalf("status = %s, want denied when auto_approve matches but no charter is configured", plan.Status)
+	}
+	if plan.Approval == nil || plan.Approval.Status != "auto_denied" {
+		t.Fatalf("approval = %+v, want auto_denied", plan.Approval)
+	}
+	if judge.planCallCount() != 0 {
+		t.Fatalf("judge calls = %d, want 0 because there is no charter to evaluate", judge.planCallCount())
+	}
+}
+
 func TestEverySubmittedPlanRunsOneMandatoryCharterReview(t *testing.T) {
 	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
 		"agent-a": {ID: "agent-rec-a", Charter: "Never run destructive plans."},
