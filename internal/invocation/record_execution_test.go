@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"atryum/internal/auth"
-	"atryum/internal/invocation"
-	"atryum/internal/store"
+	"github.com/validmind/atryum/internal/auth"
+	"github.com/validmind/atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/store"
 
 	_ "modernc.org/sqlite"
 )

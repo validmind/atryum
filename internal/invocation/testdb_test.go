@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"testing"
 
-	"atryum/internal/store"
+	"github.com/validmind/atryum/internal/store"
 )
 
 func newSQLiteTestDB(t *testing.T) *sql.DB {

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"atryum/internal/mcp"
+	"github.com/validmind/atryum/internal/mcp"
 )
 
 type CustomHeaderProvider struct{}

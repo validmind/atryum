@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"atryum/internal/mcp"
+	"github.com/validmind/atryum/internal/mcp"
 )
 
 type BearerTokenProvider struct{}

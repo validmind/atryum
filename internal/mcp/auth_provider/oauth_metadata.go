@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"atryum/internal/mcp"
+	"github.com/validmind/atryum/internal/mcp"
 )
 
 // OAuthMetadataProvider is the discovery-driven dispatcher. It runs RFC 9728

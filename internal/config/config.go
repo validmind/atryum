@@ -6,7 +6,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"atryum/internal/auth"
+	"github.com/validmind/atryum/internal/auth"
 )
 
 type Config struct {

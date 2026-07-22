@@ -14,13 +14,13 @@ import (
 	"testing"
 	"time"
 
-	"atryum/internal/auth"
-	backendclient "atryum/internal/backend"
-	"atryum/internal/config"
-	"atryum/internal/invocation"
-	"atryum/internal/managedagents"
-	"atryum/internal/mcp"
-	"atryum/internal/store"
+	"github.com/validmind/atryum/internal/auth"
+	backendclient "github.com/validmind/atryum/internal/backend"
+	"github.com/validmind/atryum/internal/config"
+	"github.com/validmind/atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/managedagents"
+	"github.com/validmind/atryum/internal/mcp"
+	"github.com/validmind/atryum/internal/store"
 
 	_ "modernc.org/sqlite"
 )
@@ -1905,4 +1905,38 @@ func TestExternalInvocationPatchErrorStatusMapping(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAddExtraRoutesMountsRoutesOutsideAuthChains(t *testing.T) {
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	// A configured validator protects the normal runtime and admin routes;
+	// extra routes are registered outside those middleware chains.
+	h.SetAuthValidator(&auth.Validator{})
+	h.AddExtraRoutes(func(mux *http.ServeMux) {
+		mux.HandleFunc("/extension", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]string{"source": "extension"})
+		})
+	})
+	routes := h.Routes()
+
+	t.Run("extra route is reachable without credentials", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		routes.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/extension", nil))
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET /extension status = %d, want %d", w.Code, http.StatusOK)
+		}
+		if got, want := w.Body.String(), "{\"source\":\"extension\"}\n"; got != want {
+			t.Fatalf("GET /extension body = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("built-in routes are unaffected", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		routes.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET /healthz status = %d, want %d", w.Code, http.StatusOK)
+		}
+	})
 }

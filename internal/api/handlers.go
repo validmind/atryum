@@ -24,15 +24,15 @@ import (
 
 	"github.com/google/uuid"
 
-	"atryum/internal/auth"
-	backendclient "atryum/internal/backend"
-	"atryum/internal/invocation"
-	"atryum/internal/invocation/policy"
-	"atryum/internal/managedagents"
-	"atryum/internal/mcp"
-	authprovider "atryum/internal/mcp/auth_provider"
-	"atryum/internal/store"
-	"atryum/internal/version"
+	"github.com/validmind/atryum/internal/auth"
+	backendclient "github.com/validmind/atryum/internal/backend"
+	"github.com/validmind/atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/invocation/policy"
+	"github.com/validmind/atryum/internal/managedagents"
+	"github.com/validmind/atryum/internal/mcp"
+	authprovider "github.com/validmind/atryum/internal/mcp/auth_provider"
+	"github.com/validmind/atryum/internal/store"
+	"github.com/validmind/atryum/internal/version"
 )
 
 //go:embed web/*
@@ -162,6 +162,21 @@ type Handler struct {
 	// managedAgents is the optional Claude Managed Agents events bridge.
 	// nil when not configured (no anthropic api key).
 	managedAgents managedAgentsAdmin
+
+	// extraRoutes are registrations contributed by embedding programs (via
+	// pkg/atryum WithRoutes). They are applied to the mux after the built-in
+	// routes and outside every auth middleware chain, like /healthz; each
+	// registration is responsible for its own authentication.
+	extraRoutes []func(mux *http.ServeMux)
+}
+
+// AddExtraRoutes registers a callback that may mount additional routes on the
+// server mux built by Routes. Patterns must not collide with built-in routes
+// (http.ServeMux panics on duplicate registration).
+func (h *Handler) AddExtraRoutes(register func(mux *http.ServeMux)) {
+	if register != nil {
+		h.extraRoutes = append(h.extraRoutes, register)
+	}
 }
 
 // managedAgentsAdmin is the slice of the managed-agents service the admin API
@@ -832,6 +847,9 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/ui", h.uiIndex)
 	mux.Handle("/ui/", http.StripPrefix("/ui/", h.spaFileServer()))
 	mux.HandleFunc("/", h.root)
+	for _, register := range h.extraRoutes {
+		register(mux)
+	}
 	return mux
 }
 

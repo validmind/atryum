@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/invocation"
 )
 
 // sessionAuditTool is the synthetic tool name used for the per-session audit

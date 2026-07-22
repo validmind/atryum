@@ -14,9 +14,9 @@ import (
 
 	jwt "github.com/golang-jwt/jwt/v5"
 
-	"atryum/internal/auth"
-	"atryum/internal/invocation"
-	"atryum/internal/store"
+	"github.com/validmind/atryum/internal/auth"
+	"github.com/validmind/atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/store"
 )
 
 // jwksHandler serves a minimal JWKS document for the given RSA public key so

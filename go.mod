@@ -1,4 +1,4 @@
-module atryum
+module github.com/validmind/atryum
 
 go 1.25.0
 
