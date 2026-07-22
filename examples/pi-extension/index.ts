@@ -224,10 +224,6 @@ type InvocationResponse = {
   error?: unknown;
 };
 
-type SessionResponse = {
-  session_id: string;
-};
-
 type ToolInput = Record<string, unknown>;
 
 const invocationMap = new Map<string, string>();
@@ -256,8 +252,10 @@ function rulesEndpointHint(tool: string): string {
   return `atryum: to see the approval rules that apply to this call, GET ${url.toString()} (advisory only; Atryum re-checks policy during the actual gated call).`;
 }
 
-// Pi's own session identifier, used only for cross-referencing (thread_id and
-// client_session_id). Atryum keys off the session_id it mints, not this.
+// Pi's own session identifier, sent as client_session_id (and thread_id) on
+// every submission. Atryum resolves the internal session with get-or-create
+// keyed by (agent binding, client_session_id) — the extension never mints,
+// persists, or echoes an Atryum session id.
 function piClientSessionID(ctx: unknown): string | undefined {
   const manager = (ctx as { sessionManager?: unknown }).sessionManager as
     | { getSessionFile?: () => string; sessionId?: string; id?: string }
@@ -271,48 +269,11 @@ function piClientSessionID(ctx: unknown): string | undefined {
   return undefined;
 }
 
-// Atryum-minted session id, created lazily on the first tool call and reused
-// for the lifetime of this extension. Atryum links every invocation carrying
-// this id and reconstructs the judge's context from them — the extension never
-// sends a free-form context blob.
-let sessionPromise: Promise<string | undefined> | undefined;
-
-async function createSession(
-  clientSessionID: string | undefined,
-): Promise<string | undefined> {
-  const res = await atryumFetch(`${API}/api/v1/external/sessions`, {
-    method: "POST",
-    contentType: true,
-    body: JSON.stringify({
-      harness: SOURCE,
-      client_session_id: clientSessionID || undefined,
-      agent_id: AGENT_ID || undefined,
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(`${res.status} ${await res.text()}`);
-  }
-  const body = (await res.json()) as SessionResponse;
-  return body.session_id || undefined;
-}
-
-async function ensureSession(ctx: unknown): Promise<string | undefined> {
-  // Sessions are an optimization for richer judge context. If creation fails,
-  // fall back to submitting without a session_id rather than blocking tools.
-  if (!sessionPromise) {
-    sessionPromise = createSession(piClientSessionID(ctx)).catch(
-      () => undefined,
-    );
-  }
-  return sessionPromise;
-}
-
 async function submit(
   tool: string,
   toolCallID: string,
   input: ToolInput,
   threadID: string | undefined,
-  sessionID: string | undefined,
 ): Promise<InvocationResponse> {
   const res = await atryumFetch(`${API}/api/v1/external/invocations`, {
     method: "POST",
@@ -324,7 +285,9 @@ async function submit(
       input,
       request_id: toolCallID,
       thread_id: threadID,
-      session_id: sessionID,
+      // Pi's own session id. Atryum resolves the internal session with
+      // get-or-create keyed by (agent binding, client_session_id).
+      client_session_id: threadID,
       agent_id: AGENT_ID || undefined,
       client_name: CLIENT_NAME,
       client_version: CLIENT_VERSION || undefined,
@@ -383,13 +346,11 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_call", async (event, ctx) => {
     try {
       const input = (event.input || {}) as ToolInput;
-      const sessionID = await ensureSession(ctx);
       const submitted = await submit(
         event.toolName,
         event.toolCallId,
         input,
         piClientSessionID(ctx),
-        sessionID,
       );
       invocationMap.set(event.toolCallId, submitted.invocation_id);
 

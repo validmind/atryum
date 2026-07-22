@@ -3570,9 +3570,16 @@ func (h *Handler) externalInvocations(w http.ResponseWriter, r *http.Request) {
 }
 
 // externalSessions mints a harness session (POST /api/v1/external/sessions).
-// The harness calls this once at startup and echoes the returned session_id on
-// every subsequent /api/v1/external/invocations call, letting Atryum rebuild the
-// judge's context from prior tool calls in the same session.
+//
+// Deprecated: harnesses should instead send client_session_id on every
+// /api/v1/external/invocations call and let Atryum get-or-create the internal
+// session server-side (keyed by agent binding + client_session_id). This
+// endpoint stays fully functional for explicit-control callers and back-compat.
+//
+// On the old flow the harness calls this once at startup and echoes the
+// returned session_id on every subsequent /api/v1/external/invocations call,
+// letting Atryum rebuild the judge's context from prior tool calls in the same
+// session.
 func (h *Handler) externalSessions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
