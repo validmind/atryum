@@ -1842,3 +1842,36 @@ func TestInvocationsByVMCUID(t *testing.T) {
 		}
 	})
 }
+
+func TestExternalInvocationPatchErrorStatusMapping(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantStatus int
+	}{
+		{"invalid transition maps to 409", fmt.Errorf("invocation inv_1 cannot move to completed from pending_approval: %w", invocation.ErrInvalidTransition), http.StatusConflict},
+		{"not owner maps to 403", fmt.Errorf("invocation inv_1: %w", invocation.ErrNotOwner), http.StatusForbidden},
+		{"missing invocation maps to 404", sql.ErrNoRows, http.StatusNotFound},
+		{"generic error maps to 400", fmt.Errorf("boom"), http.StatusBadRequest},
+		{"success maps to 200", nil, http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &stubService{invErr: tc.err}
+			h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+			req := httptest.NewRequest(http.MethodPatch, "/api/v1/external/invocations/inv_1", strings.NewReader(`{"execution_status":"completed"}`))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			h.Routes().ServeHTTP(w, req)
+			if w.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d (body=%s)", w.Code, tc.wantStatus, w.Body.String())
+			}
+			if svc.recordID != "inv_1" {
+				t.Fatalf("RecordExecution called with id %q, want inv_1", svc.recordID)
+			}
+			if svc.recordReq == nil || svc.recordReq.ExecutionStatus != "completed" {
+				t.Fatalf("RecordExecution update = %+v", svc.recordReq)
+			}
+		})
+	}
+}

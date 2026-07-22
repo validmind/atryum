@@ -1419,7 +1419,12 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	var resolvedAIDecision *policy.Decision
 	var resolvedAIConfidence *float64
 	if s.rules != nil {
-		if approvalRules, err := s.rules.ListApprovalRules(ctx); err == nil {
+		approvalRules, err := s.rules.ListApprovalRules(ctx)
+		if err != nil {
+			slog.Error("failed to load approval rules; failing closed to human review",
+				"error", err, "source", source, "tool", req.Tool)
+			s.emitRuleEvaluatedEvent(ctx, inv.InvocationID, "", "", policy.Decision{Disposition: policy.DispositionHuman, Reason: "rule lookup failed: " + err.Error()}, nil)
+		} else {
 			for _, rule := range matchRules(approvalRules, source, req.Tool, agentRec.ID) {
 				r := rule
 				if r.ID != "" {
@@ -1607,10 +1612,37 @@ func (s *Service) summarizePendingApproval(invocationID string) {
 	}()
 }
 
+// ErrInvalidTransition is returned by RecordExecution when the reported
+// execution status is not reachable from the invocation's current status —
+// e.g. an executor claiming "completed" while the invocation is still
+// pending_approval, or after a human denied it.
+var ErrInvalidTransition = errors.New("invalid execution status transition")
+
+// ErrNotOwner is returned by RecordExecution when the verified agent identity
+// on the request does not match the agent the invocation belongs to.
+var ErrNotOwner = errors.New("invocation belongs to a different agent")
+
+// requireStatus rejects an execution-status transition unless the invocation
+// is currently in one of the allowed states.
+func requireStatus(inv Invocation, target string, allowed ...Status) error {
+	for _, status := range allowed {
+		if inv.Status == status {
+			return nil
+		}
+	}
+	return fmt.Errorf("invocation %s cannot move to %s from %s: %w", inv.InvocationID, target, inv.Status, ErrInvalidTransition)
+}
+
 // RecordExecution updates an externally-executed invocation with the outcome
 // reported by the executor. Valid execStatus values:
 //
 //	running | completed | failed | cancelled
+//
+// Transitions are guarded: an outcome may only be recorded once the invocation
+// has been approved (or, for cancelled, while it is still awaiting approval —
+// abandoning a pending call is always safe). Reporting the same terminal
+// status twice is an idempotent no-op so executors can retry safely; the
+// first recorded outcome wins and is never overwritten.
 func (s *Service) RecordExecution(ctx context.Context, invocationID string, update ExternalExecutionUpdate) (InvocationResponse, error) {
 	inv, err := s.invocations.Get(ctx, invocationID)
 	if err != nil {
@@ -1619,28 +1651,29 @@ func (s *Service) RecordExecution(ctx context.Context, invocationID string, upda
 	// Ownership: update.Result/Error are surfaced to the judge as trusted
 	// evidence, so a caller who knows another agent's invocation_id could
 	// poison that agent's session context. The PATCH
-	// /api/v1/external/invocations/{id} route now runs under the agent-runtime
+	// /api/v1/external/invocations/{id} route runs under the agent-runtime
 	// OAuth middleware, so in auth mode ctx carries the authenticated caller.
 	// When an identity is present, reject any attempt to write an invocation
 	// this agent does not own (inv.AgentID is set from the authenticated
-	// identity at Submit time, so a match proves ownership). In no-auth mode
-	// there is no identity to check against — behavior is unchanged, and the
-	// in-process managed-agents watcher (which calls RecordExecution directly
-	// with no auth identity) is likewise unaffected.
+	// identity at Submit time, so a match proves ownership). Invocations
+	// submitted anonymously (no agent_id) skip the ownership check. In no-auth
+	// mode there is no identity to check against — behavior is unchanged, and
+	// the in-process managed-agents watcher (which calls RecordExecution
+	// directly with no auth identity) is likewise unaffected.
 	if callerID := strings.TrimSpace(auth.AgentIDFromContext(ctx)); callerID != "" {
 		owner := ""
 		if inv.AgentID != nil {
 			owner = strings.TrimSpace(*inv.AgentID)
 		}
-		if owner != callerID {
-			return InvocationResponse{}, fmt.Errorf("invocation does not belong to this agent")
+		if owner != "" && owner != callerID {
+			return InvocationResponse{}, fmt.Errorf("invocation %s: %w", invocationID, ErrNotOwner)
 		}
 	}
 	now := time.Now().UTC()
 	switch update.ExecutionStatus {
 	case "running":
-		if inv.Status != StatusApproved && inv.Status != StatusExecuting {
-			return InvocationResponse{}, fmt.Errorf("invocation %s cannot move to running from %s", invocationID, inv.Status)
+		if err := requireStatus(inv, "running", StatusApproved, StatusExecuting); err != nil {
+			return InvocationResponse{}, err
 		}
 		inv.Status = StatusExecuting
 		if err := s.invocations.UpdateResult(ctx, inv); err != nil {
@@ -1648,6 +1681,12 @@ func (s *Service) RecordExecution(ctx context.Context, invocationID string, upda
 		}
 		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.executing", Payload: mustJSON(map[string]any{"upstream": inv.Upstream, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "external": true}), CreatedAt: now})
 	case "completed":
+		if inv.Status == StatusSucceeded {
+			return s.toResponse(inv), nil // idempotent retry
+		}
+		if err := requireStatus(inv, "completed", StatusApproved, StatusExecuting); err != nil {
+			return InvocationResponse{}, err
+		}
 		inv.Status = StatusSucceeded
 		inv.CompletedAt = &now
 		if len(update.Result) > 0 {
@@ -1658,6 +1697,12 @@ func (s *Service) RecordExecution(ctx context.Context, invocationID string, upda
 		}
 		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.succeeded", Payload: mustJSON(map[string]any{"upstream": inv.Upstream, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "body": json.RawMessage(nullableRaw(inv.Response)), "external": true}), CreatedAt: now})
 	case "failed":
+		if inv.Status == StatusFailed {
+			return s.toResponse(inv), nil // idempotent retry
+		}
+		if err := requireStatus(inv, "failed", StatusApproved, StatusExecuting); err != nil {
+			return InvocationResponse{}, err
+		}
 		inv.Status = StatusFailed
 		inv.CompletedAt = &now
 		if len(update.Error) > 0 {
@@ -1672,6 +1717,14 @@ func (s *Service) RecordExecution(ctx context.Context, invocationID string, upda
 		}
 		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.failed", Payload: mustJSON(map[string]any{"upstream": inv.Upstream, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "body": json.RawMessage(inv.Error), "external": true}), CreatedAt: now})
 	case "cancelled":
+		if inv.Status == StatusCancelled {
+			return s.toResponse(inv), nil // idempotent retry
+		}
+		// pending_approval is allowed here: an executor abandoning a call
+		// that never got approved makes the record strictly more conservative.
+		if err := requireStatus(inv, "cancelled", StatusApproved, StatusExecuting, StatusPendingApproval); err != nil {
+			return InvocationResponse{}, err
+		}
 		inv.Status = StatusCancelled
 		inv.CompletedAt = &now
 		if len(update.Error) > 0 {

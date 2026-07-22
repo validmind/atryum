@@ -188,6 +188,52 @@ func TestInvokeFailsClosedWhenRuleLoadFails(t *testing.T) {
 	}
 }
 
+// TestSubmitLogsAndAuditsRuleLoadFailure verifies that Submit records a
+// rule-lookup failure in the invocation's audit trail instead of discarding
+// it. Submit already fell back to pending_approval before this fix (unlike
+// Invoke, it has no global-policy fallback to accidentally fall through to),
+// but it did so silently: the error was dropped with no log line and no
+// event, so an operator investigating a stuck pending_approval invocation
+// could not distinguish "no rules matched" from "the rule store errored."
+func TestSubmitLogsAndAuditsRuleLoadFailure(t *testing.T) {
+	db := newSQLiteTestDB(t)
+	service := invocation.NewService(
+		store.NewInvocationRepo(db),
+		store.NewEventRepo(db),
+		nil, nil, nil,
+		5*time.Second,
+		rulesStoreStub{err: errors.New("database is locked")}, // simulates the transient DB hiccup
+		nil, nil, nil,
+	)
+
+	resp, err := service.Submit(context.Background(), invocation.ExternalSubmitRequest{
+		Source: "amp",
+		Tool:   "dangerous-tool",
+		Input:  map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusPendingApproval {
+		t.Fatalf("status = %q, want pending_approval", resp.Status)
+	}
+
+	events, err := service.Events(context.Background(), resp.InvocationID, invocation.EventListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, evt := range events.Items {
+		if evt.Type == "invocation.rule_evaluated" && jsonContains(evt.Data, "rule lookup failed") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected an invocation.rule_evaluated event recording the rule lookup failure; got none — the error was silently dropped")
+	}
+}
+
 func TestResolverBootstrapsServersFromConfigWhenDBEmpty(t *testing.T) {
 	db := newSQLiteTestDB(t)
 	repo := store.NewServerRepo(db)
@@ -850,11 +896,15 @@ func TestRecordExecutionRejectsMismatchedAuthenticatedCaller(t *testing.T) {
 	attacker := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "attacker"})
 	if _, err := service.RecordExecution(attacker, inv.InvocationID, invocation.ExternalExecutionUpdate{
 		ExecutionStatus: "completed", Result: json.RawMessage(`{"stdout":"pwned"}`),
-	}); err == nil || !strings.Contains(err.Error(), "does not belong") {
-		t.Fatalf("expected ownership rejection, got %v", err)
+	}); err == nil || !errors.Is(err, invocation.ErrNotOwner) {
+		t.Fatalf("expected ErrNotOwner, got %v", err)
 	}
 
-	// The owning agent succeeds.
+	if err := service.Approve(context.Background(), inv.InvocationID, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// The owning agent succeeds once the invocation is approved.
 	if _, err := service.RecordExecution(owner, inv.InvocationID, invocation.ExternalExecutionUpdate{
 		ExecutionStatus: "completed", Result: json.RawMessage(`{"stdout":"file.txt"}`),
 	}); err != nil {
@@ -869,10 +919,13 @@ func TestRecordExecutionRejectsMismatchedAuthenticatedCaller(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := service.Approve(context.Background(), noauth.InvocationID, ""); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := service.RecordExecution(context.Background(), noauth.InvocationID, invocation.ExternalExecutionUpdate{
 		ExecutionStatus: "completed", Result: json.RawMessage(`{"stdout":"ok"}`),
 	}); err != nil {
-		t.Fatalf("no-auth RecordExecution should be unchanged: %v", err)
+		t.Fatalf("no-auth RecordExecution should succeed after approval: %v", err)
 	}
 }
 
