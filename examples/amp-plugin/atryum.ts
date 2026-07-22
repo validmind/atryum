@@ -9,11 +9,13 @@
 // Session context for the LLM-as-judge is NOT sent by this plugin. The harness
 // is trusted to report which session a tool call belongs to, but it does not
 // get to hand Atryum a free-form context blob (a runaway agent could use that
-// to poison the judge). Instead, the plugin mints an Atryum session once at
-// startup (POST /api/v1/external/sessions) and echoes the returned session_id
-// on every submission. Atryum reconstructs the judge's context from the prior
-// tool calls it recorded for that session, which it trusts at the appropriate
-// level (tool outputs > tool inputs > nothing from agent chat).
+// to poison the judge). Instead, the plugin sends Amp's own thread id as
+// `client_session_id` on every submission and lets Atryum manage the session
+// server-side: Atryum resolves the internal session with get-or-create keyed by
+// (agent binding, client_session_id) and reconstructs the judge's context from
+// the prior tool calls it recorded for that session, which it trusts at the
+// appropriate level (tool outputs > tool inputs > nothing from agent chat). The
+// plugin never mints, persists, or echoes an Atryum session id.
 //
 // Configure via env:
 //   ATRYUM_URL       base URL of the atryum server, default http://localhost:8080
@@ -38,8 +40,9 @@
 //                    token is refreshed on expiry and on a 401.
 //   ATRYUM_AMP_SESSION_FILE
 //                    override Amp session JSON file, default
-//                    ~/.local/share/amp/session.json. Used only to label the
-//                    session with Amp's own thread id (client_session_id).
+//                    ~/.local/share/amp/session.json. Used to derive Amp's own
+//                    thread id, sent as client_session_id so Atryum can group a
+//                    thread's tool calls into one server-managed session.
 
 import type { PluginAPI } from "@ampcode/plugin";
 import { exec } from "node:child_process";
@@ -283,10 +286,6 @@ type InvocationResponse = {
   error?: unknown;
 };
 
-type SessionResponse = {
-  session_id: string;
-};
-
 // toolUseID -> atryum invocation id, so tool.result can patch the right row.
 const invocationMap = new Map<string, string>();
 
@@ -317,39 +316,6 @@ function activeThreadID(): string {
   return "";
 }
 
-// Atryum-minted session id, created lazily on the first tool call and reused
-// for the lifetime of this plugin process. Atryum links every invocation
-// carrying this id and reconstructs the judge's context from them.
-let sessionPromise: Promise<string | undefined> | undefined;
-
-async function createSession(): Promise<string | undefined> {
-  const res = await atryumFetch(`${API}/api/v1/external/sessions`, {
-    method: "POST",
-    contentType: true,
-    body: JSON.stringify({
-      harness: SOURCE,
-      // Amp's own thread id, for cross-referencing only. Atryum keys off the
-      // session_id it mints, not this.
-      client_session_id: activeThreadID() || undefined,
-      agent_id: AGENT_ID || undefined,
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(`${res.status} ${await res.text()}`);
-  }
-  const body = (await res.json()) as SessionResponse;
-  return body.session_id || undefined;
-}
-
-async function ensureSession(): Promise<string | undefined> {
-  // Sessions are an optimization for richer judge context. If creation fails,
-  // fall back to submitting without a session_id rather than blocking tools.
-  if (!sessionPromise) {
-    sessionPromise = createSession().catch(() => undefined);
-  }
-  return sessionPromise;
-}
-
 function describe(input: Record<string, unknown>): string {
   const parts = Object.entries(input)
     .filter(([, v]) => typeof v === "string")
@@ -374,8 +340,8 @@ async function submit(
   tool: string,
   toolUseID: string,
   input: Record<string, unknown>,
-  sessionID: string | undefined,
 ): Promise<InvocationResponse> {
+  const threadID = activeThreadID() || undefined;
   const res = await atryumFetch(`${API}/api/v1/external/invocations`, {
     method: "POST",
     contentType: true,
@@ -385,8 +351,11 @@ async function submit(
       description: describe(input),
       input,
       request_id: toolUseID,
-      thread_id: activeThreadID() || undefined,
-      session_id: sessionID,
+      thread_id: threadID,
+      // Amp's own thread id. Atryum resolves the internal session with
+      // get-or-create keyed by (agent binding, client_session_id) — no mint,
+      // no persisted session id, no re-mint on expiry.
+      client_session_id: threadID,
       client_name: CLIENT_NAME,
       client_version: CLIENT_VERSION || undefined,
       agent_id: AGENT_ID || undefined,
@@ -444,12 +413,10 @@ async function patchExecution(
 export default function (amp: PluginAPI) {
   amp.on("tool.call", async (event, ctx) => {
     try {
-      const sessionID = await ensureSession();
       const submitted = await submit(
         event.tool,
         event.toolUseID,
         event.input,
-        sessionID,
       );
       invocationMap.set(event.toolUseID, submitted.invocation_id);
 

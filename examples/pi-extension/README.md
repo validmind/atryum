@@ -92,17 +92,17 @@ The extension does **not** send a free-form chat/context blob to Atryum. The
 harness is trusted to report _which_ session a tool call belongs to, but a
 runaway agent must not be able to hand the judge arbitrary text to poison it.
 
-Instead, on the first tool call the extension mints an Atryum session via
-`POST /api/v1/external/sessions` (passing `harness` and, for cross-referencing
-only, Pi's own session id as `client_session_id`). It caches the returned
-`session_id` for the lifetime of the session and echoes it on every
-`POST /api/v1/external/invocations`. Atryum then reconstructs the judge's
-context from the prior tool calls it recorded for that session — trusting tool
-outputs more than tool inputs, and ignoring agent chat entirely.
+Instead, the extension sends Pi's own session id as `client_session_id` on
+every `POST /api/v1/external/invocations` and lets Atryum manage the session
+server-side. Atryum resolves the internal session with get-or-create keyed by
+(agent binding, `client_session_id`) and reconstructs the judge's context from
+the prior tool calls it recorded for that session — trusting tool outputs more
+than tool inputs, and ignoring agent chat entirely. The extension never mints,
+persists, or echoes an Atryum session id.
 
-If session creation fails, the extension falls back to submitting without a
-`session_id` (tool calls are still gated, just without prior-call context)
-rather than blocking the agent.
+If the caller has no agent binding, Atryum simply resolves no session and
+evaluates the call history-free (tool calls are still gated, just without
+prior-call context) rather than blocking the agent.
 
 ## Tagging invocations to an Agent Record
 

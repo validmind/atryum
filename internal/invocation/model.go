@@ -114,10 +114,21 @@ type ExternalSubmitRequest struct {
 	RequestID      *string        `json:"request_id,omitempty"`
 	IdempotencyKey *string        `json:"idempotency_key,omitempty"`
 	ThreadID       string         `json:"thread_id,omitempty"`
-	// SessionID is an Atryum-minted session identifier (from POST
+	// ClientSessionID is the harness's own session/thread identifier (the id it
+	// already tracks for its host conversation). When set and no SessionID is
+	// provided, Atryum resolves the internal session with get-or-create
+	// semantics keyed by (agent binding, client_session_id): first sight mints
+	// the internal ses_ row, subsequent calls reuse it, and an expired row under
+	// the same key rolls over to a fresh session. This is the preferred path —
+	// the harness never has to mint, persist, or echo an Atryum session id.
+	ClientSessionID string `json:"client_session_id,omitempty"`
+	// Deprecated: prefer ClientSessionID (server-side get-or-create). SessionID
+	// is an Atryum-minted session identifier (from the deprecated POST
 	// /api/v1/external/sessions). When set, Atryum reconstructs the judge's
 	// session context from the prior invocations it recorded for this session,
-	// rather than trusting a harness-supplied context blob.
+	// rather than trusting a harness-supplied context blob. Still fully
+	// functional; the ownership/expiry/unbound rejections on this path remain
+	// hard.
 	SessionID string `json:"session_id,omitempty"`
 	// SessionContext is the agent's recent session history (human messages and
 	// tool calls/results) passed to the LLM judge. It is populated in-process by
@@ -166,6 +177,11 @@ type InvocationResponse struct {
 	Approval      *Approval `json:"approval"`
 	MatchedRuleID *string   `json:"matched_rule_id,omitempty"`
 	AgentID       *string   `json:"agent_id,omitempty"`
+	// SessionID is the internal Atryum session (ses_...) this invocation was
+	// linked to, if any. Exposed for observability/debugging — clients never
+	// need to send it back. Populated on both the explicit session_id path and
+	// the client_session_id get-or-create path.
+	SessionID *string `json:"session_id,omitempty"`
 	// AgentClientName / AgentClientVersion identify the MCP client software
 	// (e.g. "amp", "cursor", "claude-code") captured from the most recent
 	// `initialize` handshake associated with this AgentID. They describe the

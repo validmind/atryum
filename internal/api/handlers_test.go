@@ -626,6 +626,37 @@ func TestExternalSessionMintRejectionReturns400(t *testing.T) {
 	}
 }
 
+// TestExternalSubmitForwardsClientSessionID pins that the submit handler decodes
+// client_session_id from the body and forwards it to Service.Submit (where the
+// server-side get-or-create resolves the session), and that the resolved
+// internal session id is surfaced in the response. This is the field that
+// replaces the old mint-then-echo session_id flow for harnesses.
+func TestExternalSubmitForwardsClientSessionID(t *testing.T) {
+	resolved := "ses_resolved"
+	svc := &stubService{invoke: invocation.InvocationResponse{
+		InvocationID: "inv_123", ToolName: "bash", Status: invocation.StatusPendingApproval,
+		SessionID: &resolved,
+	}}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	body := strings.NewReader(`{"source":"amp","tool":"bash","input":{"cmd":"ls"},"client_session_id":"amp-thread-1"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/external/invocations", body)
+	req.Header.Set("content-type", "application/json")
+	req = req.WithContext(auth.WithIdentity(req.Context(), auth.Identity{AgentID: "amp-1"}))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if svc.submitReq == nil || svc.submitReq.ClientSessionID != "amp-thread-1" {
+		t.Fatalf("submit request client_session_id not forwarded: %+v", svc.submitReq)
+	}
+	if !strings.Contains(w.Body.String(), "ses_resolved") {
+		t.Fatalf("expected resolved session id in response body: %s", w.Body.String())
+	}
+}
+
 type stubAgentsRepo struct {
 	records     []store.AgentRecord
 	err         error

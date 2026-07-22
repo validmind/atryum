@@ -61,7 +61,7 @@ the hook definition, so changing the command requires re-review.
 | `ATRYUM_POLL_MS` | `2000` | approval polling interval |
 | `ATRYUM_AGENT_ID` | _(empty)_ | self-declared agent identifier; matched against Agent Record `agent_ids` |
 | `ATRYUM_ACCESS_TOKEN` | _(empty)_ | optional OAuth bearer token for Atryum agent runtime APIs |
-| `ATRYUM_STATE_DIR` | `~/.atryum/agent-hook-state` | tool-use to invocation-id state and the cached Atryum session |
+| `ATRYUM_STATE_DIR` | `~/.atryum/agent-hook-state` | tool-use to invocation-id state |
 
 ## LLM-as-judge session context
 
@@ -70,20 +70,19 @@ history, or send any chat/context blob to Atryum. The harness is trusted to
 report _which_ session a tool call belongs to, but a runaway agent must not be
 able to hand the judge arbitrary text to poison it.
 
-Instead, the hook mints an Atryum session via `POST /api/v1/external/sessions`
-(passing `harness` and, for cross-referencing only, Codex's own session id as
-`client_session_id`). Because each hook invocation is a fresh process, the
-returned `session_id` is cached on disk under `$ATRYUM_STATE_DIR` keyed by the
-host session id and echoed on every `POST /api/v1/external/invocations`. Atryum
-then reconstructs the judge's context from the prior tool calls it recorded for
-that session — trusting tool outputs more than tool inputs, and ignoring agent
-chat entirely.
+Instead, the hook sends Codex's own session id as `client_session_id` on every
+`POST /api/v1/external/invocations` and lets Atryum manage the session
+server-side. Atryum resolves the internal session with get-or-create keyed by
+(agent binding, `client_session_id`) and reconstructs the judge's context from
+the prior tool calls it recorded for that session — trusting tool outputs more
+than tool inputs, and ignoring agent chat entirely. Because the server manages
+the session, the hook keeps no session state on disk even though each hook
+invocation is a fresh process — no mint call, no cache file, no re-mint/retry.
 
-Sessions require an agent binding: `ATRYUM_AGENT_ID` (no-auth mode) or the
-bearer token (auth mode). With neither, the caller is anonymous and the hook
-submits without a `session_id` (tool calls are still gated, just without
-prior-call context). If a cached session is unknown, foreign, or expired, the
-hook mints a fresh one and retries the submit once.
+A session still requires an agent binding: `ATRYUM_AGENT_ID` (no-auth mode) or
+the bearer token (auth mode). With neither, the caller is anonymous and Atryum
+resolves no session, evaluating the call history-free (tool calls are still
+gated, just without prior-call context).
 
 ## MCP proxy
 

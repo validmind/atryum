@@ -206,6 +206,7 @@ type eventRepo interface {
 type sessionStore interface {
 	CreateSession(ctx context.Context, s ExternalSession) error
 	GetSession(ctx context.Context, id string) (ExternalSession, error)
+	GetSessionByAgentAndClientSessionID(ctx context.Context, agentID, clientSessionID string) (ExternalSession, error)
 	TouchSession(ctx context.Context, id string, expiresAt time.Time) error
 }
 
@@ -289,6 +290,13 @@ func (s *Service) SetSessionStore(store sessionStore) {
 }
 
 // CreateSession mints a new harness session bound to agentID and persists it.
+//
+// Deprecated: harnesses should send client_session_id on the submit path and
+// let Atryum get-or-create the internal session (see getOrCreateSession). This
+// endpoint stays fully functional for explicit-control callers and for
+// back-compat with harnesses that still pre-mint. It is also reused internally
+// by getOrCreateSession to mint the ses_ row on first sight of a key.
+//
 // agentID is the authenticated identity when present, else the self-declared id
 // (no-auth mode). A non-empty binding is required: session history is
 // identity-keyed, and an anonymous caller has no stable identity for ownership
@@ -891,6 +899,56 @@ func (s *Service) lookupSessionForAgent(ctx context.Context, sessionID, agentID 
 	return sess, nil
 }
 
+// getOrCreateSession resolves the internal session for a submit that carries a
+// client_session_id but no explicit session_id, keyed by (agentID,
+// clientSessionID). Callers must have already established that sessions are
+// enabled, agentID is a non-empty binding, and clientSessionID is non-empty —
+// the no-binding / empty-client-id cases degrade to history-free evaluation at
+// the call site rather than reaching here.
+//
+// The key is namespaced by the agent binding, so agent B presenting agent A's
+// client_session_id resolves to a different session with no context bleed —
+// the same isolation lookupSessionForAgent enforces by ownership comparison,
+// achieved here by key construction. First sight of a key mints the internal
+// ses_ row (reusing CreateSession's metadata caps / TTL / binding requirement);
+// subsequent calls reuse it. An expired row under the same key intentionally
+// rolls over to a fresh session — judge context resets rather than resurrecting
+// stale history, and the old row stays for audit.
+//
+// clientSessionID is truncated to the same width CreateSession stores so lookup
+// and persistence agree on the key.
+//
+// Concurrency: two racing first-submits for the same key can each miss the
+// lookup and both mint a row. That is acceptable — both are valid audit rows,
+// and GetSessionByAgentAndClientSessionID returns the newest, so subsequent
+// calls converge on one session. We deliberately don't add locking; a uniqueness
+// constraint isn't a clean fit here because expiry rollover legitimately creates
+// multiple rows per key over time.
+func (s *Service) getOrCreateSession(ctx context.Context, agentID, clientSessionID, harness string) (string, error) {
+	if s.sessions == nil {
+		return "", fmt.Errorf("sessions not enabled")
+	}
+	clientSessionID = truncateContextText(strings.TrimSpace(clientSessionID), maxExternalSessionMetadataChars)
+	agentID = strings.TrimSpace(agentID)
+	sess, err := s.sessions.GetSessionByAgentAndClientSessionID(ctx, agentID, clientSessionID)
+	switch {
+	case err == nil:
+		if sess.ExpiresAt.IsZero() || time.Now().UTC().Before(sess.ExpiresAt) {
+			return sess.ID, nil // reuse the live session
+		}
+		// expired: fall through to mint a fresh session (rollover).
+	case errors.Is(err, sql.ErrNoRows):
+		// first sight of this key: fall through to mint.
+	default:
+		return "", err
+	}
+	resp, err := s.CreateSession(ctx, CreateSessionRequest{Harness: harness, ClientSessionID: clientSessionID}, agentID)
+	if err != nil {
+		return "", err
+	}
+	return resp.SessionID, nil
+}
+
 // buildSessionContext reconstructs the judge's session context from the prior
 // invocations Atryum recorded for sessionID (oldest to newest). Each entry
 // carries the tool, the agent-chosen input, the approval disposition, and the
@@ -1353,18 +1411,36 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	}
 	agentRec := s.resolveAgentRecord(ctx, agentID)
 
-	// Invocations API session: when the harness presents an Atryum-minted
-	// session_id, verify it belongs to this agent and rebuild the judge's
-	// session context from the prior invocations we recorded for it. Built
-	// before Create() so the current call is excluded from its own context.
-	// This supersedes any harness-supplied SessionContext on the API path.
+	// Invocations API session: resolve the internal session and rebuild the
+	// judge's context from the prior invocations Atryum recorded for it. Built
+	// before Create() so the current call is excluded from its own context, and
+	// it supersedes any harness-supplied SessionContext on the API path.
+	//
+	// Two ways in:
+	//   - Explicit session_id (deprecated, back-compat): verify it belongs to
+	//     this agent; ownership/expiry/unbound rejections stay hard.
+	//   - client_session_id (preferred): get-or-create keyed by (agent binding,
+	//     client_session_id). No binding or empty client_session_id → no session
+	//     → history-free evaluation (same rule as an anonymous caller today).
 	var sessionID string
-	if req.SessionID != "" {
+	switch {
+	case req.SessionID != "":
 		sess, err := s.lookupSessionForAgent(ctx, req.SessionID, agentID)
 		if err != nil {
 			return InvocationResponse{}, err
 		}
 		sessionID = sess.ID
+		sessionContext, sessionContextMessages = s.buildSessionContext(ctx, sessionID)
+	case s.sessions != nil && agentID != "" && strings.TrimSpace(req.ClientSessionID) != "":
+		harness := req.ClientName
+		if harness == "" {
+			harness = source
+		}
+		resolved, err := s.getOrCreateSession(ctx, agentID, req.ClientSessionID, harness)
+		if err != nil {
+			return InvocationResponse{}, err
+		}
+		sessionID = resolved
 		sessionContext, sessionContextMessages = s.buildSessionContext(ctx, sessionID)
 	}
 
@@ -1834,6 +1910,9 @@ func (s *Service) toResponse(inv Invocation) InvocationResponse {
 	resp := InvocationResponse{InvocationID: inv.InvocationID, ServerName: inv.Upstream, ToolName: inv.Tool, Status: inv.Status, Approval: inv.Approval, MatchedRuleID: inv.MatchedRuleID, AgentID: inv.AgentID, RequestID: inv.RequestID, SubmittedAt: inv.SubmittedAt, CompletedAt: inv.CompletedAt}
 	if inv.Summary != nil {
 		resp.Summary = *inv.Summary
+	}
+	if inv.SessionID != nil {
+		resp.SessionID = inv.SessionID
 	}
 	if inv.ClientName != nil {
 		resp.AgentClientName = inv.ClientName
