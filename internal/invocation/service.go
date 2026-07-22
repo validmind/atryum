@@ -171,12 +171,30 @@ type resolver interface {
 }
 
 type upstreamClient interface {
-	Invoke(ctx context.Context, upstream mcp.Upstream, tool string, input map[string]any, requestID *string) (mcp.InvokeResult, error)
+	Invoke(ctx context.Context, upstream mcp.Upstream, tool string, input map[string]any, requestID *string, meta map[string]any) (mcp.InvokeResult, error)
+	InvokeStream(ctx context.Context, upstream mcp.Upstream, tool string, input map[string]any, requestID *string, meta map[string]any, sink mcp.StreamSink, opts mcp.StreamOptions) (mcp.InvokeResult, error)
 	ListTools(ctx context.Context, upstream mcp.Upstream) ([]mcp.Tool, error)
 	ForwardEnvelope(ctx context.Context, upstream mcp.Upstream, envelope mcp.Envelope, protocolVersion string) (mcp.ForwardResult, error)
 }
 
+// StreamAuditLimits bounds how many per-call invocation.stream_event audit
+// rows get persisted, and how large each one's data field is, for one
+// streaming tools/call execution. A zero value disables that particular
+// cap (no configured event-count limit / untruncated data). The audit sink's
+// bounded queue remains a final backpressure guard even with MaxEvents zero,
+// and reports any queue drops in invocation.stream_completed.
+type StreamAuditLimits struct {
+	MaxEvents     int
+	MaxEventBytes int
+}
+
 const toolCatalogTTL = 5 * time.Minute
+
+// terminalPersistenceTimeout bounds writes that finalize an invocation after
+// execution. Those writes must outlive the agent-facing request context: a
+// downstream disconnect cancels that context before the service can record the
+// resulting failure, which would otherwise leave the durable row executing.
+const terminalPersistenceTimeout = 5 * time.Second
 
 type toolCatalogEntry struct {
 	tools     map[string]mcp.Tool
@@ -198,6 +216,12 @@ type Service struct {
 	defaultTimeout   time.Duration
 	mu               sync.Mutex
 	pendingApprovals map[string]chan approvalDecision
+
+	// streamOptions and streamAuditLimits govern InvokeStreaming's execution
+	// once a sink is present (see finishExecution). The zero value of each
+	// disables its bounds; SetStreamOptions installs real values.
+	streamOptions     mcp.StreamOptions
+	streamAuditLimits StreamAuditLimits
 
 	toolCatalogMu sync.Mutex
 	toolCatalog   map[string]toolCatalogEntry
@@ -235,6 +259,14 @@ func NewService(
 // summarize invocations automatically when they enter human approval.
 func (s *Service) SetInvocationSummarizer(client SummaryClient) {
 	s.summarizer = client
+}
+
+// SetStreamOptions configures the header/idle/max-duration timeout scheme
+// and per-event audit caps used by InvokeStreaming once a caller supplies a
+// sink (see finishExecution). Calls with a nil sink are unaffected.
+func (s *Service) SetStreamOptions(opts mcp.StreamOptions, auditLimits StreamAuditLimits) {
+	s.streamOptions = opts
+	s.streamAuditLimits = auditLimits
 }
 
 // SetSessionStore installs the optional store backing the Invocations API
@@ -291,7 +323,21 @@ func (s *Service) CreateSession(ctx context.Context, req CreateSessionRequest, a
 	}, nil
 }
 
+// Invoke runs one tool call with no live relay: the upstream call is fully
+// buffered and returned as a single result, exactly as InvokeStreaming(ctx,
+// req, nil) would.
 func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (InvocationResponse, error) {
+	return s.InvokeStreaming(ctx, req, nil)
+}
+
+// InvokeStreaming runs one tool call exactly like Invoke, except that when
+// sink is non-nil and the upstream answers the tools/call with an SSE
+// stream, intermediate JSON-RPC messages (progress, logging, other
+// notifications) are relayed to sink as they arrive — see finishExecution.
+// Rule evaluation, policy, and the human-approval gate below are entirely
+// unaware of sink: it is not touched until execution begins, so an
+// approval-gated call pauses with nothing relayed, the same as today.
+func (s *Service) InvokeStreaming(ctx context.Context, req CreateInvocationRequest, sink mcp.StreamSink) (InvocationResponse, error) {
 	if req.Server == "" {
 		return InvocationResponse{}, fmt.Errorf("server is required")
 	}
@@ -430,12 +476,12 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	case policy.DispositionNever:
 		return s.denyByPolicy(ctx, inv, decision.Reason, aiConfidence)
 	case policy.DispositionAuto:
-		return s.executeNow(ctx, inv, upstream, req, decision.Reason, aiConfidence)
+		return s.executeNow(ctx, inv, upstream, req, decision.Reason, aiConfidence, sink)
 	default:
 		// DispositionHuman, DispositionWorkflow, and dispositionAIEscalated all gate
 		// on a human decision. AI-escalated invocations are already tagged on inv.Approval
 		// above; waitForHumanApproval will persist the pending_approval status.
-		return s.waitForHumanApproval(ctx, inv, upstream, req)
+		return s.waitForHumanApproval(ctx, inv, upstream, req, sink)
 	}
 }
 
@@ -977,7 +1023,7 @@ func (s *Service) denyByPolicy(ctx context.Context, inv Invocation, reason strin
 }
 
 // executeNow runs the tool call immediately without waiting for human approval.
-func (s *Service) executeNow(ctx context.Context, inv Invocation, upstream mcp.Upstream, req CreateInvocationRequest, reason string, confidence *float64) (InvocationResponse, error) {
+func (s *Service) executeNow(ctx context.Context, inv Invocation, upstream mcp.Upstream, req CreateInvocationRequest, reason string, confidence *float64, sink mcp.StreamSink) (InvocationResponse, error) {
 	inv.Status = StatusExecuting
 	inv.Approval = newApproval("auto_approved", reason, confidence)
 	if err := s.invocations.UpdateResult(ctx, inv); err != nil {
@@ -993,11 +1039,11 @@ func (s *Service) executeNow(ctx context.Context, inv Invocation, upstream mcp.U
 		}),
 		CreatedAt: time.Now().UTC(),
 	})
-	return s.finishExecution(ctx, inv, upstream, req)
+	return s.finishExecution(ctx, inv, upstream, req, sink)
 }
 
 // waitForHumanApproval blocks until an operator approves or denies, or the context is cancelled.
-func (s *Service) waitForHumanApproval(ctx context.Context, inv Invocation, upstream mcp.Upstream, req CreateInvocationRequest) (InvocationResponse, error) {
+func (s *Service) waitForHumanApproval(ctx context.Context, inv Invocation, upstream mcp.Upstream, req CreateInvocationRequest, sink mcp.StreamSink) (InvocationResponse, error) {
 	ch := make(chan approvalDecision, 1)
 	s.mu.Lock()
 	s.pendingApprovals[inv.InvocationID] = ch
@@ -1100,14 +1146,26 @@ func (s *Service) waitForHumanApproval(ctx context.Context, inv Invocation, upst
 		Payload:      mustJSON(executingPayload),
 		CreatedAt:    approvedAt,
 	})
-	return s.finishExecution(ctx, inv, upstream, req)
+	return s.finishExecution(ctx, inv, upstream, req, sink)
 }
 
-// finishExecution calls the upstream client and persists the outcome.
-func (s *Service) finishExecution(ctx context.Context, inv Invocation, upstream mcp.Upstream, req CreateInvocationRequest) (InvocationResponse, error) {
+// finishExecution calls the upstream client and persists the outcome. When
+// sink is nil, the call is fully buffered exactly as before. When sink is
+// non-nil, the call is relayed live via InvokeStream: intermediate events
+// reach sink (wrapped in an audit decorator) as they arrive, and the fixed
+// s.defaultTimeout is replaced by s.streamOptions, since a long-lived relay
+// should not be judged against the same budget as an ordinary buffered call.
+func (s *Service) finishExecution(ctx context.Context, inv Invocation, upstream mcp.Upstream, req CreateInvocationRequest, sink mcp.StreamSink) (InvocationResponse, error) {
+	if sink == nil {
+		return s.finishExecutionBuffered(ctx, inv, upstream, req)
+	}
+	return s.finishExecutionStreaming(ctx, inv, upstream, req, sink)
+}
+
+func (s *Service) finishExecutionBuffered(ctx context.Context, inv Invocation, upstream mcp.Upstream, req CreateInvocationRequest) (InvocationResponse, error) {
 	execCtx, cancel := context.WithTimeout(ctx, s.defaultTimeout)
 	defer cancel()
-	result, err := s.client.Invoke(execCtx, upstream, req.Tool, req.Input, req.RequestID)
+	result, err := s.client.Invoke(execCtx, upstream, req.Tool, req.Input, req.RequestID, req.Meta)
 	completed := time.Now().UTC()
 	inv.CompletedAt = &completed
 	if err != nil {
@@ -1138,6 +1196,88 @@ func (s *Service) finishExecution(ctx context.Context, inv Invocation, upstream 
 		return InvocationResponse{}, err
 	}
 	return s.toResponse(inv), nil
+}
+
+// finishExecutionStreaming is finishExecution's live-relay path: it wraps
+// the caller's sink in an auditing decorator (so every relayed event and
+// the call's outcome are recorded as invocation_events rows regardless of
+// whether the downstream write later fails) and calls InvokeStream with
+// s.streamOptions instead of the fixed s.defaultTimeout.
+func (s *Service) finishExecutionStreaming(ctx context.Context, inv Invocation, upstream mcp.Upstream, req CreateInvocationRequest, sink mcp.StreamSink) (InvocationResponse, error) {
+	audited := newAuditingSink(sink, s.events, inv.InvocationID, req.RequestID, upstream.Name, s.streamAuditLimits)
+	result, err := s.client.InvokeStream(ctx, upstream, req.Tool, req.Input, req.RequestID, req.Meta, audited, s.streamOptions)
+	completed := time.Now().UTC()
+	inv.CompletedAt = &completed
+
+	if err != nil {
+		inv.Status = StatusFailed
+		reason, message := classifyStreamError(audited, err)
+		inv.Error = mustJSON(map[string]any{"message": message})
+		audited.finish(completed, "failed")
+		persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), terminalPersistenceTimeout)
+		defer cancelPersist()
+		if updateErr := s.invocations.UpdateResult(persistCtx, inv); updateErr != nil {
+			return InvocationResponse{}, fmt.Errorf("persist streaming invocation failure: %w", updateErr)
+		}
+		// stream_completed (the summary of what happened during the relay)
+		// is written before the invocation-level failed/succeeded event, so
+		// an audit trail read chronologically sees "here's what the stream
+		// did" before "here's how the invocation ended" — the natural
+		// narrative order, even though both share the same timestamp.
+		_ = s.events.Create(persistCtx, Event{
+			InvocationID: inv.InvocationID, EventType: "invocation.failed",
+			Payload:   mustJSON(map[string]any{"reason": reason, "message": message, "events_relayed": audited.seq}),
+			CreatedAt: completed,
+		})
+		return s.toResponse(inv), nil
+	}
+	var terminalEvent Event
+	if result.Failed {
+		inv.Status = StatusFailed
+		inv.Error = result.Body
+		audited.finish(completed, "failed")
+		terminalEvent = Event{
+			InvocationID: inv.InvocationID, EventType: "invocation.failed",
+			Payload:   mustJSON(map[string]any{"request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "body": json.RawMessage(result.Body)}),
+			CreatedAt: completed,
+		}
+	} else {
+		inv.Status = StatusSucceeded
+		inv.Response = result.Body
+		audited.finish(completed, "succeeded")
+		terminalEvent = Event{
+			InvocationID: inv.InvocationID, EventType: "invocation.succeeded",
+			Payload:   mustJSON(map[string]any{"request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "body": json.RawMessage(result.Body)}),
+			CreatedAt: completed,
+		}
+	}
+	persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), terminalPersistenceTimeout)
+	defer cancelPersist()
+	if err := s.invocations.UpdateResult(persistCtx, inv); err != nil {
+		return InvocationResponse{}, err
+	}
+	_ = s.events.Create(persistCtx, terminalEvent)
+	return s.toResponse(inv), nil
+}
+
+// classifyStreamError distinguishes why InvokeStream returned an error, in
+// priority order: the sink itself (i.e. the downstream agent connection)
+// failing first — that's the caller's own signal and always the most
+// specific one available — then the client's own header/idle/max-duration
+// bound (mcp.ErrStreamTimeout), then anything else as a generic transport
+// failure. The reason is persisted on the invocation.failed audit event so
+// it can be told apart from an ordinary transport error after the fact.
+func classifyStreamError(audited *auditingSink, err error) (reason string, message string) {
+	if audited.downstreamErr != nil {
+		return "stream_aborted_downstream", audited.downstreamErr.Error()
+	}
+	if errors.Is(err, mcp.ErrStreamTimeout) {
+		return "stream_timeout", err.Error()
+	}
+	if errors.Is(err, mcp.ErrStreamSessionRetryRefused) {
+		return "stream_session_retry_refused", err.Error()
+	}
+	return "transport_error", err.Error()
 }
 
 func (s *Service) Approve(ctx context.Context, invocationID string, actorID string) error {

@@ -49,6 +49,35 @@ connection_timeout_seconds = 5
 [defaults]
 request_timeout_seconds = 30
 
+# Live SSE relay for tools/call: when an upstream MCP server answers a
+# tools/call with a Server-Sent Events stream (per the Streamable HTTP
+# transport, MCP spec 2025-11-25), Atryum relays intermediate messages
+# (progress, logging, other notifications) to the agent as they arrive,
+# instead of buffering the whole response and returning only the terminal
+# result. This only ever activates when the agent's own request also sends
+# Accept: text/event-stream and the upstream responds with one; non-streaming
+# tool calls are completely unaffected. stream_relay_enabled is a kill-switch
+# to disable the relay globally without a rollback.
+stream_relay_enabled = true
+# Bounds waiting for the upstream's response headers on a streaming
+# tools/call (the connect phase, before Atryum knows whether the response
+# will stream). 0 falls back to request_timeout_seconds above.
+stream_header_timeout_seconds = 0
+# Bounds the gap between successive relayed events once a stream has
+# started; resets on every event. Does not bound the call's total duration.
+stream_idle_timeout_seconds = 60
+# Bounds the whole call once a stream has started. 0 = unlimited.
+stream_max_duration_seconds = 600
+# Caps how many invocation.stream_event audit rows are persisted per call.
+# Beyond the cap, events are still relayed live to the agent but only
+# counted, not stored individually. 0 disables this count cap; the bounded
+# audit queue can still drop events if storage cannot keep up, and reports
+# those drops in invocation.stream_completed.
+stream_audit_max_events = 100
+# Truncates each persisted stream_event row's data field beyond this many
+# bytes. 0 = no truncation.
+stream_audit_max_event_bytes = 4096
+
 # Optional Claude Managed Agents events bridge. Declare one [[managed_agents]]
 # table per Anthropic account/workspace you want to watch. When an entry's
 # api_key is set, Atryum connects outbound to Anthropic's Managed Agents

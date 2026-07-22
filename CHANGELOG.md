@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Live SSE relay for `tools/call`: when an upstream MCP server answers a tool
+  call with a Server-Sent Events stream (Streamable HTTP transport, MCP spec
+  2025-11-25), Atryum relays intermediate messages (progress, logging, other
+  notifications) to the connected agent as they arrive, instead of buffering
+  the whole response and returning only the terminal result. Activates only
+  when the agent's request sends `Accept: text/event-stream` and the
+  upstream responds with one; non-streaming tool calls are unaffected.
+  If an upstream closes a resumable SSE response before the terminal
+  JSON-RPC message, Atryum reconnects with `Last-Event-ID` and continues
+  from the last event acknowledged to the upstream.
+  Streamed events are audited into `invocation_events`
+  (`invocation.stream_event` / `invocation.stream_completed`). New
+  `[defaults]` config knobs: `stream_relay_enabled` (kill-switch, default
+  on), `stream_header_timeout_seconds`, `stream_idle_timeout_seconds`,
+  `stream_max_duration_seconds`, `stream_audit_max_events`,
+  `stream_audit_max_event_bytes`. See `docs/architecture.md` for the full
+  design.
+
 ## [0.2.0] - 2026-07-14
 
 ### Added

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -42,6 +43,7 @@ const upstreamMCPOAuthCallbackPath = "/api/v1/mcp/oauth/callback"
 
 type service interface {
 	Invoke(ctx context.Context, req invocation.CreateInvocationRequest) (invocation.InvocationResponse, error)
+	InvokeStreaming(ctx context.Context, req invocation.CreateInvocationRequest, sink mcp.StreamSink) (invocation.InvocationResponse, error)
 	ListTools(ctx context.Context, server string) ([]mcp.Tool, error)
 	Get(ctx context.Context, id string) (invocation.InvocationResponse, error)
 	List(ctx context.Context, filter invocation.InvocationListFilter) (invocation.InvocationListResponse, error)
@@ -150,6 +152,13 @@ type Handler struct {
 	authDebugSkip         bool
 	authValidator         *auth.Validator
 	apiKeyAuth            auth.APIKeyConfig
+
+	// streamRelayEnabled is the kill-switch for the tools/call SSE relay
+	// (see handleMCPProxy). The relay only ever activates when the agent's
+	// POST also sends Accept: text/event-stream and the upstream answers
+	// with an SSE body, so leaving this on by default is safe; it exists so
+	// the feature can be disabled globally without a rollback.
+	streamRelayEnabled bool
 
 	// clientInfoCache remembers the most recent `initialize.clientInfo`
 	// per MCP session key so that subsequent tools/call requests on the
@@ -707,7 +716,15 @@ func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Reg
 	if f, ok := svc.(mcpEnvelopeForwarder); ok {
 		forwarder = f
 	}
-	return &Handler{svc: svc, serverSvc: serverSvc, policyRegistry: policyRegistry, rulesRepo: rules, agentsRepo: agents, agentSyncSettingsRepo: agentSyncSettings, llmConfigsRepo: llmConfigs, backendClient: bc, summarizeClient: bc, localSummarizer: localSummarizer, syncAgentsFn: syncAgents, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug, clientInfoCache: make(map[string]clientInfoSnapshot)}
+	return &Handler{svc: svc, serverSvc: serverSvc, policyRegistry: policyRegistry, rulesRepo: rules, agentsRepo: agents, agentSyncSettingsRepo: agentSyncSettings, llmConfigsRepo: llmConfigs, backendClient: bc, summarizeClient: bc, localSummarizer: localSummarizer, syncAgentsFn: syncAgents, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug, clientInfoCache: make(map[string]clientInfoSnapshot), streamRelayEnabled: true}
+}
+
+// SetStreamRelayEnabled toggles the tools/call SSE relay kill-switch (on by
+// default). Disabling it forces every tools/call back to the buffered
+// application/json path regardless of what the agent's Accept header or the
+// upstream's response content-type would otherwise allow.
+func (h *Handler) SetStreamRelayEnabled(enabled bool) {
+	h.streamRelayEnabled = enabled
 }
 
 // SetAuthValidator installs the inbound auth validator. When non-nil, the
@@ -1003,6 +1020,198 @@ func writeSSEComment(w io.Writer, comment string) {
 	fmt.Fprint(w, "\n")
 }
 
+// writeSSEEvent writes and flushes one SSE frame. Per the SSE spec, a
+// multi-line payload must be sent as one "data:" line per line of content —
+// a raw newline embedded in a single "data:" line breaks framing, since any
+// continuation line lacking its own field prefix is ignored by a compliant
+// parser. This matters here: a relayed notification's data (evt.Data,
+// reconstructed by mcp.sseEventReader) can genuinely be multi-line if the
+// upstream sent it that way (see mcp.TestListToolsDecodesMultilineSSEData
+// for a real example) — only the terminal frame (always compact
+// json.Marshal output) is guaranteed single-line. No "id:" field is ever
+// emitted: doing so implies Last-Event-ID resumability, which Atryum does
+// not support and must not advertise. Returns whatever error the write
+// itself produced, which is how a broken downstream connection (the agent
+// disconnected) is detected.
+func writeSSEEvent(w io.Writer, flusher http.Flusher, event string, data []byte) error {
+	if event != "" {
+		if _, err := fmt.Fprintf(w, "event: %s\n", event); err != nil {
+			return err
+		}
+	}
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		if _, err := fmt.Fprintf(w, "data: %s\n", line); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprint(w, "\n"); err != nil {
+		return err
+	}
+	flusher.Flush()
+	return nil
+}
+
+const (
+	// sseRelayHeartbeatInterval paces `: ping` comment frames on an open
+	// tools/call relay stream. Intermediary proxies and load balancers
+	// commonly kill connections with no traffic for ~60s (e.g. the ALB
+	// default); an upstream tool that is busy but silent would otherwise
+	// have its downstream leg severed mid-call. Matches the cadence the
+	// GET keepalive endpoint (handleMCPSSE) already uses.
+	sseRelayHeartbeatInterval = 15 * time.Second
+	// sseRelayWriteTimeout bounds each individual write to the agent. The
+	// server deliberately sets no global WriteTimeout (it would kill every
+	// long-lived stream), so without a per-write deadline an agent that
+	// stops reading would block the handler goroutine in Write forever —
+	// and, because the relay is synchronous, wedge the upstream read loop
+	// with it. A deadline turns the stalled agent into a write error, which
+	// aborts the relay as stream_aborted_downstream.
+	sseRelayWriteTimeout = 30 * time.Second
+)
+
+// sseRelaySink implements mcp.StreamSink for one agent-facing tools/call
+// request. It relays every intermediate upstream event to the agent as an
+// SSE frame, live, as InvokeStreaming reads it from the upstream, and keeps
+// the downstream connection alive with heartbeat comments while the
+// upstream is silent.
+//
+// The downstream response only switches to SSE mode when StreamStarted
+// fires — until then, handleMCPProxy has written nothing, so a JSON
+// (non-streaming) upstream response still produces today's exact buffered
+// reply. Once started is true, headers have already been sent: the caller
+// must never call writeRPCResult/writeRPCError/WriteHeader again for this
+// request; the terminal response is written via finishStream instead.
+//
+// Concurrency: StreamStarted/Event run synchronously on the handler
+// goroutine (inside InvokeStreaming's call stack); the heartbeat runs on
+// its own goroutine. mu serializes every write to w so a heartbeat can
+// never interleave with (and corrupt) an event or terminal frame.
+// finishStream stops the heartbeat before writing the terminal frame, so
+// no write can occur after the handler returns.
+type sseRelaySink struct {
+	w       http.ResponseWriter
+	flusher http.Flusher
+	rc      *http.ResponseController
+
+	// heartbeatInterval defaults to sseRelayHeartbeatInterval; a test seam.
+	heartbeatInterval time.Duration
+
+	mu sync.Mutex // serializes writes to w: events, heartbeats, terminal frame
+	// writeErr is the first write failure, sticky. A heartbeat that fails
+	// (agent gone) surfaces here so the next Event aborts the relay
+	// promptly instead of waiting for its own write to fail.
+	writeErr error
+
+	started       bool
+	eventCount    int
+	heartbeatStop chan struct{}
+	heartbeatDone chan struct{}
+	stopOnce      sync.Once
+}
+
+func newSSERelaySink(w http.ResponseWriter, flusher http.Flusher) *sseRelaySink {
+	return &sseRelaySink{
+		w:                 w,
+		flusher:           flusher,
+		rc:                http.NewResponseController(w),
+		heartbeatInterval: sseRelayHeartbeatInterval,
+	}
+}
+
+func (s *sseRelaySink) StreamStarted() {
+	s.started = true
+	s.w.Header().Set("Content-Type", "text/event-stream")
+	s.w.Header().Set("Cache-Control", "no-cache")
+	s.w.Header().Set("Connection", "keep-alive")
+	s.w.Header().Set("X-Accel-Buffering", "no")
+	s.w.WriteHeader(http.StatusOK)
+	s.flusher.Flush()
+
+	s.heartbeatStop = make(chan struct{})
+	s.heartbeatDone = make(chan struct{})
+	go s.heartbeatLoop()
+}
+
+func (s *sseRelaySink) heartbeatLoop() {
+	defer close(s.heartbeatDone)
+	ticker := time.NewTicker(s.heartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.heartbeatStop:
+			return
+		case <-ticker.C:
+			s.mu.Lock()
+			if s.writeErr != nil {
+				s.mu.Unlock()
+				return
+			}
+			s.setWriteDeadlineLocked()
+			if _, err := fmt.Fprint(s.w, ": ping\n\n"); err != nil {
+				s.writeErr = err
+				s.mu.Unlock()
+				return
+			}
+			s.flusher.Flush()
+			s.mu.Unlock()
+		}
+	}
+}
+
+// setWriteDeadlineLocked arms the per-write deadline, best-effort: not every
+// ResponseWriter supports it (httptest recorders don't), and an unsupported
+// deadline must not break the relay — it just loses the stalled-agent bound.
+func (s *sseRelaySink) setWriteDeadlineLocked() {
+	_ = s.rc.SetWriteDeadline(time.Now().Add(sseRelayWriteTimeout))
+}
+
+func (s *sseRelaySink) Event(evt mcp.StreamEvent) error {
+	if evt.ServerRequest {
+		// Atryum does not broker server-initiated requests (sampling,
+		// elicitation, roots) — it doesn't advertise those capabilities in
+		// initialize, and the agent has no channel to answer a request
+		// arriving on what it expects to be a tools/call response stream.
+		// Audited by the service-layer auditingSink already (server_request
+		// flag on the invocation.stream_event row); never written to the
+		// agent.
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.writeErr != nil {
+		// A heartbeat already found the connection dead: abort the relay
+		// now rather than waiting for this write to discover it again.
+		return s.writeErr
+	}
+	s.eventCount++
+	s.setWriteDeadlineLocked()
+	if err := writeSSEEvent(s.w, s.flusher, "", evt.Data); err != nil {
+		s.writeErr = err
+		return err
+	}
+	return nil
+}
+
+// finishStream stops the heartbeat and writes the terminal frame as the
+// stream's final write. Must be called on every handler path once started
+// is true — it is what guarantees the heartbeat goroutine cannot write to
+// (or race on) the ResponseWriter after the handler returns.
+func (s *sseRelaySink) finishStream(terminal []byte) error {
+	s.stopOnce.Do(func() { close(s.heartbeatStop) })
+	<-s.heartbeatDone
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.writeErr != nil {
+		return s.writeErr
+	}
+	s.setWriteDeadlineLocked()
+	if err := writeSSEEvent(s.w, s.flusher, "", terminal); err != nil {
+		s.writeErr = err
+		return err
+	}
+	return nil
+}
+
 func isJSONRPCRequest(r *http.Request) bool {
 	if strings.Contains(strings.ToLower(r.Header.Get("Content-Type")), "application/json") {
 		return true
@@ -1286,6 +1495,7 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		var params struct {
 			Name      string         `json:"name"`
 			Arguments map[string]any `json:"arguments"`
+			Meta      map[string]any `json:"_meta"`
 		}
 		if err := json.Unmarshal(req.Params, &params); err != nil {
 			h.writeRPCError(w, req.ID, -32602, "invalid params")
@@ -1295,7 +1505,7 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			h.handleAtryumRulesToolCall(w, r, req.ID, server, params.Arguments)
 			return
 		}
-		toolReq := invocation.CreateInvocationRequest{Server: server, Tool: params.Name, Input: params.Arguments}
+		toolReq := invocation.CreateInvocationRequest{Server: server, Tool: params.Name, Input: params.Arguments, Meta: params.Meta}
 		if requestID != "" {
 			toolReq.RequestID = stringPtr(requestID)
 		}
@@ -1306,22 +1516,63 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			toolReq.ClientName = snap.Name
 			toolReq.ClientVersion = snap.Version
 		}
-		resp, err := h.svc.Invoke(r.Context(), toolReq)
+		// A stream-capable agent gets a relay sink; the response mode switch
+		// happens lazily, inside svc.InvokeStreaming, only if the upstream
+		// actually answers with an SSE stream (sink.StreamStarted). Until
+		// then nothing has been written, so a JSON upstream response still
+		// produces exactly today's buffered reply below.
+		var sink *sseRelaySink
+		if flusher, ok := w.(http.Flusher); ok && h.streamRelayEnabled && acceptsEventStream(r) {
+			sink = newSSERelaySink(w, flusher)
+		}
+		var resp invocation.InvocationResponse
+		var err error
+		if sink != nil {
+			resp, err = h.svc.InvokeStreaming(r.Context(), toolReq, sink)
+		} else {
+			resp, err = h.svc.Invoke(r.Context(), toolReq)
+		}
 		if err != nil {
+			// This branch IS reachable with an already-started stream:
+			// besides pre-execution validation failures (sink untouched),
+			// InvokeStreaming also returns an error if persisting the
+			// result fails after the stream completed. Once headers are
+			// out, the only spec-correct way to end the exchange is a
+			// terminal JSON-RPC error as the final SSE frame — never
+			// writeRPCError (a second WriteHeader), and never a bare
+			// close (the agent would be left with a request that ended
+			// without any response).
+			if sink != nil && sink.started {
+				h.debugf("mcp tools.call error after stream started server=%s tool=%s err=%v", server, params.Name, err)
+				errBody, _ := json.Marshal(map[string]any{"code": -32000, "message": err.Error()})
+				terminal, _ := json.Marshal(jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: errBody})
+				_ = sink.finishStream(terminal)
+				return
+			}
 			h.writeRPCError(w, req.ID, -32000, err.Error())
 			return
 		}
-		tracePayload := map[string]any{"request_id": requestID, "status": resp.Status, "invocation_id": resp.InvocationID, "tool": params.Name}
+		streamed := sink != nil && sink.started
+		tracePayload := map[string]any{"request_id": requestID, "status": resp.Status, "invocation_id": resp.InvocationID, "tool": params.Name, "streamed": streamed}
+		if streamed {
+			tracePayload["stream_events"] = sink.eventCount
+		}
 		_ = h.emitTraceEvent(r.Context(), server, "mcp.tools.call", tracePayload)
-		if len(resp.Error) > 0 {
-			result := normalizeToolCallResult(resp.Error, true)
-			if resp.Status == invocation.StatusDenied {
-				result = h.appendRulesContextToToolResult(r.Context(), result, auth.AgentIDFromContext(r.Context()), server, params.Name)
-			}
-			h.writeRPCResult(w, req.ID, result)
+
+		result := h.toolCallResult(r.Context(), server, params.Name, resp)
+		if streamed {
+			// Headers were already sent when the stream started: the
+			// terminal response is the final SSE frame, rewritten to the
+			// agent's own request id (upstream always sees id "1" — see
+			// mcp.Client.invokeHTTP/invokeStream). Never writeRPCResult or
+			// WriteHeader here. finishStream also stops the heartbeat
+			// goroutine — mandatory before returning from the handler.
+			body, _ := json.Marshal(result)
+			terminal, _ := json.Marshal(jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: body})
+			_ = sink.finishStream(terminal)
 			return
 		}
-		h.writeRPCResult(w, req.ID, normalizeToolCallResult(resp.Result, false))
+		h.writeRPCResult(w, req.ID, result)
 	default:
 		forwarded, forwardedOK := h.forwardProxyEnvelope(r.Context(), server, req, protocolVersion)
 		if !forwardedOK {
@@ -1637,6 +1888,22 @@ func effectiveActionForTool(rules []store.Rule, server, tool, agentCUID string) 
 		return r.Action, r.ID
 	}
 	return invocation.RuleActionHumanApproval, ""
+}
+
+// toolCallResult builds the MCP tool-result value for a completed
+// invocation, appending rules context to a denial exactly as the
+// non-streaming path always has. Shared by both the buffered and the SSE
+// relay branches of the tools/call handler so the result shape is
+// identical either way.
+func (h *Handler) toolCallResult(ctx context.Context, server, tool string, resp invocation.InvocationResponse) any {
+	if len(resp.Error) > 0 {
+		result := normalizeToolCallResult(resp.Error, true)
+		if resp.Status == invocation.StatusDenied {
+			result = h.appendRulesContextToToolResult(ctx, result, auth.AgentIDFromContext(ctx), server, tool)
+		}
+		return result
+	}
+	return normalizeToolCallResult(resp.Result, false)
 }
 
 // appendRulesContextToToolResult adds an extra text content block to a denied

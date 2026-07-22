@@ -115,6 +115,37 @@ type ServerConfig struct {
 
 type DefaultsConfig struct {
 	RequestTimeoutSeconds int `toml:"request_timeout_seconds"`
+
+	// StreamRelayEnabled is the kill-switch for the tools/call SSE relay
+	// (see api.Handler.SetStreamRelayEnabled / docs/architecture.md). The
+	// relay only ever activates when the agent's own request also sends
+	// Accept: text/event-stream and the upstream answers with an SSE
+	// body, so leaving this on by default is safe.
+	StreamRelayEnabled bool `toml:"stream_relay_enabled"`
+	// StreamHeaderTimeoutSeconds bounds waiting for the upstream's
+	// response headers on a streaming tools/call — the connect phase,
+	// before Atryum knows whether the response will be an SSE stream.
+	// Zero falls back to RequestTimeoutSeconds, preserving today's
+	// connect-phase behavior.
+	StreamHeaderTimeoutSeconds int `toml:"stream_header_timeout_seconds"`
+	// StreamIdleTimeoutSeconds bounds the gap between successive relayed
+	// events once a stream has started; it resets on every event. Unlike
+	// RequestTimeoutSeconds, this does not bound the call's total
+	// duration — only how long it may go without producing anything.
+	StreamIdleTimeoutSeconds int `toml:"stream_idle_timeout_seconds"`
+	// StreamMaxDurationSeconds bounds the whole call once a stream has
+	// started. Zero disables the bound (unlimited).
+	StreamMaxDurationSeconds int `toml:"stream_max_duration_seconds"`
+	// StreamAuditMaxEvents caps how many invocation.stream_event audit
+	// rows get persisted per call; beyond the cap, events are still
+	// relayed live to the agent but only counted, not stored
+	// individually. Zero disables this count cap; the bounded audit queue
+	// may still drop events under storage backpressure, which is reported
+	// in the stream completion audit row.
+	StreamAuditMaxEvents int `toml:"stream_audit_max_events"`
+	// StreamAuditMaxEventBytes truncates each persisted stream_event
+	// row's data field beyond this size. Zero disables truncation.
+	StreamAuditMaxEventBytes int `toml:"stream_audit_max_event_bytes"`
 }
 
 type UpstreamConfig struct {
@@ -150,7 +181,12 @@ func Load(path string) (Config, error) {
 			ConnectionTimeoutSecs: 5,
 		},
 		Defaults: DefaultsConfig{
-			RequestTimeoutSeconds: 30,
+			RequestTimeoutSeconds:    30,
+			StreamRelayEnabled:       true,
+			StreamIdleTimeoutSeconds: 60,
+			StreamMaxDurationSeconds: 600,
+			StreamAuditMaxEvents:     100,
+			StreamAuditMaxEventBytes: 4096,
 		},
 	}
 	_, err := toml.DecodeFile(path, &cfg)

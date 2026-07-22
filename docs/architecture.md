@@ -186,6 +186,175 @@ The admin invocation stream is a polling SSE view: the handler queries the durab
 invocation list every two seconds and emits when its signature changes. Database writes
 do not directly publish to the stream.
 
+### Live SSE relay for tools/call
+
+This section is a special case of the execution flow above, scoped to just one of the
+two `Invoke`-backed entry points from the Runtime ingress table: the MCP proxy's
+`tools/call`. Direct invocation (`POST /api/v1/invocations`) is a plain REST endpoint —
+it does not negotiate `Accept: text/event-stream` and never streams.
+
+**Background, read this first.** Every message in this protocol is JSON-RPC: a
+*request* asks for something and carries an `id`; a *response* answers one specific
+request by carrying that same `id` back; a *notification* is a one-way heads-up with no
+`id` and no reply expected. Server-Sent Events (SSE) is just a way to send several of
+these messages down one HTTP connection over time — as `data:` lines, one message each,
+separated by blank lines — instead of sending one message all at once. A tool call
+answered this way might look like:
+
+```
+data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1,"total":3}}
+
+data: {"jsonrpc":"2.0","id":"1","result":{"content":[{"type":"text","text":"done"}]}}
+```
+
+The first line is a notification — a progress update nobody has to reply to. The second
+is the real answer (it has an `id` and a `result`). This doc calls that second one the
+**terminal response**: it's the one and only thing a non-streaming call would have
+returned.
+
+**What Atryum does with this.** If the upstream tool streams progress notifications
+while working on a call, Atryum forwards each one to the agent as it happens — the agent
+sees them live instead of waiting in silence until the call finishes.
+
+If the upstream tool answers with a single plain response and no streaming, the agent
+simply receives that response. There are no live updates to relay in that case.
+
+**The three layers involved**, in order: the part of Atryum facing the agent decides
+whether to relay live and writes the response back; the part in the middle runs
+approval rules and keeps the audit trail; the part facing the upstream tool speaks the
+actual wire protocol and hands messages up as they arrive. (If you want to find the
+code: `internal/api` → `internal/invocation` → `internal/mcp`, in that order.)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Agent
+    participant Facing as Atryum: agent-facing layer
+    participant Middle as Atryum: rules & audit layer
+    participant Client as Atryum: upstream-facing layer
+    participant Upstream as Upstream tool server
+
+    Agent->>Facing: Call a tool (willing to receive a live stream)
+    Facing->>Middle: Run the call
+    Middle->>Client: Send the call upstream
+    Client->>Upstream: Call the tool
+    alt Upstream streams progress before answering
+        Upstream-->>Client: Starts streaming
+        Client->>Middle: A progress update arrived
+        Middle->>Middle: Record it for the audit trail (in the background)
+        Middle->>Facing: Forward the update
+        Facing-->>Agent: Relay it live
+        Note over Client,Upstream: repeats for every update sent
+        Upstream-->>Client: Final answer
+        Client-->>Middle: Done
+        Middle->>Middle: Save the result, close out the audit trail
+        Middle-->>Facing: Done
+        Facing-->>Agent: Send the final answer
+    else Upstream just answers directly, no streaming
+        Upstream-->>Client: Single reply
+        Note over Client,Facing: nothing has been sent to the agent yet
+        Client-->>Middle: Done
+        Middle-->>Facing: Done
+        Facing-->>Agent: Send the one reply
+    end
+```
+
+**Approval gating applies before any streaming can start.** If a rule says a tool call
+needs a human to approve it first, Atryum pauses *before ever contacting the upstream
+tool* — which is before any streaming could even start. Nothing is sent to the agent
+while a call is waiting on approval, whether or not the agent asked for a live stream.
+
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant Atryum
+    participant Reviewer as Human reviewer
+    participant Upstream as Upstream tool server
+
+    Agent->>Atryum: Call a tool
+    Atryum->>Atryum: Rule says this needs approval — pause and wait
+    Note over Agent,Atryum: Connection stays open. Nothing sent yet.
+    Reviewer->>Atryum: Approve
+    Atryum->>Upstream: Now make the call
+    Note over Agent,Upstream: From here it's the same as the diagram above
+    Upstream-->>Agent: Progress updates, then the final answer
+```
+
+**Every relayed update is also recorded for the audit trail**, in the background, so a
+slow database write can never delay a live update reaching the agent or eat into the
+time budget described below.
+
+**Why there are three separate time limits, not one.** A normal (non-streaming) call has
+one clock: if it takes too long overall, Atryum gives up. A streaming call can't work
+that way, because "this is taking a while" is expected and fine as long as *something*
+keeps happening. So there are three limits instead of one:
+
+- How long to wait for the upstream tool to even start responding.
+- How long to wait between one update and the next, once it has started — this one
+  resets every time something new arrives, so a stream that's still actively sending
+  updates is never punished just for running long overall.
+- A hard ceiling on the whole call, just in case, so nothing runs forever.
+
+Whichever limit is hit first ends the call, and Atryum records *which one* (a stalled
+tool, an agent that disconnected, and an ordinary network failure all get a different,
+searchable label in the audit trail) — so whoever's debugging later doesn't have to
+guess which of the three actually happened.
+
+**The agent's own connection has a time limit too.** If the agent stops reading — its
+connection dies, or it just stops paying attention — Atryum needs to notice, otherwise
+it would sit forever trying to hand off data nobody is receiving, which would also
+stall the upstream tool call waiting behind it. So every write to the agent has its own
+short time limit, and while the upstream tool is quiet, Atryum sends small "still here"
+pings on the open connection, so ordinary network equipment sitting in between doesn't
+mistake a slow-but-healthy call for a dead one and close it.
+
+**If the upstream tool's own connection drops mid-stream, Atryum reconnects and picks up
+where it left off** — this is a feature of the underlying protocol, not something Atryum
+invented — so the agent doesn't see a glitch. The connection *from* Atryum *to* the
+agent intentionally does not support this kind of resume: promising it would mean
+promising to remember exactly where every agent left off, even across an Atryum
+restart, which isn't a promise Atryum makes today.
+
+Atryum does not forward messages that the *upstream tool* might try to send back toward
+the agent as if it were the agent's own message (a few advanced, rarely-used parts of
+the protocol allow this) — those get recorded for the audit trail and dropped, since
+Atryum has no way to get a reply back to where it came from. The always-on keepalive
+connection agents can poll separately is a distinct mechanism from this relay.
+
+A single on/off switch lets an operator disable the relay entirely, so every `tools/call`
+gets a single buffered response regardless of what the agent or upstream would otherwise
+support.
+
+#### Edge cases and failure paths
+
+- **A tool call that failed to connect properly must not get relayed twice.** If Atryum
+  needs to retry the setup for a call, it only does so before anything has been sent to
+  the agent — retrying after the agent has already seen live updates would relay
+  everything a second time, so Atryum refuses to retry once that's happened.
+- **Something going wrong mid-stream must still leave the agent with a real answer.**
+  Even if a problem is discovered after Atryum has already started relaying updates, the
+  agent still gets a proper closing message explaining what happened — never a
+  connection that just quietly closes with no explanation.
+- **A duplicate update on reconnect must not reach the agent twice.** When Atryum
+  reconnects to an upstream tool mid-stream, some tools resend the very last update as
+  part of "catching up." Atryum recognizes and skips that one repeated update, so the
+  agent only ever sees it once.
+- **An update that spans multiple lines must not get corrupted.** The wire format allows
+  a single update to be written across more than one line. Atryum preserves that shape
+  correctly when relaying it, instead of accidentally squashing it into something that
+  looks like a different, malformed message.
+- **A stuck external tool process must be fully stopped, not half-stopped, when it times
+  out.** Some upstream tools run as an external program that can itself launch further
+  child programs. If Atryum only stopped the program it directly started, a leftover
+  child process could keep running and keep things open, and the timeout would never
+  actually free anything up. Atryum stops the whole group of processes together.
+- **Resetting a "how long has it been quiet" timer must not accidentally end a call
+  that's actually fine.** Naively restarting a countdown every time an update arrives
+  can, in rare bad timing, let the old countdown finish a split second before the
+  restart takes effect — ending a call that was actually still healthy. Atryum
+  double-checks how much time has *really* passed before deciding to end a call, so a
+  well-timed update can never be wrongly punished by bad luck in the timing.
+
 ## Decision-only calls
 
 `Submit` persists and returns a decision without contacting an MCP server. An external

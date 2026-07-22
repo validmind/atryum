@@ -244,6 +244,21 @@ func runServer(args []string) error {
 		service.SetInvocationSummarizer(&summaryAdapter{client: backendClient})
 	}
 	service.SetSessionStore(store.NewExternalSessionRepoWithDialect(db, dialect))
+	streamHeaderTimeoutSeconds := cfg.Defaults.StreamHeaderTimeoutSeconds
+	if streamHeaderTimeoutSeconds <= 0 {
+		streamHeaderTimeoutSeconds = cfg.Defaults.RequestTimeoutSeconds
+	}
+	service.SetStreamOptions(
+		mcp.StreamOptions{
+			HeaderTimeout: time.Duration(streamHeaderTimeoutSeconds) * time.Second,
+			IdleTimeout:   time.Duration(cfg.Defaults.StreamIdleTimeoutSeconds) * time.Second,
+			MaxDuration:   time.Duration(cfg.Defaults.StreamMaxDurationSeconds) * time.Second,
+		},
+		invocation.StreamAuditLimits{
+			MaxEvents:     cfg.Defaults.StreamAuditMaxEvents,
+			MaxEventBytes: cfg.Defaults.StreamAuditMaxEventBytes,
+		},
+	)
 	serverAdmin := api.NewServerAdminService(serverRepo, oauthRepo, client, 5*time.Second, cfg.Server.PublicBaseURL)
 	if *initServers {
 		if err := initEnabledServerStatuses(context.Background(), serverRepo, serverAdmin); err != nil {
@@ -258,6 +273,7 @@ func runServer(args []string) error {
 	}
 	handler := api.NewHandler(service, serverAdmin, policyRegistry, rulesRepo, agentsRepo, agentSyncSettingsRepo, llmConfigsRepo, syncAgentsFn, backendClient, localEvaluator)
 	handler.SetManagedAgentBindings(managedAgentBindingRepo)
+	handler.SetStreamRelayEnabled(cfg.Defaults.StreamRelayEnabled)
 
 	authValidator, err := auth.NewValidator(cfg.Auth, nil)
 	if err != nil {
