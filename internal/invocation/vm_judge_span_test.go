@@ -76,7 +76,7 @@ func TestVMJudgeContentCaptureDisabled(t *testing.T) {
 
 	chat := lastSpanNamed(sr, "chat nocap-judge")
 	if chat == nil {
-		t.Fatal("no 'chat gpt-4o-mini' span recorded")
+		t.Fatal("no 'chat nocap-judge' span recorded")
 	}
 	got, gotInt := spanAttrs(chat)
 	if got["gen_ai.prompt"] != "" || got["gen_ai.completion"] != "" {

@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"log/slog"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -62,6 +63,12 @@ func Setup(ctx context.Context, cfg config.OTELConfig, environment string) (func
 
 	tp := sdktrace.NewTracerProvider(opts...)
 	otel.SetTracerProvider(tp)
+	// Exporter setup is lazy, so a bad endpoint/auth or an unreachable backend
+	// surfaces only as a runtime export error. Route those through Atryum's logger
+	// instead of the SDK's default stderr handler, so they show up in normal logs.
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+		slog.Error("otel span export failed", "err", err)
+	}))
 	// Accept inbound W3C trace context so Atryum spans can nest under a calling
 	// agent's trace when the header is propagated.
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
