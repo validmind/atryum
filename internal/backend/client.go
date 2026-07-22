@@ -358,9 +358,20 @@ type EvaluateRequest struct {
 // EvaluateResponse is the result returned by the VM backend after LLM evaluation.
 // Verdict is one of: "approved", "denied", "human_approval", "next_rule".
 type EvaluateResponse struct {
-	Verdict    string   `json:"verdict"`
-	Reason     string   `json:"reason"`
-	Confidence *float64 `json:"confidence,omitempty"`
+	Verdict    string          `json:"verdict"`
+	Reason     string          `json:"reason"`
+	Confidence *float64        `json:"confidence,omitempty"`
+	Model      string          `json:"model,omitempty"`
+	Usage      *TokenUsage     `json:"usage,omitempty"`
+	LatencyMS  int             `json:"latency_ms,omitempty"`
+	Prompt     json.RawMessage `json:"prompt,omitempty"`
+	Completion string          `json:"completion,omitempty"`
+}
+
+// TokenUsage carries the judge LLM's token counts as reported by the VM backend.
+type TokenUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
 }
 
 // EvaluateToolCall calls the VM backend's evaluate endpoint and returns whether

@@ -14,11 +14,43 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"atryum/internal/auth"
 	"atryum/internal/invocation/policy"
 	"atryum/internal/mcp"
 )
+
+// tracer is a no-op until telemetry.Setup installs a real provider, so the
+// spans below cost nothing when OTEL is disabled.
+var tracer = otel.Tracer("atryum/invocation")
+
+// captureContent gates attaching the judge's prompt/completion text to gen_ai
+// spans. Set once at startup from [otel].capture_content (default true).
+// ponytail: process-wide telemetry policy, mirrors the package-level tracer.
+var captureContent = true
+
+// SetContentCapture toggles prompt/completion capture on gen_ai spans. Call once
+// at startup before serving.
+func SetContentCapture(on bool) { captureContent = on }
+
+// setGenAIContent attaches the judge prompt (a JSON messages array) and the
+// model's raw completion to a gen_ai span, using the vendor-neutral gen_ai.prompt
+// / gen_ai.completion keys OTEL backends read as the generation's input/output.
+// No-op when content capture is disabled or a value is empty.
+func setGenAIContent(span trace.Span, prompt, completion string) {
+	if !captureContent {
+		return
+	}
+	if prompt != "" {
+		span.SetAttributes(attribute.String("gen_ai.prompt", prompt))
+	}
+	if completion != "" {
+		span.SetAttributes(attribute.String("gen_ai.completion", completion))
+	}
+}
 
 // dispositionContinue is an internal sentinel returned by runAIEvaluation when the
 // LLM verdict is "next_rule". It is never persisted or returned to clients — the
@@ -116,10 +148,23 @@ type EvaluateRequest struct {
 
 // EvaluateResponse mirrors backend.EvaluateResponse.
 // Verdict is one of: "approved", "denied", "human_approval", "next_rule".
+// Model/Usage/LatencyMS/CostUSD are populated on a successful VM-path evaluation
+// so the VM judge can render as a gen_ai generation span, like the local path.
 type EvaluateResponse struct {
-	Verdict    string   `json:"verdict"`
-	Reason     string   `json:"reason"`
-	Confidence *float64 `json:"confidence,omitempty"`
+	Verdict    string          `json:"verdict"`
+	Reason     string          `json:"reason"`
+	Confidence *float64        `json:"confidence,omitempty"`
+	Model      string          `json:"model,omitempty"`
+	Usage      *TokenUsage     `json:"usage,omitempty"`
+	LatencyMS  int             `json:"latency_ms,omitempty"`
+	Prompt     json.RawMessage `json:"prompt,omitempty"`
+	Completion string          `json:"completion,omitempty"`
+}
+
+// TokenUsage carries the judge LLM's token counts (mirrors backend.TokenUsage).
+type TokenUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
 }
 
 // SummaryRequest mirrors backend.SummarizeInvocationRequest so the service
@@ -298,6 +343,11 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	if req.Tool == "" {
 		return InvocationResponse{}, fmt.Errorf("tool is required")
 	}
+	ctx, span := tracer.Start(ctx, "atryum.invocation", trace.WithAttributes(
+		attribute.String("atryum.server", req.Server),
+		attribute.String("atryum.tool", req.Tool),
+	))
+	defer span.End()
 	if req.IdempotencyKey != nil && *req.IdempotencyKey != "" {
 		existing, err := s.invocations.GetByIdempotencyKey(ctx, *req.IdempotencyKey)
 		if err == nil {
@@ -346,6 +396,10 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	}
 	if err := s.invocations.Create(ctx, inv); err != nil {
 		return InvocationResponse{}, err
+	}
+	span.SetAttributes(attribute.String("atryum.invocation.id", inv.InvocationID))
+	if agentID != "" {
+		span.SetAttributes(attribute.String("atryum.agent.id", agentID))
 	}
 
 	// Determine disposition: check rules first (fine-grained), then fall back to policy (global).
@@ -408,6 +462,14 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 			inv.Approval = newApproval("ai_escalated", decision.Reason, aiConfidence)
 		}
 		_ = s.invocations.UpdateResult(ctx, inv)
+	}
+
+	span.SetAttributes(attribute.String("atryum.disposition", string(decision.Disposition)))
+	if matchedRuleID != nil {
+		span.SetAttributes(attribute.String("atryum.rule.id", *matchedRuleID))
+	}
+	if aiConfidence != nil {
+		span.SetAttributes(attribute.Float64("atryum.ai.confidence", *aiConfidence))
 	}
 
 	receivedPayload := map[string]any{
@@ -566,6 +628,12 @@ func combineEvaluationContext(toolContext, historyContext string) string {
 // rule.AtryumLLMConfigID is set). Falls back to DispositionHuman on any error
 // so no invocation is silently lost.
 func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serverName, toolName string, toolArgs map[string]any, agentID string, agentRec AgentRecord, sessionContext string, sessionContextMessages int) (policy.Decision, *float64) {
+	ctx, span := tracer.Start(ctx, "atryum.ai_evaluation", trace.WithAttributes(
+		attribute.String("atryum.rule.id", rule.ID),
+		attribute.String("atryum.server", serverName),
+		attribute.String("atryum.tool", toolName),
+	))
+	defer span.End()
 	if s.evaluator == nil {
 		slog.Warn("ai_evaluation rule matched but no evaluator configured; falling back to human_approval",
 			"rule_id", rule.ID, "tool", toolName, "server", serverName)
@@ -628,6 +696,7 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 			"confidence", resp.Confidence,
 		)
 
+		setJudgeSpanAttrs(span, "local", rule.AtryumLLMConfigID, resp)
 		return toDecision(resp), resp.Confidence
 	}
 
@@ -695,7 +764,57 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 		"confidence", resp.Confidence,
 	)
 
+	recordVMJudgeGeneration(ctx, resp)
+	setJudgeSpanAttrs(span, "vm", rule.ModelConfigCUID, resp)
 	return toDecision(resp), resp.Confidence
+}
+
+// recordVMJudgeGeneration synthesizes the "chat {model}" gen_ai generation span
+// for the VM path from the facts the backend returned, mirroring the local path
+// so both evaluators render identically in any OTEL backend. The span is
+// backdated by the reported latency so its duration is the real LLM call time.
+// No-op when the backend reported no model (older backend or a degraded path
+// that returned only a verdict).
+func recordVMJudgeGeneration(ctx context.Context, resp EvaluateResponse) {
+	if resp.Model == "" {
+		return
+	}
+	end := time.Now()
+	start := end.Add(-time.Duration(resp.LatencyMS) * time.Millisecond)
+	_, gen := tracer.Start(ctx, "chat "+resp.Model,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithTimestamp(start),
+		trace.WithAttributes(
+			attribute.String("gen_ai.system", "openai"),
+			attribute.String("gen_ai.operation.name", "chat"),
+			attribute.String("gen_ai.request.model", resp.Model),
+		))
+	if resp.Usage != nil {
+		gen.SetAttributes(
+			attribute.Int("gen_ai.usage.input_tokens", resp.Usage.InputTokens),
+			attribute.Int("gen_ai.usage.output_tokens", resp.Usage.OutputTokens),
+		)
+	}
+	gen.SetAttributes(attribute.String("atryum.judge.verdict", resp.Verdict))
+	if resp.Confidence != nil {
+		gen.SetAttributes(attribute.Float64("atryum.judge.confidence", *resp.Confidence))
+	}
+	setGenAIContent(gen, string(resp.Prompt), resp.Completion)
+	gen.End(trace.WithTimestamp(end))
+}
+
+// setJudgeSpanAttrs records the judge verdict/confidence on the ai_evaluation span.
+func setJudgeSpanAttrs(span trace.Span, evaluator, configID string, resp EvaluateResponse) {
+	span.SetAttributes(
+		attribute.String("atryum.evaluator", evaluator),
+		attribute.String("atryum.judge.verdict", resp.Verdict),
+	)
+	if configID != "" {
+		span.SetAttributes(attribute.String("atryum.llm_config.id", configID))
+	}
+	if resp.Confidence != nil {
+		span.SetAttributes(attribute.Float64("atryum.judge.confidence", *resp.Confidence))
+	}
 }
 
 // toDecision converts an EvaluateResponse verdict into a policy.Decision.
@@ -1256,6 +1375,14 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	if source == "" {
 		source = "external"
 	}
+	// Same span as Invoke: the external path is the harness-hook twin, and rules
+	// match on source the way Invoke matches on the upstream name.
+	ctx, span := tracer.Start(ctx, "atryum.invocation", trace.WithAttributes(
+		attribute.String("atryum.server", source),
+		attribute.String("atryum.tool", req.Tool),
+		attribute.Bool("atryum.external", true),
+	))
+	defer span.End()
 	if req.IdempotencyKey != nil && *req.IdempotencyKey != "" {
 		existing, err := s.invocations.GetByIdempotencyKey(ctx, *req.IdempotencyKey)
 		if err == nil {
@@ -1355,6 +1482,10 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	if err := s.invocations.Create(ctx, inv); err != nil {
 		return InvocationResponse{}, err
 	}
+	span.SetAttributes(attribute.String("atryum.invocation.id", inv.InvocationID))
+	if agentID != "" {
+		span.SetAttributes(attribute.String("atryum.agent.id", agentID))
+	}
 	if sessionID != "" {
 		_ = s.sessions.TouchSession(ctx, sessionID, now.Add(externalSessionTTL)) // best-effort last-seen/expiry bump
 	}
@@ -1403,6 +1534,23 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		}
 	}
 	inv.MatchedRuleID = matchedRuleID
+
+	// Record the outcome once, here, rather than in each terminal branch below:
+	// every return path from the switch flows through this point. With no
+	// matching rule the external path always lands on human approval.
+	spanDisposition := policy.DispositionHuman
+	if resolvedAIDecision != nil {
+		spanDisposition = resolvedAIDecision.Disposition
+	} else if ruleAction != "" {
+		spanDisposition = decisionForRuleAction(ruleAction).Disposition
+	}
+	span.SetAttributes(attribute.String("atryum.disposition", string(spanDisposition)))
+	if matchedRuleID != nil {
+		span.SetAttributes(attribute.String("atryum.rule.id", *matchedRuleID))
+	}
+	if resolvedAIConfidence != nil {
+		span.SetAttributes(attribute.Float64("atryum.ai.confidence", *resolvedAIConfidence))
+	}
 
 	receivedPayload := map[string]any{"tool": req.Tool, "upstream": source, "request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "external": true}
 	if agentID != "" {

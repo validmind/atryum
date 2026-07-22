@@ -211,6 +211,11 @@ provider = "manual_approval"
 key = ""
 secret = ""
 
+# OpenTelemetry trace export (off by default). Enable and add one
+# [[otel.exporters]] per backend (Langfuse, Datadog, …); see atryum.example.toml.
+[otel]
+enabled = false
+
 [auth_debug]
 skip_verify = false
 

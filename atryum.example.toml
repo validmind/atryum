@@ -103,6 +103,39 @@ api_key = ""          # Anthropic API key created in that workspace
 key = ""
 secret = ""
 
+# OpenTelemetry trace export (OTLP/HTTP). Off unless enabled. Fans one span tree
+# per invocation to every exporter below at once. There are no built-in providers:
+# any OTLP backend works with no vendor code — Langfuse, Datadog and Arize below
+# are just examples. Per exporter: endpoint must be the FULL traces URL ending in
+# /v1/traces (used verbatim); scheme sets transport (https = TLS, http = plain).
+# Auth goes in `headers`; for a Basic-auth key pair (e.g. Langfuse) use public_key/
+# secret_key instead and Atryum builds the header. capture_content (default true)
+# attaches prompt/answer text — set false for metrics/verdict only.
+#
+# [otel]
+# enabled = true
+# # environment = "prod-us5"    # e.g. Datadog `env` tag; omit → atryum's instance id
+# # capture_content = false     # keep prompt/answer TEXT out of the backend
+#
+# # Example — Basic-auth key pair (here: Langfuse; the pair selects the project):
+# [[otel.exporters]]
+# name = "langfuse"
+# endpoint = "https://<langfuse-host>/api/public/otel/v1/traces"
+# public_key = "pk-lf-…"
+# secret_key = "sk-lf-…"
+#
+# # Example — API key in a header (here: Datadog; or a local agent on :4318):
+# [[otel.exporters]]
+# name = "datadog"
+# endpoint = "https://otlp.<dd-site>/v1/traces"   # or http://<dd-agent>:4318/v1/traces
+# headers = { "DD-API-KEY" = "<key>" }
+#
+# # Example — API key in a header (here: Arize; confirm the header name in its docs):
+# [[otel.exporters]]
+# name = "arize"
+# endpoint = "https://<arize-otlp-host>/v1/traces"
+# headers = { "api_key" = "<key>" }
+
 # Local-only auth debug mode. When true, the Authorization header is ignored
 # entirely on /mcp/: no bearer token is required and no identity is set on
 # the request context. Never enable outside local debugging.
