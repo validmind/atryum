@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/invocation"
 )
 
 func newPlanStub() invocation.Plan {

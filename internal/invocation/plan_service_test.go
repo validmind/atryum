@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"atryum/internal/auth"
-	"atryum/internal/config"
-	"atryum/internal/invocation"
-	"atryum/internal/mcp"
-	"atryum/internal/store"
+	"github.com/validmind/atryum/internal/auth"
+	"github.com/validmind/atryum/internal/config"
+	"github.com/validmind/atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/mcp"
+	"github.com/validmind/atryum/internal/store"
 
 	_ "modernc.org/sqlite"
 )

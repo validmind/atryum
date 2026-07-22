@@ -8,7 +8,7 @@ import (
 
 	sq "github.com/Masterminds/squirrel"
 
-	"atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/invocation"
 )
 
 // PlansRepo persists agent-submitted plans. It returns invocation-layer

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/invocation"
 )
 
 func newPlanFixture(id, agentID string, status invocation.PlanStatus, submittedAt time.Time) invocation.Plan {

@@ -46,7 +46,7 @@ func TestResolveDBTarget_SelectsSQLiteForSQLiteFileAndBarePaths(t *testing.T) {
 }
 
 func TestMigrationRegistryPreservesExistingVersionsAndNames(t *testing.T) {
-	if len(migrations) != 27 {
+	if len(migrations) != 28 {
 		t.Fatalf("migration count = %d", len(migrations))
 	}
 	want := []struct {

@@ -11,7 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"atryum/internal/auth"
+	"github.com/validmind/atryum/internal/auth"
 )
 
 const (
