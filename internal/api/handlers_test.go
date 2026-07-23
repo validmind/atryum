@@ -555,7 +555,7 @@ func TestAdminServerTestDebugLogsRequestContext(t *testing.T) {
 	}()
 
 	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/servers/shortcut/test", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/servers/shortcut/test", nil)
 	req.Header.Set("Origin", "http://localhost:8080")
 	req.Header.Set("Referer", "http://localhost:8080/ui/")
 	req.Header.Set("User-Agent", "debug-test")
@@ -569,7 +569,7 @@ func TestAdminServerTestDebugLogsRequestContext(t *testing.T) {
 	}
 	got := logs.String()
 	for _, want := range []string{
-		"admin server test request method=POST path=/api/v1/admin/servers/shortcut/test server=shortcut",
+		"admin server test request method=POST path=/api/v1/servers/shortcut/test server=shortcut",
 		"origin=\"http://localhost:8080\"",
 		"referer=\"http://localhost:8080/ui/\"",
 		"user_agent=\"debug-test\"",
@@ -604,7 +604,7 @@ func TestManagedAgentSessionRegistrationDebugLogsFailure(t *testing.T) {
 		"account": "default",
 		"agent_id": "agent_013popGjeyhH8qPYqziHxdLk"
 	}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/managed-agents/sessions", body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/managed-agents/sessions", body)
 	req.Header.Set("content-type", "application/json")
 	w := httptest.NewRecorder()
 

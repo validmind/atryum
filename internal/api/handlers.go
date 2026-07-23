@@ -828,7 +828,7 @@ func (h *Handler) SetAuthDebugSkipVerify(enabled bool) {
 }
 
 // SetManagedAgents installs the optional Claude Managed Agents events bridge,
-// enabling the POST /api/v1/admin/managed-agents/sessions endpoint.
+// enabling the POST /api/v1/managed-agents/sessions endpoint.
 func (h *Handler) SetManagedAgents(m managedAgentsAdmin) {
 	h.managedAgents = m
 }
@@ -907,25 +907,25 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("/api/v1/review/invocations", admin(h.reviewInvocations))
 	mux.Handle("/api/v1/review/invocations/stream", admin(h.reviewInvocationStream))
 	mux.Handle("/api/v1/review/invocations/", admin(h.reviewInvocationDetail))
-	mux.Handle("/api/v1/admin/servers", admin(h.adminServers))
-	mux.Handle("/api/v1/admin/servers/", admin(h.adminServerDetail))
-	mux.Handle("/api/v1/admin/rules", admin(h.adminRules))
-	mux.Handle("/api/v1/admin/rules/", admin(h.adminRuleDetail))
-	mux.Handle("/api/v1/admin/agents", admin(h.adminAgents))
-	mux.Handle("/api/v1/admin/agents/", admin(h.adminAgentDetail))
-	mux.Handle("/api/v1/admin/model-configs", admin(h.adminModelConfigs))
-	mux.Handle("/api/v1/admin/llm-configs", admin(h.adminLLMConfigs))
-	mux.Handle("/api/v1/admin/llm-configs/", admin(h.adminLLMConfigDetail))
-	mux.Handle("/api/v1/admin/settings", admin(h.adminSettings))
-	mux.Handle("/api/v1/admin/vm/organizations", admin(h.adminVMOrganizations))
-	mux.Handle("/api/v1/admin/vm/record-types", admin(h.adminVMRecordTypes))
-	mux.Handle("/api/v1/admin/vm/custom-fields", admin(h.adminVMCustomFields))
+	mux.Handle("/api/v1/servers", admin(h.adminServers))
+	mux.Handle("/api/v1/servers/", admin(h.adminServerDetail))
+	mux.Handle("/api/v1/rules", admin(h.adminRules))
+	mux.Handle("/api/v1/rules/", admin(h.adminRuleDetail))
+	mux.Handle("/api/v1/agents", admin(h.adminAgents))
+	mux.Handle("/api/v1/agents/", admin(h.adminAgentDetail))
+	mux.Handle("/api/v1/model-configs", admin(h.adminModelConfigs))
+	mux.Handle("/api/v1/llm-configs", admin(h.adminLLMConfigs))
+	mux.Handle("/api/v1/llm-configs/", admin(h.adminLLMConfigDetail))
+	mux.Handle("/api/v1/settings", admin(h.adminSettings))
+	mux.Handle("/api/v1/vm/organizations", admin(h.adminVMOrganizations))
+	mux.Handle("/api/v1/vm/record-types", admin(h.adminVMRecordTypes))
+	mux.Handle("/api/v1/vm/custom-fields", admin(h.adminVMCustomFields))
 	mux.HandleFunc(upstreamMCPOAuthCallbackPath, h.oauthCallback)
-	mux.Handle("/api/v1/admin/policy", admin(h.adminPolicy))
-	mux.Handle("/api/v1/admin/managed-agents/accounts", admin(h.adminManagedAgentAccounts))
-	mux.Handle("/api/v1/admin/managed-agents/agents", admin(h.adminManagedAgents))
-	mux.Handle("/api/v1/admin/managed-agents/sessions/", admin(h.adminManagedAgentSessionDetail))
-	mux.Handle("/api/v1/admin/managed-agents/sessions", admin(h.adminManagedAgentSessions))
+	mux.Handle("/api/v1/policy", admin(h.adminPolicy))
+	mux.Handle("/api/v1/managed-agents/accounts", admin(h.adminManagedAgentAccounts))
+	mux.Handle("/api/v1/managed-agents/agents", admin(h.adminManagedAgents))
+	mux.Handle("/api/v1/managed-agents/sessions/", admin(h.adminManagedAgentSessionDetail))
+	mux.Handle("/api/v1/managed-agents/sessions", admin(h.adminManagedAgentSessions))
 	agentRulesHandler := h.agentRuntimeHandler(http.HandlerFunc(h.agentRules))
 	mux.Handle("/api/v1/agent/rules", agentRulesHandler)
 	mux.Handle("/api/v1/external/invocations", h.agentRuntimeHandler(http.HandlerFunc(h.externalInvocations)))
@@ -933,9 +933,9 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("/api/v1/external/sessions", h.agentRuntimeHandler(http.HandlerFunc(h.externalSessions)))
 	mux.Handle("/api/v1/external/plans", h.agentRuntimeHandler(http.HandlerFunc(h.externalPlans)))
 	mux.Handle("/api/v1/external/plans/", h.agentRuntimeHandler(http.HandlerFunc(h.externalPlanDetail)))
-	mux.Handle("/api/v1/admin/plans", admin(h.adminPlans))
-	mux.Handle("/api/v1/admin/plans/stream", admin(h.adminPlanStream))
-	mux.Handle("/api/v1/admin/plans/", admin(h.adminPlanDetail))
+	mux.Handle("/api/v1/plans", admin(h.adminPlans))
+	mux.Handle("/api/v1/plans/stream", admin(h.adminPlanStream))
+	mux.Handle("/api/v1/plans/", admin(h.adminPlanDetail))
 	apiKeyMW := auth.APIKeyMiddleware(h.apiKeyAuth)
 	mux.Handle("/agent_ids", apiKeyMW(http.HandlerFunc(h.agentIDs)))
 	mux.Handle("/invocations/", apiKeyMW(http.HandlerFunc(h.invocationsByAgentID)))
@@ -2301,7 +2301,7 @@ func (h *Handler) adminServers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) adminServerDetail(w http.ResponseWriter, r *http.Request) {
-	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/servers/")
+	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/servers/")
 	trimmed = strings.Trim(trimmed, "/")
 	if trimmed == "" {
 		writeError(w, http.StatusNotFound, "not found")
@@ -2564,7 +2564,7 @@ func (h *Handler) adminRules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) adminRuleDetail(w http.ResponseWriter, r *http.Request) {
-	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/rules/")
+	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/rules/")
 	trimmed = strings.Trim(trimmed, "/")
 	if trimmed == "" {
 		writeError(w, http.StatusNotFound, "not found")
@@ -2787,7 +2787,7 @@ func (h *Handler) adminLLMConfigs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) adminLLMConfigDetail(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/llm-configs/")
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/llm-configs/")
 	id = strings.Trim(id, "/")
 	if id == "" {
 		writeError(w, http.StatusNotFound, "not found")
@@ -3238,14 +3238,14 @@ func (h *Handler) adminAgents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
-	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/agents/")
+	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/agents/")
 	trimmed = strings.Trim(trimmed, "/")
 	if trimmed == "" {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 
-	// POST /api/v1/admin/agents/sync — trigger a backend sync
+	// POST /api/v1/agents/sync — trigger a backend sync
 	if trimmed == "sync" {
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -3272,7 +3272,7 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// GET /api/v1/admin/agents/:id/charter-preview — assemble the charter hierarchy
+	// GET /api/v1/agents/:id/charter-preview — assemble the charter hierarchy
 	if strings.HasSuffix(trimmed, "/charter-preview") {
 		id := strings.TrimSuffix(trimmed, "/charter-preview")
 		id = strings.Trim(id, "/")
@@ -3280,7 +3280,7 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// /api/v1/admin/agents/:id — GET / PATCH / DELETE
+	// /api/v1/agents/:id — GET / PATCH / DELETE
 	id := trimmed
 	switch r.Method {
 	case http.MethodGet:
@@ -4075,7 +4075,7 @@ func (h *Handler) externalPlanDetail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, plan)
 }
 
-// adminPlans handles GET /api/v1/admin/plans.
+// adminPlans handles GET /api/v1/plans.
 func (h *Handler) adminPlans(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -4137,10 +4137,10 @@ func (h *Handler) adminPlanStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// adminPlanDetail handles GET /api/v1/admin/plans/{id}, GET .../{id}/events,
+// adminPlanDetail handles GET /api/v1/plans/{id}, GET .../{id}/events,
 // and POST .../{id}/approve|deny|revise|expire.
 func (h *Handler) adminPlanDetail(w http.ResponseWriter, r *http.Request) {
-	trimmed := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/admin/plans/"), "/")
+	trimmed := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/plans/"), "/")
 	if trimmed == "" {
 		writeError(w, http.StatusNotFound, "not found")
 		return
@@ -4305,7 +4305,7 @@ func (h *Handler) adminManagedAgentSessionDetail(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	rawID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/admin/managed-agents/sessions/"), "/")
+	rawID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/managed-agents/sessions/"), "/")
 	sessionID, err := url.PathUnescape(rawID)
 	if err != nil || strings.TrimSpace(sessionID) == "" {
 		writeError(w, http.StatusNotFound, "not found")

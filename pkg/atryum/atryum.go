@@ -148,7 +148,7 @@ func runServer(args []string, o options) error {
 	planEventsRepo := store.NewPlanEventsRepoWithDialect(db, dialect)
 
 	// syncAgents is the shared sync function used both at startup and via the
-	// admin API POST /api/v1/admin/agents/sync endpoint.
+	// admin API POST /api/v1/agents/sync endpoint.
 	// org_cuid and agent_record_type_slug are read exclusively from the DB
 	// (configured via the Settings UI).
 	syncAgents := func(ctx context.Context) error {
