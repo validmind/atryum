@@ -180,9 +180,9 @@ type upstreamClient interface {
 // StreamAuditLimits bounds how many per-call invocation.stream_event audit
 // rows get persisted, and how large each one's data field is, for one
 // streaming tools/call execution. A zero value disables that particular
-// cap (no configured event-count limit / untruncated data). The audit sink's
-// bounded queue remains a final backpressure guard even with MaxEvents zero,
-// and reports any queue drops in invocation.stream_completed.
+// cap (no configured event-count limit / untruncated data). The shared audit
+// dispatcher's bounded queues remain a final backpressure guard even with
+// MaxEvents zero and report drops in invocation.stream_completed.
 type StreamAuditLimits struct {
 	MaxEvents     int
 	MaxEventBytes int
@@ -267,6 +267,25 @@ func (s *Service) SetInvocationSummarizer(client SummaryClient) {
 func (s *Service) SetStreamOptions(opts mcp.StreamOptions, auditLimits StreamAuditLimits) {
 	s.streamOptions = opts
 	s.streamAuditLimits = auditLimits
+}
+
+// RecordStreamDelivery records whether the handler delivered the terminal SSE
+// frame. Upstream execution and durable invocation state are separate from
+// this final agent-facing write, so delivery gets its own audit event.
+func (s *Service) RecordStreamDelivery(ctx context.Context, invocationID, status, message string) error {
+	if s.events == nil || invocationID == "" {
+		return nil
+	}
+	payload := map[string]any{"status": status}
+	if message != "" {
+		payload["message"] = message
+	}
+	return s.events.Create(ctx, Event{
+		InvocationID: invocationID,
+		EventType:    "invocation.stream_delivery",
+		Payload:      mustJSON(payload),
+		CreatedAt:    time.Now().UTC(),
+	})
 }
 
 // SetSessionStore installs the optional store backing the Invocations API

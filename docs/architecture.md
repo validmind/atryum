@@ -246,6 +246,7 @@ Streaming is opt-in and keeps the old behavior as its fallback:
 | **JSON-RPC request** | A message asking for work. It has an `id`, and the response must carry the same `id`. |
 | **JSON-RPC notification** | A one-way message such as a progress update. It has a `method` but no `id`, so no reply is expected. |
 | **Terminal response** | The final JSON-RPC success or error for the tool call. It is the one result a non-streaming call would return. |
+| **Terminal delivery** | The final write from Atryum to the downstream client. It can fail even after the upstream result was saved successfully. |
 | **SSE** | Server-Sent Events, a one-way HTTP response format that lets a server send multiple events over one open response. |
 | **Progress token** | A string or number used to match progress to a call. The client requests it with `_meta.progressToken`; notifications return it as `params.progressToken`. |
 | **MCP session** | A group of requests recognized by the upstream server through one session ID. Atryum shares that upstream session across active calls. |
@@ -320,6 +321,7 @@ sequenceDiagram
         Upstream-->>Atryum: Terminal response on Path A
         Atryum->>Atryum: Save final invocation state
         Atryum-->>Client: Terminal response as SSE, then close
+        Atryum->>Atryum: Record whether terminal delivery succeeded
     end
 ```
 
@@ -354,22 +356,24 @@ cross-delivery.
 |---|---|
 | `pkg/atryum` (startup only) | Load stream configuration, inject timeout and audit limits into the invocation service, and set the relay kill switch on the HTTP handler. |
 | `internal/api` | Detect downstream SSE support, write and flush SSE frames, send heartbeats, enforce downstream write deadlines, and finish the stream. |
-| `internal/invocation` | Preserve rule and approval behavior, update invocation state, and audit stream events through a bounded background queue. |
+| `internal/invocation` | Preserve rule and approval behavior, update invocation state, and audit stream events through a bounded shared dispatcher. |
 | `internal/mcp` | Call the upstream, parse and classify JSON-RPC messages, merge the two upstream paths, correlate progress tokens, reconnect resumable streams, and enforce upstream timeouts. |
 
 After startup wiring, each call crosses the runtime packages in this order:
 `internal/api` → `internal/invocation` → `internal/mcp`.
 
-#### Time limits
+#### Resource limits
 
 A single timeout is not enough for a stream. A long-running tool can be healthy as long
-as it continues to send progress. The relay therefore separates three upstream limits:
+as it continues to send progress. The relay therefore separates setup, inactivity,
+total-duration, and message-size limits:
 
 | Limit | Configuration | What it measures |
 |---|---|---|
-| Header timeout | `stream_header_timeout_seconds` | How long Atryum waits for HTTP response headers or stdio session initialization. |
+| Header timeout | `stream_header_timeout_seconds` | How long Atryum waits for HTTP session initialization and response headers, or stdio session initialization. |
 | Idle timeout | `stream_idle_timeout_seconds` | The longest allowed gap between upstream messages. It resets after every message. |
 | Maximum duration | `stream_max_duration_seconds` | A hard limit for the upstream execution phase, even if progress continues. |
+| Message size | `stream_max_message_bytes` | The largest accepted SSE event, stdio JSON-RPC line, or plain JSON response body. The default is 4 MiB. |
 
 The downstream connection has a separate per-write deadline. If the downstream client
 disconnects or stops reading, Atryum aborts that call instead of leaving a goroutine
@@ -381,7 +385,8 @@ other transport failures.
 #### Reliability guarantees and limits
 
 - **Plain JSON remains the fallback.** Atryum does not start the downstream SSE response
-  unless the client accepts SSE and the upstream actually streams.
+  unless the client accepts SSE and the upstream sends an SSE response or a stdio
+  intermediate message.
 - **Approval still comes first.** No upstream call or downstream stream starts while a
   tool call is waiting for approval.
 - **Retry is safe only before delivery.** Atryum may retry session setup before it has
@@ -393,25 +398,37 @@ other transport failures.
 - **The per-call upstream stream can resume.** If it closes after providing an SSE event
   ID but before the terminal response, Atryum reconnects with a `Last-Event-ID` header
   naming the last processed event. If the upstream inclusively replays that event,
-  Atryum skips the duplicate.
-- **The standalone stream does not resume.** If that shared GET disconnects, calls can
-  still receive their terminal responses on their POST connections, but may miss
-  standalone progress until a later group of calls opens a new GET.
+  Atryum skips the duplicate. Reconnects use bounded exponential backoff with jitter;
+  the upstream cannot cause a zero-delay retry loop.
+- **The standalone stream reconnects but does not replay.** A transient connection
+  failure is retried with backoff. Session renewal opens a new standalone GET carrying
+  the new session ID. Because this path has no replay cursor, messages sent while it was
+  disconnected may still be missed.
 - **The downstream stream does not resume.** Atryum intentionally sends no downstream
   SSE event IDs because it does not store each client's last processed position across
   restarts.
-- **Audit storage cannot stall delivery.** Each intermediate event handled by the relay
-  is offered to a bounded background audit queue. Slow or failed writes are counted in
-  the completion audit row; they do not delay the live event.
+- **Audit storage cannot stall delivery.** Each intermediate event is offered to a
+  process-wide bounded, sharded dispatcher served by a fixed worker pool. A call does
+  not create its own audit goroutine, and one call's events remain ordered. Slow or
+  failed writes are counted in the completion audit row; they do not delay the live
+  event.
 - **Audit volume is bounded.** `stream_audit_max_events` limits rows per call, and
   `stream_audit_max_event_bytes` limits the retained bytes in each row. Events beyond
   those storage limits are still relayed.
 - **A slow call cannot block the shared standalone stream.** Each call has a bounded
   progress buffer. If it fills, Atryum drops that call's standalone progress event so
-  other calls can continue.
+  other calls can continue. `standalone_events_dropped` in
+  `invocation.stream_completed` makes that loss visible.
 - **Unsupported standalone GET is not fatal.** If an upstream does not provide this
   optional path, Atryum stops trying while the current group of calls remains active.
   The tool call and its POST response continue normally.
+- **Input memory is bounded.** Atryum rejects an upstream message above
+  `stream_max_message_bytes` instead of accumulating an arbitrarily large SSE event,
+  stdio line, or plain JSON body in memory.
+- **Execution and delivery are audited separately.** A durable succeeded/failed
+  invocation describes the upstream outcome. `invocation.stream_delivery` separately
+  records whether the terminal SSE frame reached the downstream connection. A
+  persistence failure is recorded as `persistence_failed`, never as a successful stream.
 - **Multi-line SSE data stays valid.** Atryum writes one `data:` field for every payload
   line and terminates the event with a blank line.
 - **Upstream requests are not forwarded as notifications.** Server-to-client requests

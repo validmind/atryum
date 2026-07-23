@@ -47,6 +47,10 @@ type stubService struct {
 	recordReq  *invocation.ExternalExecutionUpdate
 	recordCtx  context.Context
 
+	streamDeliveryInvocationID string
+	streamDeliveryStatus       string
+	streamDeliveryMessage      string
+
 	createSessionReq     *invocation.CreateSessionRequest
 	createSessionAgentID string
 
@@ -74,6 +78,13 @@ func (s *stubService) InvokeStreaming(ctx context.Context, req invocation.Create
 		return s.invokeStreamingFn(ctx, req, sink)
 	}
 	return s.invoke, s.invErr
+}
+
+func (s *stubService) RecordStreamDelivery(_ context.Context, invocationID, status, message string) error {
+	s.streamDeliveryInvocationID = invocationID
+	s.streamDeliveryStatus = status
+	s.streamDeliveryMessage = message
+	return nil
 }
 func (s *stubService) ListTools(context.Context, string) ([]mcp.Tool, error) {
 	return s.tools, s.listErr

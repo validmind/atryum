@@ -199,6 +199,39 @@ func TestSSERelaySinkHeartbeatFailureSurfacesOnNextEvent(t *testing.T) {
 	}
 }
 
+func TestMCPToolsCallAuditsTerminalDeliveryFailure(t *testing.T) {
+	now := time.Now().UTC()
+	svc := &stubService{invoke: invocation.InvocationResponse{
+		InvocationID: "inv_delivery", ServerName: "demo", ToolName: "demo_tool",
+		Status: invocation.StatusSucceeded, SubmittedAt: now, CompletedAt: &now,
+		Result: json.RawMessage(`{"content":[{"type":"text","text":"done"}]}`),
+	}}
+	writer := &switchableFailingWriter{ResponseRecorder: httptest.NewRecorder()}
+	svc.invokeStreamingFn = func(ctx context.Context, req invocation.CreateInvocationRequest, sink mcp.StreamSink) (invocation.InvocationResponse, error) {
+		sink.StreamStarted()
+		if err := sink.Event(mcp.StreamEvent{Data: []byte(`{"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1}}`)}); err != nil {
+			t.Fatalf("sink.Event: %v", err)
+		}
+		writer.broken.Store(true)
+		return svc.invoke, nil
+	}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"demo_tool","arguments":{}}}`))
+	req.Header.Set("Accept", "text/event-stream")
+
+	h.Routes().ServeHTTP(writer, req)
+
+	if svc.streamDeliveryInvocationID != "inv_delivery" {
+		t.Fatalf("delivery audit invocation = %q, want inv_delivery", svc.streamDeliveryInvocationID)
+	}
+	if svc.streamDeliveryStatus != "failed" {
+		t.Fatalf("delivery audit status = %q, want failed", svc.streamDeliveryStatus)
+	}
+	if !strings.Contains(svc.streamDeliveryMessage, "connection reset") {
+		t.Fatalf("delivery audit message = %q, want terminal write failure", svc.streamDeliveryMessage)
+	}
+}
+
 func TestMCPToolsCallErrorAfterStreamStartedWritesTerminalErrorFrame(t *testing.T) {
 	svc := &stubService{}
 	svc.invokeStreamingFn = func(ctx context.Context, req invocation.CreateInvocationRequest, sink mcp.StreamSink) (invocation.InvocationResponse, error) {

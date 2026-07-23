@@ -43,6 +43,7 @@ const upstreamMCPOAuthCallbackPath = "/api/v1/mcp/oauth/callback"
 type service interface {
 	Invoke(ctx context.Context, req invocation.CreateInvocationRequest) (invocation.InvocationResponse, error)
 	InvokeStreaming(ctx context.Context, req invocation.CreateInvocationRequest, sink mcp.StreamSink) (invocation.InvocationResponse, error)
+	RecordStreamDelivery(ctx context.Context, invocationID, status, message string) error
 	ListTools(ctx context.Context, server string) ([]mcp.Tool, error)
 	Get(ctx context.Context, id string) (invocation.InvocationResponse, error)
 	List(ctx context.Context, filter invocation.InvocationListFilter) (invocation.InvocationListResponse, error)
@@ -1371,7 +1372,8 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 				h.debugf("mcp tools.call error after stream started server=%s tool=%s err=%v", server, params.Name, err)
 				errBody, _ := json.Marshal(map[string]any{"code": -32000, "message": err.Error()})
 				terminal, _ := json.Marshal(jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: errBody})
-				_ = sink.finishStream(terminal)
+				deliveryErr := sink.finishStream(terminal)
+				h.recordStreamDelivery(r.Context(), resp.InvocationID, deliveryErr)
 				return
 			}
 			h.writeRPCError(w, req.ID, -32000, err.Error())
@@ -1394,7 +1396,8 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			// goroutine — mandatory before returning from the handler.
 			body, _ := json.Marshal(result)
 			terminal, _ := json.Marshal(jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: body})
-			_ = sink.finishStream(terminal)
+			deliveryErr := sink.finishStream(terminal)
+			h.recordStreamDelivery(r.Context(), resp.InvocationID, deliveryErr)
 			return
 		}
 		h.writeRPCResult(w, req.ID, result)
@@ -4243,4 +4246,22 @@ func (h *Handler) debugf(format string, args ...any) {
 		return
 	}
 	log.Printf("[mcp] "+format, args...)
+}
+
+func (h *Handler) recordStreamDelivery(ctx context.Context, invocationID string, deliveryErr error) {
+	if invocationID == "" {
+		return
+	}
+	status := "succeeded"
+	message := ""
+	if deliveryErr != nil {
+		status = "failed"
+		message = deliveryErr.Error()
+		h.debugf("mcp terminal stream delivery failed invocation_id=%s err=%v", invocationID, deliveryErr)
+	}
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	if err := h.svc.RecordStreamDelivery(persistCtx, invocationID, status, message); err != nil {
+		h.debugf("mcp stream delivery audit failed invocation_id=%s err=%v", invocationID, err)
+	}
 }

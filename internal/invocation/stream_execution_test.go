@@ -36,6 +36,17 @@ type blockingStreamEventRepo struct {
 	once    sync.Once
 }
 
+type failTerminalUpdateRepo struct {
+	*store.InvocationRepo
+}
+
+func (r *failTerminalUpdateRepo) UpdateResult(ctx context.Context, inv invocation.Invocation) error {
+	if inv.Status == invocation.StatusSucceeded || inv.Status == invocation.StatusFailed {
+		return errors.New("terminal persistence unavailable")
+	}
+	return r.InvocationRepo.UpdateResult(ctx, inv)
+}
+
 func (r *blockingStreamEventRepo) Create(ctx context.Context, evt invocation.Event) error {
 	if evt.EventType == "invocation.stream_event" {
 		r.once.Do(func() { close(r.started) })
@@ -389,6 +400,105 @@ func TestInvokeStreamingSinkAbortPersistsFailureAfterRequestContextCancellation(
 		}
 	}
 	t.Fatal("expected persisted invocation.failed event with reason stream_aborted_downstream")
+}
+
+func TestInvokeStreamingQuietRequestCancellationIsDownstreamAbort(t *testing.T) {
+	callStarted := make(chan struct{})
+	upstream := sseToolCallUpstream(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.(http.Flusher).Flush()
+		close(callStarted)
+		<-r.Context().Done()
+	})
+	defer upstream.Close()
+
+	service := newTestService(t, config.Config{
+		Defaults:  config.DefaultsConfig{RequestTimeoutSeconds: 5},
+		Upstreams: []config.UpstreamConfig{{Name: "shortcut", Mode: "http", BaseURL: upstream.URL, Enabled: true, TimeoutSeconds: 5}},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	resultCh := make(chan invocation.InvocationResponse, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		resp, err := service.InvokeStreaming(ctx, invocation.CreateInvocationRequest{Server: "shortcut", Tool: "demo", Input: map[string]any{}}, &recordingSink{})
+		resultCh <- resp
+		errCh <- err
+	}()
+	<-callStarted
+	cancel()
+
+	resp := <-resultCh
+	if err := <-errCh; err != nil {
+		t.Fatalf("InvokeStreaming returned error: %v", err)
+	}
+	if resp.Status != invocation.StatusFailed {
+		t.Fatalf("status = %s, want failed", resp.Status)
+	}
+	events, err := service.Events(context.Background(), resp.InvocationID, invocation.EventListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, evt := range events.Items {
+		if evt.Type == "invocation.failed" && jsonContains(evt.Data, "stream_aborted_downstream") {
+			return
+		}
+	}
+	t.Fatal("quiet request cancellation was not audited as stream_aborted_downstream")
+}
+
+func TestInvokeStreamingDoesNotAuditSuccessBeforeTerminalPersistence(t *testing.T) {
+	upstream := sseToolCallUpstream(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		writeSSEEvent(w, flusher, `{"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1}}`)
+		writeSSEEvent(w, flusher, `{"jsonrpc":"2.0","id":"1","result":{"content":[{"type":"text","text":"done"}]}}`)
+	})
+	defer upstream.Close()
+
+	db := newSQLiteTestDB(t)
+	serverRepo := store.NewServerRepo(db)
+	resolver := mcp.NewResolver(serverRepo, config.Config{
+		Upstreams: []config.UpstreamConfig{{Name: "shortcut", Mode: "http", BaseURL: upstream.URL, Enabled: true, TimeoutSeconds: 5}},
+	})
+	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	eventRepo := store.NewEventRepo(db)
+	service := invocation.NewService(
+		&failTerminalUpdateRepo{InvocationRepo: store.NewInvocationRepo(db)},
+		eventRepo,
+		resolver,
+		mcp.NewHTTPClient(),
+		policy.AlwaysApproveProvider{},
+		5*time.Second,
+		nil, nil, nil, nil,
+	)
+
+	resp, err := service.InvokeStreaming(
+		context.Background(),
+		invocation.CreateInvocationRequest{Server: "shortcut", Tool: "demo", Input: map[string]any{}},
+		&recordingSink{},
+	)
+	if err == nil {
+		t.Fatal("expected terminal persistence error")
+	}
+	if resp.InvocationID == "" {
+		t.Fatal("expected the invocation ID to remain available for delivery audit")
+	}
+
+	events, _, listErr := eventRepo.ListByInvocation(context.Background(), resp.InvocationID, invocation.EventListFilter{Limit: 100})
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	for _, evt := range events {
+		if evt.EventType == "invocation.succeeded" {
+			t.Fatal("found invocation.succeeded despite terminal persistence failure")
+		}
+		if evt.EventType == "invocation.stream_completed" && jsonContains(evt.Payload, `"terminal":"succeeded"`) {
+			t.Fatal("stream completion claimed success before terminal persistence")
+		}
+	}
 }
 
 func TestInvokeStreamingIdleTimeoutMarksFailedAsStreamTimeout(t *testing.T) {

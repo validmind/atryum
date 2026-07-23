@@ -10,10 +10,56 @@ import (
 )
 
 const (
-	streamAuditQueueCapacity = 128
+	streamAuditQueueCapacity = 512
+	streamAuditWorkerCount   = 8
 	streamAuditWriteTimeout  = 500 * time.Millisecond
 	streamAuditFlushTimeout  = 2 * time.Second
 )
+
+type streamAuditWrite struct {
+	repo  eventRepo
+	owner *auditingSink
+	event Event
+}
+
+type streamAuditDispatcher struct {
+	queues    []chan streamAuditWrite
+	nextShard atomic.Uint64
+}
+
+func newStreamAuditDispatcher() *streamAuditDispatcher {
+	d := &streamAuditDispatcher{queues: make([]chan streamAuditWrite, streamAuditWorkerCount)}
+	perWorkerCapacity := streamAuditQueueCapacity / streamAuditWorkerCount
+	for i := range d.queues {
+		d.queues[i] = make(chan streamAuditWrite, perWorkerCapacity)
+		go d.runWorker(d.queues[i])
+	}
+	return d
+}
+
+func (d *streamAuditDispatcher) assignShard() int {
+	return int(d.nextShard.Add(1)-1) % len(d.queues)
+}
+
+func (d *streamAuditDispatcher) enqueue(shard int, write streamAuditWrite) bool {
+	select {
+	case d.queues[shard] <- write:
+		return true
+	default:
+		return false
+	}
+}
+
+func (d *streamAuditDispatcher) runWorker(queue <-chan streamAuditWrite) {
+	for write := range queue {
+		writeCtx, cancel := context.WithTimeout(context.Background(), streamAuditWriteTimeout)
+		err := write.repo.Create(writeCtx, write.event)
+		cancel()
+		write.owner.completeAuditWrite(err)
+	}
+}
+
+var sharedStreamAuditDispatcher = newStreamAuditDispatcher()
 
 // auditingSink wraps a caller-supplied mcp.StreamSink so every relayed event
 // and the call's outcome are recorded as invocation_events audit rows,
@@ -23,26 +69,26 @@ const (
 // service layer, not the handler, precisely so they occur even if the
 // handler's write to the agent fails mid-stream.
 //
-// Audit writes run through a bounded background queue rather than on the
-// relay's hot path. A stalled audit repository must neither delay an event
-// reaching the agent nor defeat the stream's idle/max-duration bounds. Each
-// write and the final queue drain are time-bounded; failures and queue drops
-// are summarized in invocation.stream_completed.
+// Audit writes run through one process-wide bounded worker pool rather than
+// creating a queue and goroutine for every invocation. A stalled repository
+// therefore cannot create unbounded relay goroutines or delay live delivery.
 type auditingSink struct {
-	inner        mcp.StreamSink // may be nil: audit-only, no relay
-	events       eventRepo
-	invocationID string
-	requestID    *string
-	upstreamName string
-	limits       StreamAuditLimits
-	auditCtx     context.Context
-	cancelAudit  context.CancelFunc
-	auditQueue   chan Event
-	auditDone    chan struct{}
-	closeOnce    sync.Once
-	persisted    atomic.Int64
-	failed       atomic.Int64
-	dropped      atomic.Int64
+	inner             mcp.StreamSink // may be nil: audit-only, no relay
+	events            eventRepo
+	invocationID      string
+	requestID         *string
+	upstreamName      string
+	limits            StreamAuditLimits
+	auditShard        int
+	persisted         atomic.Int64
+	failed            atomic.Int64
+	dropped           atomic.Int64
+	standaloneDropped atomic.Int64
+	pendingMu         sync.Mutex
+	pending           int
+	closing           bool
+	drained           chan struct{}
+	drainOnce         sync.Once
 
 	seq int
 	// downstreamErr is set once inner.Event returns an error — the
@@ -59,12 +105,8 @@ func newAuditingSink(inner mcp.StreamSink, events eventRepo, invocationID string
 		requestID:    requestID,
 		upstreamName: upstreamName,
 		limits:       limits,
-	}
-	if events != nil {
-		a.auditCtx, a.cancelAudit = context.WithCancel(context.Background())
-		a.auditQueue = make(chan Event, streamAuditQueueCapacity)
-		a.auditDone = make(chan struct{})
-		go a.runAuditWriter()
+		auditShard:   sharedStreamAuditDispatcher.assignShard(),
+		drained:      make(chan struct{}),
 	}
 	return a
 }
@@ -88,8 +130,12 @@ func (a *auditingSink) Event(evt mcp.StreamEvent) error {
 	return nil
 }
 
+func (a *auditingSink) StreamStats(stats mcp.StreamStats) {
+	a.standaloneDropped.Add(stats.StandaloneEventsDropped)
+}
+
 func (a *auditingSink) recordEvent(evt mcp.StreamEvent) {
-	if a.auditQueue == nil {
+	if a.events == nil {
 		return
 	}
 	if a.limits.MaxEvents > 0 && a.seq > a.limits.MaxEvents {
@@ -120,62 +166,68 @@ func (a *auditingSink) recordEvent(evt mcp.StreamEvent) {
 		Payload:      mustJSON(payload),
 		CreatedAt:    time.Now().UTC(),
 	}
-	select {
-	case a.auditQueue <- record:
-	default:
+	a.pendingMu.Lock()
+	a.pending++
+	a.pendingMu.Unlock()
+	if !sharedStreamAuditDispatcher.enqueue(a.auditShard, streamAuditWrite{repo: a.events, owner: a, event: record}) {
 		a.dropped.Add(1)
+		a.completePending()
 	}
 }
 
-func (a *auditingSink) runAuditWriter() {
-	defer close(a.auditDone)
-	for evt := range a.auditQueue {
-		writeCtx, cancel := context.WithTimeout(a.auditCtx, streamAuditWriteTimeout)
-		err := a.events.Create(writeCtx, evt)
-		cancel()
-		if err != nil {
-			a.failed.Add(1)
-			continue
-		}
+func (a *auditingSink) completeAuditWrite(err error) {
+	if err != nil {
+		a.failed.Add(1)
+	} else {
 		a.persisted.Add(1)
 	}
+	a.completePending()
 }
 
-func (a *auditingSink) stopAuditWriter() {
-	if a.auditQueue == nil {
-		return
+func (a *auditingSink) completePending() {
+	a.pendingMu.Lock()
+	a.pending--
+	drained := a.closing && a.pending == 0
+	a.pendingMu.Unlock()
+	if drained {
+		a.drainOnce.Do(func() { close(a.drained) })
 	}
-	a.closeOnce.Do(func() { close(a.auditQueue) })
+}
+
+func (a *auditingSink) waitForAuditWrites() bool {
+	a.pendingMu.Lock()
+	a.closing = true
+	drained := a.pending == 0
+	a.pendingMu.Unlock()
+	if drained {
+		a.drainOnce.Do(func() { close(a.drained) })
+	}
+
 	timer := time.NewTimer(streamAuditFlushTimeout)
 	defer timer.Stop()
 	select {
-	case <-a.auditDone:
-		a.cancelAudit()
+	case <-a.drained:
+		return true
 	case <-timer.C:
-		// Cancel the in-flight write and make every queued write fail fast.
-		// Do not wait indefinitely if an eventRepo violates context
-		// cancellation; terminal invocation persistence must remain bounded.
-		a.cancelAudit()
-		select {
-		case <-a.auditDone:
-		case <-time.After(streamAuditWriteTimeout):
-		}
+		return false
 	}
 }
 
 // finish records the invocation.stream_completed totals row. terminal is
-// "succeeded", "failed", or "aborted".
+// "succeeded", "failed", or "persistence_failed".
 func (a *auditingSink) finish(completed time.Time, terminal string) {
 	if a.events == nil {
 		return
 	}
-	a.stopAuditWriter()
+	auditFlushed := a.waitForAuditWrites()
 	payload := map[string]any{
-		"events_total":         a.seq,
-		"events_persisted":     a.persisted.Load(),
-		"audit_write_failures": a.failed.Load(),
-		"audit_queue_dropped":  a.dropped.Load(),
-		"terminal":             terminal,
+		"events_total":              a.seq,
+		"events_persisted":          a.persisted.Load(),
+		"audit_write_failures":      a.failed.Load(),
+		"audit_queue_dropped":       a.dropped.Load(),
+		"standalone_events_dropped": a.standaloneDropped.Load(),
+		"audit_flush_timed_out":     !auditFlushed,
+		"terminal":                  terminal,
 	}
 	writeCtx, cancel := context.WithTimeout(context.Background(), streamAuditWriteTimeout)
 	defer cancel()

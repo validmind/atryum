@@ -19,11 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   If an upstream closes a resumable SSE response before the terminal
   JSON-RPC message, Atryum reconnects with `Last-Event-ID` and continues
   from the last event acknowledged to the upstream.
-  Streamed events are audited into `invocation_events`
-  (`invocation.stream_event` / `invocation.stream_completed`). New
+  Streamed events and terminal delivery are audited into `invocation_events`
+  (`invocation.stream_event`, `invocation.stream_completed`, and
+  `invocation.stream_delivery`). New
   `[defaults]` config knobs: `stream_relay_enabled` (kill-switch, default
   on), `stream_header_timeout_seconds`, `stream_idle_timeout_seconds`,
-  `stream_max_duration_seconds`, `stream_audit_max_events`,
+  `stream_max_duration_seconds`, `stream_max_message_bytes`,
+  `stream_audit_max_events`,
   `stream_audit_max_event_bytes`. See `docs/architecture.md` for the full
   design.
 - The relay also listens on the Streamable HTTP standalone SSE stream (a GET
@@ -34,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `_meta.progressToken` to a value unique to that call before forwarding it
   upstream, so two unrelated concurrent callers who happen to choose the same
   token can never have their progress notifications cross-delivered.
+  Standalone connections now follow session renewal and retry transient
+  failures with bounded backoff. Stream audit writes use a fixed shared worker
+  pool; standalone-buffer drops and downstream terminal-delivery outcomes are
+  recorded explicitly.
 
 ## [0.2.0] - 2026-07-14
 
