@@ -3194,7 +3194,12 @@ func (h *Handler) adminAgentCharterPreview(w http.ResponseWriter, r *http.Reques
 		charterFieldKey = settings.CharterFieldKey
 	}
 
-	if agent.VMCUID != "" && h.backendClient != nil {
+	// VMOrganizationCUID (mirrored in AdminAgent.Synced) is the correct "is this
+	// a real ValidMind-synced agent" signal. VMCUID alone is NOT — manually
+	// created agents get VMCUID reused as their local id (see the create
+	// handler above) while VMOrganizationCUID stays empty, precisely so a fake
+	// VMCUID is never mistaken for a real ValidMind inventory-model cuid here.
+	if agent.VMOrganizationCUID != "" && h.backendClient != nil {
 		result, err := h.backendClient.CharterPreview(r.Context(), agent.VMCUID, charterFieldKey, agent.VMOrganizationCUID)
 		if err != nil {
 			log.Printf("charter-preview: backend call failed for agent %s: %v", id, err)
