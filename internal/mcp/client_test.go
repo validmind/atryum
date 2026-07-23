@@ -1338,6 +1338,84 @@ func TestInvokeStreamStandaloneStreamRelaysProgressNotification(t *testing.T) {
 	}
 }
 
+func TestInvokeStreamStandaloneProgressResetsIdleTimeout(t *testing.T) {
+	tokenCh := make(chan string, 1)
+	progressComplete := make(chan struct{})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher := w.(http.Flusher)
+			token := <-tokenCh
+			for progress := 1; progress <= 4; progress++ {
+				time.Sleep(60 * time.Millisecond)
+				writeTestSSEEventFlush(w, flusher, fmt.Sprintf(
+					`{"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":%q,"progress":%d}}`,
+					token,
+					progress,
+				))
+			}
+			close(progressComplete)
+			<-r.Context().Done()
+			return
+		}
+
+		var req Envelope
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		switch req.Method {
+		case "initialize":
+			w.Header().Set("Mcp-Session-Id", "sid-standalone-idle")
+			writeTestRPC(w, req.ID, map[string]any{"protocolVersion": r.Header.Get("MCP-Protocol-Version"), "capabilities": map[string]any{}}, nil)
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/call":
+			var params struct {
+				Meta struct {
+					ProgressToken string `json:"progressToken"`
+				} `json:"_meta"`
+			}
+			_ = json.Unmarshal(req.Params, &params)
+			tokenCh <- params.Meta.ProgressToken
+
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher := w.(http.Flusher)
+			_, _ = w.Write([]byte(": stream ready\n\n"))
+			flusher.Flush()
+			<-progressComplete
+			writeTestSSEEventFlush(w, flusher, `{"jsonrpc":"2.0","id":"1","result":{"content":[{"type":"text","text":"done"}]}}`)
+		default:
+			t.Fatalf("unexpected method %q", req.Method)
+		}
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient()
+	client.httpClient = server.Client()
+	sink := newSyncFakeStreamSink()
+
+	result, err := client.InvokeStream(
+		context.Background(),
+		Upstream{Name: "standalone-idle", Mode: UpstreamModeHTTP, BaseURL: server.URL},
+		"slow_streaming_task",
+		map[string]any{},
+		nil,
+		map[string]any{"progressToken": "caller-token"},
+		sink,
+		StreamOptions{IdleTimeout: 150 * time.Millisecond},
+	)
+	if err != nil {
+		t.Fatalf("InvokeStream returned error while standalone progress remained active: %v", err)
+	}
+	if !strings.Contains(string(result.Body), "done") {
+		t.Fatalf("expected terminal result body, got %s", result.Body)
+	}
+	if events := sink.snapshotEvents(); len(events) != 4 {
+		t.Fatalf("expected four relayed progress events, got %d", len(events))
+	}
+}
+
 // TestInvokeStreamRestoresCallerProgressTokenOnPOSTResponseStreamToo is a
 // regression test: some upstreams echo a call's progress notifications on
 // the tools/call POST response itself, not the standalone stream — that's

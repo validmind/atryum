@@ -1217,6 +1217,12 @@ func (c *Client) relaySSEToolCall(resp *http.Response, sink StreamSink, progress
 			sink.StreamStarted()
 		}
 	}
+	deliver := func(evt StreamEvent) error {
+		guard.resetIdle()
+		ensureStarted()
+		relayed++
+		return sink.Event(evt)
+	}
 
 	pump := newPostStreamPump(c, guard, upstream, resp)
 	defer pump.stop()
@@ -1231,9 +1237,7 @@ func (c *Client) relaySSEToolCall(resp *http.Response, sink StreamSink, progress
 				progressCh = nil
 				continue
 			}
-			ensureStarted()
-			relayed++
-			if err := sink.Event(evt); err != nil {
+			if err := deliver(evt); err != nil {
 				return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, err
 			}
 		case msg, ok := <-pump.msgs:
@@ -1263,9 +1267,7 @@ func (c *Client) relaySSEToolCall(resp *http.Response, sink StreamSink, progress
 							if !ok {
 								break settleLoop
 							}
-							ensureStarted()
-							relayed++
-							if err := sink.Event(evt); err != nil {
+							if err := deliver(evt); err != nil {
 								settle.Stop()
 								return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, err
 							}
@@ -1283,15 +1285,11 @@ func (c *Client) relaySSEToolCall(resp *http.Response, sink StreamSink, progress
 				}
 				return streamCallOutcome{invoke: invoke, missingSession: missingSession, eventsRelayed: relayed, sessionID: sessionID}, nil
 			case rpcMessageServerRequest:
-				ensureStarted()
-				relayed++
-				if err := sink.Event(StreamEvent{Data: payload, ServerRequest: true}); err != nil {
+				if err := deliver(StreamEvent{Data: payload, ServerRequest: true}); err != nil {
 					return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, err
 				}
 			case rpcMessageNotification:
-				ensureStarted()
-				relayed++
-				if err := sink.Event(StreamEvent{Data: payload}); err != nil {
+				if err := deliver(StreamEvent{Data: payload}); err != nil {
 					return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, err
 				}
 			default:
