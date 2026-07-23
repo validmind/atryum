@@ -395,7 +395,7 @@ func TestUnprotectedRoutesRemainOpenWhenAuthEnabled(t *testing.T) {
 	}
 }
 
-func TestAdminRoutesRequireAdminTokenWhenAdminAuthEnabled(t *testing.T) {
+func TestReviewRoutesRequireAdminTokenWhenAdminAuthEnabled(t *testing.T) {
 	rig := newAuthTestRig(t, func(c *auth.Config) {
 		c.AdminEnabled = true
 		c.AdminClientID = "admin-client"

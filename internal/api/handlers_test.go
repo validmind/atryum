@@ -569,11 +569,11 @@ func TestAdminServerTestDebugLogsRequestContext(t *testing.T) {
 	}
 	got := logs.String()
 	for _, want := range []string{
-		"admin server test request method=POST path=/api/v1/servers/shortcut/test server=shortcut",
+		"operator server test request method=POST path=/api/v1/servers/shortcut/test server=shortcut",
 		"origin=\"http://localhost:8080\"",
 		"referer=\"http://localhost:8080/ui/\"",
 		"user_agent=\"debug-test\"",
-		"admin server test response server=shortcut",
+		"operator server test response server=shortcut",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected logs to contain %q, got:\n%s", want, got)
