@@ -121,11 +121,13 @@ func (c *Client) relayStdioToolCall(reader *bufio.Reader, sink StreamSink, guard
 			}
 			return InvokeResult{}, err
 		}
+		// Any line — including a blank one — is upstream liveness, matching
+		// the HTTP relay's per-line idle reset (SSE comments count there).
+		guard.resetIdle()
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue
 		}
-		guard.resetIdle()
 
 		switch classifyRPCMessage(line, expectedID) {
 		case rpcMessageTerminalResponse:

@@ -15,7 +15,7 @@ import (
 // records terminal-frame delivery separately because that write happens only
 // after this method returns.
 func (s *Service) finishExecutionStreaming(ctx context.Context, inv Invocation, upstream mcp.Upstream, req CreateInvocationRequest, sink mcp.StreamSink) (InvocationResponse, error) {
-	audited := newAuditingSink(sink, s.events, inv.InvocationID, req.RequestID, upstream.Name, s.streamAuditLimits)
+	audited := newAuditingSink(sink, s.events, inv.InvocationID, req.RequestID, upstream.Name, s.effectiveStreamAuditLimits())
 	result, err := s.client.InvokeStream(ctx, upstream, req.Tool, req.Input, req.RequestID, req.Meta, audited, s.effectiveStreamOptions())
 	completed := time.Now().UTC()
 	inv.CompletedAt = &completed
@@ -65,7 +65,7 @@ func (s *Service) finishExecutionStreaming(ctx context.Context, inv Invocation, 
 	defer cancelPersist()
 	if err := s.invocations.UpdateResult(persistCtx, inv); err != nil {
 		audited.finish(completed, "persistence_failed")
-		return s.toResponse(inv), err
+		return s.toResponse(inv), fmt.Errorf("persist streaming invocation result: %w", err)
 	}
 	if result.Failed {
 		audited.finish(completed, "failed")

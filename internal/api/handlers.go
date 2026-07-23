@@ -737,7 +737,10 @@ func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Reg
 // SetStreamRelayEnabled toggles the tools/call SSE relay kill-switch (on by
 // default). Disabling it forces every tools/call back to the buffered
 // application/json path regardless of what the agent's Accept header or the
-// upstream's response content-type would otherwise allow.
+// upstream's response content-type would otherwise allow. Call it during
+// startup wiring only: the flag is an unsynchronized bool read on every
+// request, so flipping it while serving is a data race, not a runtime
+// toggle.
 func (h *Handler) SetStreamRelayEnabled(enabled bool) {
 	h.streamRelayEnabled = enabled
 }
@@ -1350,6 +1353,10 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		var sink *sseRelaySink
 		if flusher, ok := w.(http.Flusher); ok && h.streamRelayEnabled && acceptsEventStream(r) {
 			sink = newSSERelaySink(w, flusher)
+			// Structural guarantee that the heartbeat goroutine can never
+			// outlive this handler, even on a panic path. A no-op on normal
+			// paths, where finishStream already stopped it.
+			defer sink.stopHeartbeat()
 		}
 		var resp invocation.InvocationResponse
 		var err error
@@ -1369,12 +1376,19 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			// close (the agent would be left with a request that ended
 			// without any response).
 			if sink != nil && sink.started {
-				// The full error is logged server-side; the wire gets a
+				// The full error is logged server-side (unconditionally —
+				// not debugf: when persistence fails, this log line is the
+				// only place the real error text survives, since the audit
+				// row can only say persistence_failed); the wire gets a
 				// static message. The only errors reachable with a started
 				// stream are internal finalization failures (result
 				// persistence), whose text can carry SQL/driver detail the
 				// agent has no business seeing.
-				h.debugf("mcp tools.call error after stream started server=%s tool=%s err=%v", server, params.Name, err)
+				log.Printf("[mcpToolsCall] finalize after stream started failed server=%s tool=%s invocation=%s: %v", server, params.Name, resp.InvocationID, err)
+				// Trace this path like the success path does: a stream that
+				// relayed events and then failed finalization is exactly the
+				// call an operator will want to find.
+				_ = h.emitTraceEvent(r.Context(), server, "mcp.tools.call", map[string]any{"request_id": requestID, "status": resp.Status, "invocation_id": resp.InvocationID, "tool": params.Name, "streamed": true, "stream_events": sink.eventCount, "finalize_failed": true})
 				errBody, _ := json.Marshal(map[string]any{"code": -32000, "message": "failed to finalize invocation"})
 				terminal, _ := json.Marshal(jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: errBody})
 				deliveryErr := sink.finishStream(terminal)

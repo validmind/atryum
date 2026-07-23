@@ -161,13 +161,29 @@ func (s *sseRelaySink) Event(evt mcp.StreamEvent) error {
 		// now rather than waiting for this write to discover it again.
 		return s.writeErr
 	}
-	s.eventCount++
 	s.setWriteDeadlineLocked()
 	if err := writeSSEEvent(s.w, s.flusher, "", evt.Data); err != nil {
 		s.writeErr = err
 		return err
 	}
+	// Incremented only after a successful write: eventCount reports frames
+	// delivered to the agent, not attempts.
+	s.eventCount++
 	return nil
+}
+
+// stopHeartbeat stops the heartbeat goroutine (if one was started) without
+// writing anything, and waits for it to exit. finishStream calls it before
+// the terminal frame; handlers additionally defer it right after building
+// the sink so a panic between StreamStarted and finishStream cannot leave
+// the goroutine writing to a ResponseWriter whose handler has returned.
+// Idempotent and safe to call on a never-started sink.
+func (s *sseRelaySink) stopHeartbeat() {
+	if s.heartbeatStop == nil {
+		return
+	}
+	s.stopOnce.Do(func() { close(s.heartbeatStop) })
+	<-s.heartbeatDone
 }
 
 // finishStream stops the heartbeat and writes the terminal frame as the
@@ -175,8 +191,7 @@ func (s *sseRelaySink) Event(evt mcp.StreamEvent) error {
 // is true — it is what guarantees the heartbeat goroutine cannot write to
 // (or race on) the ResponseWriter after the handler returns.
 func (s *sseRelaySink) finishStream(terminal []byte) error {
-	s.stopOnce.Do(func() { close(s.heartbeatStop) })
-	<-s.heartbeatDone
+	s.stopHeartbeat()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.writeErr != nil {

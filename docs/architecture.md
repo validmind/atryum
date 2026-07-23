@@ -379,8 +379,11 @@ The downstream connection has a separate per-write deadline. If the downstream c
 disconnects or stops reading, Atryum aborts that call instead of leaving a goroutine
 blocked forever. While the upstream is quiet, Atryum sends SSE comment heartbeats so
 proxies and load balancers do not mistake the downstream connection for an abandoned
-one. The audit trail distinguishes an upstream timeout, a downstream disconnect, and
-other transport failures.
+one. The audit trail distinguishes an upstream timeout (`stream_timeout`), a proven
+downstream disconnect (`stream_aborted_downstream`, set only when a write to the agent
+actually failed), and other transport failures. A bare request-context cancellation is
+recorded as `stream_canceled`: with no failed downstream write, a quiet agent
+disconnect and a server shutdown are indistinguishable, so the audit does not guess.
 
 #### Reliability guarantees and limits
 

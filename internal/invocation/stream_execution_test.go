@@ -97,7 +97,13 @@ func sseToolCallUpstream(t *testing.T, callHandler func(w http.ResponseWriter, r
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode request: %v", err)
+			// t.Errorf + an HTTP error, never t.Fatal: FailNow from a
+			// non-test goroutine only kills the handler, and the
+			// never-answered client would hang the test until the suite
+			// timeout instead of failing it cleanly.
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "bad request body", http.StatusBadRequest)
+			return
 		}
 		switch body["method"] {
 		case "initialize":
@@ -110,7 +116,8 @@ func sseToolCallUpstream(t *testing.T, callHandler func(w http.ResponseWriter, r
 		case "tools/call":
 			callHandler(w, r, body)
 		default:
-			t.Fatalf("unexpected method %q", body["method"])
+			t.Errorf("unexpected method %q", body["method"])
+			http.Error(w, "unexpected method", http.StatusInternalServerError)
 		}
 	}))
 }
@@ -703,5 +710,67 @@ func TestInvokeStreamingNilSinkMatchesInvoke(t *testing.T) {
 	}
 	if string(viaInvoke.Result) != string(viaStreaming.Result) {
 		t.Fatalf("result mismatch: Invoke=%s InvokeStreaming(nil)=%s", viaInvoke.Result, viaStreaming.Result)
+	}
+}
+
+// TestInvokeBufferedPersistsFailureAfterRequestContextCancellation mirrors
+// the streaming regression test above for the buffered path: a downstream
+// that disconnects mid-call (canceling the request context) must still get
+// its invocation finalized as failed — not left stuck "executing" — because
+// finalization writes run on their own bounded context, detached from the
+// request.
+func TestInvokeBufferedPersistsFailureAfterRequestContextCancellation(t *testing.T) {
+	callStarted := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "bad request body", http.StatusBadRequest)
+			return
+		}
+		switch body["method"] {
+		case "initialize":
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": body["id"], "result": map[string]any{"serverInfo": map[string]any{"name": "fake", "version": "0.1.0"}, "capabilities": map[string]any{}}})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/call":
+			close(callStarted)
+			<-r.Context().Done() // hold the call open until the client vanishes
+		default:
+			t.Errorf("unexpected method %q", body["method"])
+			http.Error(w, "unexpected method", http.StatusInternalServerError)
+		}
+	}))
+	defer upstream.Close()
+
+	service := newTestService(t, config.Config{
+		Defaults:  config.DefaultsConfig{RequestTimeoutSeconds: 5},
+		Upstreams: []config.UpstreamConfig{{Name: "shortcut", Mode: "http", BaseURL: upstream.URL, Enabled: true, TimeoutSeconds: 5}},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	respCh := make(chan invocation.InvocationResponse, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		resp, err := service.Invoke(ctx, invocation.CreateInvocationRequest{Server: "shortcut", Tool: "demo", Input: map[string]any{}})
+		respCh <- resp
+		errCh <- err
+	}()
+	<-callStarted
+	cancel()
+
+	resp := <-respCh
+	if err := <-errCh; err != nil {
+		t.Fatalf("Invoke returned error: %v", err)
+	}
+	if resp.Status != invocation.StatusFailed {
+		t.Fatalf("status = %s, want failed", resp.Status)
+	}
+	stored, err := service.Get(context.Background(), resp.InvocationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != invocation.StatusFailed {
+		t.Fatalf("persisted status = %s, want failed (the row must not stay executing after a downstream disconnect)", stored.Status)
 	}
 }

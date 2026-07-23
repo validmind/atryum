@@ -13,10 +13,14 @@ import (
 	"time"
 )
 
-// syncFakeStreamSink is fakeStreamSink's mutex-protected counterpart. It's
-// needed wherever a test can have both relaySSEToolCall's own read loop and
-// routeStandaloneEvent deliver to the same sink concurrently — the plain
-// fakeStreamSink above assumes single-goroutine delivery and would race.
+// syncFakeStreamSink is fakeStreamSink's mutex-protected counterpart.
+// Production delivery is single-goroutine by contract (see StreamSink's doc
+// comment — routeStandaloneEvent hands events to the call goroutine via a
+// channel, it never touches the sink itself), so the mutex is not covering
+// a production race. It exists for the tests here whose *assertion*
+// goroutine reads events while InvokeStream may still be delivering on its
+// own goroutine — the plain fakeStreamSink (client_test.go) would race in
+// that test-side pattern.
 type syncFakeStreamSink struct {
 	mu      sync.Mutex
 	started bool

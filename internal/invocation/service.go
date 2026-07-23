@@ -275,12 +275,15 @@ func (s *Service) SetStreamOptions(opts mcp.StreamOptions, auditLimits StreamAud
 
 // Fallback stream bounds for a Service whose owner never called
 // SetStreamOptions. They mirror the documented config defaults
-// (stream_idle_timeout_seconds / stream_max_duration_seconds in
+// (stream_idle_timeout_seconds, stream_max_duration_seconds,
+// stream_audit_max_events, stream_audit_max_event_bytes in
 // atryum.example.toml) so an embedder wiring NewService directly gets the
 // same protection the stock binary configures explicitly.
 const (
-	fallbackStreamIdleTimeout = 60 * time.Second
-	fallbackStreamMaxDuration = 10 * time.Minute
+	fallbackStreamIdleTimeout      = 60 * time.Second
+	fallbackStreamMaxDuration      = 10 * time.Minute
+	fallbackStreamAuditMaxEvents   = 100
+	fallbackStreamAuditMaxEvtBytes = 4096
 )
 
 // effectiveStreamOptions returns the configured stream bounds, or — when
@@ -300,6 +303,20 @@ func (s *Service) effectiveStreamOptions() mcp.StreamOptions {
 		HeaderTimeout: s.defaultTimeout,
 		IdleTimeout:   fallbackStreamIdleTimeout,
 		MaxDuration:   fallbackStreamMaxDuration,
+	}
+}
+
+// effectiveStreamAuditLimits is effectiveStreamOptions' counterpart for the
+// audit caps: the same never-wired embedder must not get unlimited
+// stream_event rows at up to 4 MiB of payload each, for the same reason it
+// must not get an unbounded relay.
+func (s *Service) effectiveStreamAuditLimits() StreamAuditLimits {
+	if s.streamOptionsSet {
+		return s.streamAuditLimits
+	}
+	return StreamAuditLimits{
+		MaxEvents:     fallbackStreamAuditMaxEvents,
+		MaxEventBytes: fallbackStreamAuditMaxEvtBytes,
 	}
 }
 
@@ -1220,17 +1237,23 @@ func (s *Service) finishExecutionBuffered(ctx context.Context, inv Invocation, u
 	result, err := s.client.Invoke(execCtx, upstream, req.Tool, req.Input, req.RequestID, req.Meta)
 	completed := time.Now().UTC()
 	inv.CompletedAt = &completed
+	// Finalization writes use their own bounded context, detached from the
+	// request: a downstream that disconnected mid-call (canceling ctx) must
+	// not leave the row stuck "executing" — the same guarantee the
+	// streaming path provides via terminalPersistenceTimeout.
+	persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), terminalPersistenceTimeout)
+	defer cancelPersist()
 	if err != nil {
 		inv.Status = StatusFailed
 		inv.Error = mustJSON(map[string]any{"message": err.Error()})
-		_ = s.invocations.UpdateResult(ctx, inv)
-		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.failed", Payload: inv.Error, CreatedAt: completed})
+		_ = s.invocations.UpdateResult(persistCtx, inv)
+		_ = s.events.Create(persistCtx, Event{InvocationID: inv.InvocationID, EventType: "invocation.failed", Payload: inv.Error, CreatedAt: completed})
 		return s.toResponse(inv), nil
 	}
 	if result.Failed {
 		inv.Status = StatusFailed
 		inv.Error = result.Body
-		_ = s.events.Create(ctx, Event{
+		_ = s.events.Create(persistCtx, Event{
 			InvocationID: inv.InvocationID, EventType: "invocation.failed",
 			Payload:   mustJSON(map[string]any{"request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "body": json.RawMessage(result.Body)}),
 			CreatedAt: completed,
@@ -1238,14 +1261,14 @@ func (s *Service) finishExecutionBuffered(ctx context.Context, inv Invocation, u
 	} else {
 		inv.Status = StatusSucceeded
 		inv.Response = result.Body
-		_ = s.events.Create(ctx, Event{
+		_ = s.events.Create(persistCtx, Event{
 			InvocationID: inv.InvocationID, EventType: "invocation.succeeded",
 			Payload:   mustJSON(map[string]any{"request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "body": json.RawMessage(result.Body)}),
 			CreatedAt: completed,
 		})
 	}
-	if err := s.invocations.UpdateResult(ctx, inv); err != nil {
-		return InvocationResponse{}, err
+	if err := s.invocations.UpdateResult(persistCtx, inv); err != nil {
+		return InvocationResponse{}, fmt.Errorf("persist buffered invocation result: %w", err)
 	}
 	return s.toResponse(inv), nil
 }

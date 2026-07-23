@@ -40,6 +40,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failures with bounded backoff. Stream audit writes use a fixed shared worker
   pool; standalone-buffer drops and downstream terminal-delivery outcomes are
   recorded explicitly.
+- Relay behavior guarantees: server-initiated upstream requests (sampling,
+  elicitation, roots) are audited but never forwarded to the agent, whichever
+  connection carried them; SSE keepalive/comment lines count as upstream
+  activity for the idle timeout, so a busy-but-quiet tool heartbeating through
+  a long run is not cut off; and stream failure audit reasons distinguish a
+  proven downstream abort (`stream_aborted_downstream`, only when a write to
+  the agent failed) from a bare request-context cancellation
+  (`stream_canceled`) and upstream timeouts (`stream_timeout`).
+
+### Fixed
+
+- Buffered (non-streaming) tool calls whose downstream client disconnects
+  mid-call no longer leave the invocation row stuck `executing`: finalization
+  writes now run on their own bounded context, matching the streaming path.
 
 ## [0.2.0] - 2026-07-14
 

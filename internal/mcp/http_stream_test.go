@@ -16,7 +16,10 @@ import (
 
 // invokeStreamTestServer builds the initialize/notifications.initialized
 // scaffolding shared by the InvokeStream tests below, dispatching tools/call
-// to callHandler.
+// to callHandler. Failures inside the handler use t.Errorf plus an HTTP
+// error, never t.Fatal: FailNow from a non-test goroutine only kills the
+// handler, and the never-answered client would hang the test until the
+// suite timeout instead of failing it cleanly.
 func invokeStreamTestServer(t *testing.T, sessionID string, callHandler func(w http.ResponseWriter, r *http.Request, req Envelope)) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -31,7 +34,9 @@ func invokeStreamTestServer(t *testing.T, sessionID string, callHandler func(w h
 		}
 		var req Envelope
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode request: %v", err)
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "bad request body", http.StatusBadRequest)
+			return
 		}
 		switch req.Method {
 		case "initialize":
@@ -42,7 +47,8 @@ func invokeStreamTestServer(t *testing.T, sessionID string, callHandler func(w h
 		case "tools/call":
 			callHandler(w, r, req)
 		default:
-			t.Fatalf("unexpected method %q", req.Method)
+			t.Errorf("unexpected method %q", req.Method)
+			http.Error(w, "unexpected method", http.StatusInternalServerError)
 		}
 	}))
 }
@@ -704,9 +710,17 @@ func TestDrainTrailingProgressResetsWindowPerArrival(t *testing.T) {
 	const gap = 300 * time.Millisecond
 
 	progressCh := make(chan StreamEvent, 1)
+	senderStop := make(chan struct{})
+	t.Cleanup(func() { close(senderStop) })
 	go func() {
 		for range 3 {
-			progressCh <- StreamEvent{Data: []byte(`{"progress":1}`)}
+			select {
+			case progressCh <- StreamEvent{Data: []byte(`{"progress":1}`)}:
+			case <-senderStop:
+				// The drain exited early (a failure mode under test); don't
+				// leave this sender blocked on a channel nobody reads.
+				return
+			}
 			time.Sleep(gap)
 		}
 	}()

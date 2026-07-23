@@ -29,7 +29,9 @@ type streamAuditDispatcher struct {
 
 func newStreamAuditDispatcher() *streamAuditDispatcher {
 	d := &streamAuditDispatcher{queues: make([]chan streamAuditWrite, streamAuditWorkerCount)}
-	perWorkerCapacity := streamAuditQueueCapacity / streamAuditWorkerCount
+	// max(1, ...) guards a future non-multiple edit of the constants: an
+	// unbuffered queue would make enqueue drop nearly every write.
+	perWorkerCapacity := max(1, streamAuditQueueCapacity/streamAuditWorkerCount)
 	for i := range d.queues {
 		d.queues[i] = make(chan streamAuditWrite, perWorkerCapacity)
 		go d.runWorker(d.queues[i])
@@ -38,7 +40,9 @@ func newStreamAuditDispatcher() *streamAuditDispatcher {
 }
 
 func (d *streamAuditDispatcher) assignShard() int {
-	return int(d.nextShard.Add(1)-1) % len(d.queues)
+	// Modulo in uint64 before converting: a wrapped counter converted to a
+	// negative int would panic on the queue index.
+	return int((d.nextShard.Add(1) - 1) % uint64(len(d.queues)))
 }
 
 func (d *streamAuditDispatcher) enqueue(shard int, write streamAuditWrite) bool {
