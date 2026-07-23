@@ -542,7 +542,7 @@ type agentsLookupAdapter struct {
 func (a *agentsLookupAdapter) GetByAgentID(ctx context.Context, agentID string) (invocation.AgentRecord, error) {
 	rec, err := a.repo.GetByAgentID(ctx, agentID)
 	if err == nil {
-		return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Charter: rec.Charter}, nil
+		return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Charter: rec.Charter, Tags: rec.Tags}, nil
 	}
 	if a.managedBindings == nil {
 		return invocation.AgentRecord{}, err
@@ -555,7 +555,7 @@ func (a *agentsLookupAdapter) GetByAgentID(ctx context.Context, agentID string) 
 	if err != nil {
 		return invocation.AgentRecord{}, err
 	}
-	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Charter: rec.Charter}, nil
+	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Charter: rec.Charter, Tags: rec.Tags}, nil
 }
 
 func (a *agentsLookupAdapter) GetByVMCUID(ctx context.Context, vmCUID string) (invocation.AgentRecord, error) {
@@ -563,7 +563,7 @@ func (a *agentsLookupAdapter) GetByVMCUID(ctx context.Context, vmCUID string) (i
 	if err != nil {
 		return invocation.AgentRecord{}, err
 	}
-	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Charter: rec.Charter}, nil
+	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Charter: rec.Charter, Tags: rec.Tags}, nil
 }
 
 // llmConfigsLookupAdapter bridges store.LLMConfigsRepo → invocation.LLMConfigProvider.
@@ -617,6 +617,7 @@ func (e *evaluatorAdapter) EvaluateToolCall(ctx context.Context, req invocation.
 		ModelConfigCUID: req.ModelConfigCUID,
 		OrgCUID:         req.OrgCUID,
 		AgentVMCUID:     req.AgentVMCUID,
+		AgentTags:       req.AgentTags,
 		CharterFieldKey: req.CharterFieldKey,
 		ServerName:      req.ServerName,
 		ToolName:        req.ToolName,

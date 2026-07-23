@@ -420,6 +420,8 @@ export interface Agent {
   synced: boolean;
   /** Governing text used by local LLM-as-judge evaluation. Only editable for non-synced agents. */
   charter?: string;
+  /** Free-form tags. Atryum-native and editable for all agents (including synced ones). */
+  tags: string[];
 }
 
 export interface AgentCreateInput {
@@ -428,6 +430,7 @@ export interface AgentCreateInput {
   enabled: boolean;
   agent_ids?: string[];
   charter?: string;
+  tags?: string[];
   claude_managed_agents?: ClaudeManagedAgentBinding[];
   force_claude_managed_agent_connect?: boolean;
 }
@@ -438,6 +441,7 @@ export interface AgentUpdateInput {
   enabled: boolean;
   agent_ids?: string[];
   charter?: string;
+  tags?: string[];
   claude_managed_agents?: ClaudeManagedAgentBinding[];
   force_claude_managed_agent_connect?: boolean;
 }

@@ -99,6 +99,7 @@ type agentsRepo interface {
 	UpdateEnabled(ctx context.Context, id string, enabled bool) error
 	UpdateAgentIDs(ctx context.Context, id string, agentIDs string) error
 	UpdateMeta(ctx context.Context, id, name, description, charter string) error
+	UpdateTags(ctx context.Context, id string, tags []string) error
 	Create(ctx context.Context, agent store.AgentRecord) error
 	Delete(ctx context.Context, id string) error
 	DeleteSynced(ctx context.Context) error
@@ -372,6 +373,7 @@ type RuleListResponse struct {
 
 type AdminAgent struct {
 	CUID                string                     `json:"cuid"`
+	VMCUID              string                     `json:"vm_cuid,omitempty"`
 	OrgName             string                     `json:"org_name"`
 	Name                string                     `json:"name"`
 	Description         string                     `json:"description,omitempty"`
@@ -380,6 +382,7 @@ type AdminAgent struct {
 	SyncedAt            time.Time                  `json:"synced_at"`
 	Enabled             bool                       `json:"enabled"`
 	Charter             string                     `json:"charter,omitempty"`
+	Tags                []string                   `json:"tags"`
 	// Synced is true when this agent originated from a ValidMind sync
 	// (vm_organization_cuid is non-empty). Synced agents cannot be deleted
 	// manually — they are removed by re-syncing with a different org/record-type.
@@ -387,11 +390,15 @@ type AdminAgent struct {
 }
 
 type AdminAgentInput struct {
-	Enabled                        bool                        `json:"enabled"`
+	// Enabled is a pointer so an omitted field means "leave unchanged" rather
+	// than "disable". Callers that only edit agent_ids/tags must not flip the
+	// agent's enabled state.
+	Enabled                        *bool                       `json:"enabled,omitempty"`
 	AgentIDs                       []string                    `json:"agent_ids,omitempty"`
 	Name                           string                      `json:"name,omitempty"`
 	Description                    string                      `json:"description,omitempty"`
 	Charter                        string                      `json:"charter,omitempty"`
+	Tags                           *[]string                   `json:"tags,omitempty"`
 	ClaudeManagedAgents            *[]AdminManagedAgentBinding `json:"claude_managed_agents,omitempty"`
 	ForceClaudeManagedAgentConnect bool                        `json:"force_claude_managed_agent_connect,omitempty"`
 }
@@ -402,6 +409,7 @@ type AdminAgentCreateInput struct {
 	Enabled                        bool                       `json:"enabled"`
 	AgentIDs                       []string                   `json:"agent_ids,omitempty"`
 	Charter                        string                     `json:"charter,omitempty"`
+	Tags                           []string                   `json:"tags,omitempty"`
 	ClaudeManagedAgents            []AdminManagedAgentBinding `json:"claude_managed_agents,omitempty"`
 	ForceClaudeManagedAgentConnect bool                       `json:"force_claude_managed_agent_connect,omitempty"`
 }
@@ -437,8 +445,13 @@ type AgentListResponse struct {
 
 func toAdminAgent(a store.AgentRecord) AdminAgent {
 	ids := parseAgentIDs(a.AgentIDs)
+	tags := a.Tags
+	if tags == nil {
+		tags = []string{}
+	}
 	return AdminAgent{
 		CUID:        a.ID,
+		VMCUID:      a.VMCUID,
 		OrgName:     a.VMOrganizationName,
 		Name:        a.VMName,
 		Description: a.VMDescription,
@@ -446,6 +459,7 @@ func toAdminAgent(a store.AgentRecord) AdminAgent {
 		SyncedAt:    a.SyncedAt,
 		Enabled:     a.Enabled,
 		Charter:     a.Charter,
+		Tags:        tags,
 		Synced:      a.VMOrganizationCUID != "",
 	}
 }
@@ -2939,6 +2953,7 @@ func (h *Handler) adminAgents(w http.ResponseWriter, r *http.Request) {
 			AgentIDs:           agentIDsJSON,
 			Enabled:            req.Enabled,
 			Charter:            req.Charter,
+			Tags:               req.Tags,
 		}
 		var bindings []store.ManagedAgentBinding
 		if h.managedAgentBindings != nil && len(req.ClaudeManagedAgents) > 0 {
@@ -3072,14 +3087,16 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 				h.releaseNewManagedAgentClaims(r.Context(), id, beforeBindings, bindings)
 			}
 		}
-		if err := h.agentsRepo.UpdateEnabled(r.Context(), id, req.Enabled); err != nil {
-			cleanupNewClaims()
-			status := http.StatusInternalServerError
-			if err == sql.ErrNoRows {
-				status = http.StatusNotFound
+		if req.Enabled != nil {
+			if err := h.agentsRepo.UpdateEnabled(r.Context(), id, *req.Enabled); err != nil {
+				cleanupNewClaims()
+				status := http.StatusInternalServerError
+				if err == sql.ErrNoRows {
+					status = http.StatusNotFound
+				}
+				writeError(w, status, "agent not found")
+				return
 			}
-			writeError(w, status, "agent not found")
-			return
 		}
 		if req.AgentIDs != nil {
 			idsJSON, err := json.Marshal(req.AgentIDs)
@@ -3100,6 +3117,20 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.Name != "" || req.Description != "" || req.Charter != "" {
 			if err := h.agentsRepo.UpdateMeta(r.Context(), id, req.Name, req.Description, req.Charter); err != nil {
+				cleanupNewClaims()
+				status := http.StatusInternalServerError
+				if err == sql.ErrNoRows {
+					status = http.StatusNotFound
+				}
+				writeError(w, status, "agent not found")
+				return
+			}
+		}
+		// Tags are editable for all agents (including synced ones). Persist only
+		// when the caller included the field (non-nil pointer), so omitting it
+		// leaves existing tags untouched.
+		if req.Tags != nil {
+			if err := h.agentsRepo.UpdateTags(r.Context(), id, *req.Tags); err != nil {
 				cleanupNewClaims()
 				status := http.StatusInternalServerError
 				if err == sql.ErrNoRows {

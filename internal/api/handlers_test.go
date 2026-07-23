@@ -709,6 +709,9 @@ func (s *stubAgentsRepo) UpdateAgentIDs(context.Context, string, string) error {
 func (s *stubAgentsRepo) UpdateMeta(context.Context, string, string, string, string) error {
 	return nil
 }
+func (s *stubAgentsRepo) UpdateTags(context.Context, string, []string) error {
+	return nil
+}
 func (s *stubAgentsRepo) CheckAgentIDConflict(_ context.Context, excludeID string, agentIDs []string) (string, string, error) {
 	for _, id := range agentIDs {
 		for _, r := range s.records {

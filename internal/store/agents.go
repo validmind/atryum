@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -27,6 +28,35 @@ type AgentRecord struct {
 	// Set by humans for manually-created agents; ignored for VM-synced agents
 	// (which get their charter from the ValidMind custom field at eval time).
 	Charter string
+	// Tags is a free-form list of string tags. Atryum-native: set by humans and
+	// preserved across VM syncs (never reset by Upsert). Stored JSON-encoded in
+	// the tags column, exactly like agent_ids.
+	Tags []string
+}
+
+// encodeTags serializes a tag slice to its JSON column representation,
+// returning "[]" for empty/nil input.
+func encodeTags(tags []string) (string, error) {
+	if len(tags) == 0 {
+		return "[]", nil
+	}
+	b, err := json.Marshal(tags)
+	if err != nil {
+		return "", fmt.Errorf("encode tags: %w", err)
+	}
+	return string(b), nil
+}
+
+// decodeTags parses the JSON tags column into a slice, tolerating empty values.
+func decodeTags(raw string) ([]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var tags []string
+	if err := json.Unmarshal([]byte(raw), &tags); err != nil {
+		return nil, fmt.Errorf("decode tags: %w", err)
+	}
+	return tags, nil
 }
 
 // AgentsRepo provides upsert and query operations for the agents table.
@@ -47,7 +77,7 @@ func NewAgentsRepoWithDialect(db *sql.DB, dialect Dialect) *AgentsRepo {
 var agentColumns = []string{
 	"id", "vm_organization_cuid", "vm_organization_name",
 	"vm_cuid", "vm_name", "vm_description",
-	"agent_ids", "enabled", "synced_at", "charter",
+	"agent_ids", "enabled", "synced_at", "charter", "tags",
 }
 
 // Upsert inserts a new agent record or, on conflict with an existing vm_cuid,
@@ -63,6 +93,10 @@ func (r *AgentsRepo) Upsert(ctx context.Context, agent AgentRecord) error {
 	if syncedAt.IsZero() {
 		syncedAt = time.Now().UTC()
 	}
+	tags, err := encodeTags(agent.Tags)
+	if err != nil {
+		return err
+	}
 
 	insert, args, err := r.sb.Insert("agents").
 		Columns(agentColumns...).
@@ -77,6 +111,7 @@ func (r *AgentsRepo) Upsert(ctx context.Context, agent AgentRecord) error {
 			agent.Enabled,
 			syncedAt,
 			agent.Charter,
+			tags,
 		).
 		Suffix(`ON CONFLICT (vm_cuid) DO UPDATE SET
 			vm_organization_cuid = excluded.vm_organization_cuid,
@@ -88,6 +123,10 @@ func (r *AgentsRepo) Upsert(ctx context.Context, agent AgentRecord) error {
 		ToSql()
 	// Note: charter is sourced from the ValidMind charter custom field and
 	// refreshed on every re-sync (the UI shows it read-only, "managed by sync").
+	// tags is deliberately absent from the DO UPDATE SET clause: it is
+	// Atryum-native and must be preserved across re-syncs, so the INSERT value
+	// ("[]" for new rows) only applies on first insert and existing tags are
+	// never overwritten.
 	if err != nil {
 		return fmt.Errorf("build agent upsert: %w", err)
 	}
@@ -210,6 +249,10 @@ func (r *AgentsRepo) Create(ctx context.Context, agent AgentRecord) error {
 	if syncedAt.IsZero() {
 		syncedAt = time.Now().UTC()
 	}
+	tags, err := encodeTags(agent.Tags)
+	if err != nil {
+		return err
+	}
 
 	insert, args, err := r.sb.Insert("agents").
 		Columns(agentColumns...).
@@ -224,6 +267,7 @@ func (r *AgentsRepo) Create(ctx context.Context, agent AgentRecord) error {
 			agent.Enabled,
 			syncedAt,
 			agent.Charter,
+			tags,
 		).
 		ToSql()
 	if err != nil {
@@ -244,6 +288,31 @@ func (r *AgentsRepo) UpdateMeta(ctx context.Context, id, name, description, char
 		ToSql()
 	if err != nil {
 		return fmt.Errorf("build agent meta update: %w", err)
+	}
+	result, err := r.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err == nil && n == 0 {
+		return sql.ErrNoRows
+	}
+	return err
+}
+
+// UpdateTags replaces the tags JSON array for the agent with the given id.
+// Tags are Atryum-native and editable for all agents (including synced ones).
+func (r *AgentsRepo) UpdateTags(ctx context.Context, id string, tags []string) error {
+	encoded, err := encodeTags(tags)
+	if err != nil {
+		return err
+	}
+	query, args, err := r.sb.Update("agents").
+		Set("tags", encoded).
+		Where(sq.Eq{"id": id}).
+		ToSql()
+	if err != nil {
+		return fmt.Errorf("build agent tags update: %w", err)
 	}
 	result, err := r.db.ExecContext(ctx, query, args...)
 	if err != nil {
@@ -389,13 +458,19 @@ func (r *AgentsRepo) list(ctx context.Context, b sq.SelectBuilder) ([]AgentRecor
 func scanAgent(scanner interface{ Scan(dest ...any) error }) (AgentRecord, error) {
 	var a AgentRecord
 	var vmDescription sql.NullString
+	var tagsRaw string
 	if err := scanner.Scan(
 		&a.ID, &a.VMOrganizationCUID, &a.VMOrganizationName,
 		&a.VMCUID, &a.VMName, &vmDescription,
-		&a.AgentIDs, &a.Enabled, &a.SyncedAt, &a.Charter,
+		&a.AgentIDs, &a.Enabled, &a.SyncedAt, &a.Charter, &tagsRaw,
 	); err != nil {
 		return AgentRecord{}, err
 	}
 	a.VMDescription = vmDescription.String
+	tags, err := decodeTags(tagsRaw)
+	if err != nil {
+		return AgentRecord{}, err
+	}
+	a.Tags = tags
 	return a, nil
 }

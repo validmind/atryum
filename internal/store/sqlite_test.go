@@ -45,8 +45,8 @@ func TestInitDB_FreshDatabase(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 26 {
-		t.Fatalf("expected 26 migrations, got %d", count)
+	if count != 27 {
+		t.Fatalf("expected 27 migrations, got %d", count)
 	}
 
 	// Verify all tables exist
@@ -74,8 +74,8 @@ func TestInitDB_Idempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 26 {
-		t.Fatalf("expected 26 migrations after double init, got %d", count)
+	if count != 27 {
+		t.Fatalf("expected 27 migrations after double init, got %d", count)
 	}
 }
 
@@ -1044,8 +1044,8 @@ func TestInitDBToleratesRenumberedMigrationStamps(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 26 {
-		t.Fatalf("expected 26 migrations recorded, got %d", count)
+	if count != 27 {
+		t.Fatalf("expected 27 migrations recorded, got %d", count)
 	}
 
 	// The columns/tables the renumbered migrations add must still be

@@ -118,6 +118,7 @@ const CreateAgentModal: React.FC<CreateAgentModalProps> = ({ isOpen, onClose }) 
     charter: '',
     enabled: true,
     agent_ids: [],
+    tags: [],
   });
   const [statusMsg, setStatusMsg] = useState<StatusMsg | null>(null);
   const createMutation = useCreateAgent();
@@ -125,7 +126,7 @@ const CreateAgentModal: React.FC<CreateAgentModalProps> = ({ isOpen, onClose }) 
   const noOptionsMessage = useCallback(() => null, []);
 
   const handleClose = () => {
-    setForm({ name: '', description: '', charter: '', enabled: true, agent_ids: [] });
+    setForm({ name: '', description: '', charter: '', enabled: true, agent_ids: [], tags: [] });
     setStatusMsg(null);
     onClose();
   };
@@ -212,6 +213,23 @@ const CreateAgentModal: React.FC<CreateAgentModalProps> = ({ isOpen, onClose }) 
               />
             </FormControl>
             <FormControl>
+              <FormLabel fontSize="sm">Tags (optional)</FormLabel>
+              <Text fontSize="xs" color="text.subtle" mb={2}>
+                Free-form labels for this agent. Type a tag and press Enter.
+              </Text>
+              <CreatableSelect
+                isMulti
+                isClearable
+                placeholder="Type a tag and press Enter…"
+                value={toOptions(form.tags ?? [])}
+                onChange={(selected) =>
+                  setForm((f) => ({ ...f, tags: fromOptions(selected) }))
+                }
+                components={{ DropdownIndicator: null }}
+                noOptionsMessage={noOptionsMessage}
+              />
+            </FormControl>
+            <FormControl>
               <FormLabel fontSize="sm">Agent IDs (optional)</FormLabel>
               <Text fontSize="xs" color="text.subtle" mb={2}>
                 JWT <code>sub</code> claims or client IDs. Type an ID and press Enter.
@@ -268,6 +286,7 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
 	const [charter, setCharter] = useState(agent.charter ?? '');
 	const [enabled, setEnabled] = useState(agent.enabled);
 	const [agentIDs, setAgentIDs] = useState<string[]>(agent.agent_ids);
+	const [tags, setTags] = useState<string[]>(agent.tags ?? []);
 	const [managedBindings, setManagedBindings] = useState<ClaudeManagedAgentBinding[]>(
 		agent.claude_managed_agents ?? [],
 	);
@@ -336,6 +355,7 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
       enabled,
       agent_ids: agentIDs,
       charter,
+      tags,
     };
     if (!managedAgentsUnavailable) {
 			input.claude_managed_agents = managedBindings;
@@ -452,6 +472,24 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
                 placeholder="Type an agent ID and press Enter…"
                 value={toOptions(agentIDs)}
                 onChange={(selected) => setAgentIDs(fromOptions(selected))}
+                components={{ DropdownIndicator: null }}
+                noOptionsMessage={noOptionsMessage}
+              />
+            </FormControl>
+
+            <Divider />
+
+            <FormControl>
+              <FormLabel fontSize="sm">Tags</FormLabel>
+              <Text fontSize="xs" color="text.subtle" mb={2}>
+                Free-form labels for this agent. Type a tag and press Enter to add it.
+              </Text>
+              <CreatableSelect
+                isMulti
+                isClearable
+                placeholder="Type a tag and press Enter…"
+                value={toOptions(tags)}
+                onChange={(selected) => setTags(fromOptions(selected))}
                 components={{ DropdownIndicator: null }}
                 noOptionsMessage={noOptionsMessage}
               />
