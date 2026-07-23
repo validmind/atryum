@@ -415,9 +415,11 @@ docker compose --profile dev up -d keycloak
 KC_URL=http://localhost:8089 ./keycloak/setup-realm.sh
 ```
 
-The script provisions a public `atryum-admin` client for authorization code + PKCE, allows both local callback URLs (`http://localhost:5174/ui/auth/callback` for Vite and `http://localhost:8080/ui/auth/callback` for the embedded UI), and adds an `atryum_admin=true` access-token claim.
+The script provisions a public `atryum-admin` client for authorization code + PKCE, allows both local callback URLs (`http://localhost:5174/ui/auth/callback` for Vite and `http://localhost:8080/ui/auth/callback` for the embedded UI), allows the corresponding post-logout URLs (`http://localhost:5174/ui/` and `http://localhost:8080/ui/`), and adds an `atryum_admin=true` access-token claim.
 
-For Auth0, use a dedicated **Single Page Application** client rather than a confidential backend app. Enable authorization code with PKCE, enable refresh tokens if requesting `offline_access`, add the local callback URLs above to Allowed Callback URLs, and add `http://localhost:5174` plus `http://localhost:8080` to Allowed Web Origins. Add the configured admin claim with a Post Login Action or your existing authorization pipeline.
+For Auth0, use a dedicated **Single Page Application** client rather than a confidential backend app. Enable authorization code with PKCE, enable refresh tokens if requesting `offline_access`, add the local callback URLs above to Allowed Callback URLs, add `http://localhost:5174` plus `http://localhost:8080` to Allowed Web Origins, and add the post-logout URLs above to Allowed Logout URLs. Add the configured admin claim with a Post Login Action or your existing authorization pipeline.
+
+When an administrator signs out, Atryum uses the selected provider's autodiscovered OIDC `end_session_endpoint`, supplies the current ID token as a logout hint, and asks the provider to return to `/ui/`. Register `<your-atryum-origin>/ui/` as an allowed post-logout URL for every admin OIDC client. If a provider does not advertise a usable end-session endpoint, Atryum still clears its local session and returns to the sign-in screen.
 
 Admin auth responses use these status codes:
 
