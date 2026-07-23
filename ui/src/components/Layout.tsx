@@ -1,6 +1,7 @@
 import React from "react";
 import {
   Box,
+  Button,
   Flex,
   HStack,
   Heading,
@@ -15,12 +16,15 @@ import { Link as RouterLink, useLocation } from "react-router-dom";
 import type { ComponentType } from "react";
 
 import {
+  ArrowRightStartOnRectangleIcon,
   CircleStackIcon,
   Cog6ToothIcon,
   CpuChipIcon,
   QueueListIcon,
   ShieldCheckIcon,
 } from "@heroicons/react/24/outline";
+
+import { useAdminAuth } from "../auth/adminAuth";
 
 type NavItem = {
   label: string;
@@ -88,6 +92,7 @@ type LayoutProps = {
 
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
+  const { status: authStatus, signOut } = useAdminAuth();
   const isActive = (path: string) => location.pathname.startsWith(path);
 
   return (
@@ -133,6 +138,18 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             ))}
           </Stack>
         </VStack>
+        {authStatus === "authenticated" ? (
+          <Box borderTopWidth={1} borderColor="border.base" p={4}>
+            <Button
+              variant="ghost"
+              w="full"
+              justifyContent="flex-start"
+              leftIcon={<Icon as={ArrowRightStartOnRectangleIcon} boxSize={6} />}
+              onClick={() => void signOut()}>
+              Log out
+            </Button>
+          </Box>
+        ) : null}
       </Box>
 
       {/* Main content */}

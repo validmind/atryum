@@ -75,10 +75,12 @@ const fetchConfig = async (): Promise<AdminAuthConfig> => {
 
 const createManager = (provider: AdminAuthProviderMetadata): UserManager => {
   const redirectURI = `${window.location.origin}/ui/auth/callback`;
+  const postLogoutRedirectURI = `${window.location.origin}/ui/`;
   const settings: UserManagerSettings = {
     authority: provider.authority || provider.issuer,
     client_id: provider.client_id,
     redirect_uri: redirectURI,
+    post_logout_redirect_uri: postLogoutRedirectURI,
     response_type: 'code',
     scope: provider.scopes,
     automaticSilentRenew: true,
@@ -310,8 +312,21 @@ export const AdminAuthProvider: React.FC<{ children: React.ReactNode }> = ({
   );
 
   const signOut = useCallback(async () => {
-    if (activeManager) {
-      await activeManager.removeUser();
+    const manager = activeManager;
+    if (manager) {
+      try {
+        console.debug('[admin-auth] signing out through provider');
+        await manager.signoutRedirect();
+      } catch {
+        console.debug(
+          '[admin-auth] provider sign out failed; clearing local session',
+        );
+        try {
+          await manager.removeUser();
+        } catch {
+          console.debug('[admin-auth] failed to remove stored user during sign out');
+        }
+      }
     }
     activeUser = null;
     setUser(null);
