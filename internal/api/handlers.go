@@ -903,10 +903,10 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/mcp", h.mcpRootNotFound)
 	mux.Handle("/mcp/", mcpHandler)
 	mux.Handle("/api/v1/invocations", h.agentRuntimeHandler(http.HandlerFunc(h.invocations)))
-	mux.HandleFunc("/api/v1/admin-auth/config", h.adminAuthConfig)
-	mux.Handle("/api/v1/admin/invocations", admin(h.adminInvocations))
-	mux.Handle("/api/v1/admin/invocations/stream", admin(h.adminInvocationStream))
-	mux.Handle("/api/v1/admin/invocations/", admin(h.adminInvocationDetail))
+	mux.HandleFunc("/api/v1/auth/config", h.adminAuthConfig)
+	mux.Handle("/api/v1/review/invocations", admin(h.reviewInvocations))
+	mux.Handle("/api/v1/review/invocations/stream", admin(h.reviewInvocationStream))
+	mux.Handle("/api/v1/review/invocations/", admin(h.reviewInvocationDetail))
 	mux.Handle("/api/v1/admin/servers", admin(h.adminServers))
 	mux.Handle("/api/v1/admin/servers/", admin(h.adminServerDetail))
 	mux.Handle("/api/v1/admin/rules", admin(h.adminRules))
@@ -1934,7 +1934,7 @@ func (h *Handler) appendRulesContextToToolResult(ctx context.Context, result any
 	return m
 }
 
-func (h *Handler) adminInvocations(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) reviewInvocations(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -1955,7 +1955,7 @@ func (h *Handler) adminInvocations(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *Handler) adminInvocationStream(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) reviewInvocationStream(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming unsupported")
@@ -1996,8 +1996,8 @@ func (h *Handler) adminInvocationStream(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) {
-	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/invocations/")
+func (h *Handler) reviewInvocationDetail(w http.ResponseWriter, r *http.Request) {
+	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/review/invocations/")
 	trimmed = strings.Trim(trimmed, "/")
 	if trimmed == "" {
 		writeError(w, http.StatusNotFound, "not found")
@@ -2144,13 +2144,13 @@ func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) 
 }
 
 // SummarizeInvocationRequest is the JSON body accepted by
-// POST /api/v1/admin/invocations/{id}/summarize.
+// POST /api/v1/review/invocations/{id}/summarize.
 type SummarizeInvocationRequest struct {
 	ModelConfigCUID string `json:"model_config_cuid"`
 }
 
 // SummarizeInvocationResponse is the JSON shape returned by
-// POST /api/v1/admin/invocations/{id}/summarize.
+// POST /api/v1/review/invocations/{id}/summarize.
 type SummarizeInvocationResponse struct {
 	InvocationID string `json:"invocation_id"`
 	Summary      string `json:"summary"`

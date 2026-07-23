@@ -722,7 +722,7 @@ func TestAdminMiddlewareLogsMissingToken(t *testing.T) {
 
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
 	h := AdminMiddleware(v, APIKeyConfig{}, MiddlewareOptions{})(next)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/review/invocations", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
@@ -748,7 +748,7 @@ func TestAdminMiddlewareLogsInvalidScheme(t *testing.T) {
 
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
 	h := AdminMiddleware(v, APIKeyConfig{}, MiddlewareOptions{})(next)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/review/invocations", nil)
 	req.Header.Set("Authorization", "Basic abc")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -778,7 +778,7 @@ func TestAdminMiddlewareMachineKeyBypassesBearer(t *testing.T) {
 	h := AdminMiddleware(v, apiKeyCfg, MiddlewareOptions{})(next)
 
 	// Correct machine key/secret — should be admitted without a Bearer token.
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/review/invocations", nil)
 	req.Header.Set("X-API-Key", "vm-key")
 	req.Header.Set("X-API-Secret", "vm-secret")
 	w := httptest.NewRecorder()
@@ -789,7 +789,7 @@ func TestAdminMiddlewareMachineKeyBypassesBearer(t *testing.T) {
 
 	// Wrong secret — should be rejected.
 	admitted = false
-	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/review/invocations", nil)
 	req2.Header.Set("X-API-Key", "vm-key")
 	req2.Header.Set("X-API-Secret", "wrong-secret")
 	w2 := httptest.NewRecorder()

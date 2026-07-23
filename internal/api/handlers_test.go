@@ -861,7 +861,7 @@ func TestSummarizeInvocationPersistsBackendSummary(t *testing.T) {
 	summarizer := &stubSummarizer{resp: backendclient.SummarizeInvocationResponse{Summary: "Read /tmp/a and returned hello."}}
 	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	h.summarizeClient = summarizer
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/invocations/inv_123/summarize", strings.NewReader(`{"model_config_cuid":" model_abc "}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/review/invocations/inv_123/summarize", strings.NewReader(`{"model_config_cuid":" model_abc "}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -911,7 +911,7 @@ func TestSummarizeInvocationUsesSettingsModelConfigWhenRequestBodyEmpty(t *testi
 	summarizer := &stubSummarizer{resp: backendclient.SummarizeInvocationResponse{Summary: "Read /tmp/a."}}
 	h := NewHandler(svc, stubServerService{}, nil, nil, nil, settings, nil, nil, nil, nil)
 	h.summarizeClient = summarizer
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/invocations/inv_123/summarize", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/review/invocations/inv_123/summarize", nil)
 	w := httptest.NewRecorder()
 
 	h.Routes().ServeHTTP(w, req)
@@ -2024,7 +2024,7 @@ func TestAdminInvocationsResponsesIncludeServerToolAndInput(t *testing.T) {
 	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	t.Run("list", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/review/invocations", nil)
 		w := httptest.NewRecorder()
 		h.Routes().ServeHTTP(w, req)
 		if !strings.Contains(w.Body.String(), `"server_name":"demo-server"`) {
@@ -2039,7 +2039,7 @@ func TestAdminInvocationsResponsesIncludeServerToolAndInput(t *testing.T) {
 	})
 
 	t.Run("detail", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations/inv_123", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/review/invocations/inv_123", nil)
 		w := httptest.NewRecorder()
 		h.Routes().ServeHTTP(w, req)
 		if !strings.Contains(w.Body.String(), `"server_name":"demo-server"`) {

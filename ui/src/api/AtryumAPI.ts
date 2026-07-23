@@ -132,21 +132,21 @@ export const invocationsApi = {
     if (filters.offset != null) params.set('offset', String(filters.offset));
     params.set('limit', String(filters.limit ?? 50));
     const { data } = await atryumApi.get(
-      `/api/v1/admin/invocations?${params.toString()}`,
+      `/api/v1/review/invocations?${params.toString()}`,
     );
     return data;
   },
 
   detail: async (id: string): Promise<InvocationDetail> => {
     const { data } = await atryumApi.get(
-      `/api/v1/admin/invocations/${encodeURIComponent(id)}`,
+      `/api/v1/review/invocations/${encodeURIComponent(id)}`,
     );
     return data;
   },
 
   events: async (id: string): Promise<{ items: InvocationEvent[] }> => {
     const { data } = await atryumApi.get(
-      `/api/v1/admin/invocations/${encodeURIComponent(id)}/events?limit=200`,
+      `/api/v1/review/invocations/${encodeURIComponent(id)}/events?limit=200`,
     );
     return data;
   },
@@ -156,7 +156,7 @@ export const invocationsApi = {
     body?: { create_rule?: RuleInput },
   ): Promise<void> => {
     await atryumApi.post(
-      `/api/v1/admin/invocations/${encodeURIComponent(id)}/approve`,
+      `/api/v1/review/invocations/${encodeURIComponent(id)}/approve`,
       body ?? {},
     );
   },
@@ -170,7 +170,7 @@ export const invocationsApi = {
     if (message) body.message = message;
     if (createRule) body.create_rule = createRule;
     await atryumApi.post(
-      `/api/v1/admin/invocations/${encodeURIComponent(id)}/deny`,
+      `/api/v1/review/invocations/${encodeURIComponent(id)}/deny`,
       body,
     );
   },
@@ -181,7 +181,7 @@ export const invocationsApi = {
   ): Promise<{ summary: string }> => {
     const body = modelConfigCuid ? { model_config_cuid: modelConfigCuid } : {};
     const { data } = await atryumApi.post(
-      `/api/v1/admin/invocations/${encodeURIComponent(id)}/summarize`,
+      `/api/v1/review/invocations/${encodeURIComponent(id)}/summarize`,
       body,
     );
     return data;

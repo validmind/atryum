@@ -123,7 +123,7 @@ admin_claim_value = true
 
 The admin client must be a browser-safe public SPA client that supports authorization code with PKCE. For Auth0, create a Single Page Application client; allow `http://localhost:5174/ui/auth/callback` for Vite development and `http://localhost:8080/ui/auth/callback` for the embedded UI, and allow the corresponding `http://localhost:5174/ui/` and `http://localhost:8080/ui/` logout URLs. For local Keycloak, run `KC_URL=http://localhost:8089 ./keycloak/setup-realm.sh`; it provisions the `atryum-admin` public client, its callback and post-logout redirect URLs, and an `atryum_admin=true` access-token claim.
 
-The frontend fetches `/api/v1/admin-auth/config`, shows a sign-in screen, redirects through the selected provider, attaches `Authorization: Bearer <access_token>` to admin API calls, and uses authenticated fetch-based SSE for `/api/v1/admin/invocations/stream`. With one configured provider, the screen skips the provider selector; with several, it shows an identity-provider selector. It attempts silent token refresh before retrying an expiry-related `401` once. Signing out uses the provider's autodiscovered OIDC `end_session_endpoint` and returns to `/ui/`; providers without a usable end-session endpoint fall back to local logout. Browser console debug logs are emitted for refresh and logout attempts and outcomes under the `[admin-auth]` prefix; access token values are never logged.
+The frontend fetches `/api/v1/auth/config`, shows a sign-in screen, redirects through the selected provider, attaches `Authorization: Bearer <access_token>` to protected API calls, and uses authenticated fetch-based SSE for `/api/v1/review/invocations/stream`. With one configured provider, the screen skips the provider selector; with several, it shows an identity-provider selector. It attempts silent token refresh before retrying an expiry-related `401` once. Signing out uses the provider's autodiscovered OIDC `end_session_endpoint` and returns to `/ui/`; providers without a usable end-session endpoint fall back to local logout. Browser console debug logs are emitted for refresh and logout attempts and outcomes under the `[admin-auth]` prefix; access token values are never logged.
 
 ## HTTP surface
 
@@ -137,9 +137,12 @@ Public (auth-protected when `[[auth]]` is configured):
 - `GET /api/v1/agent/rules` — agent-facing rule introspection.
 - `GET /healthz` — liveness.
 
+Review workflow:
+
+- `/api/v1/review/invocations`, `/{id}`, `/{id}/events`, `/{id}/approve`, `/{id}/deny`, `/stream` (SSE)
+
 Admin (UI and operators):
 
-- `/api/v1/admin/invocations`, `/{id}`, `/{id}/events`, `/{id}/approve`, `/{id}/deny`, `/stream` (SSE)
 - `/api/v1/admin/servers`, `/{name}`, `/{name}/test`, `/{name}/connect`, `/{name}/connect/status`
 - `/api/v1/admin/rules`, `/{id}` (including reorder/move)
 - `/api/v1/admin/agents`, `/{id}`
@@ -147,7 +150,7 @@ Admin (UI and operators):
 - `/api/v1/admin/managed-agents/accounts`, `/managed-agents/agents` — discover configured Anthropic accounts and Claude agents for UI linking
 - `/api/v1/admin/managed-agents/sessions` — manually register a Claude Managed Agents session for the events bridge to watch; kept as a debugging escape hatch
 - `/api/v1/mcp/oauth/callback` — public OAuth callback for upstream MCP server connect flows
-- `/api/v1/admin-auth/config` — public, non-secret OIDC metadata for the admin UI login screen
+- `/api/v1/auth/config` — public, non-secret OIDC metadata for the admin UI login screen
 
 ## Frontend
 

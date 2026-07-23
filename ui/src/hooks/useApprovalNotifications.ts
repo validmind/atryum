@@ -86,7 +86,7 @@ const parseInvocationStreamPayload = (
   }
 };
 
-const STREAM_URL = '/api/v1/admin/invocations/stream?status=pending_approval&limit=50';
+const STREAM_URL = '/api/v1/review/invocations/stream?status=pending_approval&limit=50';
 
 const ensurePermissionAfterUserGesture = (onPermissionGranted: () => void) => {
   if (!('Notification' in window) || Notification.permission !== 'default') {
