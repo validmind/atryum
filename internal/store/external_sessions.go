@@ -7,7 +7,7 @@ import (
 
 	sq "github.com/Masterminds/squirrel"
 
-	"atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/invocation"
 )
 
 // ExternalSessionRepo persists harness sessions for the Invocations API path.
@@ -56,6 +56,33 @@ func (r *ExternalSessionRepo) GetSession(ctx context.Context, id string) (invoca
 		Select("id", "agent_id", "harness", "client_session_id", "created_at", "last_seen_at", "expires_at").
 		From("external_sessions").
 		Where(sq.Eq{"id": id}).
+		ToSql()
+	if err != nil {
+		return invocation.ExternalSession{}, err
+	}
+	var s invocation.ExternalSession
+	err = r.db.QueryRowContext(ctx, query, args...).Scan(
+		&s.ID, &s.AgentID, &s.Harness, &s.ClientSessionID, &s.CreatedAt, &s.LastSeenAt, &s.ExpiresAt,
+	)
+	if err != nil {
+		return invocation.ExternalSession{}, err
+	}
+	return s, nil
+}
+
+// GetSessionByAgentAndClientSessionID returns the most recently created session
+// matching (agent_id, client_session_id), or sql.ErrNoRows if none exists. This
+// backs the submit-path get-or-create: the (agent binding, client_session_id)
+// pair is the lookup key. Newest-first ordering makes a benign double-create
+// under a first-submit race resolve to the latest row — both rows are valid
+// audit records; see Service.getOrCreateSession.
+func (r *ExternalSessionRepo) GetSessionByAgentAndClientSessionID(ctx context.Context, agentID, clientSessionID string) (invocation.ExternalSession, error) {
+	query, args, err := r.sb.
+		Select("id", "agent_id", "harness", "client_session_id", "created_at", "last_seen_at", "expires_at").
+		From("external_sessions").
+		Where(sq.Eq{"agent_id": agentID, "client_session_id": clientSessionID}).
+		OrderBy("created_at DESC").
+		Limit(1).
 		ToSql()
 	if err != nil {
 		return invocation.ExternalSession{}, err

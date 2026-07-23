@@ -26,7 +26,11 @@ const envMs = (name: string, fallback: number) => {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 };
 const TOKEN_REFRESH_SKEW_MS = envMs("ATRYUM_TOKEN_REFRESH_SKEW_MS", 60000);
-const TOKEN_COMMAND_TIMEOUT_MS = envMs("ATRYUM_TOKEN_COMMAND_TIMEOUT_MS", 10000);
+const TOKEN_COMMAND_TIMEOUT_MS = envMs(
+  "ATRYUM_TOKEN_COMMAND_TIMEOUT_MS",
+  10000,
+);
+const PLAN_SUPPORT_CACHE_TTL_MS = 30000;
 const STATE_DIR =
   process.env.ATRYUM_STATE_DIR ||
   join(homedir(), ".atryum", "pi-extension-state");
@@ -224,13 +228,21 @@ type InvocationResponse = {
   error?: unknown;
 };
 
-type SessionResponse = {
-  session_id: string;
+type AgentRulesResponse = {
+  plan_submission?: {
+    enabled?: boolean;
+    endpoint?: string;
+    message?: string;
+  };
 };
-
 type ToolInput = Record<string, unknown>;
 
 const invocationMap = new Map<string, string>();
+type PlanSupportCacheEntry = {
+  promise: Promise<AgentRulesResponse | undefined>;
+  expiresAt: number;
+};
+const planSupportCache = new Map<string, PlanSupportCacheEntry>();
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -246,8 +258,73 @@ function describe(input: ToolInput): string {
   return parts.join(" | ") || "(no string params)";
 }
 
-// Pi's own session identifier, used only for cross-referencing (thread_id and
-// client_session_id). Atryum keys off the session_id it mints, not this.
+// Points the agent at the rules endpoint rather than pre-fetching and
+// embedding rule content, so the model can query it directly when useful.
+function rulesEndpointHint(tool: string): string {
+  const url = new URL("/api/v1/agent/rules", API);
+  url.searchParams.set("server", SOURCE);
+  url.searchParams.set("tool", tool);
+  if (AGENT_ID && !ACCESS_TOKEN) url.searchParams.set("agent_id", AGENT_ID);
+  return `atryum: to see the approval rules that apply to this call, GET ${url.toString()} (advisory only; Atryum re-checks policy during the actual gated call).`;
+}
+function agentRulesURL(tool?: string): string {
+  const url = new URL("/api/v1/agent/rules", API);
+  url.searchParams.set("source", SOURCE);
+  if (tool) url.searchParams.set("tool", tool);
+  if (AGENT_ID) url.searchParams.set("agent_id", AGENT_ID);
+  return url.toString();
+}
+
+async function loadAgentRules(
+  tool?: string,
+): Promise<AgentRulesResponse | undefined> {
+  const res = await fetch(agentRulesURL(tool), {
+    headers: await atryumHeaders(),
+  });
+  if (!res.ok) return undefined;
+  return (await res.json()) as AgentRulesResponse;
+}
+
+function cachedAgentRules(
+  tool?: string,
+): Promise<AgentRulesResponse | undefined> {
+  const key = tool || "";
+  const cached = planSupportCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.promise;
+
+  let entry: PlanSupportCacheEntry;
+  const promise = loadAgentRules(tool).then(
+    (rules) => {
+      if (planSupportCache.get(key) === entry) {
+        if (rules) entry.expiresAt = Date.now() + PLAN_SUPPORT_CACHE_TTL_MS;
+        else planSupportCache.delete(key);
+      }
+      return rules;
+    },
+    () => {
+      if (planSupportCache.get(key) === entry) planSupportCache.delete(key);
+      return undefined;
+    },
+  );
+  entry = { promise, expiresAt: Number.POSITIVE_INFINITY };
+  planSupportCache.set(key, entry);
+  return promise;
+}
+
+async function planHint(tool?: string): Promise<string> {
+  const rules = await cachedAgentRules(tool);
+  if (!rules?.plan_submission?.enabled) return "";
+  // The server-authored message is the single source of truth for the plan
+  // workflow (including the source-scoped submission endpoint), so guidance
+  // stays current when plan semantics change server-side.
+  const message = (rules.plan_submission.message || "").trim();
+  return message ? ` ${message}` : "";
+}
+
+// Pi's own session identifier, sent as client_session_id (and thread_id) on
+// every submission. Atryum resolves the internal session with get-or-create
+// keyed by (agent binding, client_session_id) — the extension never mints,
+// persists, or echoes an Atryum session id.
 function piClientSessionID(ctx: unknown): string | undefined {
   const manager = (ctx as { sessionManager?: unknown }).sessionManager as
     | { getSessionFile?: () => string; sessionId?: string; id?: string }
@@ -261,48 +338,11 @@ function piClientSessionID(ctx: unknown): string | undefined {
   return undefined;
 }
 
-// Atryum-minted session id, created lazily on the first tool call and reused
-// for the lifetime of this extension. Atryum links every invocation carrying
-// this id and reconstructs the judge's context from them — the extension never
-// sends a free-form context blob.
-let sessionPromise: Promise<string | undefined> | undefined;
-
-async function createSession(
-  clientSessionID: string | undefined,
-): Promise<string | undefined> {
-  const res = await atryumFetch(`${API}/api/v1/external/sessions`, {
-    method: "POST",
-    contentType: true,
-    body: JSON.stringify({
-      harness: SOURCE,
-      client_session_id: clientSessionID || undefined,
-      agent_id: AGENT_ID || undefined,
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(`${res.status} ${await res.text()}`);
-  }
-  const body = (await res.json()) as SessionResponse;
-  return body.session_id || undefined;
-}
-
-async function ensureSession(ctx: unknown): Promise<string | undefined> {
-  // Sessions are an optimization for richer judge context. If creation fails,
-  // fall back to submitting without a session_id rather than blocking tools.
-  if (!sessionPromise) {
-    sessionPromise = createSession(piClientSessionID(ctx)).catch(
-      () => undefined,
-    );
-  }
-  return sessionPromise;
-}
-
 async function submit(
   tool: string,
   toolCallID: string,
   input: ToolInput,
   threadID: string | undefined,
-  sessionID: string | undefined,
 ): Promise<InvocationResponse> {
   const res = await atryumFetch(`${API}/api/v1/external/invocations`, {
     method: "POST",
@@ -314,7 +354,9 @@ async function submit(
       input,
       request_id: toolCallID,
       thread_id: threadID,
-      session_id: sessionID,
+      // Pi's own session id. Atryum resolves the internal session with
+      // get-or-create keyed by (agent binding, client_session_id).
+      client_session_id: threadID,
       agent_id: AGENT_ID || undefined,
       client_name: CLIENT_NAME,
       client_version: CLIENT_VERSION || undefined,
@@ -370,16 +412,38 @@ async function patchExecution(
 }
 
 export default function (pi: ExtensionAPI) {
+  // session_start also fires for resumed, forked, and reloaded sessions. Pi
+  // permits context injection immediately before the first agent turn, so arm
+  // it here and consume it exactly once in before_agent_start. Start armed as
+  // a fallback for runtimes that load an extension after session_start.
+  let planGuidancePending = true;
+
+  pi.on("session_start", async () => {
+    planGuidancePending = true;
+  });
+
+  pi.on("before_agent_start", async () => {
+    if (!planGuidancePending) return;
+    planGuidancePending = false;
+    const guidance = (await planHint()).trim();
+    if (!guidance) return;
+    return {
+      message: {
+        customType: "atryum-plan-guidance",
+        content: guidance,
+        display: false,
+      },
+    };
+  });
+
   pi.on("tool_call", async (event, ctx) => {
     try {
       const input = (event.input || {}) as ToolInput;
-      const sessionID = await ensureSession(ctx);
       const submitted = await submit(
         event.toolName,
         event.toolCallId,
         input,
         piClientSessionID(ctx),
-        sessionID,
       );
       invocationMap.set(event.toolCallId, submitted.invocation_id);
 
@@ -408,7 +472,7 @@ export default function (pi: ExtensionAPI) {
         : "";
       return {
         block: true,
-        reason: `atryum: tool call '${event.toolName}' was ${decided.status} by reviewer.${reviewerReason}`,
+        reason: `atryum: tool call '${event.toolName}' was ${decided.status} by reviewer.${reviewerReason} ${rulesEndpointHint(event.toolName)}${await planHint(event.toolName)}`,
       };
     } catch (err) {
       ctx.ui.setStatus("atryum", "gate failed");

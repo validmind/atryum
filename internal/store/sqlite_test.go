@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"atryum/internal/invocation"
-	"atryum/internal/mcp"
+	"github.com/validmind/atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/mcp"
 
 	_ "modernc.org/sqlite"
 )
@@ -45,18 +45,19 @@ func TestInitDB_FreshDatabase(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 25 {
-		t.Fatalf("expected 25 migrations, got %d", count)
+	if count != 28 {
+		t.Fatalf("expected 28 migrations, got %d", count)
 	}
 
 	// Verify all tables exist
-	tables := []string{"invocations", "invocation_events", "mcp_servers", "oauth_credentials", "oauth_connect_sessions", "approval_rules", "managed_agent_sessions", "managed_agent_bindings", "external_sessions"}
+	tables := []string{"invocations", "invocation_events", "mcp_servers", "oauth_credentials", "oauth_connect_sessions", "approval_rules", "managed_agent_sessions", "managed_agent_bindings", "external_sessions", "plans", "plan_events"}
 	for _, table := range tables {
 		var name string
 		if err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&name); err != nil {
 			t.Errorf("table %s not found: %v", table, err)
 		}
 	}
+
 }
 
 func TestInitDB_Idempotent(t *testing.T) {
@@ -74,8 +75,8 @@ func TestInitDB_Idempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 25 {
-		t.Fatalf("expected 25 migrations after double init, got %d", count)
+	if count != 28 {
+		t.Fatalf("expected 28 migrations after double init, got %d", count)
 	}
 }
 
@@ -554,6 +555,8 @@ func TestInitDBBackfillsEndpointSlugCollisionsDeterministically(t *testing.T) {
 	// seed. Later migrations (025 external_sessions + expires_at) touch tables
 	// this fixture never creates, so they must stay marked-applied here.
 	for _, m := range migrations {
+		// Leave only migration 024 pending — it's the one under test; the
+		// seeded schema is too minimal for later migrations to apply.
 		if m.Version == 24 {
 			continue
 		}
@@ -1044,8 +1047,8 @@ func TestInitDBToleratesRenumberedMigrationStamps(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 25 {
-		t.Fatalf("expected 25 migrations recorded, got %d", count)
+	if count != 28 {
+		t.Fatalf("expected 28 migrations recorded, got %d", count)
 	}
 
 	// The columns/tables the renumbered migrations add must still be

@@ -121,18 +121,19 @@ admin_claim = "atryum_admin"
 admin_claim_value = true
 ```
 
-The admin client must be a browser-safe public SPA client that supports authorization code with PKCE. For Auth0, create a Single Page Application client and allow `http://localhost:5174/ui/auth/callback` for Vite development and `http://localhost:8080/ui/auth/callback` for the embedded UI. For local Keycloak, run `KC_URL=http://localhost:8089 ./keycloak/setup-realm.sh`; it provisions the `atryum-admin` public client and an `atryum_admin=true` access-token claim.
+The admin client must be a browser-safe public SPA client that supports authorization code with PKCE. For Auth0, create a Single Page Application client; allow `http://localhost:5174/ui/auth/callback` for Vite development and `http://localhost:8080/ui/auth/callback` for the embedded UI, and allow the corresponding `http://localhost:5174/ui/` and `http://localhost:8080/ui/` logout URLs. For local Keycloak, run `KC_URL=http://localhost:8089 ./keycloak/setup-realm.sh`; it provisions the `atryum-admin` public client, its callback and post-logout redirect URLs, and an `atryum_admin=true` access-token claim.
 
-The frontend fetches `/api/v1/admin-auth/config`, shows a sign-in screen, redirects through the selected provider, attaches `Authorization: Bearer <access_token>` to admin API calls, and uses authenticated fetch-based SSE for `/api/v1/admin/invocations/stream`. With one configured provider, the screen skips the provider selector; with several, it shows an identity-provider selector. It attempts silent token refresh before retrying an expiry-related `401` once. Browser console debug logs are emitted for refresh attempts and outcomes under the `[admin-auth]` prefix; access token values are never logged.
+The frontend fetches `/api/v1/admin-auth/config`, shows a sign-in screen, redirects through the selected provider, attaches `Authorization: Bearer <access_token>` to admin API calls, and uses authenticated fetch-based SSE for `/api/v1/admin/invocations/stream`. With one configured provider, the screen skips the provider selector; with several, it shows an identity-provider selector. It attempts silent token refresh before retrying an expiry-related `401` once. Signing out uses the provider's autodiscovered OIDC `end_session_endpoint` and returns to `/ui/`; providers without a usable end-session endpoint fall back to local logout. Browser console debug logs are emitted for refresh and logout attempts and outcomes under the `[admin-auth]` prefix; access token values are never logged.
 
 ## HTTP surface
 
 Public (auth-protected when `[[auth]]` is configured):
 
-- `POST /mcp/{server}` — MCP JSON-RPC. `tools/list` annotates each tool with its policy disposition for the calling agent; a synthetic `atryum.rules.get` tool lets an agent inspect its applicable rules before deciding what to call.
+- `POST /mcp/{server}` — MCP JSON-RPC. `tools/list` annotates each tool with its policy disposition for the calling agent; a synthetic `atryum_rules_get` tool lets an agent inspect its applicable invocation rules before deciding what to call, and when plans are enabled it also lists synthetic `atryum.plan.submit` and `atryum.plan.get` tools so the agent can submit and poll a batch plan before running tools. Submitted plans are evaluated action-by-action against the same ordered invocation rules, then receive one mandatory whole-plan AI review for charter compliance. The rules helper uses an underscore because dotted MCP tool names are spec-compliant, but some common harness implementations reject them.
 - `GET /mcp/{server}` — Streamable HTTP / legacy SSE channel for MCP clients that need a long-lived event stream.
 - `POST /api/v1/invocations` — direct invocation (Atryum executes).
 - `POST /api/v1/external/invocations`, `PATCH /api/v1/external/invocations/{id}` — hook path (harness executes, Atryum gates and records).
+- `POST /api/v1/external/plans`, `GET /api/v1/external/plans/{id}` — agent-submitted preapproval plans for batches of intended tool calls. A plan's actions are scoped to its `source` and only match later tool calls from the same source; the submission may carry it as a `?source=` query parameter (the plan hint bakes it into the advertised endpoint) or a body field, body winning. Once a plan is approved, tool calls matching its declared actions are checked by an adherence judge against both the plan and the agent charter — calls confirmed to follow one or more eligible actions auto-approve; off-plan or charter-violating calls are denied. When several actions use the same tool and server, each eligible action is checked and the latest positive match is recorded for execution-order tracking. Steps may be skipped, but after a later step runs, earlier steps are denied. A successful final action marks the plan completed so later calls return to normal gating; a plain poll of the plan's own status always passes while it is active. An approved plan's pass otherwise expires after its `ttl_seconds`; the default and the hard ceiling are set by the `[plans]` TOML section (default 1h, ceiling 24h).
 - `GET /api/v1/agent/rules` — agent-facing rule introspection.
 - `GET /healthz` — liveness.
 
@@ -182,6 +183,10 @@ log_level       = "info"
 
 [defaults]
 request_timeout_seconds = 30
+
+[plans]                           # optional — approved-plan pass lifetime bounds
+default_ttl_seconds = 3600        # used when a submitted plan omits ttl_seconds
+max_ttl_seconds     = 86400       # hard ceiling; agent requests and human approval overrides are clamped to it
 
 [backend]                         # optional ValidMind backend credential check
 base_url = ""

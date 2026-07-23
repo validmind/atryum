@@ -14,9 +14,9 @@ import (
 
 	jwt "github.com/golang-jwt/jwt/v5"
 
-	"atryum/internal/auth"
-	"atryum/internal/invocation"
-	"atryum/internal/store"
+	"github.com/validmind/atryum/internal/auth"
+	"github.com/validmind/atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/store"
 )
 
 // jwksHandler serves a minimal JWKS document for the given RSA public key so
@@ -183,12 +183,47 @@ func TestMCPAcceptsValidTokenAndPlumbsAgentID(t *testing.T) {
 	}
 }
 
+func TestMCPPlanGetRejectsAnotherAuthenticatedAgentsPlan(t *testing.T) {
+	rig := newAuthTestRig(t)
+	now := time.Now().UTC()
+	svc := &stubService{plan: invocation.Plan{
+		PlanID:      "plan_other_agent",
+		AgentID:     "agent-other",
+		Goal:        "sensitive plan",
+		Actions:     []invocation.PlanAction{{Tool: "Bash"}},
+		Status:      invocation.PlanStatusApproved,
+		Revision:    1,
+		TTLSeconds:  3600,
+		SubmittedAt: now,
+	}}
+	h := newAuthedHandler(t, svc, rig)
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"atryum.plan.get","arguments":{"plan_id":"plan_other_agent"}}}`))
+	req.Header.Set("Authorization", "Bearer "+rig.sign(t, defaultClaims())) // agent-007
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected JSON-RPC response, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"plan not found"`) {
+		t.Fatalf("expected ownership error, got %s", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), `"sensitive plan"`) {
+		t.Fatalf("response leaked another agent's plan: %s", w.Body.String())
+	}
+}
+
 func TestAgentRulesRequiresAuthAndUsesTokenAgentID(t *testing.T) {
 	rig := newAuthTestRig(t)
+	tokenAgent := store.AgentRecord{ID: "agent-cuid-007", AgentIDs: `["agent-007"]`}
+	otherAgent := store.AgentRecord{ID: "agent-cuid-other", AgentIDs: `["other"]`}
 	rules := &stubRulesRepo{rules: []store.Rule{
-		{ID: "auto-rule", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, Enabled: true, Order: 0},
+		{ID: "other-deny", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentCUIDs: []string{otherAgent.ID}, Enabled: true, Order: 0},
+		{ID: "auto-rule", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentCUIDs: []string{tokenAgent.ID}, Enabled: true, Order: 1},
 	}}
-	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
+	agents := &stubAgentsRepo{records: []store.AgentRecord{tokenAgent, otherAgent}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, agents, nil, nil, nil, nil, nil)
 	h.SetAuthValidator(rig.v)
 	handler := h.Routes()
 
@@ -216,6 +251,9 @@ func TestAgentRulesRequiresAuthAndUsesTokenAgentID(t *testing.T) {
 	}
 	if resp.Action != invocation.RuleActionAutoApprove {
 		t.Fatalf("expected auto_approve action, got %q", resp.Action)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].ID != "auto-rule" {
+		t.Fatalf("expected only token agent rule to be visible, got %#v", resp.Items)
 	}
 }
 

@@ -50,3 +50,52 @@ func TestRulesRepo_CreateVMPathAIEvaluationRule(t *testing.T) {
 		t.Errorf("AtryumLLMConfigID = %q, want empty string", got.AtryumLLMConfigID)
 	}
 }
+
+// TestRulesRepo_CorruptPatternJSONFailsClosed is a regression test for
+// scanRule silently defaulting a corrupt server_pattern/tool_pattern/
+// agent_cuids column to an empty slice. Per matchPatterns/matchAgentCUIDs, an
+// empty slice means "match all" — so a decode failure used to silently widen
+// a narrowly-scoped rule (e.g. an auto_approve limited to one server) into
+// one that matches every server, tool, or agent. Get/List must now surface
+// the decode error instead of returning a rule with a silently expanded
+// blast radius.
+func TestRulesRepo_CorruptPatternJSONFailsClosed(t *testing.T) {
+	for _, column := range []string{"server_pattern", "tool_pattern", "agent_cuids"} {
+		t.Run(column, func(t *testing.T) {
+			db, cleanup := openTestDB(t)
+			defer cleanup()
+			if err := InitDB(db); err != nil {
+				t.Fatalf("InitDB: %v", err)
+			}
+
+			repo := NewRulesRepo(db)
+			ctx := context.Background()
+
+			rule := Rule{
+				ID:             "rule-corrupt-" + column,
+				Action:         "auto_approve",
+				ServerPatterns: []string{"staging-db"},
+				ToolPatterns:   []string{"read_only_query"},
+				Enabled:        true,
+				Order:          0,
+			}
+			if err := repo.Create(ctx, rule); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+
+			// Simulate corrupted data (bad manual edit, partial write, disk
+			// corruption) by writing invalid JSON directly, bypassing the
+			// repo's own encoder.
+			if _, err := db.ExecContext(ctx, `UPDATE approval_rules SET `+column+` = ? WHERE id = ?`, "{not valid json", rule.ID); err != nil {
+				t.Fatalf("corrupt %s: %v", column, err)
+			}
+
+			if _, err := repo.Get(ctx, rule.ID); err == nil {
+				t.Fatalf("Get succeeded despite corrupt %s JSON; want an error rather than silently defaulting to \"match all\"", column)
+			}
+			if _, err := repo.List(ctx); err == nil {
+				t.Fatalf("List succeeded despite corrupt %s JSON; want an error", column)
+			}
+		})
+	}
+}

@@ -14,29 +14,30 @@ import (
 	"testing"
 	"time"
 
-	"atryum/internal/auth"
-	backendclient "atryum/internal/backend"
-	"atryum/internal/config"
-	"atryum/internal/invocation"
-	"atryum/internal/managedagents"
-	"atryum/internal/mcp"
-	"atryum/internal/store"
+	"github.com/validmind/atryum/internal/auth"
+	backendclient "github.com/validmind/atryum/internal/backend"
+	"github.com/validmind/atryum/internal/config"
+	"github.com/validmind/atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/managedagents"
+	"github.com/validmind/atryum/internal/mcp"
+	"github.com/validmind/atryum/internal/store"
 
 	_ "modernc.org/sqlite"
 )
 
 type stubService struct {
-	tools    []mcp.Tool
-	invoke   invocation.InvocationResponse
-	invErr   error
-	getErr   error
-	setResp  invocation.InvocationResponse
-	setID    string
-	setText  string
-	listErr  error
-	upstream mcp.Upstream
-	forward  mcp.ForwardResult
-	fwdErr   error
+	tools         []mcp.Tool
+	invoke        invocation.InvocationResponse
+	invErr        error
+	getErr        error
+	setResp       invocation.InvocationResponse
+	setID         string
+	setText       string
+	listErr       error
+	upstream      mcp.Upstream
+	forward       mcp.ForwardResult
+	fwdErr        error
+	plansDisabled bool
 
 	invokedReq *invocation.CreateInvocationRequest
 	invokedCtx context.Context
@@ -49,6 +50,17 @@ type stubService struct {
 
 	createSessionReq     *invocation.CreateSessionRequest
 	createSessionAgentID string
+	plan                 invocation.Plan
+	planErr              error
+	planSubmitReq        *invocation.PlanSubmitRequest
+	planApproveID        string
+	planTTL              int
+	planDenyID           string
+	planDenyMsg          string
+	planReviseID         string
+	planFeedback         string
+	planExpireID         string
+	planCancelID         string
 }
 
 func (s *stubService) Invoke(ctx context.Context, req invocation.CreateInvocationRequest) (invocation.InvocationResponse, error) {
@@ -108,6 +120,47 @@ func (s *stubService) RecordExecution(ctx context.Context, id string, req invoca
 		return s.invoke, s.invErr
 	}
 	return invocation.InvocationResponse{InvocationID: id, Status: invocation.StatusSucceeded}, s.invErr
+}
+func (s *stubService) SubmitPlan(_ context.Context, req invocation.PlanSubmitRequest) (invocation.Plan, error) {
+	s.planSubmitReq = &req
+	return s.plan, s.planErr
+}
+func (s *stubService) GetPlan(context.Context, string) (invocation.Plan, error) {
+	return s.plan, s.planErr
+}
+func (s *stubService) ListPlans(_ context.Context, filter invocation.PlanListFilter) (invocation.PlanListResponse, error) {
+	return invocation.PlanListResponse{Items: []invocation.Plan{s.plan}, Total: 1, Limit: filter.Limit}, s.planErr
+}
+func (s *stubService) ListPlanRevisions(context.Context, string) ([]invocation.Plan, error) {
+	return []invocation.Plan{}, nil
+}
+func (s *stubService) ApprovePlan(_ context.Context, id string, ttlSeconds int) (invocation.Plan, error) {
+	s.planApproveID = id
+	s.planTTL = ttlSeconds
+	return s.plan, s.planErr
+}
+func (s *stubService) DenyPlan(_ context.Context, id string, message string) (invocation.Plan, error) {
+	s.planDenyID = id
+	s.planDenyMsg = message
+	return s.plan, s.planErr
+}
+func (s *stubService) RequestPlanRevision(_ context.Context, id string, feedback string) (invocation.Plan, error) {
+	s.planReviseID = id
+	s.planFeedback = feedback
+	return s.plan, s.planErr
+}
+func (s *stubService) ExpirePlan(_ context.Context, id string) (invocation.Plan, error) {
+	s.planExpireID = id
+	return s.plan, s.planErr
+}
+func (s *stubService) CancelPlan(_ context.Context, id string) (invocation.Plan, error) {
+	s.planCancelID = id
+	return s.plan, s.planErr
+}
+func (s *stubService) PlansEnabled() bool { return !s.plansDisabled }
+
+func (s *stubService) PlanEvents(context.Context, string, invocation.EventListFilter) (invocation.EventListResponse, error) {
+	return invocation.EventListResponse{}, nil
 }
 func (s *stubService) ForwardEnvelope(context.Context, mcp.Upstream, mcp.Envelope, string) (mcp.ForwardResult, error) {
 	return s.forward, s.fwdErr
@@ -626,6 +679,37 @@ func TestExternalSessionMintRejectionReturns400(t *testing.T) {
 	}
 }
 
+// TestExternalSubmitForwardsClientSessionID pins that the submit handler decodes
+// client_session_id from the body and forwards it to Service.Submit (where the
+// server-side get-or-create resolves the session), and that the resolved
+// internal session id is surfaced in the response. This is the field that
+// replaces the old mint-then-echo session_id flow for harnesses.
+func TestExternalSubmitForwardsClientSessionID(t *testing.T) {
+	resolved := "ses_resolved"
+	svc := &stubService{invoke: invocation.InvocationResponse{
+		InvocationID: "inv_123", ToolName: "bash", Status: invocation.StatusPendingApproval,
+		SessionID: &resolved,
+	}}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	body := strings.NewReader(`{"source":"amp","tool":"bash","input":{"cmd":"ls"},"client_session_id":"amp-thread-1"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/external/invocations", body)
+	req.Header.Set("content-type", "application/json")
+	req = req.WithContext(auth.WithIdentity(req.Context(), auth.Identity{AgentID: "amp-1"}))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if svc.submitReq == nil || svc.submitReq.ClientSessionID != "amp-thread-1" {
+		t.Fatalf("submit request client_session_id not forwarded: %+v", svc.submitReq)
+	}
+	if !strings.Contains(w.Body.String(), "ses_resolved") {
+		t.Fatalf("expected resolved session id in response body: %s", w.Body.String())
+	}
+}
+
 type stubAgentsRepo struct {
 	records     []store.AgentRecord
 	err         error
@@ -1117,8 +1201,43 @@ func TestMCPToolsList(t *testing.T) {
 		t.Fatalf("expected tools list, got %s", w.Body.String())
 	}
 	if strings.Contains(w.Body.String(), `"atryum.rules.get"`) {
-		t.Fatalf("did not expect synthetic rules tool, got %s", w.Body.String())
+		t.Fatalf("did not expect dotted synthetic rules tool, got %s", w.Body.String())
 	}
+	if !strings.Contains(w.Body.String(), `"`+atryumRulesToolName+`"`) {
+		t.Fatalf("expected compatible synthetic rules tool, got %s", w.Body.String())
+	}
+}
+
+func TestMCPRulesToolSchemaIncludesRequestIDFallback(t *testing.T) {
+	h := NewHandler(&stubService{tools: []mcp.Tool{{Name: "demo_tool"}}}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	var rpcResp struct {
+		Result struct {
+			Tools []struct {
+				Name        string `json:"name"`
+				InputSchema struct {
+					Properties map[string]json.RawMessage `json:"properties"`
+				} `json:"inputSchema"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &rpcResp); err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range rpcResp.Result.Tools {
+		if tool.Name != atryumRulesToolName {
+			continue
+		}
+		if _, ok := tool.InputSchema.Properties["request_id"]; !ok {
+			t.Fatalf("expected request_id in %s schema properties, got %#v", atryumRulesToolName, tool.InputSchema.Properties)
+		}
+		return
+	}
+	t.Fatalf("expected %s in tools/list, got %#v", atryumRulesToolName, rpcResp.Result.Tools)
 }
 
 func TestMCPToolsCallInterceptsInvocation(t *testing.T) {
@@ -1141,6 +1260,104 @@ func TestMCPToolsCallInterceptsInvocation(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), `"text":"ok"`) {
 		t.Fatalf("expected tool result, got %s", w.Body.String())
+	}
+}
+
+func TestMCPRulesToolReturnsAgentRulesWithoutInvocation(t *testing.T) {
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "read-auto", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Read"}, Enabled: true, Order: 0},
+	}}
+	svc := &stubService{}
+	h := NewHandler(svc, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"atryum_rules_get","arguments":{"tool":"Read"}}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if svc.invokedReq != nil {
+		t.Fatalf("rules helper should not create a gated invocation, got %#v", svc.invokedReq)
+	}
+	var rpcResp struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &rpcResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(rpcResp.Result.Content) != 1 {
+		t.Fatalf("expected one content block, got %#v", rpcResp.Result.Content)
+	}
+	var rulesResp AgentRulesResponse
+	if err := json.Unmarshal([]byte(rpcResp.Result.Content[0].Text), &rulesResp); err != nil {
+		t.Fatal(err)
+	}
+	if rulesResp.Server != "demo" || rulesResp.Tool != "Read" {
+		t.Fatalf("expected demo/Read preview, got %#v", rulesResp)
+	}
+	if rulesResp.Action != invocation.RuleActionAutoApprove {
+		t.Fatalf("expected auto approve disposition, got %q", rulesResp.Action)
+	}
+	if rulesResp.MatchedRuleID == nil || *rulesResp.MatchedRuleID != "read-auto" {
+		t.Fatalf("expected read-auto match, got %#v", rulesResp.MatchedRuleID)
+	}
+}
+func TestMCPPlanSubmitToolSubmitsPlan(t *testing.T) {
+	now := time.Now().UTC()
+	svc := &stubService{plan: invocation.Plan{
+		PlanID:      "plan_123",
+		AgentID:     "agent-1",
+		Source:      "demo",
+		Goal:        "Read files before editing",
+		Actions:     []invocation.PlanAction{{Tool: "Read"}},
+		Status:      invocation.PlanStatusPendingApproval,
+		Revision:    1,
+		TTLSeconds:  3600,
+		SubmittedAt: now,
+	}}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"atryum.plan.submit","arguments":{"goal":"Read files before editing","actions":[{"tool":"Read"}],"ttl_seconds":600}}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if svc.planSubmitReq == nil {
+		t.Fatal("expected plan submission request")
+	}
+	if svc.planSubmitReq.Source != "demo" {
+		t.Fatalf("source = %q, want demo", svc.planSubmitReq.Source)
+	}
+	if svc.planSubmitReq.Goal != "Read files before editing" || len(svc.planSubmitReq.Actions) != 1 || svc.planSubmitReq.Actions[0].Tool != "Read" {
+		t.Fatalf("unexpected plan request: %#v", svc.planSubmitReq)
+	}
+	if !strings.Contains(w.Body.String(), `"plan_123"`) {
+		t.Fatalf("expected plan response, got %s", w.Body.String())
+	}
+}
+
+func TestMCPPlanGetToolGetsPlan(t *testing.T) {
+	now := time.Now().UTC()
+	svc := &stubService{plan: invocation.Plan{
+		PlanID:      "plan_123",
+		AgentID:     "agent-1",
+		Source:      "demo",
+		Goal:        "Read files before editing",
+		Actions:     []invocation.PlanAction{{Tool: "Read"}},
+		Status:      invocation.PlanStatusApproved,
+		Revision:    1,
+		TTLSeconds:  3600,
+		SubmittedAt: now,
+	}}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"atryum.plan.get","arguments":{"plan_id":"plan_123"}}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if !strings.Contains(w.Body.String(), `"approved"`) || !strings.Contains(w.Body.String(), `"plan_123"`) {
+		t.Fatalf("expected plan status response, got %s", w.Body.String())
 	}
 }
 
@@ -1211,6 +1428,7 @@ func TestAgentRulesListsApplicableRulesAndDisposition(t *testing.T) {
 		{ID: "bash-deny", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Bash"}, Enabled: true, Order: 0},
 		{ID: "read-auto", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, Description: "Read is safe", Enabled: true, Order: 1},
 		{ID: "fallback-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 2},
+		{ID: "later-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, Enabled: true, Order: 3},
 		{ID: "disabled", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, Enabled: false, Order: 3},
 	}}
 	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
@@ -1235,11 +1453,202 @@ func TestAgentRulesListsApplicableRulesAndDisposition(t *testing.T) {
 	if resp.MatchedRuleID == nil || *resp.MatchedRuleID != "read-auto" {
 		t.Fatalf("expected matched rule read-auto, got %#v", resp.MatchedRuleID)
 	}
-	if len(resp.Items) != 3 {
-		t.Fatalf("expected three applicable rules, got %#v", resp.Items)
+	if resp.GeneratedAt.IsZero() {
+		t.Fatal("expected generated_at to be populated")
 	}
-	if resp.Items[0].ID != "bash-deny" || resp.Items[1].ID != "read-auto" || resp.Items[2].ID != "fallback-human" {
+	if resp.EvaluationMode != "static_only" {
+		t.Fatalf("expected static_only evaluation mode, got %q", resp.EvaluationMode)
+	}
+	if !strings.Contains(resp.Explanation, "advisory") {
+		t.Fatalf("expected advisory explanation, got %q", resp.Explanation)
+	}
+	if resp.PlanSubmission == nil || !resp.PlanSubmission.Enabled {
+		t.Fatalf("expected plan submission capability, got %#v", resp.PlanSubmission)
+	}
+	if resp.PlanSubmission.Endpoint != "/api/v1/external/plans?source=amp" {
+		t.Fatalf("plan submission endpoint must carry the caller's source, got %q", resp.PlanSubmission.Endpoint)
+	}
+	if !strings.Contains(resp.PlanSubmission.Message, resp.PlanSubmission.Endpoint) {
+		t.Fatalf("plan submission message must contain the endpoint so hooks can inject it verbatim, got %q", resp.PlanSubmission.Message)
+	}
+	if !strings.Contains(resp.PlanSubmission.Message, "never move backwards") {
+		t.Fatalf("plan submission message must state the execution-order rule, got %q", resp.PlanSubmission.Message)
+	}
+	if !strings.Contains(resp.PlanSubmission.Message, `Set each action's server to "amp"`) {
+		t.Fatalf("plan submission message must name the caller's source for action servers, got %q", resp.PlanSubmission.Message)
+	}
+	// The caller's already-known identity (query-hinted here; verified OAuth
+	// in auth mode) must be echoed verbatim so an agent submitting a plan
+	// doesn't invent a different agent_id that its own tool calls can never
+	// match.
+	if !strings.Contains(resp.PlanSubmission.Message, `agent_id set to exactly "agent-007"`) {
+		t.Fatalf("plan submission message must echo the caller's resolved agent id, got %q", resp.PlanSubmission.Message)
+	}
+	if len(resp.Items) != 4 {
+		t.Fatalf("expected four applicable rules, got %#v", resp.Items)
+	}
+	if resp.Items[0].ID != "bash-deny" || resp.Items[1].ID != "read-auto" || resp.Items[2].ID != "fallback-human" || resp.Items[3].ID != "later-human" {
 		t.Fatalf("unexpected applicable rules order: %#v", resp.Items)
+	}
+	if resp.Items[1].Guidance == "" {
+		t.Fatalf("expected rule guidance, got %#v", resp.Items[1])
+	}
+}
+
+func TestAgentRulesFiltersOutRulesScopedToOtherAgents(t *testing.T) {
+	agent := store.AgentRecord{ID: "agent-cuid-007", AgentIDs: `["agent-007"]`}
+	other := store.AgentRecord{ID: "agent-cuid-other", AgentIDs: `["other-agent"]`}
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "other-agent", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentCUIDs: []string{other.ID}, Enabled: true, Order: 0},
+		{ID: "this-agent", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentCUIDs: []string{agent.ID}, Enabled: true, Order: 1},
+		{ID: "unscoped", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 2},
+	}}
+	agents := &stubAgentsRepo{records: []store.AgentRecord{agent, other}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, agents, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?agent_id=agent-007&source=amp&tool=Read", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Action != invocation.RuleActionAutoApprove {
+		t.Fatalf("expected this-agent auto approve disposition, got %q", resp.Action)
+	}
+	if resp.MatchedRuleID == nil || *resp.MatchedRuleID != "this-agent" {
+		t.Fatalf("expected matched rule this-agent, got %#v", resp.MatchedRuleID)
+	}
+	if len(resp.Items) != 2 {
+		t.Fatalf("expected two visible rules, got %#v", resp.Items)
+	}
+	for _, item := range resp.Items {
+		if item.ID == "other-agent" {
+			t.Fatalf("other-agent scoped rule leaked into response: %#v", resp.Items)
+		}
+	}
+}
+
+func TestAgentRulesAdvertisesPlanSubmissionWithInvocationRules(t *testing.T) {
+	// Plan submission is advertised whenever the feature is enabled; the same
+	// invocation rules are used to evaluate submitted plans.
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "fallback-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 0},
+	}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?agent_id=agent-007&source=cursor", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.PlanSubmission == nil || !resp.PlanSubmission.Enabled {
+		t.Fatalf("expected plan submission capability, got %#v", resp.PlanSubmission)
+	}
+	if resp.PlanSubmission.Endpoint != "/api/v1/external/plans?source=cursor" {
+		t.Fatalf("plan submission endpoint must carry the caller's source, got %q", resp.PlanSubmission.Endpoint)
+	}
+}
+
+// TestAgentRulesPlanSubmissionFallsBackToGenericAgentIDGuidanceWhenAnonymous
+// covers a caller with no resolvable identity at all (no auth, no agent_id
+// hint): the message can't echo an identity that doesn't exist, so it must
+// fall back to telling the agent to invent and reuse a stable one.
+func TestAgentRulesPlanSubmissionFallsBackToGenericAgentIDGuidanceWhenAnonymous(t *testing.T) {
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "fallback-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 0},
+	}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?source=cursor", nil) // no agent_id
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.PlanSubmission == nil {
+		t.Fatalf("expected plan submission capability, got %#v", resp.PlanSubmission)
+	}
+	if strings.Contains(resp.PlanSubmission.Message, "agent_id set to exactly") {
+		t.Fatalf("message must not fabricate an identity to echo when none is known, got %q", resp.PlanSubmission.Message)
+	}
+	if !strings.Contains(resp.PlanSubmission.Message, "a stable identifier for this agent") {
+		t.Fatalf("message must fall back to generic agent_id guidance, got %q", resp.PlanSubmission.Message)
+	}
+}
+
+// TestAgentRulesPlanSubmissionDoesNotEchoRequestIDAsStableIdentity covers a
+// caller identified only by request_id — a single in-flight tool call's id,
+// meant for previewing that one call's disposition, not a stable agent
+// identity. It must still surface as AgentID (existing rule-preview
+// behavior), but the plan message must not tell the agent to submit a plan
+// under it: a later invocation carries a different request_id and would
+// never match, so the plan would silently expire unactioned.
+func TestAgentRulesPlanSubmissionDoesNotEchoRequestIDAsStableIdentity(t *testing.T) {
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "fallback-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 0},
+	}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?source=cursor&request_id=req-12345", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.AgentID != "req-12345" {
+		t.Fatalf("expected existing request_id fallback preserved in AgentID, got %q", resp.AgentID)
+	}
+	if resp.PlanSubmission == nil {
+		t.Fatalf("expected plan submission capability, got %#v", resp.PlanSubmission)
+	}
+	if strings.Contains(resp.PlanSubmission.Message, "req-12345") {
+		t.Fatalf("message must not present the request-scoped id as a stable identity to submit a plan under, got %q", resp.PlanSubmission.Message)
+	}
+	if !strings.Contains(resp.PlanSubmission.Message, "a stable identifier for this agent") {
+		t.Fatalf("message must fall back to generic agent_id guidance, got %q", resp.PlanSubmission.Message)
+	}
+}
+
+func TestAgentRulesOmitsPlanSubmissionWhenPlansDisabled(t *testing.T) {
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "human-any", Action: invocation.RuleActionHumanApproval, Enabled: true, Order: 0},
+	}}
+	h := NewHandler(&stubService{plansDisabled: true}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?agent_id=agent-007&source=cursor", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.PlanSubmission != nil {
+		t.Fatalf("expected no plan submission capability when the plan feature is not wired, got %#v", resp.PlanSubmission)
 	}
 }
 
@@ -1276,6 +1685,70 @@ func TestAgentRulesUsesDefaultAgentRecordForAgentScopedRules(t *testing.T) {
 	}
 	if resp.Items[0].ID != "default-agent" || resp.Items[1].ID != "fallback-human" {
 		t.Fatalf("unexpected applicable rules order: %#v", resp.Items)
+	}
+}
+
+func TestAgentRulesNoAuthAgentIDFiltering(t *testing.T) {
+	agent := store.AgentRecord{ID: "agent-cuid-007", AgentIDs: `["agent-007"]`}
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "scoped", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentCUIDs: []string{agent.ID}, Enabled: true, Order: 0},
+		{ID: "other", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentCUIDs: []string{"agent-other"}, Enabled: true, Order: 1},
+	}}
+	agents := &stubAgentsRepo{records: []store.AgentRecord{agent}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, agents, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?agent_id=agent-007&source=amp&tool=Read", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Action != invocation.RuleActionAutoApprove {
+		t.Fatalf("expected scoped auto approve disposition, got %q", resp.Action)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].ID != "scoped" {
+		t.Fatalf("expected only scoped visible rule, got %#v", resp.Items)
+	}
+}
+
+func TestAgentRulesGuidanceForEachAction(t *testing.T) {
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "auto-approve", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, Enabled: true, Order: 0},
+		{ID: "auto-deny", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Bash"}, Enabled: true, Order: 1},
+		{ID: "human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 2},
+		{ID: "ai", Action: invocation.RuleActionAIEvaluation, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Search"}, Enabled: true, Order: 3},
+	}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]string{}
+	for _, item := range resp.Items {
+		byID[item.ID] = item.Guidance
+	}
+	for id, want := range map[string]string{
+		"auto-approve": "Auto-approved",
+		"auto-deny":    "Auto-denied",
+		"human":        "Requires reviewer approval",
+		"ai":           "real gated call",
+	} {
+		if !strings.Contains(byID[id], want) {
+			t.Fatalf("expected %s guidance to contain %q, got %q", id, want, byID[id])
+		}
 	}
 }
 
@@ -1331,7 +1804,10 @@ func TestMCPToolsListAnnotatesEffectiveAction(t *testing.T) {
 		t.Fatalf("Other tool annotations: %#v", otherTool.Annotations)
 	}
 	if _, ok := byName["atryum.rules.get"]; ok {
-		t.Fatalf("did not expect synthetic rules tool in tools/list")
+		t.Fatalf("did not expect dotted synthetic rules tool in tools/list")
+	}
+	if _, ok := byName[atryumRulesToolName]; !ok {
+		t.Fatalf("expected compatible synthetic rules tool in tools/list")
 	}
 }
 
@@ -1374,10 +1850,17 @@ func TestMCPToolsListAnnotationsUseDefaultAgentScopedRules(t *testing.T) {
 	if len(rpcResp.Result.Tools) == 0 {
 		t.Fatalf("expected tools, got %#v", rpcResp.Result.Tools)
 	}
-	bashTool := rpcResp.Result.Tools[0]
-	if bashTool.Name != "Bash" {
-		t.Fatalf("expected Bash tool, got %q", bashTool.Name)
+	bashIdx := -1
+	for i, tool := range rpcResp.Result.Tools {
+		if tool.Name == "Bash" {
+			bashIdx = i
+			break
+		}
 	}
+	if bashIdx < 0 {
+		t.Fatalf("expected Bash tool, got %#v", rpcResp.Result.Tools)
+	}
+	bashTool := rpcResp.Result.Tools[bashIdx]
 	if bashTool.Annotations == nil || bashTool.Annotations.Atryum.EffectiveAction != invocation.RuleActionAutoApprove {
 		t.Fatalf("Bash tool annotations: %#v", bashTool.Annotations)
 	}
@@ -1386,6 +1869,68 @@ func TestMCPToolsListAnnotationsUseDefaultAgentScopedRules(t *testing.T) {
 	}
 	if !strings.HasPrefix(bashTool.Description, "[atryum policy: auto_approve]") {
 		t.Fatalf("Bash description prefix: %q", bashTool.Description)
+	}
+}
+
+func TestMCPToolsListAnnotationsIgnoreJSONRPCIDForNoAuthAgent(t *testing.T) {
+	agent := store.AgentRecord{ID: "agent-cuid-007", AgentIDs: `["agent-007"]`}
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "agent-auto", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Bash"}, AgentCUIDs: []string{agent.ID}, Enabled: true, Order: 0},
+	}}
+	svc := &stubService{tools: []mcp.Tool{{Name: "Bash", Description: "run a shell command"}}}
+	agents := &stubAgentsRepo{records: []store.AgentRecord{agent}}
+	h := NewHandler(svc, stubServerService{}, nil, rules, agents, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":"agent-007","method":"tools/list","params":{}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var rpcResp struct {
+		Result struct {
+			Tools []struct {
+				Name        string `json:"name"`
+				Annotations *struct {
+					Atryum struct {
+						EffectiveAction string `json:"effective_action"`
+						MatchedRuleID   string `json:"matched_rule_id"`
+					} `json:"atryum"`
+				} `json:"annotations"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &rpcResp); err != nil {
+		t.Fatal(err)
+	}
+	var bashTool *struct {
+		Name        string `json:"name"`
+		Annotations *struct {
+			Atryum struct {
+				EffectiveAction string `json:"effective_action"`
+				MatchedRuleID   string `json:"matched_rule_id"`
+			} `json:"atryum"`
+		} `json:"annotations"`
+	}
+	for i := range rpcResp.Result.Tools {
+		if rpcResp.Result.Tools[i].Name == "Bash" {
+			bashTool = &rpcResp.Result.Tools[i]
+			break
+		}
+	}
+	if bashTool == nil {
+		t.Fatalf("expected Bash tool, got %#v", rpcResp.Result.Tools)
+	}
+	got := bashTool.Annotations
+	if got == nil {
+		t.Fatal("expected annotation")
+	}
+	if got.Atryum.EffectiveAction != invocation.RuleActionHumanApproval {
+		t.Fatalf("expected anonymous/default policy, got %#v", got.Atryum)
+	}
+	if got.Atryum.MatchedRuleID != "" {
+		t.Fatalf("json-rpc id should not match agent-scoped rule, got %q", got.Atryum.MatchedRuleID)
 	}
 }
 
@@ -1427,6 +1972,49 @@ func TestMCPToolsCallDenialIncludesRulesContext(t *testing.T) {
 	last := rpcResp.Result.Content[len(rpcResp.Result.Content)-1].Text
 	if !strings.Contains(last, "Atryum approval rules") || !strings.Contains(last, "bash-deny") {
 		t.Fatalf("expected rules context in denial result, got %q", last)
+	}
+}
+
+func TestMCPToolsCallDenialRulesContextFiltersAgentScopedRules(t *testing.T) {
+	now := time.Now().UTC()
+	agent := store.AgentRecord{ID: "agent-cuid-007", AgentIDs: `["agent-007"]`}
+	other := store.AgentRecord{ID: "agent-cuid-other", AgentIDs: `["other-agent"]`}
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "other-deny", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Bash"}, AgentCUIDs: []string{other.ID}, Enabled: true, Order: 0},
+		{ID: "agent-deny", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Bash"}, AgentCUIDs: []string{agent.ID}, Enabled: true, Order: 1},
+	}}
+	svc := &stubService{invoke: invocation.InvocationResponse{
+		InvocationID: "inv_denied", ServerName: "demo", ToolName: "Bash",
+		Status:      invocation.StatusDenied,
+		SubmittedAt: now, CompletedAt: &now,
+		Error: json.RawMessage(`{"content":[{"type":"text","text":"Tool call denied by approval rule (auto_deny)."}],"isError":true}`),
+	}}
+	agents := &stubAgentsRepo{records: []store.AgentRecord{agent, other}}
+	h := NewHandler(svc, stubServerService{}, nil, rules, agents, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo?agent_id=agent-007", strings.NewReader(`{"jsonrpc":"2.0","id":"request-1","method":"tools/call","params":{"name":"Bash","arguments":{"cmd":"ls"}}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	var rpcResp struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &rpcResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(rpcResp.Result.Content) < 2 {
+		t.Fatalf("expected denial text plus rules context, got %#v", rpcResp.Result.Content)
+	}
+	last := rpcResp.Result.Content[len(rpcResp.Result.Content)-1].Text
+	if !strings.Contains(last, "agent-deny") {
+		t.Fatalf("expected agent scoped rule in denial context, got %q", last)
+	}
+	if strings.Contains(last, "other-deny") {
+		t.Fatalf("other agent rule leaked into denial context: %q", last)
 	}
 }
 
@@ -1540,6 +2128,73 @@ func TestInvocationsByVMCUID(t *testing.T) {
 		h.invocationsByVMCUID(w, req)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400, got %d body=%s", w.Code, w.Body.String())
+		}
+	})
+}
+
+func TestExternalInvocationPatchErrorStatusMapping(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantStatus int
+	}{
+		{"invalid transition maps to 409", fmt.Errorf("invocation inv_1 cannot move to completed from pending_approval: %w", invocation.ErrInvalidTransition), http.StatusConflict},
+		{"not owner maps to 403", fmt.Errorf("invocation inv_1: %w", invocation.ErrNotOwner), http.StatusForbidden},
+		{"missing invocation maps to 404", sql.ErrNoRows, http.StatusNotFound},
+		{"generic error maps to 400", fmt.Errorf("boom"), http.StatusBadRequest},
+		{"success maps to 200", nil, http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &stubService{invErr: tc.err}
+			h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+			req := httptest.NewRequest(http.MethodPatch, "/api/v1/external/invocations/inv_1", strings.NewReader(`{"execution_status":"completed"}`))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			h.Routes().ServeHTTP(w, req)
+			if w.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d (body=%s)", w.Code, tc.wantStatus, w.Body.String())
+			}
+			if svc.recordID != "inv_1" {
+				t.Fatalf("RecordExecution called with id %q, want inv_1", svc.recordID)
+			}
+			if svc.recordReq == nil || svc.recordReq.ExecutionStatus != "completed" {
+				t.Fatalf("RecordExecution update = %+v", svc.recordReq)
+			}
+		})
+	}
+}
+
+func TestAddExtraRoutesMountsRoutesOutsideAuthChains(t *testing.T) {
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	// A configured validator protects the normal runtime and admin routes;
+	// extra routes are registered outside those middleware chains.
+	h.SetAuthValidator(&auth.Validator{})
+	h.AddExtraRoutes(func(mux *http.ServeMux) {
+		mux.HandleFunc("/extension", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]string{"source": "extension"})
+		})
+	})
+	routes := h.Routes()
+
+	t.Run("extra route is reachable without credentials", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		routes.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/extension", nil))
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET /extension status = %d, want %d", w.Code, http.StatusOK)
+		}
+		if got, want := w.Body.String(), "{\"source\":\"extension\"}\n"; got != want {
+			t.Fatalf("GET /extension body = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("built-in routes are unaffected", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		routes.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET /healthz status = %d, want %d", w.Code, http.StatusOK)
 		}
 	})
 }

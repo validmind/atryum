@@ -15,9 +15,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"atryum/internal/auth"
-	"atryum/internal/invocation/policy"
-	"atryum/internal/mcp"
+	"github.com/validmind/atryum/internal/auth"
+	"github.com/validmind/atryum/internal/invocation/policy"
+	"github.com/validmind/atryum/internal/mcp"
 )
 
 // dispositionContinue is an internal sentinel returned by runAIEvaluation when the
@@ -72,6 +72,13 @@ type AgentRecord struct {
 	VMCUID             string // VM inventory model CUID (used for charter lookup)
 	VMOrganizationCUID string // VM organization CUID (used for cross-tenant validation)
 	Charter            string // governing text for local LLM-as-judge evaluation
+	// AgentIDs lists every runtime identity string registered to this same
+	// agent record (agents.agent_ids). Different channels reporting the same
+	// logical agent under no-auth (e.g. an MCP client's self-declared
+	// agent_id vs. a hook's ATRYUM_AGENT_ID) end up with different runtime
+	// ids; grouping them under one record lets plan matching treat them as
+	// the same agent instead of requiring the exact same string everywhere.
+	AgentIDs []string
 }
 
 // EvaluatorClient is the minimal interface required by the invocation service
@@ -161,6 +168,7 @@ type eventRepo interface {
 type sessionStore interface {
 	CreateSession(ctx context.Context, s ExternalSession) error
 	GetSession(ctx context.Context, id string) (ExternalSession, error)
+	GetSessionByAgentAndClientSessionID(ctx context.Context, agentID, clientSessionID string) (ExternalSession, error)
 	TouchSession(ctx context.Context, id string, expiresAt time.Time) error
 }
 
@@ -194,6 +202,12 @@ type Service struct {
 	summarizer       SummaryClient
 	syncSettings     SyncSettingsProvider // nil = no charter lookup
 	sessions         sessionStore         // nil = SessionID feature disabled
+	plans            planRepo             // nil = plan submission disabled
+	planEvents       planEventRepo
+	planJudge        PlanEvaluator
+	planPollOrigins  planOriginSet // hosts trusted by the plan-status fast pass
+	planDefaultTTL   int           // seconds; 0 = built-in default
+	planMaxTTL       int           // seconds; 0 = built-in ceiling
 	defaultTimeout   time.Duration
 	mu               sync.Mutex
 	pendingApprovals map[string]chan approvalDecision
@@ -244,6 +258,13 @@ func (s *Service) SetSessionStore(store sessionStore) {
 }
 
 // CreateSession mints a new harness session bound to agentID and persists it.
+//
+// Deprecated: harnesses should send client_session_id on the submit path and
+// let Atryum get-or-create the internal session (see getOrCreateSession). This
+// endpoint stays fully functional for explicit-control callers and for
+// back-compat with harnesses that still pre-mint. It is also reused internally
+// by getOrCreateSession to mint the ses_ row on first sight of a key.
+//
 // agentID is the authenticated identity when present, else the self-declared id
 // (no-auth mode). A non-empty binding is required: session history is
 // identity-keyed, and an anonymous caller has no stable identity for ownership
@@ -340,6 +361,89 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		return InvocationResponse{}, err
 	}
 
+	// An approved plan grants a scoped pass. On this MCP proxy path the
+	// tools/call arguments leave no channel for an explicit plan_id, so the
+	// association is implicit: an action on this server in the agent's newest
+	// approved plan. A scoped call is gated exclusively by the plan flow —
+	// a status poll auto-approves, the adherence judge confirms or denies
+	// everything else, and an unverifiable call goes straight to a human,
+	// bypassing rules/policy. Unmatched calls get normal gating.
+	if planMatch, ok, ambiguous := s.matchApprovedPlan(ctx, agentID, upstream.Name, req.Tool); ok || ambiguous {
+		planID := planMatch.Plan.PlanID
+		inv.PlanID = &planID
+		var reason string
+		var confidence *float64
+		var outcome planGateOutcome
+		if ambiguous {
+			planMatch, reason, confidence, outcome = s.ambiguousApprovedPlanPass(ctx, planMatch.Plan, agentRec, upstream.Name, req.Tool, req.Input, "")
+		} else {
+			reason, confidence, outcome = s.approvedPlanPass(ctx, planMatch, agentRec, upstream.Name, req.Tool, req.Input, "")
+		}
+		if outcome == planGateApprovePoll {
+			// A judged status poll grants the pass without binding a plan
+			// step: binding one would advance the execution-order high-water
+			// mark and could complete the plan before its real actions run.
+			// Downstream handling is identical to a plan approval.
+			outcome = planGateApprove
+		} else if planMatch.Action.Tool != "" && !planStatusFastPass(s.planPollOrigins, planID, req.Input) {
+			stepIndex := planMatch.ActionIndex
+			inv.PlanStepIndex = &stepIndex
+		}
+
+		planPayload := map[string]any{
+			"tool": req.Tool, "upstream": upstream.Name,
+			"request_id": req.RequestID,
+			"input":      json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input),
+			"disposition_reason": reason, "plan_id": planID,
+		}
+		if agentID != "" {
+			planPayload["agent_id"] = agentID
+		}
+
+		switch outcome {
+		case planGateApprove:
+			planPayload["disposition"] = "plan_approved"
+			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(planPayload), CreatedAt: now})
+			inv.Status = StatusExecuting
+			inv.Approval = newApproval("plan_approved", reason, confidence)
+			if err := s.invocations.UpdateResult(ctx, inv); err != nil {
+				return InvocationResponse{}, err
+			}
+			_ = s.events.Create(ctx, Event{
+				InvocationID: inv.InvocationID,
+				EventType:    "invocation.executing",
+				Payload: mustJSON(map[string]any{
+					"upstream": upstream.Name, "request_id": req.RequestID,
+					"input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input),
+					"auto_approved": true, "auto_reason": reason, "plan_id": planID,
+				}),
+				CreatedAt: time.Now().UTC(),
+			})
+			return s.finishExecution(ctx, inv, upstream, req)
+
+		case planGateDeny:
+			planPayload["disposition"] = "plan_denied"
+			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(planPayload), CreatedAt: now})
+			completed := time.Now().UTC()
+			inv.Status = StatusDenied
+			inv.CompletedAt = &completed
+			inv.Approval = newApproval("plan_denied", reason, confidence)
+			inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": "Tool call denied: " + reason}}, "isError": true})
+			_ = s.invocations.UpdateResult(context.Background(), inv)
+			_ = s.events.Create(context.Background(), Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"plan_id": planID, "reason": reason, "confidence": confidence}), CreatedAt: completed})
+			return s.toResponse(inv), nil
+
+		default: // planGateHuman: adherence unverifiable — straight to a human.
+			planPayload["disposition"] = "plan_escalated"
+			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(planPayload), CreatedAt: now})
+			inv.Approval = newApproval("plan_escalated", reason, confidence)
+			if err := s.invocations.UpdateResult(ctx, inv); err != nil {
+				return InvocationResponse{}, err
+			}
+			return s.waitForHumanApproval(ctx, inv, upstream, req)
+		}
+	}
+
 	// Determine disposition: check rules first (fine-grained), then fall back to policy (global).
 	// Both resolve to a policy.Decision so the rest of the flow is uniform.
 	var decision policy.Decision
@@ -347,7 +451,13 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	var aiConfidence *float64
 	ruleMatched := false
 	if s.rules != nil {
-		if approvalRules, err := s.rules.ListApprovalRules(ctx); err == nil {
+		approvalRules, err := s.rules.ListApprovalRules(ctx)
+		if err != nil {
+			slog.Error("failed to load approval rules; failing closed to human review",
+				"error", err, "server", upstream.Name, "tool", req.Tool)
+			ruleMatched = true
+			decision = policy.Decision{Disposition: policy.DispositionHuman, Reason: "rule lookup failed: " + err.Error()}
+		} else {
 			for _, rule := range matchRules(approvalRules, upstream.Name, req.Tool, agentRec.ID) {
 				r := rule
 				ruleMatched = true
@@ -766,6 +876,56 @@ func (s *Service) lookupSessionForAgent(ctx context.Context, sessionID, agentID 
 	return sess, nil
 }
 
+// getOrCreateSession resolves the internal session for a submit that carries a
+// client_session_id but no explicit session_id, keyed by (agentID,
+// clientSessionID). Callers must have already established that sessions are
+// enabled, agentID is a non-empty binding, and clientSessionID is non-empty —
+// the no-binding / empty-client-id cases degrade to history-free evaluation at
+// the call site rather than reaching here.
+//
+// The key is namespaced by the agent binding, so agent B presenting agent A's
+// client_session_id resolves to a different session with no context bleed —
+// the same isolation lookupSessionForAgent enforces by ownership comparison,
+// achieved here by key construction. First sight of a key mints the internal
+// ses_ row (reusing CreateSession's metadata caps / TTL / binding requirement);
+// subsequent calls reuse it. An expired row under the same key intentionally
+// rolls over to a fresh session — judge context resets rather than resurrecting
+// stale history, and the old row stays for audit.
+//
+// clientSessionID is truncated to the same width CreateSession stores so lookup
+// and persistence agree on the key.
+//
+// Concurrency: two racing first-submits for the same key can each miss the
+// lookup and both mint a row. That is acceptable — both are valid audit rows,
+// and GetSessionByAgentAndClientSessionID returns the newest, so subsequent
+// calls converge on one session. We deliberately don't add locking; a uniqueness
+// constraint isn't a clean fit here because expiry rollover legitimately creates
+// multiple rows per key over time.
+func (s *Service) getOrCreateSession(ctx context.Context, agentID, clientSessionID, harness string) (string, error) {
+	if s.sessions == nil {
+		return "", fmt.Errorf("sessions not enabled")
+	}
+	clientSessionID = truncateContextText(strings.TrimSpace(clientSessionID), maxExternalSessionMetadataChars)
+	agentID = strings.TrimSpace(agentID)
+	sess, err := s.sessions.GetSessionByAgentAndClientSessionID(ctx, agentID, clientSessionID)
+	switch {
+	case err == nil:
+		if sess.ExpiresAt.IsZero() || time.Now().UTC().Before(sess.ExpiresAt) {
+			return sess.ID, nil // reuse the live session
+		}
+		// expired: fall through to mint a fresh session (rollover).
+	case errors.Is(err, sql.ErrNoRows):
+		// first sight of this key: fall through to mint.
+	default:
+		return "", err
+	}
+	resp, err := s.CreateSession(ctx, CreateSessionRequest{Harness: harness, ClientSessionID: clientSessionID}, agentID)
+	if err != nil {
+		return "", err
+	}
+	return resp.SessionID, nil
+}
+
 // buildSessionContext reconstructs the judge's session context from the prior
 // invocations Atryum recorded for sessionID (oldest to newest). Each entry
 // carries the tool, the agent-chosen input, the approval disposition, and the
@@ -1073,6 +1233,9 @@ func (s *Service) finishExecution(ctx context.Context, inv Invocation, upstream 
 	if err := s.invocations.UpdateResult(ctx, inv); err != nil {
 		return InvocationResponse{}, err
 	}
+	if inv.Status == StatusSucceeded {
+		s.completePlanAfterSuccessfulFinalAction(ctx, inv)
+	}
 	return s.toResponse(inv), nil
 }
 
@@ -1220,18 +1383,36 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	}
 	agentRec := s.resolveAgentRecord(ctx, agentID)
 
-	// Invocations API session: when the harness presents an Atryum-minted
-	// session_id, verify it belongs to this agent and rebuild the judge's
-	// session context from the prior invocations we recorded for it. Built
-	// before Create() so the current call is excluded from its own context.
-	// This supersedes any harness-supplied SessionContext on the API path.
+	// Invocations API session: resolve the internal session and rebuild the
+	// judge's context from the prior invocations Atryum recorded for it. Built
+	// before Create() so the current call is excluded from its own context, and
+	// it supersedes any harness-supplied SessionContext on the API path.
+	//
+	// Two ways in:
+	//   - Explicit session_id (deprecated, back-compat): verify it belongs to
+	//     this agent; ownership/expiry/unbound rejections stay hard.
+	//   - client_session_id (preferred): get-or-create keyed by (agent binding,
+	//     client_session_id). No binding or empty client_session_id → no session
+	//     → history-free evaluation (same rule as an anonymous caller today).
 	var sessionID string
-	if req.SessionID != "" {
+	switch {
+	case req.SessionID != "":
 		sess, err := s.lookupSessionForAgent(ctx, req.SessionID, agentID)
 		if err != nil {
 			return InvocationResponse{}, err
 		}
 		sessionID = sess.ID
+		sessionContext, sessionContextMessages = s.buildSessionContext(ctx, sessionID)
+	case s.sessions != nil && agentID != "" && strings.TrimSpace(req.ClientSessionID) != "":
+		harness := req.ClientName
+		if harness == "" {
+			harness = source
+		}
+		resolved, err := s.getOrCreateSession(ctx, agentID, req.ClientSessionID, harness)
+		if err != nil {
+			return InvocationResponse{}, err
+		}
+		sessionID = resolved
 		sessionContext, sessionContextMessages = s.buildSessionContext(ctx, sessionID)
 	}
 
@@ -1276,13 +1457,91 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	if sessionID != "" {
 		_ = s.sessions.TouchSession(ctx, sessionID, now.Add(externalSessionTTL)) // best-effort last-seen/expiry bump
 	}
+
+	// An approved plan grants a scoped pass. The association is implicit —
+	// the agent's newest approved plan scoped to this source — because harness
+	// tool-input schemas leave the agent no channel to declare a plan id. A
+	// scoped call is gated exclusively by the plan flow: a status poll
+	// auto-approves, the adherence judge confirms or denies everything else,
+	// and an unverifiable call goes straight to a human, bypassing approval
+	// rules. Unmatched calls get normal gating.
+	if planMatch, ok, ambiguous := s.matchApprovedPlan(ctx, agentID, source, req.Tool); ok || ambiguous {
+		planID := planMatch.Plan.PlanID
+		inv.PlanID = &planID
+		var reason string
+		var confidence *float64
+		var outcome planGateOutcome
+		if ambiguous {
+			planMatch, reason, confidence, outcome = s.ambiguousApprovedPlanPass(ctx, planMatch.Plan, agentRec, source, req.Tool, req.Input, sessionContext)
+		} else {
+			reason, confidence, outcome = s.approvedPlanPass(ctx, planMatch, agentRec, source, req.Tool, req.Input, sessionContext)
+		}
+		if outcome == planGateApprovePoll {
+			// A judged status poll grants the pass without binding a plan
+			// step: binding one would advance the execution-order high-water
+			// mark and could complete the plan before its real actions run.
+			// Downstream handling is identical to a plan approval.
+			outcome = planGateApprove
+		} else if planMatch.Action.Tool != "" && !planStatusFastPass(s.planPollOrigins, planID, req.Input) {
+			stepIndex := planMatch.ActionIndex
+			inv.PlanStepIndex = &stepIndex
+		}
+
+		planPayload := map[string]any{"tool": req.Tool, "upstream": source, "request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "external": true, "plan_id": planID}
+		if agentID != "" {
+			planPayload["agent_id"] = agentID
+		}
+
+		switch outcome {
+		case planGateApprove:
+			inv.Status = StatusApproved
+			inv.Approval = newApproval("plan_approved", reason, confidence)
+			if err := s.invocations.UpdateResult(ctx, inv); err != nil {
+				return InvocationResponse{}, err
+			}
+			planPayload["disposition"] = "plan_approved"
+			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(planPayload), CreatedAt: now})
+			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.approved", Payload: mustJSON(map[string]any{"plan_id": planID, "auto_approved": true, "auto_reason": reason}), CreatedAt: time.Now().UTC()})
+			return s.toResponse(inv), nil
+
+		case planGateDeny:
+			completed := time.Now().UTC()
+			inv.Status = StatusDenied
+			inv.CompletedAt = &completed
+			inv.Approval = newApproval("plan_denied", reason, confidence)
+			inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": "Tool call denied: " + reason}}, "isError": true})
+			_ = s.invocations.UpdateResult(context.Background(), inv)
+			planPayload["disposition"] = "plan_denied"
+			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(planPayload), CreatedAt: now})
+			_ = s.events.Create(context.Background(), Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"plan_id": planID, "reason": reason, "confidence": confidence}), CreatedAt: completed})
+			return s.toResponse(inv), nil
+
+		default: // planGateHuman: adherence unverifiable — straight to a human.
+			inv.Status = StatusPendingApproval
+			inv.Approval = newApproval("plan_escalated", reason, confidence)
+			if err := s.invocations.UpdateResult(ctx, inv); err != nil {
+				return InvocationResponse{}, err
+			}
+			planPayload["disposition"] = "plan_escalated"
+			planPayload["disposition_reason"] = reason
+			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(planPayload), CreatedAt: now})
+			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.pending_approval", Payload: mustJSON(planPayload), CreatedAt: time.Now().UTC()})
+			s.summarizePendingApproval(inv.InvocationID)
+			return s.toResponse(inv), nil
+		}
+	}
 	ruleAction := ""
 	ruleDeferred := false
 	var matchedRuleID *string
 	var resolvedAIDecision *policy.Decision
 	var resolvedAIConfidence *float64
 	if s.rules != nil {
-		if approvalRules, err := s.rules.ListApprovalRules(ctx); err == nil {
+		approvalRules, err := s.rules.ListApprovalRules(ctx)
+		if err != nil {
+			slog.Error("failed to load approval rules; failing closed to human review",
+				"error", err, "source", source, "tool", req.Tool)
+			s.emitRuleEvaluatedEvent(ctx, inv.InvocationID, "", "", policy.Decision{Disposition: policy.DispositionHuman, Reason: "rule lookup failed: " + err.Error()}, nil)
+		} else {
 			for _, rule := range matchRules(approvalRules, source, req.Tool, agentRec.ID) {
 				r := rule
 				if r.ID != "" {
@@ -1453,10 +1712,37 @@ func (s *Service) summarizePendingApproval(invocationID string) {
 	}()
 }
 
+// ErrInvalidTransition is returned by RecordExecution when the reported
+// execution status is not reachable from the invocation's current status —
+// e.g. an executor claiming "completed" while the invocation is still
+// pending_approval, or after a human denied it.
+var ErrInvalidTransition = errors.New("invalid execution status transition")
+
+// ErrNotOwner is returned by RecordExecution when the verified agent identity
+// on the request does not match the agent the invocation belongs to.
+var ErrNotOwner = errors.New("invocation belongs to a different agent")
+
+// requireStatus rejects an execution-status transition unless the invocation
+// is currently in one of the allowed states.
+func requireStatus(inv Invocation, target string, allowed ...Status) error {
+	for _, status := range allowed {
+		if inv.Status == status {
+			return nil
+		}
+	}
+	return fmt.Errorf("invocation %s cannot move to %s from %s: %w", inv.InvocationID, target, inv.Status, ErrInvalidTransition)
+}
+
 // RecordExecution updates an externally-executed invocation with the outcome
 // reported by the executor. Valid execStatus values:
 //
 //	running | completed | failed | cancelled
+//
+// Transitions are guarded: an outcome may only be recorded once the invocation
+// has been approved (or, for cancelled, while it is still awaiting approval —
+// abandoning a pending call is always safe). Reporting the same terminal
+// status twice is an idempotent no-op so executors can retry safely; the
+// first recorded outcome wins and is never overwritten.
 func (s *Service) RecordExecution(ctx context.Context, invocationID string, update ExternalExecutionUpdate) (InvocationResponse, error) {
 	inv, err := s.invocations.Get(ctx, invocationID)
 	if err != nil {
@@ -1465,28 +1751,29 @@ func (s *Service) RecordExecution(ctx context.Context, invocationID string, upda
 	// Ownership: update.Result/Error are surfaced to the judge as trusted
 	// evidence, so a caller who knows another agent's invocation_id could
 	// poison that agent's session context. The PATCH
-	// /api/v1/external/invocations/{id} route now runs under the agent-runtime
+	// /api/v1/external/invocations/{id} route runs under the agent-runtime
 	// OAuth middleware, so in auth mode ctx carries the authenticated caller.
 	// When an identity is present, reject any attempt to write an invocation
 	// this agent does not own (inv.AgentID is set from the authenticated
-	// identity at Submit time, so a match proves ownership). In no-auth mode
-	// there is no identity to check against — behavior is unchanged, and the
-	// in-process managed-agents watcher (which calls RecordExecution directly
-	// with no auth identity) is likewise unaffected.
+	// identity at Submit time, so a match proves ownership). Invocations
+	// submitted anonymously (no agent_id) skip the ownership check. In no-auth
+	// mode there is no identity to check against — behavior is unchanged, and
+	// the in-process managed-agents watcher (which calls RecordExecution
+	// directly with no auth identity) is likewise unaffected.
 	if callerID := strings.TrimSpace(auth.AgentIDFromContext(ctx)); callerID != "" {
 		owner := ""
 		if inv.AgentID != nil {
 			owner = strings.TrimSpace(*inv.AgentID)
 		}
-		if owner != callerID {
-			return InvocationResponse{}, fmt.Errorf("invocation does not belong to this agent")
+		if owner != "" && owner != callerID {
+			return InvocationResponse{}, fmt.Errorf("invocation %s: %w", invocationID, ErrNotOwner)
 		}
 	}
 	now := time.Now().UTC()
 	switch update.ExecutionStatus {
 	case "running":
-		if inv.Status != StatusApproved && inv.Status != StatusExecuting {
-			return InvocationResponse{}, fmt.Errorf("invocation %s cannot move to running from %s", invocationID, inv.Status)
+		if err := requireStatus(inv, "running", StatusApproved, StatusExecuting); err != nil {
+			return InvocationResponse{}, err
 		}
 		inv.Status = StatusExecuting
 		if err := s.invocations.UpdateResult(ctx, inv); err != nil {
@@ -1494,6 +1781,12 @@ func (s *Service) RecordExecution(ctx context.Context, invocationID string, upda
 		}
 		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.executing", Payload: mustJSON(map[string]any{"upstream": inv.Upstream, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "external": true}), CreatedAt: now})
 	case "completed":
+		if inv.Status == StatusSucceeded {
+			return s.toResponse(inv), nil // idempotent retry
+		}
+		if err := requireStatus(inv, "completed", StatusApproved, StatusExecuting); err != nil {
+			return InvocationResponse{}, err
+		}
 		inv.Status = StatusSucceeded
 		inv.CompletedAt = &now
 		if len(update.Result) > 0 {
@@ -1503,7 +1796,14 @@ func (s *Service) RecordExecution(ctx context.Context, invocationID string, upda
 			return InvocationResponse{}, err
 		}
 		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.succeeded", Payload: mustJSON(map[string]any{"upstream": inv.Upstream, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "body": json.RawMessage(nullableRaw(inv.Response)), "external": true}), CreatedAt: now})
+		s.completePlanAfterSuccessfulFinalAction(ctx, inv)
 	case "failed":
+		if inv.Status == StatusFailed {
+			return s.toResponse(inv), nil // idempotent retry
+		}
+		if err := requireStatus(inv, "failed", StatusApproved, StatusExecuting); err != nil {
+			return InvocationResponse{}, err
+		}
 		inv.Status = StatusFailed
 		inv.CompletedAt = &now
 		if len(update.Error) > 0 {
@@ -1518,6 +1818,14 @@ func (s *Service) RecordExecution(ctx context.Context, invocationID string, upda
 		}
 		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.failed", Payload: mustJSON(map[string]any{"upstream": inv.Upstream, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "body": json.RawMessage(inv.Error), "external": true}), CreatedAt: now})
 	case "cancelled":
+		if inv.Status == StatusCancelled {
+			return s.toResponse(inv), nil // idempotent retry
+		}
+		// pending_approval is allowed here: an executor abandoning a call
+		// that never got approved makes the record strictly more conservative.
+		if err := requireStatus(inv, "cancelled", StatusApproved, StatusExecuting, StatusPendingApproval); err != nil {
+			return InvocationResponse{}, err
+		}
 		inv.Status = StatusCancelled
 		inv.CompletedAt = &now
 		if len(update.Error) > 0 {
@@ -1624,9 +1932,12 @@ func (s *Service) SetSummary(ctx context.Context, invocationID string, summary s
 }
 
 func (s *Service) toResponse(inv Invocation) InvocationResponse {
-	resp := InvocationResponse{InvocationID: inv.InvocationID, ServerName: inv.Upstream, ToolName: inv.Tool, Status: inv.Status, Approval: inv.Approval, MatchedRuleID: inv.MatchedRuleID, AgentID: inv.AgentID, RequestID: inv.RequestID, SubmittedAt: inv.SubmittedAt, CompletedAt: inv.CompletedAt}
+	resp := InvocationResponse{InvocationID: inv.InvocationID, ServerName: inv.Upstream, ToolName: inv.Tool, Status: inv.Status, Approval: inv.Approval, MatchedRuleID: inv.MatchedRuleID, PlanID: inv.PlanID, AgentID: inv.AgentID, RequestID: inv.RequestID, SubmittedAt: inv.SubmittedAt, CompletedAt: inv.CompletedAt}
 	if inv.Summary != nil {
 		resp.Summary = *inv.Summary
+	}
+	if inv.SessionID != nil {
+		resp.SessionID = inv.SessionID
 	}
 	if inv.ClientName != nil {
 		resp.AgentClientName = inv.ClientName

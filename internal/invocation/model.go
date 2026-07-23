@@ -38,7 +38,14 @@ type Invocation struct {
 	Status         Status    `json:"status"`
 	Approval       *Approval `json:"approval"`
 	MatchedRuleID  *string   `json:"matched_rule_id,omitempty"`
-	AgentID        *string   `json:"agent_id,omitempty"`
+	// PlanID links this invocation to the approved plan whose pass
+	// auto-approved it, when applicable.
+	PlanID *string `json:"plan_id,omitempty"`
+	// PlanStepIndex is the zero-based position of the declared plan action
+	// matched by this invocation. It is internal state used to prevent a plan
+	// from moving backwards after a later step has run.
+	PlanStepIndex *int    `json:"-"`
+	AgentID       *string `json:"agent_id,omitempty"`
 	// SessionID links this invocation to an external harness session (see
 	// ExternalSession). Set on the Invocations API path so the judge can be
 	// given the session's prior tool calls as context.
@@ -72,6 +79,7 @@ type InvocationListFilter struct {
 	Tool       string
 	Status     string
 	AgentIDs   []string // filters to invocations whose agent_id is in this list
+	PlanID     string   // filters to invocations linked to one approved plan
 	SessionID  string   // filters to invocations belonging to one external session
 	ClientName string
 	StartDate  *time.Time
@@ -114,10 +122,21 @@ type ExternalSubmitRequest struct {
 	RequestID      *string        `json:"request_id,omitempty"`
 	IdempotencyKey *string        `json:"idempotency_key,omitempty"`
 	ThreadID       string         `json:"thread_id,omitempty"`
-	// SessionID is an Atryum-minted session identifier (from POST
+	// ClientSessionID is the harness's own session/thread identifier (the id it
+	// already tracks for its host conversation). When set and no SessionID is
+	// provided, Atryum resolves the internal session with get-or-create
+	// semantics keyed by (agent binding, client_session_id): first sight mints
+	// the internal ses_ row, subsequent calls reuse it, and an expired row under
+	// the same key rolls over to a fresh session. This is the preferred path —
+	// the harness never has to mint, persist, or echo an Atryum session id.
+	ClientSessionID string `json:"client_session_id,omitempty"`
+	// Deprecated: prefer ClientSessionID (server-side get-or-create). SessionID
+	// is an Atryum-minted session identifier (from the deprecated POST
 	// /api/v1/external/sessions). When set, Atryum reconstructs the judge's
 	// session context from the prior invocations it recorded for this session,
-	// rather than trusting a harness-supplied context blob.
+	// rather than trusting a harness-supplied context blob. Still fully
+	// functional; the ownership/expiry/unbound rejections on this path remain
+	// hard.
 	SessionID string `json:"session_id,omitempty"`
 	// SessionContext is the agent's recent session history (human messages and
 	// tool calls/results) passed to the LLM judge. It is populated in-process by
@@ -165,7 +184,13 @@ type InvocationResponse struct {
 	Status        Status    `json:"status"`
 	Approval      *Approval `json:"approval"`
 	MatchedRuleID *string   `json:"matched_rule_id,omitempty"`
+	PlanID        *string   `json:"plan_id,omitempty"`
 	AgentID       *string   `json:"agent_id,omitempty"`
+	// SessionID is the internal Atryum session (ses_...) this invocation was
+	// linked to, if any. Exposed for observability/debugging — clients never
+	// need to send it back. Populated on both the explicit session_id path and
+	// the client_session_id get-or-create path.
+	SessionID *string `json:"session_id,omitempty"`
 	// AgentClientName / AgentClientVersion identify the MCP client software
 	// (e.g. "amp", "cursor", "claude-code") captured from the most recent
 	// `initialize` handshake associated with this AgentID. They describe the

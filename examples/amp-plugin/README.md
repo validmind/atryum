@@ -91,7 +91,7 @@ To remove the global plugin later:
 | `ATRYUM_TOKEN_REFRESH_SKEW_MS`    | `60000`                           | refresh command cache skew before token expiry                                                                             |
 | `ATRYUM_TOKEN_COMMAND_TIMEOUT_MS` | `10000`                           | timeout for the token command subprocess                                                                                   |
 | `ATRYUM_STATE_DIR`                | `~/.atryum/amp-plugin-state`      | directory for the on-disk token cache (`token-cache.json`, mode 0600)                                                      |
-| `ATRYUM_AMP_SESSION_FILE`         | `~/.local/share/amp/session.json` | Amp session state file used to label the Atryum session with Amp's thread id                                              |
+| `ATRYUM_AMP_SESSION_FILE`         | `~/.local/share/amp/session.json` | Amp session state file used to derive Amp's thread id, sent as `client_session_id`                                        |
 
 ## LLM-as-judge session context
 
@@ -99,17 +99,31 @@ The plugin does **not** send a free-form chat/context blob to Atryum. The
 harness is trusted to report _which_ session a tool call belongs to, but a
 runaway agent must not be able to hand the judge arbitrary text to poison it.
 
-Instead, on the first tool call the plugin mints an Atryum session via
-`POST /api/v1/external/sessions` (passing `harness` and, for cross-referencing
-only, Amp's own thread id as `client_session_id`). It caches the returned
-`session_id` for the lifetime of the process and echoes it on every
-`POST /api/v1/external/invocations`. Atryum then reconstructs the judge's
-context from the prior tool calls it recorded for that session — trusting tool
-outputs more than tool inputs, and ignoring agent chat entirely.
+Instead, the plugin sends Amp's own thread id as `client_session_id` on every
+`POST /api/v1/external/invocations` and lets Atryum manage the session
+server-side. Atryum resolves the internal session with get-or-create keyed by
+(agent binding, `client_session_id`) and reconstructs the judge's context from
+the prior tool calls it recorded for that session — trusting tool outputs more
+than tool inputs, and ignoring agent chat entirely. The plugin never mints,
+persists, or echoes an Atryum session id.
 
-If session creation fails, the plugin falls back to submitting without a
-`session_id` (tool calls are still gated, just without prior-call context)
-rather than blocking the agent.
+If the caller has no agent binding, Atryum simply resolves no session and
+evaluates the call history-free (tool calls are still gated, just without
+prior-call context) rather than blocking the agent.
+
+## Preapproval plans
+
+When plans are enabled, the plugin injects plan submission guidance into the
+first agent turn after every `session.start` and
+also repeats it in blocked tool messages as a fallback. It discovers support
+via `GET /api/v1/agent/rules`. The agent can submit a batch plan to
+`POST /api/v1/external/plans?source=<source>` (the hint provides the exact
+endpoint; the source parameter scopes the plan's actions to this harness so
+later tool calls match), wait for approval, and then continue with normal
+tool calls. Atryum's adherence judge checks each call matching a declared
+action against the approved plan: confirmed calls are preapproved until the
+final action succeeds or the plan expires, off-plan calls are denied, and polling the approved plan's
+status URL is always allowed.
 
 ## Tagging invocations to an Agent Record
 

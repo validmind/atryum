@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,12 +14,12 @@ import (
 	"testing"
 	"time"
 
-	"atryum/internal/auth"
-	"atryum/internal/config"
-	"atryum/internal/invocation"
-	"atryum/internal/invocation/policy"
-	"atryum/internal/mcp"
-	"atryum/internal/store"
+	"github.com/validmind/atryum/internal/auth"
+	"github.com/validmind/atryum/internal/config"
+	"github.com/validmind/atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/invocation/policy"
+	"github.com/validmind/atryum/internal/mcp"
+	"github.com/validmind/atryum/internal/store"
 
 	_ "modernc.org/sqlite"
 )
@@ -117,6 +118,119 @@ func TestBusinessToolErrorMarksInvocationFailed(t *testing.T) {
 	}
 	if len(resp.Error) == 0 {
 		t.Fatal("expected error payload")
+	}
+}
+
+// TestInvokeFailsClosedWhenRuleLoadFails verifies that a failure loading
+// approval rules (e.g. a locked SQLite connection) is not treated as "no
+// rules matched" and does not fall through to the permissive global policy.
+// It must fail closed, matching Submit's behavior on the same error.
+func TestInvokeFailsClosedWhenRuleLoadFails(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		switch body["method"] {
+		case "initialize":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0", "id": body["id"],
+				"result": map[string]any{"serverInfo": map[string]any{"name": "fake", "version": "0.1.0"}, "capabilities": map[string]any{}},
+			})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/call":
+			// Should never be reached: a failed-closed invocation waits for a
+			// human and never executes the tool.
+			t.Error("tool executed despite the rule load failure; should have failed closed")
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"content": []map[string]any{{"type": "text", "text": "ok"}}}})
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer upstream.Close()
+
+	db := newSQLiteTestDB(t)
+	serverRepo := store.NewServerRepo(db)
+	resolver := mcp.NewResolver(serverRepo, config.Config{
+		Upstreams: []config.UpstreamConfig{{Name: "shortcut", Mode: "http", BaseURL: upstream.URL, Enabled: true, TimeoutSeconds: 5}},
+	})
+	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	service := invocation.NewService(
+		store.NewInvocationRepo(db),
+		store.NewEventRepo(db),
+		resolver,
+		mcp.NewHTTPClient(),
+		policy.AlwaysApproveProvider{}, // the operator's permissive global fallback
+		5*time.Second,
+		rulesStoreStub{err: errors.New("database is locked")}, // simulates the transient DB hiccup
+		nil, nil, nil,
+	)
+
+	// If Invoke correctly fails closed, it blocks in waitForHumanApproval, so
+	// this goroutine denies the invocation once it shows up pending — proving
+	// it reached human review rather than the permissive global policy. If
+	// Invoke instead falls through to the bug's auto-approve path, Invoke
+	// returns before this goroutine ever finds a pending invocation to act on.
+	go denyNextInvocation(t, service, 50*time.Millisecond)
+
+	resp, err := service.Invoke(context.Background(), invocation.CreateInvocationRequest{
+		Server: "shortcut",
+		Tool:   "dangerous-tool",
+		Input:  map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusDenied {
+		t.Fatalf("status = %q, want denied (a rule-load failure must fail closed to human review, not fall through to the global policy)", resp.Status)
+	}
+}
+
+// TestSubmitLogsAndAuditsRuleLoadFailure verifies that Submit records a
+// rule-lookup failure in the invocation's audit trail instead of discarding
+// it. Submit already fell back to pending_approval before this fix (unlike
+// Invoke, it has no global-policy fallback to accidentally fall through to),
+// but it did so silently: the error was dropped with no log line and no
+// event, so an operator investigating a stuck pending_approval invocation
+// could not distinguish "no rules matched" from "the rule store errored."
+func TestSubmitLogsAndAuditsRuleLoadFailure(t *testing.T) {
+	db := newSQLiteTestDB(t)
+	service := invocation.NewService(
+		store.NewInvocationRepo(db),
+		store.NewEventRepo(db),
+		nil, nil, nil,
+		5*time.Second,
+		rulesStoreStub{err: errors.New("database is locked")}, // simulates the transient DB hiccup
+		nil, nil, nil,
+	)
+
+	resp, err := service.Submit(context.Background(), invocation.ExternalSubmitRequest{
+		Source: "amp",
+		Tool:   "dangerous-tool",
+		Input:  map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != invocation.StatusPendingApproval {
+		t.Fatalf("status = %q, want pending_approval", resp.Status)
+	}
+
+	events, err := service.Events(context.Background(), resp.InvocationID, invocation.EventListFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, evt := range events.Items {
+		if evt.Type == "invocation.rule_evaluated" && jsonContains(evt.Data, "rule lookup failed") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected an invocation.rule_evaluated event recording the rule lookup failure; got none — the error was silently dropped")
 	}
 }
 
@@ -727,11 +841,15 @@ func TestRecordExecutionRejectsMismatchedAuthenticatedCaller(t *testing.T) {
 	attacker := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "attacker"})
 	if _, err := service.RecordExecution(attacker, inv.InvocationID, invocation.ExternalExecutionUpdate{
 		ExecutionStatus: "completed", Result: json.RawMessage(`{"stdout":"pwned"}`),
-	}); err == nil || !strings.Contains(err.Error(), "does not belong") {
-		t.Fatalf("expected ownership rejection, got %v", err)
+	}); err == nil || !errors.Is(err, invocation.ErrNotOwner) {
+		t.Fatalf("expected ErrNotOwner, got %v", err)
 	}
 
-	// The owning agent succeeds.
+	if err := service.Approve(context.Background(), inv.InvocationID, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// The owning agent succeeds once the invocation is approved.
 	if _, err := service.RecordExecution(owner, inv.InvocationID, invocation.ExternalExecutionUpdate{
 		ExecutionStatus: "completed", Result: json.RawMessage(`{"stdout":"file.txt"}`),
 	}); err != nil {
@@ -746,10 +864,13 @@ func TestRecordExecutionRejectsMismatchedAuthenticatedCaller(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := service.Approve(context.Background(), noauth.InvocationID, ""); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := service.RecordExecution(context.Background(), noauth.InvocationID, invocation.ExternalExecutionUpdate{
 		ExecutionStatus: "completed", Result: json.RawMessage(`{"stdout":"ok"}`),
 	}); err != nil {
-		t.Fatalf("no-auth RecordExecution should be unchanged: %v", err)
+		t.Fatalf("no-auth RecordExecution should succeed after approval: %v", err)
 	}
 }
 
@@ -872,6 +993,242 @@ func TestSubmitSucceedsWithProperlyBoundSession(t *testing.T) {
 		Source: "amp", Tool: "bash", Input: map[string]any{"cmd": "ls"}, SessionID: sess.SessionID,
 	}); err != nil {
 		t.Fatalf("expected properly bound session to succeed, got %v", err)
+	}
+}
+
+// newGetOrCreateTestService builds a service wired with an AI-evaluation rule
+// and a real session store, returning the evaluator so tests can inspect the
+// judge context. Mirrors the setup in
+// TestSubmitWithSessionReconstructsContextFromPriorInvocations.
+func newGetOrCreateTestService(t *testing.T, db *sql.DB) (*invocation.Service, *evaluateClientStub) {
+	t.Helper()
+	evaluator := &evaluateClientStub{resp: invocation.EvaluateResponse{Verdict: "approved", Reason: "ok"}}
+	defaultAgent := invocation.AgentRecord{ID: "a", VMCUID: "vm-a", VMOrganizationCUID: "org", Charter: "c"}
+	service := invocation.NewService(
+		store.NewInvocationRepo(db), store.NewEventRepo(db), nil, nil, nil, 5*time.Second,
+		rulesStoreStub{rules: []invocation.ApprovalRule{{
+			Action:          invocation.RuleActionAIEvaluation,
+			ModelConfigCUID: "model-ai",
+			Enabled:         true,
+		}}},
+		agentLookupStub{byVMCUID: map[string]invocation.AgentRecord{defaultAgent.VMCUID: defaultAgent}},
+		evaluator,
+		summarySettingsStub{charterFieldKey: "charter", defaultAgentVMCUID: defaultAgent.VMCUID},
+	)
+	service.SetSessionStore(store.NewExternalSessionRepo(db))
+	return service, evaluator
+}
+
+// TestSubmitGetOrCreateCreatesThenReusesSession pins the core get-or-create
+// contract: a submit carrying only client_session_id (no session_id) mints the
+// internal ses_ row on first sight, reuses it on the second call under the same
+// key, reconstructs context from the prior recorded invocation, and returns the
+// resolved session id in the response.
+func TestSubmitGetOrCreateCreatesThenReusesSession(t *testing.T) {
+	db := newSQLiteTestDB(t)
+	service, evaluator := newGetOrCreateTestService(t, db)
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "amp-1"})
+
+	first, err := service.Submit(ctx, invocation.ExternalSubmitRequest{
+		Source: "amp", Tool: "bash", Input: map[string]any{"cmd": "ls"}, ClientSessionID: "thread-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.SessionID == nil || *first.SessionID == "" {
+		t.Fatal("expected resolved session id on first submit response")
+	}
+	if !strings.HasPrefix(*first.SessionID, "ses_") {
+		t.Fatalf("expected internal ses_ id, got %q", *first.SessionID)
+	}
+	if c := evaluator.request().Context; strings.Contains(c, "tool=bash") {
+		t.Fatalf("first call should have no prior history: %q", c)
+	}
+	if _, err := service.RecordExecution(ctx, first.InvocationID, invocation.ExternalExecutionUpdate{
+		ExecutionStatus: "completed", Result: json.RawMessage(`{"stdout":"file.txt"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := service.Submit(ctx, invocation.ExternalSubmitRequest{
+		Source: "amp", Tool: "cat", Input: map[string]any{"path": "file.txt"}, ClientSessionID: "thread-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.SessionID == nil || *second.SessionID != *first.SessionID {
+		t.Fatalf("expected reuse of session %q, got %v", *first.SessionID, second.SessionID)
+	}
+	c := evaluator.request().Context
+	if !strings.Contains(c, `tool=bash disposition=succeeded`) || !strings.Contains(c, `{"stdout":"file.txt"}`) {
+		t.Fatalf("second call missing reconstructed context:\n%s", c)
+	}
+	if strings.Contains(c, "tool=cat") {
+		t.Fatalf("current call leaked into its own context:\n%s", c)
+	}
+
+	// Exactly one internal session row was minted across both calls.
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM external_sessions`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly one session row, got %d", count)
+	}
+}
+
+// TestSubmitGetOrCreateRollsOverExpiredKey pins that when the live session under
+// a key has expired, a submit rolls over to a fresh internal session and the
+// judge context resets rather than resurrecting the expired session's history.
+func TestSubmitGetOrCreateRollsOverExpiredKey(t *testing.T) {
+	db := newSQLiteTestDB(t)
+	service, evaluator := newGetOrCreateTestService(t, db)
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "amp-1"})
+
+	first, err := service.Submit(ctx, invocation.ExternalSubmitRequest{
+		Source: "amp", Tool: "bash", Input: map[string]any{"cmd": "ls"}, ClientSessionID: "thread-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstID := *first.SessionID
+	if _, err := service.RecordExecution(ctx, first.InvocationID, invocation.ExternalExecutionUpdate{
+		ExecutionStatus: "completed", Result: json.RawMessage(`{"stdout":"file.txt"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Expire every session row under this key.
+	if _, err := db.Exec(`UPDATE external_sessions SET expires_at = ?`, time.Now().UTC().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := service.Submit(ctx, invocation.ExternalSubmitRequest{
+		Source: "amp", Tool: "cat", Input: map[string]any{"path": "file.txt"}, ClientSessionID: "thread-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.SessionID == nil || *second.SessionID == firstID {
+		t.Fatalf("expected rollover to a fresh session, still %v", second.SessionID)
+	}
+	if c := evaluator.request().Context; strings.Contains(c, "tool=bash") {
+		t.Fatalf("rolled-over session must start history-free:\n%s", c)
+	}
+
+	// The expired row stays for audit; the rollover adds a second row.
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM external_sessions`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("expected the expired row plus the rolled-over row, got %d", count)
+	}
+}
+
+// TestSubmitGetOrCreateIsolatesAgentsByBinding pins cross-agent isolation: the
+// same client_session_id under two different agent bindings resolves to two
+// different sessions with no context bleed. The key is namespaced by the binding.
+func TestSubmitGetOrCreateIsolatesAgentsByBinding(t *testing.T) {
+	db := newSQLiteTestDB(t)
+	service, evaluator := newGetOrCreateTestService(t, db)
+
+	agentA := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "agent-a"})
+	agentB := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "agent-b"})
+
+	a1, err := service.Submit(agentA, invocation.ExternalSubmitRequest{
+		Source: "amp", Tool: "bash", Input: map[string]any{"cmd": "secret-a"}, ClientSessionID: "shared-thread",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RecordExecution(agentA, a1.InvocationID, invocation.ExternalExecutionUpdate{
+		ExecutionStatus: "completed", Result: json.RawMessage(`{"stdout":"A-PRIVATE"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	b1, err := service.Submit(agentB, invocation.ExternalSubmitRequest{
+		Source: "amp", Tool: "cat", Input: map[string]any{"path": "x"}, ClientSessionID: "shared-thread",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a1.SessionID == nil || b1.SessionID == nil || *a1.SessionID == *b1.SessionID {
+		t.Fatalf("same client_session_id under different agents must not share a session: %v vs %v", a1.SessionID, b1.SessionID)
+	}
+	if c := evaluator.request().Context; strings.Contains(c, "A-PRIVATE") || strings.Contains(c, "secret-a") {
+		t.Fatalf("agent A's history bled into agent B's context:\n%s", c)
+	}
+}
+
+// TestSubmitGetOrCreateNoSessionWithoutBindingOrClientID pins the two
+// degrade-to-history-free cases: no agent binding, or an empty
+// client_session_id. Neither mints a session; evaluation is history-free.
+func TestSubmitGetOrCreateNoSessionWithoutBindingOrClientID(t *testing.T) {
+	db := newSQLiteTestDB(t)
+	service, _ := newGetOrCreateTestService(t, db)
+
+	// (a) client_session_id present but no binding (fully anonymous caller).
+	anon, err := service.Submit(context.Background(), invocation.ExternalSubmitRequest{
+		Source: "amp", Tool: "bash", Input: map[string]any{"cmd": "ls"}, ClientSessionID: "thread-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if anon.SessionID != nil {
+		t.Fatalf("no binding must yield no session, got %v", *anon.SessionID)
+	}
+
+	// (b) valid binding but empty client_session_id.
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "amp-1"})
+	noID, err := service.Submit(ctx, invocation.ExternalSubmitRequest{
+		Source: "amp", Tool: "bash", Input: map[string]any{"cmd": "ls"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if noID.SessionID != nil {
+		t.Fatalf("empty client_session_id must yield no session, got %v", *noID.SessionID)
+	}
+
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM external_sessions`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("expected no sessions created, got %d", count)
+	}
+}
+
+// TestSubmitExplicitSessionIDWinsOverClientSessionID pins that when both a
+// session_id and a client_session_id are supplied, the explicit session_id path
+// wins and no second session is minted from the client_session_id.
+func TestSubmitExplicitSessionIDWinsOverClientSessionID(t *testing.T) {
+	db := newSQLiteTestDB(t)
+	service, _ := newGetOrCreateTestService(t, db)
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "amp-1"})
+
+	sess, err := service.CreateSession(ctx, invocation.CreateSessionRequest{Harness: "amp"}, "amp-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := service.Submit(ctx, invocation.ExternalSubmitRequest{
+		Source: "amp", Tool: "bash", Input: map[string]any{"cmd": "ls"},
+		SessionID: sess.SessionID, ClientSessionID: "thread-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.SessionID == nil || *resp.SessionID != sess.SessionID {
+		t.Fatalf("expected explicit session %q to win, got %v", sess.SessionID, resp.SessionID)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM external_sessions`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("client_session_id must not mint a second session on the explicit path, got %d rows", count)
 	}
 }
 
@@ -1086,10 +1443,11 @@ func (s summarySettingsStub) SummarySettings(context.Context) (string, string) {
 
 type rulesStoreStub struct {
 	rules []invocation.ApprovalRule
+	err   error
 }
 
 func (s rulesStoreStub) ListApprovalRules(context.Context) ([]invocation.ApprovalRule, error) {
-	return s.rules, nil
+	return s.rules, s.err
 }
 
 type agentLookupStub struct {
@@ -1149,6 +1507,25 @@ func approveNextInvocation(t *testing.T, service *invocation.Service, delay time
 	}
 	if err := service.Approve(context.Background(), pending.InvocationID, ""); err != nil {
 		t.Errorf("approve invocation: %v", err)
+	}
+}
+
+func denyNextInvocation(t *testing.T, service *invocation.Service, delay time.Duration) {
+	time.Sleep(delay)
+	list, err := service.List(context.Background(), invocation.InvocationListFilter{Limit: 10})
+	// Return silently when there's nothing pending — this is expected when the
+	// invocation completed (auto-approved) before this goroutine runs, which
+	// is exactly the failure mode this test is checking for. Calling
+	// t.Errorf after the test has completed causes a panic.
+	if err != nil || len(list.Items) == 0 {
+		return
+	}
+	pending := list.Items[0]
+	if pending.Status != invocation.StatusPendingApproval {
+		return
+	}
+	if err := service.Deny(context.Background(), pending.InvocationID, "test: proving fail-closed behavior", ""); err != nil {
+		t.Errorf("deny invocation: %v", err)
 	}
 }
 

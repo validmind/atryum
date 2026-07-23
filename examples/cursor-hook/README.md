@@ -4,7 +4,7 @@ A Cursor command-hook adapter that gates Cursor agent tool calls through Atryum
 before execution, then reports successful results back for audit.
 
 Cursor's hook surface is still evolving. This adapter targets the current
-`preToolUse` / `postToolUse` command hook shape used by Cursor plugins and
+`sessionStart` / `preToolUse` / `postToolUse` command hook shape used by Cursor plugins and
 `.cursor/hooks.json`.
 
 ## Install
@@ -23,6 +23,12 @@ Then add this to `~/.cursor/hooks.json` for all projects, or to
 ```json
 {
   "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "command": "ATRYUM_HOOK_HOST=cursor ATRYUM_HOOK_EVENT=sessionStart ATRYUM_SOURCE=cursor node ~/.atryum/hooks/atryum-hook.mjs"
+      }
+    ],
     "preToolUse": [
       {
         "type": "command",
@@ -53,7 +59,7 @@ Restart Cursor after changing hooks.
 | `ATRYUM_TOKEN_COMMAND`            | _(empty)_                         | optional command run to mint each new token; prints a raw token with no whitespace or OAuth token JSON with `access_token` |
 | `ATRYUM_TOKEN_REFRESH_SKEW_MS`    | `60000`                           | refresh command cache skew before token expiry                                                                             |
 | `ATRYUM_TOKEN_COMMAND_TIMEOUT_MS` | `10000`                           | timeout for the token command subprocess                                                                                   |
-| `ATRYUM_STATE_DIR`                | `~/.atryum/agent-hook-state`      | tool-use to invocation-id state, the cached Atryum session, and the on-disk token cache (`token-cache.json`, mode 0600)     |
+| `ATRYUM_STATE_DIR`                | `~/.atryum/agent-hook-state`      | tool-use to invocation-id state and the on-disk token cache (`token-cache.json`, mode 0600)                                 |
 
 ## Authentication
 
@@ -118,23 +124,36 @@ chat/context blob to Atryum. The harness is trusted to report _which_ session a
 tool call belongs to, but a runaway agent must not be able to hand the judge
 arbitrary text to poison it.
 
-Instead, the hook mints an Atryum session via `POST /api/v1/external/sessions`
-(passing `harness` and, for cross-referencing only, Cursor's own session id as
-`client_session_id`). Because each hook invocation is a fresh process, the
-returned `session_id` is cached on disk under `$ATRYUM_STATE_DIR` keyed by the
-host session id and echoed on every `POST /api/v1/external/invocations`. Atryum
-then reconstructs the judge's context from the prior tool calls it recorded for
-that session — trusting tool outputs more than tool inputs, and ignoring agent
-chat entirely.
+Instead, the hook sends Cursor's own session id as `client_session_id` on every
+`POST /api/v1/external/invocations` and lets Atryum manage the session
+server-side. Atryum resolves the internal session with get-or-create keyed by
+(agent binding, `client_session_id`) and reconstructs the judge's context from
+the prior tool calls it recorded for that session — trusting tool outputs more
+than tool inputs, and ignoring agent chat entirely. Because the server manages
+the session, the hook keeps no session state on disk even though each hook
+invocation is a fresh process — no mint call, no cache file, no re-mint/retry.
 
-Sessions require an agent binding: `ATRYUM_AGENT_ID` (no-auth mode) or the
-bearer token (auth mode). With neither, the caller is anonymous and the hook
-submits without a `session_id` (tool calls are still gated, just without
-prior-call context). If a cached session is unknown, foreign, or expired, the
-hook mints a fresh one and retries the submit once.
+A session still requires an agent binding: `ATRYUM_AGENT_ID` (no-auth mode) or
+the bearer token (auth mode). With neither, the caller is anonymous and Atryum
+resolves no session, evaluating the call history-free (tool calls are still
+gated, just without prior-call context).
+
+## Preapproval plans
+
+When plans are enabled, the shared hook discovers that via
+`GET /api/v1/agent/rules` and injects plan-submission guidance at
+`sessionStart`. It also includes the guidance in a blocked tool message as a
+fallback. The agent can submit a batch plan to
+`POST /api/v1/external/plans?source=<source>` (the hint provides the exact
+endpoint; the source parameter scopes the plan's actions to this harness so
+later tool calls match), wait for approval, and then continue with normal
+tool calls. Atryum's adherence judge checks each call matching a declared
+action against the approved plan: confirmed calls are preapproved until the
+final action succeeds or the plan expires, off-plan calls are denied, and polling the approved plan's
+status URL is always allowed.
 
 ## Plugin packaging
 
 For a Cursor plugin, point the plugin manifest at a hooks file that contains
-the same `preToolUse` and `postToolUse` entries. Cursor plugin manifests support
-a `hooks` path or inline hooks object.
+the same `sessionStart`, `preToolUse`, and `postToolUse` entries. Cursor plugin
+manifests support a `hooks` path or inline hooks object.

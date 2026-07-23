@@ -9,11 +9,13 @@
 // Session context for the LLM-as-judge is NOT sent by this plugin. The harness
 // is trusted to report which session a tool call belongs to, but it does not
 // get to hand Atryum a free-form context blob (a runaway agent could use that
-// to poison the judge). Instead, the plugin mints an Atryum session once at
-// startup (POST /api/v1/external/sessions) and echoes the returned session_id
-// on every submission. Atryum reconstructs the judge's context from the prior
-// tool calls it recorded for that session, which it trusts at the appropriate
-// level (tool outputs > tool inputs > nothing from agent chat).
+// to poison the judge). Instead, the plugin sends Amp's own thread id as
+// `client_session_id` on every submission and lets Atryum manage the session
+// server-side: Atryum resolves the internal session with get-or-create keyed by
+// (agent binding, client_session_id) and reconstructs the judge's context from
+// the prior tool calls it recorded for that session, which it trusts at the
+// appropriate level (tool outputs > tool inputs > nothing from agent chat). The
+// plugin never mints, persists, or echoes an Atryum session id.
 //
 // Configure via env:
 //   ATRYUM_URL       base URL of the atryum server, default http://localhost:8080
@@ -38,8 +40,9 @@
 //                    token is refreshed on expiry and on a 401.
 //   ATRYUM_AMP_SESSION_FILE
 //                    override Amp session JSON file, default
-//                    ~/.local/share/amp/session.json. Used only to label the
-//                    session with Amp's own thread id (client_session_id).
+//                    ~/.local/share/amp/session.json. Used to derive Amp's own
+//                    thread id, sent as client_session_id so Atryum can group a
+//                    thread's tool calls into one server-managed session.
 
 import type { PluginAPI } from "@ampcode/plugin";
 import { exec } from "node:child_process";
@@ -71,6 +74,8 @@ const ENV_THREAD_ID =
 const CLIENT_NAME = process.env.ATRYUM_CLIENT_NAME || SOURCE;
 const CLIENT_VERSION =
   process.env.ATRYUM_CLIENT_VERSION || process.env.AMP_VERSION || "";
+// Per-message cap when trimming chat transcript entries.
+const MAX_MESSAGE_CHARS = 2000;
 // Self-declared agent identity. Atryum resolves the Agent Record via the
 // agents.agent_ids JSON array, so any string the user has added to an
 // Agent Record (e.g. "amp-local", "amp-alice", a service account id, etc.)
@@ -88,7 +93,11 @@ const envMs = (name: string, fallback: number) => {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 };
 const TOKEN_REFRESH_SKEW_MS = envMs("ATRYUM_TOKEN_REFRESH_SKEW_MS", 60000);
-const TOKEN_COMMAND_TIMEOUT_MS = envMs("ATRYUM_TOKEN_COMMAND_TIMEOUT_MS", 10000);
+const TOKEN_COMMAND_TIMEOUT_MS = envMs(
+  "ATRYUM_TOKEN_COMMAND_TIMEOUT_MS",
+  10000,
+);
+const PLAN_SUPPORT_CACHE_TTL_MS = 30000;
 const STATE_DIR =
   process.env.ATRYUM_STATE_DIR ||
   join(homedir(), ".atryum", "amp-plugin-state");
@@ -283,12 +292,118 @@ type InvocationResponse = {
   error?: unknown;
 };
 
-type SessionResponse = {
-  session_id: string;
+type AgentRulesResponse = {
+  plan_submission?: {
+    enabled?: boolean;
+    endpoint?: string;
+    message?: string;
+  };
 };
 
+type ChatMessage = {
+  role: string;
+  text: string;
+};
 // toolUseID -> atryum invocation id, so tool.result can patch the right row.
 const invocationMap = new Map<string, string>();
+const activityContext: ChatMessage[] = [];
+type PlanSupportCacheEntry = {
+  promise: Promise<AgentRulesResponse | undefined>;
+  expiresAt: number;
+};
+const planSupportCache = new Map<string, PlanSupportCacheEntry>();
+
+function normalizeRole(role: unknown): string | undefined {
+  if (role !== "user" && role !== "assistant" && role !== "system") {
+    return undefined;
+  }
+  return role;
+}
+
+function trimMessage(text: string): string {
+  const compact = text
+    .replace(/\s+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (compact.length <= MAX_MESSAGE_CHARS) return compact;
+  return `${compact.slice(0, MAX_MESSAGE_CHARS)}...`;
+}
+
+function extractText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return "";
+
+  if (Array.isArray(value)) {
+    return value.map(extractText).filter(Boolean).join("\n");
+  }
+
+  const record = value as Record<string, unknown>;
+  if (typeof record.text === "string") return record.text;
+
+  const type = typeof record.type === "string" ? record.type : "";
+  if (type === "tool_use" || type === "tool-call") {
+    const name = typeof record.name === "string" ? record.name : "tool";
+    return `[tool call: ${name}]`;
+  }
+  if (type === "tool_result" || type === "tool-result") {
+    const run = record.run as Record<string, unknown> | undefined;
+    const status =
+      typeof record.status === "string"
+        ? record.status
+        : typeof run?.status === "string"
+          ? run.status
+          : "completed";
+    return `[tool result: ${status}]`;
+  }
+  if (record.content !== undefined) return extractText(record.content);
+  if (record.message !== undefined) return extractText(record.message);
+  return "";
+}
+
+function chatMessagesFromValue(value: unknown): ChatMessage[] {
+  if (!value || typeof value !== "object") return [];
+
+  const root = value as Record<string, unknown>;
+  const source = Array.isArray(root.messages) ? root.messages : value;
+  if (!Array.isArray(source)) return [];
+
+  const messages: ChatMessage[] = [];
+  for (const item of source) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const role = normalizeRole(record.role);
+    if (!role) continue;
+    const text = trimMessage(extractText(record.content ?? record.message));
+    if (text) messages.push({ role, text });
+  }
+  return messages;
+}
+
+function chatMessagesFromContext(ctx: unknown): ChatMessage[] {
+  const manager = (ctx as { sessionManager?: unknown } | undefined)
+    ?.sessionManager as
+    | {
+        getBranch?: () => unknown;
+        getThread?: () => unknown;
+        getMessages?: () => unknown;
+      }
+    | undefined;
+
+  for (const getter of [
+    manager?.getBranch,
+    manager?.getThread,
+    manager?.getMessages,
+  ]) {
+    if (typeof getter !== "function") continue;
+    try {
+      const messages = chatMessagesFromValue(getter.call(manager));
+      if (messages.length > 0) return messages;
+    } catch {
+      // Amp plugin internals are not stable; fall through to thread file.
+    }
+  }
+  return [];
+}
 
 function activeThreadID(): string {
   if (ENV_THREAD_ID) return ENV_THREAD_ID;
@@ -317,39 +432,6 @@ function activeThreadID(): string {
   return "";
 }
 
-// Atryum-minted session id, created lazily on the first tool call and reused
-// for the lifetime of this plugin process. Atryum links every invocation
-// carrying this id and reconstructs the judge's context from them.
-let sessionPromise: Promise<string | undefined> | undefined;
-
-async function createSession(): Promise<string | undefined> {
-  const res = await atryumFetch(`${API}/api/v1/external/sessions`, {
-    method: "POST",
-    contentType: true,
-    body: JSON.stringify({
-      harness: SOURCE,
-      // Amp's own thread id, for cross-referencing only. Atryum keys off the
-      // session_id it mints, not this.
-      client_session_id: activeThreadID() || undefined,
-      agent_id: AGENT_ID || undefined,
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(`${res.status} ${await res.text()}`);
-  }
-  const body = (await res.json()) as SessionResponse;
-  return body.session_id || undefined;
-}
-
-async function ensureSession(): Promise<string | undefined> {
-  // Sessions are an optimization for richer judge context. If creation fails,
-  // fall back to submitting without a session_id rather than blocking tools.
-  if (!sessionPromise) {
-    sessionPromise = createSession().catch(() => undefined);
-  }
-  return sessionPromise;
-}
-
 function describe(input: Record<string, unknown>): string {
   const parts = Object.entries(input)
     .filter(([, v]) => typeof v === "string")
@@ -360,12 +442,75 @@ function describe(input: Record<string, unknown>): string {
   return parts.join(" | ") || "(no string params)";
 }
 
+// Points the agent at the rules endpoint rather than pre-fetching and
+// embedding rule content, so the model can query it directly when useful.
+function rulesEndpointHint(tool: string): string {
+  const url = new URL("/api/v1/agent/rules", API);
+  url.searchParams.set("server", SOURCE);
+  url.searchParams.set("tool", tool);
+  if (AGENT_ID && !ACCESS_TOKEN) url.searchParams.set("agent_id", AGENT_ID);
+  return `atryum: to see the approval rules that apply to this call, GET ${url.toString()} (advisory only; Atryum re-checks policy during the actual gated call).`;
+}
+function agentRulesURL(tool?: string): string {
+  const url = new URL("/api/v1/agent/rules", API);
+  url.searchParams.set("source", SOURCE);
+  if (tool) url.searchParams.set("tool", tool);
+  if (AGENT_ID) url.searchParams.set("agent_id", AGENT_ID);
+  return url.toString();
+}
+
+async function loadAgentRules(
+  tool?: string,
+): Promise<AgentRulesResponse | undefined> {
+  const res = await fetch(agentRulesURL(tool), {
+    headers: await atryumHeaders(),
+  });
+  if (!res.ok) return undefined;
+  return (await res.json()) as AgentRulesResponse;
+}
+
+function cachedAgentRules(
+  tool?: string,
+): Promise<AgentRulesResponse | undefined> {
+  const key = tool || "";
+  const cached = planSupportCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.promise;
+
+  let entry: PlanSupportCacheEntry;
+  const promise = loadAgentRules(tool).then(
+    (rules) => {
+      if (planSupportCache.get(key) === entry) {
+        if (rules) entry.expiresAt = Date.now() + PLAN_SUPPORT_CACHE_TTL_MS;
+        else planSupportCache.delete(key);
+      }
+      return rules;
+    },
+    () => {
+      if (planSupportCache.get(key) === entry) planSupportCache.delete(key);
+      return undefined;
+    },
+  );
+  entry = { promise, expiresAt: Number.POSITIVE_INFINITY };
+  planSupportCache.set(key, entry);
+  return promise;
+}
+
+async function planHint(tool?: string): Promise<string> {
+  const rules = await cachedAgentRules(tool);
+  if (!rules?.plan_submission?.enabled) return "";
+  // The server-authored message is the single source of truth for the plan
+  // workflow (including the source-scoped submission endpoint), so guidance
+  // stays current when plan semantics change server-side.
+  const message = (rules.plan_submission.message || "").trim();
+  return message ? ` ${message}` : "";
+}
+
 async function submit(
   tool: string,
   toolUseID: string,
   input: Record<string, unknown>,
-  sessionID: string | undefined,
 ): Promise<InvocationResponse> {
+  const threadID = activeThreadID() || undefined;
   const res = await atryumFetch(`${API}/api/v1/external/invocations`, {
     method: "POST",
     contentType: true,
@@ -375,8 +520,11 @@ async function submit(
       description: describe(input),
       input,
       request_id: toolUseID,
-      thread_id: activeThreadID() || undefined,
-      session_id: sessionID,
+      thread_id: threadID,
+      // Amp's own thread id. Atryum resolves the internal session with
+      // get-or-create keyed by (agent binding, client_session_id) — no mint,
+      // no persisted session id, no re-mint on expiry.
+      client_session_id: threadID,
       client_name: CLIENT_NAME,
       client_version: CLIENT_VERSION || undefined,
       agent_id: AGENT_ID || undefined,
@@ -432,14 +580,34 @@ async function patchExecution(
 }
 
 export default function (amp: PluginAPI) {
+  // Amp's session.start event cannot add model context itself. Mark the thread
+  // unguided and inject into its first agent turn instead. Tracking completed
+  // threads also covers runtimes that load the plugin after session.start.
+  const sessionsWithPlanGuidance = new Set<string>();
+
+  amp.on("session.start", async (event) => {
+    sessionsWithPlanGuidance.delete(event.thread.id);
+  });
+
+  amp.on("agent.start", async (event) => {
+    if (sessionsWithPlanGuidance.has(event.thread.id)) return {};
+    sessionsWithPlanGuidance.add(event.thread.id);
+    const guidance = (await planHint()).trim();
+    if (!guidance) return {};
+    return {
+      message: {
+        content: guidance,
+        display: false,
+      },
+    };
+  });
+
   amp.on("tool.call", async (event, ctx) => {
     try {
-      const sessionID = await ensureSession();
       const submitted = await submit(
         event.tool,
         event.toolUseID,
         event.input,
-        sessionID,
       );
       invocationMap.set(event.toolUseID, submitted.invocation_id);
 
@@ -471,7 +639,7 @@ export default function (amp: PluginAPI) {
       invocationMap.delete(event.toolUseID);
       return {
         action: "reject-and-continue",
-        message: `atryum: tool call '${event.tool}' was ${decided.status} by reviewer.`,
+        message: `atryum: tool call '${event.tool}' was ${decided.status} by reviewer. ${rulesEndpointHint(event.tool)}${await planHint(event.tool)}`,
       };
     } catch (err) {
       ctx.logger.log(`atryum error: ${err}`);

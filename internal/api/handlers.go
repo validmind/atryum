@@ -7,6 +7,7 @@ import (
 	"embed"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -23,15 +24,15 @@ import (
 
 	"github.com/google/uuid"
 
-	"atryum/internal/auth"
-	backendclient "atryum/internal/backend"
-	"atryum/internal/invocation"
-	"atryum/internal/invocation/policy"
-	"atryum/internal/managedagents"
-	"atryum/internal/mcp"
-	authprovider "atryum/internal/mcp/auth_provider"
-	"atryum/internal/store"
-	"atryum/internal/version"
+	"github.com/validmind/atryum/internal/auth"
+	backendclient "github.com/validmind/atryum/internal/backend"
+	"github.com/validmind/atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/invocation/policy"
+	"github.com/validmind/atryum/internal/managedagents"
+	"github.com/validmind/atryum/internal/mcp"
+	authprovider "github.com/validmind/atryum/internal/mcp/auth_provider"
+	"github.com/validmind/atryum/internal/store"
+	"github.com/validmind/atryum/internal/version"
 )
 
 //go:embed web/*
@@ -52,6 +53,17 @@ type service interface {
 	CreateSession(ctx context.Context, req invocation.CreateSessionRequest, agentID string) (invocation.SessionResponse, error)
 	RecordExecution(ctx context.Context, invocationID string, update invocation.ExternalExecutionUpdate) (invocation.InvocationResponse, error)
 	SetSummary(ctx context.Context, invocationID string, summary string) (invocation.InvocationResponse, error)
+	SubmitPlan(ctx context.Context, req invocation.PlanSubmitRequest) (invocation.Plan, error)
+	GetPlan(ctx context.Context, id string) (invocation.Plan, error)
+	ListPlans(ctx context.Context, filter invocation.PlanListFilter) (invocation.PlanListResponse, error)
+	ListPlanRevisions(ctx context.Context, id string) ([]invocation.Plan, error)
+	ApprovePlan(ctx context.Context, id string, ttlSeconds int) (invocation.Plan, error)
+	DenyPlan(ctx context.Context, id string, message string) (invocation.Plan, error)
+	RequestPlanRevision(ctx context.Context, id string, feedback string) (invocation.Plan, error)
+	ExpirePlan(ctx context.Context, id string) (invocation.Plan, error)
+	CancelPlan(ctx context.Context, id string) (invocation.Plan, error)
+	PlanEvents(ctx context.Context, id string, filter invocation.EventListFilter) (invocation.EventListResponse, error)
+	PlansEnabled() bool
 }
 
 type mcpEnvelopeForwarder interface {
@@ -161,6 +173,21 @@ type Handler struct {
 	// managedAgents is the optional Claude Managed Agents events bridge.
 	// nil when not configured (no anthropic api key).
 	managedAgents managedAgentsAdmin
+
+	// extraRoutes are registrations contributed by embedding programs (via
+	// pkg/atryum WithRoutes). They are applied to the mux after the built-in
+	// routes and outside every auth middleware chain, like /healthz; each
+	// registration is responsible for its own authentication.
+	extraRoutes []func(mux *http.ServeMux)
+}
+
+// AddExtraRoutes registers a callback that may mount additional routes on the
+// server mux built by Routes. Patterns must not collide with built-in routes
+// (http.ServeMux panics on duplicate registration).
+func (h *Handler) AddExtraRoutes(register func(mux *http.ServeMux)) {
+	if register != nil {
+		h.extraRoutes = append(h.extraRoutes, register)
+	}
 }
 
 // managedAgentsAdmin is the slice of the managed-agents service the admin API
@@ -193,17 +220,13 @@ type PolicyUpdateRequest struct {
 
 type ApproveRequest struct {
 	CreateRule *AdminRuleInput `json:"create_rule,omitempty"`
-	// ActorID identifies the human reviewer who made the decision. Optional —
-	// when omitted no attribution is stored. The VM backend proxy injects this
-	// field from the authenticated user's identity before forwarding.
-	ActorID string `json:"actor_id,omitempty"`
+	ActorID    string          `json:"actor_id,omitempty"`
 }
 
 type DenyRequest struct {
 	Message    string          `json:"message,omitempty"`
 	CreateRule *AdminRuleInput `json:"create_rule,omitempty"`
-	// ActorID identifies the human reviewer who made the decision. Optional.
-	ActorID string `json:"actor_id,omitempty"`
+	ActorID    string          `json:"actor_id,omitempty"`
 }
 
 type AdminServer struct {
@@ -379,6 +402,7 @@ type AdminAgent struct {
 	SyncedAt            time.Time                  `json:"synced_at"`
 	Enabled             bool                       `json:"enabled"`
 	Charter             string                     `json:"charter,omitempty"`
+	VMCUID              string                     `json:"vm_cuid,omitempty"`
 	// Synced is true when this agent originated from a ValidMind sync
 	// (vm_organization_cuid is non-empty). Synced agents cannot be deleted
 	// manually — they are removed by re-syncing with a different org/record-type.
@@ -386,7 +410,7 @@ type AdminAgent struct {
 }
 
 type AdminAgentInput struct {
-	Enabled                        bool                        `json:"enabled"`
+	Enabled                        *bool                       `json:"enabled,omitempty"`
 	AgentIDs                       []string                    `json:"agent_ids,omitempty"`
 	Name                           string                      `json:"name,omitempty"`
 	Description                    string                      `json:"description,omitempty"`
@@ -445,6 +469,7 @@ func toAdminAgent(a store.AgentRecord) AdminAgent {
 		SyncedAt:    a.SyncedAt,
 		Enabled:     a.Enabled,
 		Charter:     a.Charter,
+		VMCUID:      a.VMCUID,
 		Synced:      a.VMOrganizationCUID != "",
 	}
 }
@@ -628,7 +653,19 @@ func parseAgentIDs(raw string) []string {
 // MCP clients can surface it to the model as system-level guidance.
 const atryumInitializeInstructions = "This MCP server is gated by the Atryum harness. " +
 	"Atryum may approve, deny, or request human approval for tool calls according to configured rules. " +
-	"Those rules may change between conversation turns, so treat each tool call as subject to the current Atryum policy."
+	"Those rules may change between conversation turns, so treat each tool call as subject to the current Atryum policy. " +
+	"To see the static approval rules that currently apply to you, call the atryum_rules_get MCP tool or issue an HTTP GET to /api/v1/agent/rules " +
+	"(optionally with ?server={server}&tool={tool} to preview the disposition for a specific tool); " +
+	"the response is advisory only, as AI-evaluation and human-approval outcomes are decided during the actual gated call. " +
+	"When the atryum.plan.submit tool is listed and work is risky or could leave files, systems, or external state inconsistent if a later call is denied, submit a batch plan before running tools. " +
+	"Plans are optional pre-approval, never a prerequisite: tool calls made without a plan are gated by the normal approval rules, so keep working without one when a plan is not warranted or after a plan completes. " +
+	"Use plans for dependent changes whose safe completion requires every step to run. " +
+	"Declare a plan's actions in the exact order they will execute: plans may skip forward but never move backwards, so once a later step has run, calls matching an earlier step are denied — submit a revised plan instead of re-running an earlier step. " +
+	"After submitting a plan, call atryum.plan.get until the plan is approved, denied, needs_revision, completed, expired, cancelled, or superseded; only proceed with planned tool calls after approval."
+
+// Dotted tool names are valid MCP names, but common harnesses have rejected
+// them in practice. Keep this synthetic helper underscore-only for compatibility.
+const atryumRulesToolName = "atryum_rules_get"
 
 type AgentRule struct {
 	ID             string   `json:"id"`
@@ -636,17 +673,98 @@ type AgentRule struct {
 	ServerPatterns []string `json:"server_patterns"`
 	ToolPatterns   []string `json:"tool_patterns"`
 	Description    string   `json:"description,omitempty"`
+	Guidance       string   `json:"guidance,omitempty"`
 	Order          int      `json:"order"`
 }
 
+type AgentPlanSubmission struct {
+	Enabled  bool   `json:"enabled"`
+	Endpoint string `json:"endpoint,omitempty"`
+	Message  string `json:"message,omitempty"`
+}
+
+// planSubmissionMessage is the plan-workflow guidance served to agents via
+// GET /api/v1/agent/rules. Harness hooks inject it into agent context
+// verbatim, so it is the single source of truth for how agents should submit
+// and follow plans — change plan semantics here, not in per-harness hook
+// scripts. source is the caller's harness source; when known, the action
+// server guidance names it concretely, since an action whose server does not
+// match the source of the tool call that later executes it can never grant
+// the plan pass.
+//
+// agentID is whatever identity this same request already resolved to
+// (verified OAuth, or the no-auth agent_id hint the calling harness sent
+// alongside this GET). Left generic ("invent a stable identifier"), agents
+// reliably invent a fresh one per plan that never matches the identity their
+// harness separately reports for the tool calls that execute it — the plan
+// then never binds to those invocations and just expires. Embedding the
+// already-established value here instead means a plan submitted from this
+// same harness session is self-consistent without any extra configuration.
+func planSubmissionMessage(endpoint, source, agentID string) string {
+	serverGuidance := "Set tool and server to the exact values this harness reports for the call " +
+		"that will execute it. "
+	if source != "" {
+		serverGuidance = "Set each action's server to \"" + source + "\" — the source this harness " +
+			"reports its tool calls under — unless the action targets a different Atryum-gated MCP " +
+			"server; an action whose server does not match the executing call's source can never " +
+			"grant the plan pass. Set tool to the exact tool name this harness reports for the call. "
+	}
+	agentGuidance := "agent_id (a stable identifier for this agent, reused for every plan and tool " +
+		"call this session; required when the harness is not authenticated). "
+	if agentID != "" {
+		agentGuidance = "agent_id set to exactly \"" + agentID + "\" — the identity already " +
+			"established for this request — so the plan matches the invocations that execute it. " +
+			"Do not invent a different value. "
+	}
+	return "Atryum accepts optional pre-approval plans from this agent. A plan is never required: " +
+		"tool calls made without one simply go through Atryum's normal approval flow (rules, AI " +
+		"evaluation, or human review) — do not refuse to work just because no plan is active. " +
+		"Submit a plan when work is risky or dependent — " +
+		"anything that could leave files, systems, or external state inconsistent if a later call is denied — " +
+		"so the whole batch can be reviewed together before the first side effect. " +
+		"Atryum evaluates every declared action against the same invocation rules used for tool calls, in priority order. " +
+		"After the rules are evaluated, one mandatory AI review checks the complete plan against the agent charter. " +
+		"A rule denial or charter violation rejects the plan; human-approval, an unmatched action, or an inconclusive " +
+		"charter review sends the complete plan to a reviewer. " +
+		"POST the plan as JSON to " + endpoint + " with: goal, rationale, actions, ttl_seconds, and " +
+		agentGuidance +
+		"Keep the endpoint's source parameter exactly as given: it scopes the plan's actions to this " +
+		"harness so later tool calls match. " +
+		"Each action is {tool, server, description, input_summary}. " + serverGuidance +
+		"Make every description and " +
+		"input summary precise and distinct — command interpreter, working directory, exact paths read " +
+		"or written — so the adherence judge can tell which declared action a given call belongs to, " +
+		"especially when actions share a tool and server. " +
+		"Declare actions in the exact order they will execute. Plans may skip forward but never move " +
+		"backwards: once a later step has been approved or started, calls matching an earlier step are " +
+		"denied. Declare an expected re-run as its own later action, and if an earlier step must " +
+		"unexpectedly be redone, submit a revision instead of retrying it under the current plan. " +
+		"Do not execute any declared action while the plan status is received, pending_approval, or " +
+		"needs_revision. Poll the plan's status URL until it is decided. If approved, execute the " +
+		"actions in declared order before the plan expires. If needs_revision, incorporate the returned " +
+		"feedback and submit a replacement plan with revision_of set to the prior plan_id, then wait on " +
+		"the replacement. If denied, cancelled, or expired, do not execute; report the final status and " +
+		"any feedback. " +
+		"Once the plan is approved, tool calls matching its declared actions are checked against both " +
+		"the plan and the agent charter — calls confirmed to follow an eligible action are " +
+		"auto-approved; off-plan or charter-violating calls are denied. A successful final action " +
+		"completes the plan and later calls return to the normal approval flow — they can still be " +
+		"made without a new plan; submit one only when the next batch also warrants pre-approval. " +
+		"A plain poll of the approved plan's own status is always auto-approved while the plan is active."
+}
+
 type AgentRulesResponse struct {
-	AgentID       string      `json:"agent_id,omitempty"`
-	Server        string      `json:"server,omitempty"`
-	Tool          string      `json:"tool,omitempty"`
-	DefaultAction string      `json:"default_action"`
-	Action        string      `json:"action,omitempty"`
-	MatchedRuleID *string     `json:"matched_rule_id,omitempty"`
-	Items         []AgentRule `json:"items"`
+	AgentID        string               `json:"agent_id,omitempty"`
+	Server         string               `json:"server,omitempty"`
+	Tool           string               `json:"tool,omitempty"`
+	DefaultAction  string               `json:"default_action"`
+	Action         string               `json:"action,omitempty"`
+	MatchedRuleID  *string              `json:"matched_rule_id,omitempty"`
+	PlanSubmission *AgentPlanSubmission `json:"plan_submission,omitempty"`
+	GeneratedAt    time.Time            `json:"generated_at"`
+	EvaluationMode string               `json:"evaluation_mode"`
+	Explanation    string               `json:"explanation"`
+	Items          []AgentRule          `json:"items"`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -813,6 +931,11 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("/api/v1/external/invocations", h.agentRuntimeHandler(http.HandlerFunc(h.externalInvocations)))
 	mux.Handle("/api/v1/external/invocations/", h.agentRuntimeHandler(http.HandlerFunc(h.externalInvocationDetail)))
 	mux.Handle("/api/v1/external/sessions", h.agentRuntimeHandler(http.HandlerFunc(h.externalSessions)))
+	mux.Handle("/api/v1/external/plans", h.agentRuntimeHandler(http.HandlerFunc(h.externalPlans)))
+	mux.Handle("/api/v1/external/plans/", h.agentRuntimeHandler(http.HandlerFunc(h.externalPlanDetail)))
+	mux.Handle("/api/v1/admin/plans", admin(h.adminPlans))
+	mux.Handle("/api/v1/admin/plans/stream", admin(h.adminPlanStream))
+	mux.Handle("/api/v1/admin/plans/", admin(h.adminPlanDetail))
 	apiKeyMW := auth.APIKeyMiddleware(h.apiKeyAuth)
 	mux.Handle("/agent_ids", apiKeyMW(http.HandlerFunc(h.agentIDs)))
 	mux.Handle("/invocations/", apiKeyMW(http.HandlerFunc(h.invocationsByAgentID)))
@@ -820,6 +943,9 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/ui", h.uiIndex)
 	mux.Handle("/ui/", http.StripPrefix("/ui/", h.spaFileServer()))
 	mux.HandleFunc("/", h.root)
+	for _, register := range h.extraRoutes {
+		register(mux)
+	}
 	return mux
 }
 
@@ -1011,14 +1137,18 @@ func (h *Handler) agentRules(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if h.rulesRepo == nil {
-		writeJSON(w, http.StatusOK, AgentRulesResponse{DefaultAction: invocation.RuleActionHumanApproval, Items: []AgentRule{}})
-		return
-	}
-
 	agentID := auth.AgentIDFromContext(r.Context())
+	// stableAgentID is safe to hand back to the agent as an identity to
+	// reuse (e.g. echoed verbatim into plan-submission guidance): it is
+	// either a verified identity or an explicit agent_id hint. agentID may
+	// additionally fall back to request_id below — a single in-flight tool
+	// call's id, useful for previewing that one call's rule disposition, but
+	// not a stable identity a plan could be submitted under and expect a
+	// later, differently-request_id'd invocation to match.
+	stableAgentID := agentID
 	if agentID == "" && h.authValidator == nil {
 		agentID = normalizeNoAuthAgentID(r.URL.Query().Get("agent_id"))
+		stableAgentID = agentID
 	}
 	if agentID == "" && h.authValidator == nil {
 		agentID = strings.TrimSpace(r.URL.Query().Get("request_id"))
@@ -1029,7 +1159,7 @@ func (h *Handler) agentRules(w http.ResponseWriter, r *http.Request) {
 	}
 	tool := strings.TrimSpace(r.URL.Query().Get("tool"))
 
-	resp, err := h.buildAgentRulesResponse(r.Context(), agentID, server, tool)
+	resp, err := h.buildAgentRulesResponse(r.Context(), agentID, stableAgentID, server, tool)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1037,13 +1167,32 @@ func (h *Handler) agentRules(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, tool string) (AgentRulesResponse, error) {
-	resp := AgentRulesResponse{
-		AgentID:       agentID,
-		Server:        server,
-		Tool:          tool,
-		DefaultAction: invocation.RuleActionHumanApproval,
-		Items:         []AgentRule{},
+// buildAgentRulesResponse builds the agent-facing rules/plan-submission
+// response. agentID is used for rule matching and echoed back as
+// AgentRulesResponse.AgentID (may be a request-scoped fallback, useful only
+// for previewing that one call's disposition). planAgentID is what the plan
+// submission message may safely present as a stable, reusable identity —
+// pass "" (or agentID itself, when it's already known stable) accordingly.
+func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, planAgentID, server, tool string) (AgentRulesResponse, error) {
+	resp := newAgentRulesResponse(agentID, server, tool)
+	if h.svc != nil && h.svc.PlansEnabled() {
+		// Plan submission is available whenever the feature is wired — no
+		// plan configuration is required: a plan with any unmatched action
+		// defaults to human review.
+		//
+		// Bake the caller's source into the submission endpoint: plan
+		// actions are scoped to their source and only match later tool
+		// calls from the same source, and agents copy this endpoint
+		// verbatim from the hint.
+		endpoint := "/api/v1/external/plans"
+		if server != "" {
+			endpoint += "?source=" + url.QueryEscape(server)
+		}
+		resp.PlanSubmission = &AgentPlanSubmission{
+			Enabled:  true,
+			Endpoint: endpoint,
+			Message:  planSubmissionMessage(endpoint, server, planAgentID),
+		}
 	}
 	if h.rulesRepo == nil {
 		return resp, nil
@@ -1056,7 +1205,7 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 	agentCUID := h.resolveAgentRecordForRules(ctx, agentID)
 
 	for _, rule := range rules {
-		if !apiRuleMatches(rule, server, tool, agentCUID, false) {
+		if !apiRuleVisibleToAgent(rule, agentCUID) {
 			continue
 		}
 		resp.Items = append(resp.Items, AgentRule{
@@ -1065,6 +1214,7 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 			ServerPatterns: rule.ServerPatterns,
 			ToolPatterns:   rule.ToolPatterns,
 			Description:    rule.Description,
+			Guidance:       agentRuleGuidance(rule.Action),
 			Order:          rule.Order,
 		})
 		if resp.Action == "" && server != "" && tool != "" &&
@@ -1077,6 +1227,72 @@ func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, 
 		}
 	}
 	return resp, nil
+}
+
+func (h *Handler) handleAtryumRulesToolCall(w http.ResponseWriter, r *http.Request, id json.RawMessage, mcpServer string, arguments map[string]any) {
+	if arguments == nil {
+		arguments = map[string]any{}
+	}
+	agentID := auth.AgentIDFromContext(r.Context())
+	stableAgentID := agentID
+	if agentID == "" && h.authValidator == nil {
+		agentID = normalizeNoAuthAgentID(stringArgument(arguments, "agent_id"))
+		stableAgentID = agentID
+	}
+	if agentID == "" && h.authValidator == nil {
+		agentID = strings.TrimSpace(stringArgument(arguments, "request_id"))
+	}
+	server := strings.TrimSpace(stringArgument(arguments, "server"))
+	if server == "" {
+		server = strings.TrimSpace(stringArgument(arguments, "source"))
+	}
+	if server == "" {
+		server = mcpServer
+	}
+	tool := strings.TrimSpace(stringArgument(arguments, "tool"))
+
+	resp, err := h.buildAgentRulesResponse(r.Context(), agentID, stableAgentID, server, tool)
+	if err != nil {
+		h.writeRPCError(w, id, -32000, err.Error())
+		return
+	}
+	body, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		h.writeRPCError(w, id, -32000, err.Error())
+		return
+	}
+	h.writeRPCResult(w, id, map[string]any{
+		"content": []map[string]any{{
+			"type": "text",
+			"text": string(body),
+		}},
+	})
+}
+
+func stringArgument(arguments map[string]any, key string) string {
+	v, ok := arguments[key]
+	if !ok {
+		return ""
+	}
+	s, ok := v.(string)
+	if !ok {
+		return ""
+	}
+	return s
+}
+
+func newAgentRulesResponse(agentID, server, tool string) AgentRulesResponse {
+	return AgentRulesResponse{
+		AgentID:        agentID,
+		Server:         server,
+		Tool:           tool,
+		DefaultAction:  invocation.RuleActionHumanApproval,
+		GeneratedAt:    time.Now().UTC(),
+		EvaluationMode: "static_only",
+		Explanation: "This advisory response is based on the current static approval rules visible to the resolved Atryum agent. " +
+			"AI evaluation rules are decided only during the actual gated tool call.",
+		Items: []AgentRule{},
+	}
 }
 
 func (h *Handler) resolveAgentRecordForRules(ctx context.Context, agentID string) string {
@@ -1106,8 +1322,15 @@ func (h *Handler) resolveAgentRecordForRules(ctx context.Context, agentID string
 	return rec.ID
 }
 
-func apiRuleMatches(rule store.Rule, server, tool, agentCUID string, includeServerTool bool) bool {
+func apiRuleVisibleToAgent(rule store.Rule, agentCUID string) bool {
 	if !rule.Enabled {
+		return false
+	}
+	return apiMatchAgentCUIDs(rule.AgentCUIDs, agentCUID)
+}
+
+func apiRuleMatches(rule store.Rule, server, tool, agentCUID string, includeServerTool bool) bool {
+	if !apiRuleVisibleToAgent(rule, agentCUID) {
 		return false
 	}
 	if includeServerTool {
@@ -1118,7 +1341,7 @@ func apiRuleMatches(rule store.Rule, server, tool, agentCUID string, includeServ
 			return false
 		}
 	}
-	return apiMatchAgentCUIDs(rule.AgentCUIDs, agentCUID)
+	return true
 }
 
 func apiMatchAgentCUIDs(cuids []string, agentCUID string) bool {
@@ -1202,7 +1425,7 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			return
 		}
 		_ = h.emitTraceEvent(r.Context(), server, "mcp.tools.list", map[string]any{"tool_count": len(tools), "request_id": requestID})
-		annotated := h.annotateToolsWithPolicy(r.Context(), server, tools)
+		annotated := h.annotateToolsWithPolicy(r.Context(), auth.AgentIDFromContext(r.Context()), server, tools)
 		h.writeRPCResult(w, req.ID, map[string]any{"tools": annotated})
 	case "tools/call":
 		var params struct {
@@ -1211,6 +1434,18 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		}
 		if err := json.Unmarshal(req.Params, &params); err != nil {
 			h.writeRPCError(w, req.ID, -32602, "invalid params")
+			return
+		}
+		if params.Name == atryumRulesToolName {
+			h.handleAtryumRulesToolCall(w, r, req.ID, server, params.Arguments)
+			return
+		}
+		if params.Name == atryumPlanSubmitTool {
+			h.handleMCPPlanSubmit(w, r, req.ID, server, params.Arguments)
+			return
+		}
+		if params.Name == atryumPlanGetTool {
+			h.handleMCPPlanGet(w, r, req.ID, params.Arguments)
 			return
 		}
 		toolReq := invocation.CreateInvocationRequest{Server: server, Tool: params.Name, Input: params.Arguments}
@@ -1234,7 +1469,7 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		if len(resp.Error) > 0 {
 			result := normalizeToolCallResult(resp.Error, true)
 			if resp.Status == invocation.StatusDenied {
-				result = h.appendRulesContextToToolResult(r.Context(), result, server, params.Name)
+				result = h.appendRulesContextToToolResult(r.Context(), result, auth.AgentIDFromContext(r.Context()), server, params.Name)
 			}
 			h.writeRPCResult(w, req.ID, result)
 			return
@@ -1274,6 +1509,79 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		w.WriteHeader(status)
 		_, _ = w.Write(body)
 	}
+}
+
+func (h *Handler) handleMCPPlanSubmit(w http.ResponseWriter, r *http.Request, id json.RawMessage, server string, args map[string]any) {
+	raw, err := json.Marshal(args)
+	if err != nil {
+		h.writeRPCError(w, id, -32602, "invalid plan arguments")
+		return
+	}
+	var planReq invocation.PlanSubmitRequest
+	if err := json.Unmarshal(raw, &planReq); err != nil {
+		h.writeRPCError(w, id, -32602, "invalid plan arguments")
+		return
+	}
+	if planReq.Source == "" {
+		planReq.Source = server
+	}
+	if planReq.ClientName == "" {
+		if snap, ok := h.lookupClientInfo(r); ok {
+			planReq.ClientName = snap.Name
+			planReq.ClientVersion = snap.Version
+		}
+	}
+	plan, err := h.svc.SubmitPlan(r.Context(), planReq)
+	if err != nil {
+		h.writeRPCError(w, id, -32000, err.Error())
+		return
+	}
+	body, err := json.MarshalIndent(plan, "", "  ")
+	if err != nil {
+		h.writeRPCError(w, id, -32000, "failed to encode plan")
+		return
+	}
+	h.writeRPCResult(w, id, map[string]any{
+		"content": []map[string]any{{
+			"type": "text",
+			"text": "Atryum plan submitted:\n" + string(body),
+		}},
+		"structuredContent": plan,
+	})
+}
+
+func (h *Handler) handleMCPPlanGet(w http.ResponseWriter, r *http.Request, id json.RawMessage, args map[string]any) {
+	rawID, _ := args["plan_id"].(string)
+	planID := strings.TrimSpace(rawID)
+	if planID == "" {
+		h.writeRPCError(w, id, -32602, "plan_id is required")
+		return
+	}
+	plan, err := h.svc.GetPlan(r.Context(), planID)
+	if err != nil {
+		h.writeRPCError(w, id, -32000, err.Error())
+		return
+	}
+	// Match the external polling endpoint's ownership check. In authenticated
+	// deployments a caller may only inspect plans belonging to its verified
+	// agent identity; anonymous no-auth deployments retain their existing
+	// unscoped behavior.
+	if !planOwnedByCaller(r, plan) {
+		h.writeRPCError(w, id, -32000, "plan not found")
+		return
+	}
+	body, err := json.MarshalIndent(plan, "", "  ")
+	if err != nil {
+		h.writeRPCError(w, id, -32000, "failed to encode plan")
+		return
+	}
+	h.writeRPCResult(w, id, map[string]any{
+		"content": []map[string]any{{
+			"type": "text",
+			"text": "Atryum plan status:\n" + string(body),
+		}},
+		"structuredContent": plan,
+	})
 }
 
 // agentIDs returns the distinct enabled agent IDs configured on synced agents.
@@ -1453,6 +1761,21 @@ func apiMatchPatterns(patterns []string, value string) bool {
 	return false
 }
 
+func agentRuleGuidance(action string) string {
+	switch action {
+	case invocation.RuleActionAutoApprove:
+		return "Auto-approved by this rule."
+	case invocation.RuleActionAutoDeny:
+		return "Auto-denied by this rule."
+	case invocation.RuleActionHumanApproval:
+		return "Requires reviewer approval."
+	case invocation.RuleActionAIEvaluation:
+		return "Evaluated only during the real gated call; advisory cannot guarantee the outcome."
+	default:
+		return ""
+	}
+}
+
 // annotatedTool is the on-the-wire shape used for tools/list when atryum is
 // able to compute a per-tool policy disposition. It mirrors mcp.Tool but adds
 // an `annotations` block plus a description prefix so models that ignore
@@ -1473,27 +1796,71 @@ type atryumToolPolicy struct {
 	MatchedRuleID   string `json:"matched_rule_id,omitempty"`
 }
 
+const (
+	atryumPlanSubmitTool = "atryum.plan.submit"
+	atryumPlanGetTool    = "atryum.plan.get"
+)
+
+func atryumPlanSubmitMCPTool(server string) annotatedTool {
+	submittingSource := "the submitting source"
+	if server != "" {
+		submittingSource = "this MCP server (\"" + server + "\")"
+	}
+	return annotatedTool{
+		Name:        atryumPlanSubmitTool,
+		Description: "Submit an Atryum plan before running a batch of tools, especially when dependent calls could leave files, systems, or external state inconsistent if a later call is denied. Plans are optional pre-approval, never a prerequisite — tool calls without a plan are gated by the normal approval rules. Arguments: goal string, rationale optional string, actions array of {tool, server?, description?, input_summary?}; an omitted action server defaults to " + submittingSource + ", which is only correct for actions that will be invoked through it — an action executed by your harness's own tools (reported via a hook) must set server to the source that harness reports, or the approved plan can never match the executing call. Declare actions in the exact order they will execute — once a later action has been approved or started, calls matching an earlier action are denied, so declare an expected re-run as its own later action. Give actions sharing a tool and server precise, distinct descriptions and input summaries. ttl_seconds optional number, thread_id optional string, chat_context optional string. After submission, call atryum.plan.get with the returned plan_id until the plan is approved, denied, or needs_revision. Approved plans can preapprove matching later tool calls until the final action succeeds or expires_at is reached.",
+		InputSchema: json.RawMessage(`{"type":"object","required":["goal","actions"],"properties":{"goal":{"type":"string"},"rationale":{"type":"string"},"actions":{"type":"array","minItems":1,"items":{"type":"object","required":["tool"],"properties":{"tool":{"type":"string"},"server":{"type":"string"},"description":{"type":"string"},"input_summary":{"type":"string"}}}},"ttl_seconds":{"type":"integer","minimum":1},"thread_id":{"type":"string"},"chat_context":{"type":"string"},"revision_of":{"type":"string"}}}`),
+		Annotations: &atryumAnnotations{Atryum: atryumToolPolicy{
+			EffectiveAction: invocation.RuleActionHumanApproval,
+		}},
+	}
+}
+
+func atryumPlanGetMCPTool() annotatedTool {
+	return annotatedTool{
+		Name:        atryumPlanGetTool,
+		Description: "Get the current status of an Atryum plan by plan_id. Use this after atryum.plan.submit while waiting for approved, denied, needs_revision, completed, expired, cancelled, or superseded.",
+		InputSchema: json.RawMessage(`{"type":"object","required":["plan_id"],"properties":{"plan_id":{"type":"string"}}}`),
+		Annotations: &atryumAnnotations{Atryum: atryumToolPolicy{
+			EffectiveAction: invocation.RuleActionHumanApproval,
+		}},
+	}
+}
+
 // annotateToolsWithPolicy decorates each tool with its effective approval
 // disposition for the current agent so the model sees the policy at the moment
 // it picks a tool. Annotation requires both rulesRepo and a concrete server.
-func (h *Handler) annotateToolsWithPolicy(ctx context.Context, server string, tools []mcp.Tool) []any {
-	out := make([]any, len(tools))
+func (h *Handler) annotateToolsWithPolicy(ctx context.Context, agentID, server string, tools []mcp.Tool) []any {
+	out := make([]any, 0, len(tools)+3)
+	// Plan tools are offered whenever the plan feature is wired — no
+	// plan configuration is required: a plan with any unmatched action
+	// defaults to human review.
+	if h.svc != nil && h.svc.PlansEnabled() {
+		out = append(out, atryumPlanSubmitMCPTool(strings.TrimSpace(server)))
+		out = append(out, atryumPlanGetMCPTool())
+	}
 	if h.rulesRepo == nil || strings.TrimSpace(server) == "" {
-		for i, t := range tools {
-			out[i] = t
+		for _, t := range tools {
+			if t.Name != atryumRulesToolName {
+				out = append(out, t)
+			}
 		}
-		return out
+		return append(out, atryumRulesTool)
 	}
 	rules, err := h.rulesRepo.List(ctx)
 	if err != nil {
-		for i, t := range tools {
-			out[i] = t
+		for _, t := range tools {
+			if t.Name != atryumRulesToolName {
+				out = append(out, t)
+			}
 		}
-		return out
+		return append(out, atryumRulesTool)
 	}
-	agentID := auth.AgentIDFromContext(ctx)
 	agentCUID := h.resolveAgentRecordForRules(ctx, agentID)
-	for i, t := range tools {
+	for _, t := range tools {
+		if t.Name == atryumRulesToolName {
+			continue
+		}
 		action, matched := effectiveActionForTool(rules, server, t.Name, agentCUID)
 		desc := t.Description
 		if action != "" {
@@ -1504,7 +1871,7 @@ func (h *Handler) annotateToolsWithPolicy(ctx context.Context, server string, to
 				desc = prefix + desc
 			}
 		}
-		out[i] = annotatedTool{
+		out = append(out, annotatedTool{
 			Name:        t.Name,
 			Description: desc,
 			InputSchema: t.InputSchema,
@@ -1512,9 +1879,15 @@ func (h *Handler) annotateToolsWithPolicy(ctx context.Context, server string, to
 				EffectiveAction: action,
 				MatchedRuleID:   matched,
 			}},
-		}
+		})
 	}
-	return out
+	return append(out, atryumRulesTool)
+}
+
+var atryumRulesTool = mcp.Tool{
+	Name:        atryumRulesToolName,
+	Description: "Return the current static Atryum approval rules visible to this agent. Optional arguments: server/source and tool preview a specific disposition. The response is advisory only; AI evaluation and human approval are decided during the actual gated tool call.",
+	InputSchema: json.RawMessage(`{"type":"object","properties":{"server":{"type":"string","description":"MCP server name to preview."},"source":{"type":"string","description":"Alias for server, useful for non-MCP harness terminology."},"tool":{"type":"string","description":"Tool name to preview."},"agent_id":{"type":"string","description":"Agent identity for no-auth local development only; ignored when inbound auth is enabled."},"request_id":{"type":"string","description":"Deprecated compatibility alias for agent_id in no-auth local development only; ignored when inbound auth is enabled."}},"additionalProperties":false}`),
 }
 
 // effectiveActionForTool returns the action of the first enabled rule that
@@ -1532,11 +1905,11 @@ func effectiveActionForTool(rules []store.Rule, server, tool, agentCUID string) 
 
 // appendRulesContextToToolResult adds an extra text content block to a denied
 // tool call result describing the applicable rules and effective action.
-func (h *Handler) appendRulesContextToToolResult(ctx context.Context, result any, server, tool string) any {
+func (h *Handler) appendRulesContextToToolResult(ctx context.Context, result any, agentID, server, tool string) any {
 	if h.rulesRepo == nil {
 		return result
 	}
-	rulesResp, err := h.buildAgentRulesResponse(ctx, auth.AgentIDFromContext(ctx), server, tool)
+	rulesResp, err := h.buildAgentRulesResponse(ctx, agentID, agentID, server, tool)
 	if err != nil {
 		return result
 	}
@@ -2899,6 +3272,14 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// GET /api/v1/admin/agents/:id/charter-preview — assemble the charter hierarchy
+	if strings.HasSuffix(trimmed, "/charter-preview") {
+		id := strings.TrimSuffix(trimmed, "/charter-preview")
+		id = strings.Trim(id, "/")
+		h.adminAgentCharterPreview(w, r, id)
+		return
+	}
+
 	// /api/v1/admin/agents/:id — GET / PATCH / DELETE
 	id := trimmed
 	switch r.Method {
@@ -2963,14 +3344,16 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 				h.releaseNewManagedAgentClaims(r.Context(), id, beforeBindings, bindings)
 			}
 		}
-		if err := h.agentsRepo.UpdateEnabled(r.Context(), id, req.Enabled); err != nil {
-			cleanupNewClaims()
-			status := http.StatusInternalServerError
-			if err == sql.ErrNoRows {
-				status = http.StatusNotFound
+		if req.Enabled != nil {
+			if err := h.agentsRepo.UpdateEnabled(r.Context(), id, *req.Enabled); err != nil {
+				cleanupNewClaims()
+				status := http.StatusInternalServerError
+				if err == sql.ErrNoRows {
+					status = http.StatusNotFound
+				}
+				writeError(w, status, "agent not found")
+				return
 			}
-			writeError(w, status, "agent not found")
-			return
 		}
 		if req.AgentIDs != nil {
 			idsJSON, err := json.Marshal(req.AgentIDs)
@@ -3042,6 +3425,73 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+// adminAgentCharterPreview assembles the per-agent charter hierarchy. For synced
+// agents (with a VM cuid) it delegates to the ValidMind backend; for local
+// agents it returns the agent's own stored charter.
+func (h *Handler) adminAgentCharterPreview(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if id == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	agent, err := h.agentsRepo.Get(r.Context(), id)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if err == sql.ErrNoRows {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, "agent not found")
+		return
+	}
+
+	var charterFieldKey string
+	if h.agentSyncSettingsRepo != nil {
+		settings, _ := h.agentSyncSettingsRepo.Get(r.Context())
+		charterFieldKey = settings.CharterFieldKey
+	}
+
+	// VMOrganizationCUID (mirrored in AdminAgent.Synced) is the correct "is this
+	// a real ValidMind-synced agent" signal. VMCUID alone is NOT — manually
+	// created agents get VMCUID reused as their local id (see the create
+	// handler above) while VMOrganizationCUID stays empty, precisely so a fake
+	// VMCUID is never mistaken for a real ValidMind inventory-model cuid here.
+	if agent.VMOrganizationCUID != "" && h.backendClient != nil {
+		result, err := h.backendClient.CharterPreview(r.Context(), agent.VMCUID, charterFieldKey, agent.VMOrganizationCUID)
+		if err != nil {
+			log.Printf("charter-preview: backend call failed for agent %s: %v", id, err)
+			writeError(w, http.StatusBadGateway, "failed to assemble charter from ValidMind backend")
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+
+	// Local agent (or no backend client): show the agent's own stored charter.
+	if agent.Charter != "" {
+		header := agent.VMName
+		if header == "" {
+			header = "This agent"
+		}
+		writeJSON(w, http.StatusOK, backendclient.CharterPreviewResult{
+			Segments: []backendclient.CharterSegment{{
+				Kind:   "agent",
+				Header: header,
+				Text:   agent.Charter,
+			}},
+			Combined: agent.Charter,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, backendclient.CharterPreviewResult{
+		Segments: []backendclient.CharterSegment{},
+		Combined: "",
+	})
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3460,10 +3910,19 @@ func (h *Handler) externalInvocations(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// ─── Plan handlers ────────────────────────────────────────────────────────────
+
 // externalSessions mints a harness session (POST /api/v1/external/sessions).
-// The harness calls this once at startup and echoes the returned session_id on
-// every subsequent /api/v1/external/invocations call, letting Atryum rebuild the
-// judge's context from prior tool calls in the same session.
+//
+// Deprecated: harnesses should instead send client_session_id on every
+// /api/v1/external/invocations call and let Atryum get-or-create the internal
+// session server-side (keyed by agent binding + client_session_id). This
+// endpoint stays fully functional for explicit-control callers and back-compat.
+//
+// On the old flow the harness calls this once at startup and echoes the
+// returned session_id on every subsequent /api/v1/external/invocations call,
+// letting Atryum rebuild the judge's context from prior tool calls in the same
+// session.
 func (h *Handler) externalSessions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -3474,8 +3933,6 @@ func (h *Handler) externalSessions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	// Authenticated identity wins; otherwise bind to the self-declared agent_id
-	// (no-auth mode), mirroring Submit.
 	agentID := auth.AgentIDFromContext(r.Context())
 	if agentID == "" {
 		agentID = strings.TrimSpace(req.AgentID)
@@ -3486,6 +3943,308 @@ func (h *Handler) externalSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, resp)
+}
+
+// PlanApproveRequest optionally overrides the pass TTL the agent requested.
+type PlanApproveRequest struct {
+	TTLSeconds int `json:"ttl_seconds,omitempty"`
+}
+
+type PlanDenyRequest struct {
+	Message string `json:"message,omitempty"`
+}
+
+type PlanReviseRequest struct {
+	Feedback string `json:"feedback"`
+}
+
+// PlanDetailResponse is the admin detail view: the plan plus its direct revisions.
+type PlanDetailResponse struct {
+	invocation.Plan
+	Revisions []invocation.Plan `json:"revisions"`
+}
+
+// externalPlans handles POST /api/v1/external/plans — an agent proposing a
+// plan for review before executing any tools.
+func (h *Handler) externalPlans(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req invocation.PlanSubmitRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	// Plan actions are scoped to their source, and later tool calls only
+	// match actions declared for the same source. Agents copy the submission
+	// endpoint from the plan hint verbatim, so a ?source= query parameter is
+	// a far more reliable channel for the harness source than a body field
+	// the agent must remember to write. Body fields win.
+	if req.Source == "" {
+		req.Source = strings.TrimSpace(r.URL.Query().Get("source"))
+	}
+	// Header fallbacks for callers that can't (or don't) put their
+	// harness identity in the JSON body. Body fields win.
+	if req.ClientName == "" {
+		if v := strings.TrimSpace(r.Header.Get("X-Atryum-Client-Name")); v != "" {
+			req.ClientName = v
+		}
+	}
+	if req.ClientVersion == "" {
+		if v := strings.TrimSpace(r.Header.Get("X-Atryum-Client-Version")); v != "" {
+			req.ClientVersion = v
+		}
+	}
+	plan, err := h.svc.SubmitPlan(r.Context(), req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, plan)
+}
+
+// planOwnedByCaller enforces agent scoping on the external plan endpoints.
+// When the request carries a verified identity (OAuth via agentRuntimeHandler,
+// or the no-auth agent_id hint) it must match the plan's agent. Anonymous
+// callers (auth disabled, no hint) are not scoped — there is no identity to
+// enforce, matching the external invocation endpoints' trust model.
+func planOwnedByCaller(r *http.Request, plan invocation.Plan) bool {
+	callerID := auth.AgentIDFromContext(r.Context())
+	return callerID == "" || callerID == plan.AgentID
+}
+
+// externalPlanDetail handles GET /api/v1/external/plans/{id} (decision polling)
+// and POST /api/v1/external/plans/{id}/cancel.
+func (h *Handler) externalPlanDetail(w http.ResponseWriter, r *http.Request) {
+	trimmed := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/external/plans/"), "/")
+	if trimmed == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if strings.HasSuffix(trimmed, "/cancel") {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimSuffix(trimmed, "/cancel"), "/")
+		existing, err := h.svc.GetPlan(r.Context(), id)
+		if err != nil {
+			status := http.StatusBadRequest
+			if err == sql.ErrNoRows {
+				status = http.StatusNotFound
+			}
+			writeError(w, status, err.Error())
+			return
+		}
+		// 404 (not 403) on ownership mismatch so callers cannot probe for
+		// other agents' plan IDs.
+		if !planOwnedByCaller(r, existing) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		plan, err := h.svc.CancelPlan(r.Context(), id)
+		if err != nil {
+			status := http.StatusBadRequest
+			if err == sql.ErrNoRows {
+				status = http.StatusNotFound
+			}
+			writeError(w, status, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, plan)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	plan, err := h.svc.GetPlan(r.Context(), trimmed)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if err == sql.ErrNoRows {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	if !planOwnedByCaller(r, plan) {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, plan)
+}
+
+// adminPlans handles GET /api/v1/admin/plans.
+func (h *Handler) adminPlans(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	filter := invocation.PlanListFilter{
+		Offset:  readUintQuery(r, "offset", 0),
+		Limit:   readUintQuery(r, "limit", 50),
+		Status:  strings.TrimSpace(r.URL.Query().Get("status")),
+		AgentID: strings.TrimSpace(r.URL.Query().Get("agent_id")),
+	}
+	resp, err := h.svc.ListPlans(r.Context(), filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) adminPlanStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	filter := invocation.PlanListFilter{
+		Offset:  readUintQuery(r, "offset", 0),
+		Limit:   readUintQuery(r, "limit", 50),
+		Status:  strings.TrimSpace(r.URL.Query().Get("status")),
+		AgentID: strings.TrimSpace(r.URL.Query().Get("agent_id")),
+	}
+	ctx := r.Context()
+	lastPayload := ""
+	for {
+		resp, err := h.svc.ListPlans(ctx, filter)
+		if err != nil {
+			fmt.Fprintf(w, "event: error\ndata: %s\n\n", mustJSONString(map[string]any{"message": err.Error()}))
+			flusher.Flush()
+			return
+		}
+		payload := mustJSONString(resp)
+		if payload != lastPayload {
+			fmt.Fprintf(w, "event: plans\ndata: %s\n\n", payload)
+			flusher.Flush()
+			lastPayload = payload
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+// adminPlanDetail handles GET /api/v1/admin/plans/{id}, GET .../{id}/events,
+// and POST .../{id}/approve|deny|revise|expire.
+func (h *Handler) adminPlanDetail(w http.ResponseWriter, r *http.Request) {
+	trimmed := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/admin/plans/"), "/")
+	if trimmed == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if strings.HasSuffix(trimmed, "/events") {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimSuffix(trimmed, "/events"), "/")
+		filter := invocation.EventListFilter{Offset: readUintQuery(r, "offset", 0), Limit: readUintQuery(r, "limit", 200)}
+		events, err := h.svc.PlanEvents(r.Context(), id, filter)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, events)
+		return
+	}
+	if strings.HasSuffix(trimmed, "/approve") {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimSuffix(trimmed, "/approve"), "/")
+		var req PlanApproveRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		plan, err := h.svc.ApprovePlan(r.Context(), id, req.TTLSeconds)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, plan)
+		return
+	}
+	if strings.HasSuffix(trimmed, "/deny") {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimSuffix(trimmed, "/deny"), "/")
+		var req PlanDenyRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		plan, err := h.svc.DenyPlan(r.Context(), id, req.Message)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, plan)
+		return
+	}
+	if strings.HasSuffix(trimmed, "/revise") {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimSuffix(trimmed, "/revise"), "/")
+		var req PlanReviseRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if strings.TrimSpace(req.Feedback) == "" {
+			writeError(w, http.StatusBadRequest, "feedback is required")
+			return
+		}
+		plan, err := h.svc.RequestPlanRevision(r.Context(), id, req.Feedback)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, plan)
+		return
+	}
+	if strings.HasSuffix(trimmed, "/expire") {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimSuffix(trimmed, "/expire"), "/")
+		plan, err := h.svc.ExpirePlan(r.Context(), id)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, plan)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	plan, err := h.svc.GetPlan(r.Context(), trimmed)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if err == sql.ErrNoRows {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	revisions, err := h.svc.ListPlanRevisions(r.Context(), trimmed)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, PlanDetailResponse{Plan: plan, Revisions: revisions})
 }
 
 // adminManagedAgentSessions registers a Claude Managed Agents session for
@@ -3622,8 +4381,13 @@ func (h *Handler) externalInvocationDetail(w http.ResponseWriter, r *http.Reques
 		resp, err := h.svc.RecordExecution(r.Context(), id, update)
 		if err != nil {
 			status := http.StatusBadRequest
-			if err == sql.ErrNoRows {
+			switch {
+			case err == sql.ErrNoRows:
 				status = http.StatusNotFound
+			case errors.Is(err, invocation.ErrNotOwner):
+				status = http.StatusForbidden
+			case errors.Is(err, invocation.ErrInvalidTransition):
+				status = http.StatusConflict
 			}
 			writeError(w, status, err.Error())
 			return

@@ -9,7 +9,7 @@ import (
 
 	sq "github.com/Masterminds/squirrel"
 
-	"atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/invocation"
 )
 
 // Rule is the store-level representation of an approval rule.
@@ -288,21 +288,27 @@ func scanRule(scanner interface{ Scan(dest ...any) error }) (Rule, error) {
 	rule.Description = description.String
 	rule.ModelConfigCUID = modelConfigCUID.String
 	rule.AtryumLLMConfigID = atryumLLMConfigID.String
+	// server_pattern/tool_pattern/agent_cuids empty-slice means "match all" (see
+	// matchPatterns/matchAgentCUIDs), so a decode failure must not silently
+	// default to it — that would turn a narrowly-scoped rule (e.g. an
+	// auto_approve limited to one server) into one that matches everything.
+	// Surface the error instead so callers fail closed the same way they
+	// already do for a ListApprovalRules error.
 	if err := json.Unmarshal([]byte(serverJSON), &rule.ServerPatterns); err != nil {
-		rule.ServerPatterns = []string{}
+		return Rule{}, fmt.Errorf("decode rule server_pattern: %w", err)
 	}
 	if rule.ServerPatterns == nil {
 		rule.ServerPatterns = []string{}
 	}
 	if err := json.Unmarshal([]byte(toolJSON), &rule.ToolPatterns); err != nil {
-		rule.ToolPatterns = []string{}
+		return Rule{}, fmt.Errorf("decode rule tool_pattern: %w", err)
 	}
 	if rule.ToolPatterns == nil {
 		rule.ToolPatterns = []string{}
 	}
 	if agentCUIDsJSON != "" {
 		if err := json.Unmarshal([]byte(agentCUIDsJSON), &rule.AgentCUIDs); err != nil {
-			rule.AgentCUIDs = []string{}
+			return Rule{}, fmt.Errorf("decode rule agent_cuids: %w", err)
 		}
 	}
 	if rule.AgentCUIDs == nil {
