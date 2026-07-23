@@ -154,10 +154,10 @@ type Handler struct {
 	apiKeyAuth            auth.APIKeyConfig
 
 	// streamRelayEnabled is the kill-switch for the tools/call SSE relay
-	// (see handleMCPProxy). The relay only ever activates when the agent's
-	// POST also sends Accept: text/event-stream and the upstream answers
-	// with an SSE body, so leaving this on by default is safe; it exists so
-	// the feature can be disabled globally without a rollback.
+	// (see handleMCPProxy). The downstream relay only activates when the
+	// agent accepts SSE and the upstream client enters live mode, either
+	// from an HTTP SSE response or an intermediate stdio message. It can be
+	// disabled globally without a rollback.
 	streamRelayEnabled bool
 
 	// clientInfoCache remembers the most recent `initialize.clientInfo`
@@ -1534,11 +1534,11 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			toolReq.ClientName = snap.Name
 			toolReq.ClientVersion = snap.Version
 		}
-		// A stream-capable agent gets a relay sink; the response mode switch
-		// happens lazily, inside svc.InvokeStreaming, only if the upstream
-		// actually answers with an SSE stream (sink.StreamStarted). Until
-		// then nothing has been written, so a JSON upstream response still
-		// produces exactly today's buffered reply below.
+		// A stream-capable agent gets a relay sink. The downstream response
+		// switches to SSE only when the upstream client calls StreamStarted:
+		// for an HTTP SSE response or the first intermediate stdio message.
+		// Until then nothing is written, so a buffered upstream response
+		// still follows the ordinary JSON path below.
 		var sink *sseRelaySink
 		if flusher, ok := w.(http.Flusher); ok && h.streamRelayEnabled && acceptsEventStream(r) {
 			sink = newSSERelaySink(w, flusher)

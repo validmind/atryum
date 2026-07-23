@@ -720,12 +720,13 @@ func (c *Client) invokeHTTP(ctx context.Context, upstream Upstream, tool string,
 	return invoke, nil
 }
 
-// StreamEvent is one upstream SSE event carrying a JSON-RPC message that is
-// not the terminal response to the call: either a notification (progress,
-// logging, or any other server-to-client notification) or, more rarely, a
+// StreamEvent is one intermediate upstream JSON-RPC message, independent of
+// whether HTTP SSE or stdio carried it. It is either a notification (progress,
+// logging, or another server-to-client notification) or, more rarely, a
 // server-to-client request.
 type StreamEvent struct {
-	// Data is the joined "data:" payload for this event: one JSON-RPC message.
+	// Data is one raw JSON-RPC message. HTTP SSE joins the event's data lines
+	// with newlines; stdio removes its newline framing.
 	Data []byte
 	// ServerRequest is true when Data is a JSON-RPC request from the
 	// upstream (has both id and method) rather than a notification. Atryum
@@ -735,15 +736,15 @@ type StreamEvent struct {
 	ServerRequest bool
 }
 
-// StreamSink receives upstream SSE events live, as InvokeStream reads them,
-// so a caller can relay them onward (or just audit them) before the
-// terminal response exists. Its methods run synchronously on the same
+// StreamSink receives intermediate upstream messages live, as InvokeStream
+// reads them, so a caller can relay them onward (or just audit them) before
+// the terminal response exists. Its methods run synchronously on the same
 // goroutine as the InvokeStream call — there is no concurrent access to the
 // sink, and no need for the sink to synchronize internally on that account.
 type StreamSink interface {
-	// StreamStarted fires exactly once, before the first event is
-	// delivered or the terminal response is returned — never for an
-	// attempt that gets silently retried (see relaySSEToolCall).
+	// StreamStarted fires at most once. HTTP SSE calls it before the first
+	// event or terminal response; stdio calls it only before the first
+	// intermediate event. A silently retried attempt never calls it.
 	StreamStarted()
 	// Event delivers one intermediate (non-terminal) message. A returned
 	// error aborts the stream: InvokeStream stops reading and returns that
@@ -751,18 +752,20 @@ type StreamSink interface {
 	Event(evt StreamEvent) error
 }
 
-// StreamOptions bounds how long InvokeStream may take once a stream has
-// started. A zero-valued field disables that particular bound.
+// StreamOptions bounds InvokeStream's setup and response-reading phases. A
+// zero-valued field disables that particular bound.
 type StreamOptions struct {
-	// HeaderTimeout bounds waiting for the upstream's initial response
-	// headers, i.e. before we know whether the response is streaming. Zero
-	// leaves this phase bounded only by ctx's own deadline, if any.
+	// HeaderTimeout bounds setup before tool response reading begins: HTTP
+	// session initialization and response headers, or the stdio initialize
+	// handshake. Zero leaves setup bounded only by ctx's deadline, if any.
 	HeaderTimeout time.Duration
-	// IdleTimeout bounds the gap between successive events once the stream
-	// has started; it resets after every event. Zero disables the check.
+	// IdleTimeout bounds response-reading inactivity. Streaming transports
+	// reset it when upstream activity arrives, including events routed over
+	// the shared standalone HTTP stream. For a plain HTTP JSON response it
+	// bounds the complete body read. Zero disables the check.
 	IdleTimeout time.Duration
-	// MaxDuration bounds the whole call once the stream has started. Zero
-	// disables the check.
+	// MaxDuration bounds the complete response-reading phase after HTTP
+	// headers or the stdio handshake. Zero disables the check.
 	MaxDuration time.Duration
 }
 
@@ -813,14 +816,10 @@ func classifyRPCMessage(payload []byte, expectedID json.RawMessage) rpcMessageKi
 	return rpcMessageUnknown
 }
 
-// callTimeoutGuard implements InvokeStream's header/idle/max-duration
-// timeout scheme by canceling one shared context — the same context the
-// HTTP request and its body reads run under. Header timing bounds only the
-// wait for response headers; once headers arrive the caller disarms it and
-// arms the idle/max-duration timers for the body-read phase instead, so a
-// slow-to-start upstream and a slow-once-started upstream are judged against
-// the right bound for each phase, rather than one fixed wall-clock budget
-// covering both (which is what the plain per-call http.Client timeout does).
+// callTimeoutGuard implements InvokeStream's setup/idle/max-duration timeout
+// scheme by canceling one shared context. The setup timer covers HTTP response
+// headers or the stdio initialize handshake. After setup, callers replace it
+// with idle and maximum-duration timers for response reading.
 type callTimeoutGuard struct {
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -1805,14 +1804,12 @@ func (c *Client) invokeHTTPStream(ctx context.Context, upstream Upstream, tool s
 	return outcome.invoke, nil
 }
 
-// InvokeStream behaves like Invoke, except that if the upstream emits
-// intermediate JSON-RPC messages (progress, logging, other notifications)
-// for the call — as an SSE stream over HTTP, or as extra newline-delimited
-// messages before the response over stdio — they are relayed to sink as
-// they arrive, before the terminal response exists. When sink is nil, or
-// the upstream never emits anything beyond its terminal response, sink is
-// never called and the returned InvokeResult is identical to what Invoke
-// would return.
+// InvokeStream behaves like Invoke while also relaying intermediate JSON-RPC
+// messages to sink as they arrive. HTTP upstreams select streaming with an
+// SSE response, so StreamStarted fires even when that SSE response contains
+// only its terminal message. Stdio has no equivalent transport signal, so its
+// sink starts only when an intermediate message arrives. A nil sink always
+// uses Invoke's buffered path.
 func (c *Client) InvokeStream(ctx context.Context, upstream Upstream, tool string, input map[string]any, requestID *string, meta map[string]any, sink StreamSink, opts StreamOptions) (InvokeResult, error) {
 	switch upstream.Mode {
 	case UpstreamModeStdio:

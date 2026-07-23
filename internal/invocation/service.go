@@ -218,8 +218,8 @@ type Service struct {
 	pendingApprovals map[string]chan approvalDecision
 
 	// streamOptions and streamAuditLimits govern InvokeStreaming's execution
-	// once a sink is present (see finishExecution). The zero value of each
-	// disables its bounds; SetStreamOptions installs real values.
+	// once a sink is present (see finishExecutionStreaming). The zero value
+	// of each disables its bounds; SetStreamOptions installs real values.
 	streamOptions     mcp.StreamOptions
 	streamAuditLimits StreamAuditLimits
 
@@ -263,7 +263,7 @@ func (s *Service) SetInvocationSummarizer(client SummaryClient) {
 
 // SetStreamOptions configures the header/idle/max-duration timeout scheme
 // and per-event audit caps used by InvokeStreaming once a caller supplies a
-// sink (see finishExecution). Calls with a nil sink are unaffected.
+// sink (see finishExecutionStreaming). Calls with a nil sink are unaffected.
 func (s *Service) SetStreamOptions(opts mcp.StreamOptions, auditLimits StreamAuditLimits) {
 	s.streamOptions = opts
 	s.streamAuditLimits = auditLimits
@@ -330,10 +330,9 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	return s.InvokeStreaming(ctx, req, nil)
 }
 
-// InvokeStreaming runs one tool call exactly like Invoke, except that when
-// sink is non-nil and the upstream answers the tools/call with an SSE
-// stream, intermediate JSON-RPC messages (progress, logging, other
-// notifications) are relayed to sink as they arrive — see finishExecution.
+// InvokeStreaming runs one tool call exactly like Invoke, except that a
+// non-nil sink can receive intermediate JSON-RPC messages from either HTTP
+// SSE or stdio as they arrive — see finishExecutionStreaming.
 // Rule evaluation, policy, and the human-approval gate below are entirely
 // unaware of sink: it is not touched until execution begins, so an
 // approval-gated call pauses with nothing relayed, the same as today.

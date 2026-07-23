@@ -118,23 +118,21 @@ type DefaultsConfig struct {
 
 	// StreamRelayEnabled is the kill-switch for the tools/call SSE relay
 	// (see api.Handler.SetStreamRelayEnabled / docs/architecture.md). The
-	// relay only ever activates when the agent's own request also sends
-	// Accept: text/event-stream and the upstream answers with an SSE
-	// body, so leaving this on by default is safe.
+	// downstream relay only activates when the agent sends Accept:
+	// text/event-stream and the upstream client enters live mode. HTTP
+	// upstreams do that by returning SSE; stdio upstreams do it when they
+	// emit an intermediate message.
 	StreamRelayEnabled bool `toml:"stream_relay_enabled"`
-	// StreamHeaderTimeoutSeconds bounds waiting for the upstream's
-	// response headers on a streaming tools/call — the connect phase,
-	// before Atryum knows whether the response will be an SSE stream.
-	// Zero falls back to RequestTimeoutSeconds, preserving today's
-	// connect-phase behavior.
+	// StreamHeaderTimeoutSeconds bounds setup before tool response reading:
+	// HTTP session initialization and response headers, or the stdio
+	// initialize handshake. Zero falls back to RequestTimeoutSeconds.
 	StreamHeaderTimeoutSeconds int `toml:"stream_header_timeout_seconds"`
-	// StreamIdleTimeoutSeconds bounds the gap between successive relayed
-	// events once a stream has started; it resets on every event. Unlike
-	// RequestTimeoutSeconds, this does not bound the call's total
-	// duration — only how long it may go without producing anything.
+	// StreamIdleTimeoutSeconds bounds response-reading inactivity. Streaming
+	// events reset it; for a plain HTTP JSON response it bounds the complete
+	// body read. It does not limit the call's total duration.
 	StreamIdleTimeoutSeconds int `toml:"stream_idle_timeout_seconds"`
-	// StreamMaxDurationSeconds bounds the whole call once a stream has
-	// started. Zero disables the bound (unlimited).
+	// StreamMaxDurationSeconds bounds response reading after setup completes.
+	// Zero disables the bound (unlimited).
 	StreamMaxDurationSeconds int `toml:"stream_max_duration_seconds"`
 	// StreamAuditMaxEvents caps how many invocation.stream_event audit
 	// rows get persisted per call; beyond the cap, events are still
