@@ -70,8 +70,12 @@ func TestClearSessionsStopsWatchersForSessionsDeletedBeforeAFailure(t *testing.T
 		}
 	}
 
-	if _, err := svc.ClearSessions(context.Background()); err == nil {
+	cleared, err := svc.ClearSessions(context.Background())
+	if err == nil {
 		t.Fatal("expected ClearSessions to surface the transient delete error")
+	}
+	if cleared != 2 {
+		t.Errorf("ClearSessions returned cleared=%d, want 2 (sessions fully cleared before the failure)", cleared)
 	}
 
 	mu.Lock()
