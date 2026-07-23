@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"atryum/internal/mcp"
+	"github.com/validmind/atryum/internal/mcp"
 )
 
 const (

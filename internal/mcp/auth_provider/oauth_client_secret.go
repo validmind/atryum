@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"strings"
 
-	"atryum/internal/mcp"
+	"github.com/validmind/atryum/internal/mcp"
 )
 
 // OAuthClientSecretProvider handles the confidential-client authorization

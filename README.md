@@ -156,7 +156,7 @@ The embedded invocation view subscribes to the admin SSE stream, updates list/de
 
 ## Storage
 
-SQLite by default, PostgreSQL optional via `server.database_url`. Both are first-class — migrations live in `internal/store/migrations/` and apply at startup. Core tables:
+SQLite by default, PostgreSQL optional via `server.database_url`. Both are first-class. Built-in migration definitions live in `pkg/migrations/`; `internal/store` applies and tracks them at startup. Embedding programs can add separately tracked, namespaced migrations through `pkg/atryum.WithMigrations`. Core tables:
 
 - `mcp_servers` — upstream connection settings and generic auth/connection status, including `connection_status`, `auth_status`, `reauth_needed`, `auth_type`, `last_checked_at`, `last_check_ok`, `last_error_summary`, and `action_required`.
 - `oauth_credentials` and related OAuth client registration tables — tokens and client registrations held by Atryum on behalf of agents.
@@ -212,6 +212,21 @@ After first-run bootstrap, edit MCP servers through the UI/API; TOML `[[upstream
 `server.database_url` selects the storage provider by URL scheme. `postgres://` and `postgresql://` use PostgreSQL via pgx stdlib; `sqlite://`, `file:`, an empty URL, or a bare path use SQLite. Normal tests do not require PostgreSQL; run the optional store integration test with `ATRYUM_POSTGRES_TESTS=1 go test ./internal/store`.
 
 When `backend.base_url` is empty, the ValidMind backend connection check is skipped for local standalone runs. When it is set, startup fails if credentials are missing or `GET /api/atryum/unstable/connection` is rejected. Environment variables override TOML: `VM_BASE_URL`, `VM_MACHINE_KEY`, `VM_MACHINE_SECRET`, and `VM_CONNECTION_TIMEOUT_SECONDS`.
+
+## Embedding
+
+The stock executable in `cmd/atryum` is a thin wrapper around the public
+`pkg/atryum` package. Another Go program can call `atryum.Main` to run the same CLI and
+server with these options:
+
+- `WithRoutes` adds HTTP routes. Extension routes are outside Atryum's built-in
+  authentication middleware and must authenticate themselves.
+- `WithMigrations` adds namespaced migrations after the built-in sequence.
+- `WithDatabase` runs a database hook after all migrations and before the server starts.
+- `WithThirdPartyNotices` supplies the notices printed by the `licenses` command.
+
+Extensions run inside the Atryum process and share its HTTP server and database. See
+[`pkg/atryum`](pkg/atryum) and [`pkg/migrations`](pkg/migrations) for the public types.
 
 ## Running
 

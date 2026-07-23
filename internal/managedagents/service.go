@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/invocation"
 )
 
 // InvocationGateway is the slice of invocation.Service the bridge reuses to run

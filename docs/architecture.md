@@ -8,16 +8,20 @@ the [README](../README.md).
 
 Atryum is a Go service that mediates tool calls. It exposes runtime endpoints to agent
 harnesses, an MCP-compatible proxy, and an admin API/UI. All ingress paths share the
-same invocation service, rule evaluation, and audit store.
+same invocation service, rule evaluation, and audit store. The stock binary and programs
+that embed Atryum both enter through the public `pkg/atryum` bootstrap package.
 
 ```mermaid
 flowchart LR
+    Stock[cmd/atryum stock binary]
+    Embedder[Embedding Go program]
     Hook[Agent harness or hook]
     MCP[MCP client]
     Claude[Claude Managed Agents API]
     Admin[Admin UI or API client]
 
     subgraph Atryum[Atryum process]
+        Bootstrap[pkg/atryum bootstrap and extensions]
         API[HTTP and MCP handlers]
         Watcher[Managed Agents watcher]
         Service[Invocation service]
@@ -26,6 +30,9 @@ flowchart LR
         Upstream[MCP client]
     end
 
+    Stock --> Bootstrap
+    Embedder -->|extension options| Bootstrap
+    Bootstrap -->|constructs| API
     Hook -->|submit, poll, report outcome| API
     MCP -->|MCP JSON-RPC| API
     Admin -->|review and configuration| API
@@ -39,8 +46,9 @@ flowchart LR
     Upstream -->|HTTP or stdio| Tools[Upstream MCP servers]
 ```
 
-The diagram corresponds to `internal/api`, `internal/managedagents`,
-`internal/invocation`, `internal/store`, and `internal/mcp`.
+The diagram corresponds to `cmd/atryum`, `pkg/atryum`, `pkg/migrations`,
+`internal/api`, `internal/managedagents`, `internal/invocation`, `internal/store`, and
+`internal/mcp`.
 
 ## Runtime ingress
 
@@ -61,15 +69,35 @@ or audit records are evaluated.
 
 | Package | Responsibility | Must not own |
 |---|---|---|
+| `cmd/atryum` | Thin stock executable that supplies bundled notices and calls `pkg/atryum` | CLI, server, or business logic |
+| `pkg/atryum` | Public CLI/server bootstrap and extension options for routes, migrations, database hooks, and notices | Invocation decisions or transport internals |
+| `pkg/migrations` | Portable definitions for Atryum's built-in schema migrations | Repository queries or migration execution state |
 | `internal/api` | HTTP/MCP transport, authentication middleware, request/response mapping, embedded UI | Rule or invocation state transitions |
 | `internal/invocation` | Invocation lifecycle, rule matching, AI evaluation dispatch, approval coordination | SQL or upstream transport details |
-| `internal/store` | SQLite/PostgreSQL repositories, schema migrations, durable query semantics | Policy decisions |
+| `internal/store` | SQLite/PostgreSQL repositories, migration execution and tracking, durable query semantics | Policy decisions |
 | `internal/mcp` | Server resolution, MCP forwarding, upstream authentication and OAuth | Approval policy |
 | `internal/auth` | Inbound OIDC/JWT validation and authenticated identity context | Upstream MCP credentials |
 | `internal/managedagents` | Anthropic session discovery, event replay, confirmation delivery | Independent rule evaluation |
 
 The React application in `ui/` is compiled into `internal/api/web/` for the production
 binary. During development it can run separately, but it still uses the same admin API.
+
+### Embedding and extension boundary
+
+`cmd/atryum` is only the stock executable. The reusable application lives in
+`pkg/atryum`, so another Go program can start the same server with additional options:
+
+- `WithRoutes` mounts extra HTTP routes after built-in routes. These routes are outside
+  Atryum's authentication middleware and must provide their own authentication.
+- `WithMigrations` registers extension-owned, namespaced schema migrations. They run
+  after all built-in migrations and are tracked separately by namespace and version.
+- `WithDatabase` runs a hook after built-in and extension migrations finish but before
+  the server starts accepting requests.
+- `WithThirdPartyNotices` replaces the notices text printed by the `licenses` command.
+
+Extensions execute inside the Atryum process and share its database and HTTP server.
+They are trusted application code, not isolated plugins. Route patterns must not collide
+with built-in routes, and a migration namespace must remain stable across releases.
 
 ## Decision pipeline
 
@@ -188,18 +216,44 @@ do not directly publish to the stream.
 
 ### Live SSE relay for tools/call
 
-This section is a special case of the execution flow above, scoped to just one of the
-two `Invoke`-backed entry points from the Runtime ingress table: the MCP proxy's
-`tools/call`. Direct invocation (`POST /api/v1/invocations`) is a plain REST endpoint —
-it does not negotiate `Accept: text/event-stream` and never streams.
+#### Purpose and scope
 
-**Background, read this first.** Every message in this protocol is JSON-RPC: a
-*request* asks for something and carries an `id`; a *response* answers one specific
-request by carrying that same `id` back; a *notification* is a one-way heads-up with no
-`id` and no reply expected. Server-Sent Events (SSE) is just a way to send several of
-these messages down one HTTP connection over time — as `data:` lines, one message each,
-separated by blank lines — instead of sending one message all at once. A tool call
-answered this way might look like:
+Atryum normally returns one response after an upstream tool finishes. The live relay
+also lets Atryum send progress updates while the tool is still running.
+
+This behavior applies only to `tools/call` requests sent through the MCP proxy at
+`/mcp/{server}`. It does not apply to the direct REST endpoint
+`POST /api/v1/invocations`.
+
+Streaming is opt-in and keeps the old behavior as its fallback:
+
+1. The downstream MCP client includes `Accept: text/event-stream` to say it can read
+   Server-Sent Events.
+2. Atryum calls the upstream MCP server.
+3. If the upstream returns a normal JSON response, Atryum returns one normal JSON
+   response.
+4. If the upstream starts a stream, Atryum relays each progress update and then the
+   final result.
+
+#### Terms used in this section
+
+| Term | Meaning here |
+|---|---|
+| **MCP** | Model Context Protocol, the protocol used to call tools. MCP messages use JSON-RPC. |
+| **Downstream MCP client** | The agent or agent harness calling Atryum. “Downstream” means the side receiving Atryum's response. |
+| **Atryum** | The relay between the downstream client and the upstream server. |
+| **Upstream MCP server** | The tool server that Atryum calls. “Upstream” means the side doing the tool work. |
+| **JSON-RPC request** | A message asking for work. It has an `id`, and the response must carry the same `id`. |
+| **JSON-RPC notification** | A one-way message such as a progress update. It has a `method` but no `id`, so no reply is expected. |
+| **Terminal response** | The final JSON-RPC success or error for the tool call. It is the one result a non-streaming call would return. |
+| **SSE** | Server-Sent Events, a one-way HTTP response format that lets a server send multiple events over one open response. |
+| **Progress token** | A string or number used to match progress to a call. The client requests it with `_meta.progressToken`; notifications return it as `params.progressToken`. |
+| **MCP session** | A group of requests recognized by the upstream server through one session ID. Atryum shares that upstream session across active calls. |
+| **Call-response stream** | The response body of the upstream `tools/call` POST. It belongs to one call. |
+| **Standalone stream** | A separate SSE GET connection shared by active calls in one upstream MCP session. Some MCP servers send progress here instead of on the call-response stream. |
+| **Stdio upstream** | An MCP server run as a local process. Atryum exchanges messages through the process's standard input and output instead of HTTP. |
+
+An SSE event contains one or more `data:` lines and ends with a blank line. For example:
 
 ```
 data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1,"total":3}}
@@ -207,228 +261,181 @@ data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1,
 data: {"jsonrpc":"2.0","id":"1","result":{"content":[{"type":"text","text":"done"}]}}
 ```
 
-The first line is a notification — a progress update nobody has to reply to. The second
-is the real answer (it has an `id` and a `result`). This doc calls that second one the
-**terminal response**: it's the one and only thing a non-streaming call would have
-returned.
+The first event is a progress notification. The second event is the terminal response.
 
-**What Atryum does with this.** If the upstream tool streams progress notifications
-while working on a call, Atryum forwards each one to the agent as it happens — the agent
-sees them live instead of waiting in silence until the call finishes.
+#### The two upstream paths
 
-If the upstream tool answers with a single plain response and no streaming, the agent
-simply receives that response. There are no live updates to relay in that case.
+Every HTTP tool call has its own POST response. Some upstream servers put both progress
+and the terminal response on that response. Other servers put progress on a separate,
+shared GET stream while still returning the terminal response on the POST response.
+Atryum listens to both paths.
 
-**Some upstream tools use a second, separate connection for progress updates instead of
-the one above.** The wire protocol actually allows two different channels for anything a
-tool sends before its final answer: updates riding along on the same connection as the
-call itself (the channel described above), and a second, independent connection carrying
-updates that aren't tied to any one specific call. Some widely-used tool-building
-frameworks always use this second channel for progress updates rather than the first.
-Atryum listens on both, so it makes no difference which channel a given upstream tool
-happens to prefer — the agent sees the same live updates either way.
+```mermaid
+flowchart TB
+    Downstream[Downstream MCP client]
+    Relay[Atryum]
+    Upstream[Upstream MCP server]
+    CallPath[Path A: one POST per call<br/>Progress and terminal response]
+    StandalonePath[Path B: one shared SSE GET<br/>Progress only]
 
-**Because that second channel isn't tied to any one call, Atryum has to work out whose
-update belongs to whom.** Several agents can have calls in flight against the same
-upstream tool server at once, all sharing that one second channel. Each update on it
-carries a tracking number the calling agent chose — but two unrelated agents could easily
-pick the same tracking number, since neither knows about the other. Atryum doesn't know in
-advance which of the two channels a given upstream will actually use to answer, so for
-every call that asks for update tracking it swaps in its own guaranteed-unique tracking
-number in place of whatever the agent supplied, before the call ever goes upstream — not
-only for calls that end up using the second channel. It restores the agent's own original
-number before handing an update back, the same way no matter which of the two channels
-that update actually arrives on. That's what makes a coincidental match between two
-unrelated agents' tracking numbers harmless either way. An update on the second channel
-with no tracking number at all (a plain log-style message, say) is only ever handed to an
-agent when exactly one call is currently sharing that channel; with more than one, there's
-no way to know whose it is, and Atryum drops it rather than guess wrong.
+    Downstream <-->|tools/call request<br/>JSON or SSE response| Relay
+    Relay --- CallPath
+    CallPath --- Upstream
+    Relay --- StandalonePath
+    StandalonePath --- Upstream
+```
 
-**The three layers involved**, in order: the part of Atryum facing the agent decides
-whether to relay live and writes the response back; the part in the middle runs
-approval rules and keeps the audit trail; the part facing the upstream tool speaks the
-actual wire protocol and hands messages up as they arrive. (If you want to find the
-code: `internal/api` → `internal/invocation` → `internal/mcp`, in that order.)
+| | Path A: call-response stream | Path B: standalone stream |
+|---|---|---|
+| HTTP connection | The response to one `tools/call` POST | One SSE GET shared by active calls in an upstream session |
+| Carries progress | Yes | Yes |
+| Carries the terminal response | Yes | No; the terminal response still arrives on the POST response |
+| How an update is matched to a call | The response already belongs to that call | Atryum matches `params.progressToken` |
+
+For a stdio upstream there is no HTTP or SSE on the upstream side. The process sends one
+JSON-RPC message per line instead. Atryum applies the same message classification,
+timeout, audit, and downstream-relay rules to those messages.
+
+#### Normal call flow
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Agent
-    participant Facing as Atryum: agent-facing layer
-    participant Middle as Atryum: rules & audit layer
-    participant Client as Atryum: upstream-facing layer
-    participant Upstream as Upstream tool server
+    participant Client as Downstream MCP client
+    participant Atryum
+    participant Upstream as Upstream MCP server
 
-    Agent->>Facing: Call a tool (willing to receive a live stream)
-    Facing->>Middle: Run the call
-    Middle->>Client: Send the call upstream
-    Client->>Upstream: Call the tool
-    alt Upstream streams progress before answering
-        Upstream-->>Client: Starts streaming
-        Note over Client,Upstream: some tools send updates on a second, separate<br/>connection instead — Atryum listens on that one too
-        Client->>Middle: A progress update arrived
-        Middle->>Middle: Record it for the audit trail (in the background)
-        Middle->>Facing: Forward the update
-        Facing-->>Agent: Relay it live
-        Note over Client,Upstream: repeats for every update sent
-        Upstream-->>Client: Final answer
-        Client-->>Middle: Done
-        Middle->>Middle: Save the result, close out the audit trail
-        Middle-->>Facing: Done
-        Facing-->>Agent: Send the final answer
-    else Upstream just answers directly, no streaming
-        Upstream-->>Client: Single reply
-        Note over Client,Facing: nothing has been sent to the agent yet
-        Client-->>Middle: Done
-        Middle-->>Facing: Done
-        Facing-->>Agent: Send the one reply
+    Client->>Atryum: tools/call, accepts SSE
+    Atryum->>Atryum: Evaluate rules and approval policy
+    Atryum->>Upstream: Execute the tool
+    alt Upstream returns one normal response
+        Upstream-->>Atryum: Terminal JSON-RPC response
+        Atryum-->>Client: One normal JSON response
+    else Upstream streams
+        loop For each progress notification, if any
+            Upstream-->>Atryum: Progress notification on Path A or B
+            Atryum->>Atryum: Queue audit write
+            Atryum-->>Client: Progress notification as SSE
+        end
+        Upstream-->>Atryum: Terminal response on Path A
+        Atryum->>Atryum: Save final invocation state
+        Atryum-->>Client: Terminal response as SSE, then close
     end
 ```
 
-The diagram above shows updates arriving on the same connection as the call itself —
-the most common case, and the only one some upstream tools use at all. Here's what
-happens instead when an upstream tool sends its updates on the second, standalone
-connection described earlier:
+Approval happens before Atryum contacts the upstream server. While waiting for a human
+decision, the downstream request remains open but Atryum has not started an SSE
+response. A denial stays a normal JSON response. After approval, execution follows the
+flow above.
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Agent
-    participant Facing as Atryum: agent-facing layer
-    participant Middle as Atryum: rules & audit layer
-    participant Client as Atryum: upstream-facing layer
-    participant Upstream as Upstream tool server
+#### Matching shared progress to the correct call
 
-    Agent->>Facing: Call a tool, willing to receive live updates
-    Facing->>Middle: Run the call
-    Middle->>Client: Send the call upstream
-    Client->>Client: Swap the agent's tracking number for a unique one
-    Client->>Upstream: Call the tool (this connection will carry the final answer)
-    Client->>Upstream: Open the second, standalone connection<br/>(shared with any other call in flight against this upstream)
-    Note over Upstream: This upstream tool sends its updates on the standalone<br/>connection, never on the call's own connection
-    Upstream-->>Client: Update arrives on the standalone connection
-    Client->>Client: Match it, by tracking number, back to this call
-    Client->>Middle: A progress update arrived (tracking number restored)
-    Middle->>Middle: Record it for the audit trail (in the background)
-    Middle->>Facing: Forward the update
-    Facing-->>Agent: Relay it live, with the agent's own original tracking number
-    Note over Upstream,Client: repeats for every update sent this way
-    Upstream-->>Client: Final answer, on the call's own connection
-    Client-->>Middle: Done
-    Middle->>Middle: Save the result, close out the audit trail
-    Middle-->>Facing: Done
-    Facing-->>Agent: Send the final answer
-```
+The standalone stream is shared, so receiving an event does not by itself identify the
+call that owns it. Atryum uses this process:
 
-**Approval gating applies before any streaming can start.** If a rule says a tool call
-needs a human to approve it first, Atryum pauses *before ever contacting the upstream
-tool* — which is before any streaming could even start. Nothing is sent to the agent
-while a call is waiting on approval, whether or not the agent asked for a live stream.
+1. The downstream client supplies `_meta.progressToken`.
+2. Before sending the tool call upstream, Atryum replaces that token with a value unique
+   to this call.
+3. On the standalone path, Atryum uses its unique value to select the correct call. On
+   the call-response path, the HTTP response already identifies the call.
+4. Before relaying progress from either path, Atryum restores the client's original token.
 
-```mermaid
-sequenceDiagram
-    participant Agent
-    participant Atryum
-    participant Reviewer as Human reviewer
-    participant Upstream as Upstream tool server
+Rewriting is necessary because two unrelated clients can choose the same token. Without
+it, one client could receive another client's progress.
 
-    Agent->>Atryum: Call a tool
-    Atryum->>Atryum: Rule says this needs approval — pause and wait
-    Note over Agent,Atryum: Connection stays open. Nothing sent yet.
-    Reviewer->>Atryum: Approve
-    Atryum->>Upstream: Now make the call
-    Note over Agent,Upstream: From here it's the same as the diagram above
-    Upstream-->>Agent: Progress updates, then the final answer
-```
+A standalone notification without a progress token cannot always be matched safely. If
+exactly one call is currently using the shared stream, Atryum sends the notification to
+that call. If several calls are active, Atryum drops it rather than guess and risk
+cross-delivery.
 
-**Every relayed update is also recorded for the audit trail**, in the background, so a
-slow database write can never delay a live update reaching the agent or eat into the
-time budget described below.
+#### Code responsibilities
 
-**Why there are three separate time limits, not one.** A normal (non-streaming) call has
-one clock: if it takes too long overall, Atryum gives up. A streaming call can't work
-that way, because "this is taking a while" is expected and fine as long as *something*
-keeps happening. So there are three limits instead of one:
+| Layer | Responsibility for this feature |
+|---|---|
+| `pkg/atryum` (startup only) | Load stream configuration, inject timeout and audit limits into the invocation service, and set the relay kill switch on the HTTP handler. |
+| `internal/api` | Detect downstream SSE support, write and flush SSE frames, send heartbeats, enforce downstream write deadlines, and finish the stream. |
+| `internal/invocation` | Preserve rule and approval behavior, update invocation state, and audit stream events through a bounded background queue. |
+| `internal/mcp` | Call the upstream, parse and classify JSON-RPC messages, merge the two upstream paths, correlate progress tokens, reconnect resumable streams, and enforce upstream timeouts. |
 
-- How long to wait for the upstream tool to even start responding.
-- How long to wait between one update and the next, once it has started — this one
-  resets every time something new arrives, so a stream that's still actively sending
-  updates is never punished just for running long overall.
-- A hard ceiling on the whole call, just in case, so nothing runs forever.
+After startup wiring, each call crosses the runtime packages in this order:
+`internal/api` → `internal/invocation` → `internal/mcp`.
 
-Whichever limit is hit first ends the call, and Atryum records *which one* (a stalled
-tool, an agent that disconnected, and an ordinary network failure all get a different,
-searchable label in the audit trail) — so whoever's debugging later doesn't have to
-guess which of the three actually happened.
+#### Time limits
 
-**The agent's own connection has a time limit too.** If the agent stops reading — its
-connection dies, or it just stops paying attention — Atryum needs to notice, otherwise
-it would sit forever trying to hand off data nobody is receiving, which would also
-stall the upstream tool call waiting behind it. So every write to the agent has its own
-short time limit, and while the upstream tool is quiet, Atryum sends small "still here"
-pings on the open connection, so ordinary network equipment sitting in between doesn't
-mistake a slow-but-healthy call for a dead one and close it.
+A single timeout is not enough for a stream. A long-running tool can be healthy as long
+as it continues to send progress. The relay therefore separates three upstream limits:
 
-**If the upstream tool's own connection drops mid-stream, Atryum reconnects and picks up
-where it left off** — this is a feature of the underlying protocol, not something Atryum
-invented — so the agent doesn't see a glitch. The connection *from* Atryum *to* the
-agent intentionally does not support this kind of resume: promising it would mean
-promising to remember exactly where every agent left off, even across an Atryum
-restart, which isn't a promise Atryum makes today.
+| Limit | Configuration | What it measures |
+|---|---|---|
+| Header timeout | `stream_header_timeout_seconds` | How long Atryum waits for HTTP response headers or stdio session initialization. |
+| Idle timeout | `stream_idle_timeout_seconds` | The longest allowed gap between upstream messages. It resets after every message. |
+| Maximum duration | `stream_max_duration_seconds` | A hard limit for the upstream execution phase, even if progress continues. |
 
-Atryum does not forward messages that the *upstream tool* might try to send back toward
-the agent as if it were the agent's own message (a few advanced, rarely-used parts of
-the protocol allow this) — those get recorded for the audit trail and dropped, since
-Atryum has no way to get a reply back to where it came from. The always-on keepalive
-connection agents can poll separately is a distinct mechanism from this relay.
+The downstream connection has a separate per-write deadline. If the downstream client
+disconnects or stops reading, Atryum aborts that call instead of leaving a goroutine
+blocked forever. While the upstream is quiet, Atryum sends SSE comment heartbeats so
+proxies and load balancers do not mistake the downstream connection for an abandoned
+one. The audit trail distinguishes an upstream timeout, a downstream disconnect, and
+other transport failures.
 
-A single on/off switch lets an operator disable the relay entirely, so every `tools/call`
-gets a single buffered response regardless of what the agent or upstream would otherwise
-support.
+#### Reliability guarantees and limits
 
-#### Edge cases and failure paths
+- **Plain JSON remains the fallback.** Atryum does not start the downstream SSE response
+  unless the client accepts SSE and the upstream actually streams.
+- **Approval still comes first.** No upstream call or downstream stream starts while a
+  tool call is waiting for approval.
+- **Retry is safe only before delivery.** Atryum may retry session setup before it has
+  relayed anything. After the first relayed event, retrying could duplicate visible
+  progress, so Atryum returns a terminal stream error instead.
+- **A started stream gets a terminal frame.** If execution fails after streaming has
+  begun, Atryum sends a final JSON-RPC error event instead of silently closing the
+  connection or trying to change the HTTP status.
+- **The per-call upstream stream can resume.** If it closes after providing an SSE event
+  ID but before the terminal response, Atryum reconnects with a `Last-Event-ID` header
+  naming the last processed event. If the upstream inclusively replays that event,
+  Atryum skips the duplicate.
+- **The standalone stream does not resume.** If that shared GET disconnects, calls can
+  still receive their terminal responses on their POST connections, but may miss
+  standalone progress until a later group of calls opens a new GET.
+- **The downstream stream does not resume.** Atryum intentionally sends no downstream
+  SSE event IDs because it does not store each client's last processed position across
+  restarts.
+- **Audit storage cannot stall delivery.** Each intermediate event handled by the relay
+  is offered to a bounded background audit queue. Slow or failed writes are counted in
+  the completion audit row; they do not delay the live event.
+- **Audit volume is bounded.** `stream_audit_max_events` limits rows per call, and
+  `stream_audit_max_event_bytes` limits the retained bytes in each row. Events beyond
+  those storage limits are still relayed.
+- **A slow call cannot block the shared standalone stream.** Each call has a bounded
+  progress buffer. If it fills, Atryum drops that call's standalone progress event so
+  other calls can continue.
+- **Unsupported standalone GET is not fatal.** If an upstream does not provide this
+  optional path, Atryum stops trying while the current group of calls remains active.
+  The tool call and its POST response continue normally.
+- **Multi-line SSE data stays valid.** Atryum writes one `data:` field for every payload
+  line and terminates the event with a blank line.
+- **Upstream requests are not forwarded as notifications.** Server-to-client requests
+  such as sampling or elicitation require a response channel Atryum does not broker.
+  Atryum audits and drops them instead.
+- **The relay has a kill switch.** Setting `stream_relay_enabled = false` restores
+  buffered, single-response behavior for every `tools/call`.
 
-- **A tool call that failed to connect properly must not get relayed twice.** If Atryum
-  needs to retry the setup for a call, it only does so before anything has been sent to
-  the agent — retrying after the agent has already seen live updates would relay
-  everything a second time, so Atryum refuses to retry once that's happened.
-- **Something going wrong mid-stream must still leave the agent with a real answer.**
-  Even if a problem is discovered after Atryum has already started relaying updates, the
-  agent still gets a proper closing message explaining what happened — never a
-  connection that just quietly closes with no explanation.
-- **A duplicate update on reconnect must not reach the agent twice.** When Atryum
-  reconnects to an upstream tool mid-stream, some tools resend the very last update as
-  part of "catching up." Atryum recognizes and skips that one repeated update, so the
-  agent only ever sees it once.
-- **An update that spans multiple lines must not get corrupted.** The wire format allows
-  a single update to be written across more than one line. Atryum preserves that shape
-  correctly when relaying it, instead of accidentally squashing it into something that
-  looks like a different, malformed message.
-- **A stuck external tool process must be fully stopped, not half-stopped, when it times
-  out.** Some upstream tools run as an external program that can itself launch further
-  child programs. If Atryum only stopped the program it directly started, a leftover
-  child process could keep running and keep things open, and the timeout would never
-  actually free anything up. Atryum stops the whole group of processes together.
-- **Resetting a "how long has it been quiet" timer must not accidentally end a call
-  that's actually fine.** Naively restarting a countdown every time an update arrives
-  can, in rare bad timing, let the old countdown finish a split second before the
-  restart takes effect — ending a call that was actually still healthy. Atryum
-  double-checks how much time has *really* passed before deciding to end a call, so a
-  well-timed update can never be wrongly punished by bad luck in the timing.
-- **Two agents that happen to pick the same tracking number for their updates must
-  never get mixed up.** The second, standalone update channel described above is shared
-  across every call currently in flight against a given upstream tool server, and
-  agents don't know about each other's choices. Since Atryum can't tell in advance which
-  channel a given upstream will actually use to answer, it assigns its own
-  guaranteed-unique tracking number to *every* call that asks for update tracking, not
-  only ones that end up using the second channel, and restores the agent's original
-  number the same way regardless of which channel the update comes back on — so a
-  coincidental match can never cross-deliver one agent's update to another either way.
-- **An upstream tool that doesn't support the second, standalone channel at all doesn't
-  affect the call itself.** Some tool servers simply don't offer it. Atryum notices on
-  the first attempt and stops trying again for the rest of that session, but the actual
-  tool call still completes and answers normally either way — the only thing lost is any
-  update that server would have sent exclusively on that unsupported channel.
+#### Advanced implementation notes
+
+These details matter when changing the implementation but are not needed to understand
+the normal flow:
+
+- An HTTP response becomes committed when Atryum writes its headers or first bytes.
+  Before that point Atryum can still return plain JSON. After that point every success or
+  error must be a final SSE frame; the handler cannot switch response formats.
+- Heartbeats and tool events can be produced by different Go lightweight threads
+  (goroutines). A lock serializes downstream writes so two frames can never be
+  interleaved and corrupted.
+- Resetting an idle timer races with the timer callback if implemented naively. The
+  timeout guard checks the actual elapsed idle time before ending the call.
+- A timed-out stdio tool can leave child processes behind. On operating systems that
+  support process groups, Atryum terminates the entire group rather than only the direct
+  child.
 
 ## Decision-only calls
 
@@ -516,8 +523,10 @@ The core tables are:
 | `managed_agent_bindings`, `managed_agent_sessions` | Anthropic agent/session ownership and replay state |
 | `external_sessions` | Atryum-minted harness sessions linking external invocations for cross-call evaluation context |
 
-Schema changes are ordered migrations under `internal/store/migrations/` and are
-applied at startup for both SQLite and PostgreSQL.
+Built-in schema definitions are ordered migrations under `pkg/migrations/`.
+`internal/store` applies them at startup and records their versions for both SQLite and
+PostgreSQL. Embedding programs can register separately tracked, namespaced migrations
+through `pkg/atryum.WithMigrations`; these run after all built-in migrations.
 
 An invocation's row is the authoritative record of current state;
 `invocation_events` is best-effort event history. The two writes are separate
@@ -553,5 +562,8 @@ Inbound and upstream authentication are separate trust boundaries:
   `admin_enabled = true` and the configured admin claim is present.
 - Upstream MCP authentication is owned by `internal/mcp/auth_provider`; credentials and
   OAuth tokens are never returned to the agent caller.
+- Routes registered through `pkg/atryum.WithRoutes` are deliberately outside Atryum's
+  built-in authentication middleware. The embedding program must authenticate and
+  authorize those routes itself.
 - No-auth mode is a local deployment option. Identity supplied by a caller in this mode
   is attribution, not a cryptographic ownership guarantee.
