@@ -771,8 +771,13 @@ func writeJSONMap(path string, value map[string]any) error {
 func applyInstallHookConfig(settings map[string]any, target string) {
 	hooks := ensureMap(settings, "hooks")
 	if target == "cursor" {
+		start := ensureSlice(hooks, "sessionStart")
 		pre := ensureSlice(hooks, "preToolUse")
 		post := ensureSlice(hooks, "postToolUse")
+		start = appendUniqueCommand(start, map[string]any{
+			"type":    "command",
+			"command": "ATRYUM_HOOK_HOST=cursor ATRYUM_HOOK_EVENT=sessionStart ATRYUM_SOURCE=cursor node ~/.atryum/hooks/atryum-hook.mjs",
+		})
 		pre = appendUniqueCommand(pre, map[string]any{
 			"type":    "command",
 			"command": "ATRYUM_HOOK_HOST=cursor ATRYUM_HOOK_EVENT=preToolUse ATRYUM_SOURCE=cursor node ~/.atryum/hooks/atryum-hook.mjs",
@@ -781,6 +786,7 @@ func applyInstallHookConfig(settings map[string]any, target string) {
 			"type":    "command",
 			"command": "ATRYUM_HOOK_HOST=cursor ATRYUM_HOOK_EVENT=postToolUse ATRYUM_SOURCE=cursor node ~/.atryum/hooks/atryum-hook.mjs",
 		})
+		hooks["sessionStart"] = start
 		hooks["preToolUse"] = pre
 		hooks["postToolUse"] = post
 		return
@@ -792,10 +798,13 @@ func applyInstallHookConfig(settings map[string]any, target string) {
 		host = "codex"
 		source = "codex"
 	}
+	start := ensureSlice(hooks, "SessionStart")
 	pre := ensureSlice(hooks, "PreToolUse")
 	post := ensureSlice(hooks, "PostToolUse")
+	start = appendUniqueNestedHookEntry(start, fmt.Sprintf("ATRYUM_HOOK_HOST=%s ATRYUM_HOOK_EVENT=SessionStart ATRYUM_SOURCE=%s node ~/.atryum/hooks/atryum-hook.mjs", host, source))
 	pre = appendUniqueNestedHookEntry(pre, fmt.Sprintf("ATRYUM_HOOK_HOST=%s ATRYUM_HOOK_EVENT=PreToolUse ATRYUM_SOURCE=%s node ~/.atryum/hooks/atryum-hook.mjs", host, source))
 	post = appendUniqueNestedHookEntry(post, fmt.Sprintf("ATRYUM_HOOK_HOST=%s ATRYUM_HOOK_EVENT=PostToolUse ATRYUM_SOURCE=%s node ~/.atryum/hooks/atryum-hook.mjs", host, source))
+	hooks["SessionStart"] = start
 	hooks["PreToolUse"] = pre
 	hooks["PostToolUse"] = post
 }
@@ -803,10 +812,12 @@ func applyInstallHookConfig(settings map[string]any, target string) {
 func applyUninstallHookConfig(settings map[string]any, target string) {
 	hooks := ensureMap(settings, "hooks")
 	if target == "cursor" {
+		hooks["sessionStart"] = removeAtryumCommands(ensureSlice(hooks, "sessionStart"))
 		hooks["preToolUse"] = removeAtryumCommands(ensureSlice(hooks, "preToolUse"))
 		hooks["postToolUse"] = removeAtryumCommands(ensureSlice(hooks, "postToolUse"))
 		return
 	}
+	hooks["SessionStart"] = removeAtryumNestedHookCommands(ensureSlice(hooks, "SessionStart"))
 	hooks["PreToolUse"] = removeAtryumNestedHookCommands(ensureSlice(hooks, "PreToolUse"))
 	hooks["PostToolUse"] = removeAtryumNestedHookCommands(ensureSlice(hooks, "PostToolUse"))
 }

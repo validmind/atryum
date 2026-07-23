@@ -1,5 +1,16 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ATRYUM_HOOK_HOST=codex ATRYUM_HOOK_EVENT=SessionStart ATRYUM_SOURCE=codex node ~/.atryum/hooks/atryum-hook.mjs"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "*",

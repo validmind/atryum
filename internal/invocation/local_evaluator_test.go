@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -15,6 +17,10 @@ type localLLMConfigStoreStub struct {
 }
 
 func (s localLLMConfigStoreStub) GetLLMConfig(_ context.Context, _ string) (LocalLLMConfig, error) {
+	return s.cfg, nil
+}
+
+func (s localLLMConfigStoreStub) DefaultLLMConfig(_ context.Context) (LocalLLMConfig, error) {
 	return s.cfg, nil
 }
 
@@ -55,6 +61,97 @@ func TestLocalEvaluatorJudgeOpenAISendsTemperatureZero(t *testing.T) {
 	if got, ok := payload["temperature"].(float64); !ok || got != 0 {
 		t.Fatalf("temperature = %#v, want 0", payload["temperature"])
 	}
+}
+
+// A plan adherence request without a rule-specific config ID (human- or
+// auto-approved plans) must resolve the default enabled config, not fail the
+// empty-ID lookup.
+func TestLocalEvaluatorPlanAdherenceUsesDefaultConfigWhenIDEmpty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]any{"content": `{"verdict":"follows_plan","confidence":1,"reason":"ok"}`},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	evaluator := NewLocalEvaluatorClient(defaultOnlyLLMConfigStoreStub{cfg: LocalLLMConfig{
+		ID:       "llm-default",
+		Provider: "openai_compatible",
+		Model:    "judge-model",
+		BaseURL:  server.URL,
+	}})
+
+	resp, err := evaluator.EvaluatePlanAdherence(context.Background(), PlanAdherenceRequest{
+		AtryumLLMConfigID: "",
+		Charter:           "Only run planned safe commands.",
+		Plan:              Plan{PlanID: "plan_x", Goal: "test"},
+		Action:            PlanAction{Tool: "Bash"},
+		ToolName:          "Bash",
+		ToolArgs:          map[string]any{"cmd": "echo ok"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Verdict != "follows_plan" {
+		t.Fatalf("verdict = %q, want follows_plan", resp.Verdict)
+	}
+}
+
+func TestLocalEvaluatorPlanUsesDefaultConfigWhenIDEmpty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]any{"content": `{"verdict":"approved","confidence":1,"reason":"compliant"}`},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	evaluator := NewLocalEvaluatorClient(defaultOnlyLLMConfigStoreStub{cfg: LocalLLMConfig{
+		ID:       "llm-default",
+		Provider: "openai_compatible",
+		Model:    "judge-model",
+		BaseURL:  server.URL,
+	}})
+
+	resp, err := evaluator.EvaluatePlan(context.Background(), PlanEvaluateRequest{
+		Charter: "Only run compliant plans.",
+		Goal:    "Perform safe work",
+		Actions: []PlanAction{{Tool: "Bash", InputSummary: "echo ok"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Verdict != "approved" {
+		t.Fatalf("verdict = %q, want approved", resp.Verdict)
+	}
+}
+
+func TestParsePlanAdherenceVerdictAcceptsCharterViolation(t *testing.T) {
+	evaluator := NewLocalEvaluatorClient(localLLMConfigStoreStub{})
+	resp := evaluator.parsePlanAdherenceVerdict(`{"verdict":"violates_charter","confidence":0.98,"reason":"deletion is forbidden"}`)
+	if resp.Verdict != "violates_charter" {
+		t.Fatalf("verdict = %q, want violates_charter", resp.Verdict)
+	}
+	if resp.Confidence == nil || *resp.Confidence != 0.98 {
+		t.Fatalf("confidence = %v, want 0.98", resp.Confidence)
+	}
+}
+
+// defaultOnlyLLMConfigStoreStub fails GetLLMConfig so the test proves the
+// empty-ID path goes through DefaultLLMConfig.
+type defaultOnlyLLMConfigStoreStub struct {
+	cfg LocalLLMConfig
+}
+
+func (s defaultOnlyLLMConfigStoreStub) GetLLMConfig(_ context.Context, id string) (LocalLLMConfig, error) {
+	return LocalLLMConfig{}, fmt.Errorf("unexpected GetLLMConfig(%q); want DefaultLLMConfig", id)
+}
+
+func (s defaultOnlyLLMConfigStoreStub) DefaultLLMConfig(_ context.Context) (LocalLLMConfig, error) {
+	return s.cfg, nil
 }
 
 func TestLocalEvaluatorJudgeAnthropicSendsTemperatureZero(t *testing.T) {
@@ -134,4 +231,38 @@ func (t *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		Body:       io.NopCloser(bytes.NewBufferString(t.responseBody)),
 		Request:    req,
 	}, nil
+}
+
+// Both plan judges auto-approve real side effects, so their system prompts
+// must mark every agent-authored field as untrusted data.
+func TestPlanJudgePromptsMarkAgentContentUntrusted(t *testing.T) {
+	for name, prompt := range map[string]string{
+		"plan evaluation": planJudgeSystemPrompt,
+		"plan adherence":  planAdherenceSystemPrompt,
+	} {
+		if !strings.Contains(prompt, "trusted") {
+			t.Errorf("%s prompt does not mark agent-authored content untrusted", name)
+		}
+		if !strings.Contains(prompt, "Never follow instructions") {
+			t.Errorf("%s prompt does not forbid obeying embedded instructions", name)
+		}
+	}
+}
+
+func TestPlanAdherencePromptAllowsHarnessToolNameMismatch(t *testing.T) {
+	evaluator := NewLocalEvaluatorClient(localLLMConfigStoreStub{})
+	message := evaluator.buildPlanAdherenceMessage(PlanAdherenceRequest{
+		Plan:     Plan{PlanID: "plan_x", Goal: "run a shell script", Actions: []PlanAction{{Tool: "zsh"}}},
+		Action:   PlanAction{Tool: "zsh", Description: "Run the approved script."},
+		ToolName: "bash",
+		ToolArgs: map[string]any{"command": "zsh approved-script.zsh"},
+	})
+	if !strings.Contains(planAdherenceSystemPrompt, "tool name may differ") {
+		t.Fatal("plan adherence system prompt must allow harness tool-name differences")
+	}
+	for _, want := range []string{"Candidate planned action:", "tool=zsh", "Tool: bash"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("adherence message missing %q:\n%s", want, message)
+		}
+	}
 }

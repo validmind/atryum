@@ -18,6 +18,7 @@ import type { ComponentType } from "react";
 import {
   ArrowRightStartOnRectangleIcon,
   CircleStackIcon,
+  ClipboardDocumentListIcon,
   Cog6ToothIcon,
   CpuChipIcon,
   QueueListIcon,
@@ -34,6 +35,7 @@ type NavItem = {
 
 const NAV_ITEMS: NavItem[] = [
   { label: "Invocations", icon: QueueListIcon, path: "/invocations" },
+  { label: "Plans", icon: ClipboardDocumentListIcon, path: "/plans" },
   { label: "Agents", icon: CpuChipIcon, path: "/agents" },
   { label: "Servers", icon: CircleStackIcon, path: "/servers" },
   { label: "Rules", icon: ShieldCheckIcon, path: "/rules" },

@@ -6,12 +6,14 @@ package atryum
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -142,6 +144,8 @@ func runServer(args []string, o options) error {
 	managedAgentBindingRepo := store.NewManagedAgentBindingRepoWithDialect(db, dialect)
 	agentSyncSettingsRepo := store.NewAgentSyncSettingsRepoWithDialect(db, dialect)
 	llmConfigsRepo := store.NewLLMConfigsRepoWithDialect(db, dialect)
+	plansRepo := store.NewPlansRepoWithDialect(db, dialect)
+	planEventsRepo := store.NewPlanEventsRepoWithDialect(db, dialect)
 
 	// syncAgents is the shared sync function used both at startup and via the
 	// admin API POST /api/v1/admin/agents/sync endpoint.
@@ -258,6 +262,8 @@ func runServer(args []string, o options) error {
 	}
 
 	service := invocation.NewService(invRepo, eventRepo, resolver, client, policyRegistry, time.Duration(cfg.Defaults.RequestTimeoutSeconds)*time.Second, rulesRepo, invAgents, invEvaluator, &syncSettingsAdapter{repo: agentSyncSettingsRepo})
+	service.SetPlanStore(plansRepo, planEventsRepo, localEvaluator, planStatusPollOrigins(cfg.Server))
+	service.SetPlanTTLBounds(cfg.Plans.DefaultTTLSeconds, cfg.Plans.MaxTTLSeconds)
 	if backendClient != nil {
 		service.SetInvocationSummarizer(&summaryAdapter{client: backendClient})
 	}
@@ -382,6 +388,22 @@ func runServer(args []string, o options) error {
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
 	return nil
+}
+
+// planStatusPollOrigins lists the hosts this Atryum API answers on, for the
+// plan-status fast pass: the configured public base URL plus the loopback
+// variants of the listen port. A status poll addressed to any other host is
+// referred to the adherence judge instead of being fast-passed.
+func planStatusPollOrigins(server config.ServerConfig) []string {
+	var origins []string
+	if server.PublicBaseURL != "" {
+		origins = append(origins, server.PublicBaseURL)
+	}
+	if _, port, err := net.SplitHostPort(server.ListenAddr); err == nil && port != "" {
+		origins = append(origins,
+			"http://localhost:"+port, "http://127.0.0.1:"+port, "http://[::1]:"+port)
+	}
+	return origins
 }
 
 // managedSessionStoreAdapter bridges store.ManagedAgentSessionRepo →
@@ -560,10 +582,25 @@ type agentsLookupAdapter struct {
 	managedBindings *store.ManagedAgentBindingRepo
 }
 
+// parseAgentIDs decodes the agents.agent_ids JSON array column. Malformed or
+// empty input yields nil rather than an error: the column is Atryum-managed
+// (never user-supplied free text at this layer), and a lookup miss here
+// should widen matching to nothing extra, not fail the caller.
+func parseAgentIDs(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	var ids []string
+	if err := json.Unmarshal([]byte(raw), &ids); err != nil {
+		return nil
+	}
+	return ids
+}
+
 func (a *agentsLookupAdapter) GetByAgentID(ctx context.Context, agentID string) (invocation.AgentRecord, error) {
 	rec, err := a.repo.GetByAgentID(ctx, agentID)
 	if err == nil {
-		return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Charter: rec.Charter}, nil
+		return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Charter: rec.Charter, AgentIDs: parseAgentIDs(rec.AgentIDs)}, nil
 	}
 	if a.managedBindings == nil {
 		return invocation.AgentRecord{}, err
@@ -576,7 +613,7 @@ func (a *agentsLookupAdapter) GetByAgentID(ctx context.Context, agentID string) 
 	if err != nil {
 		return invocation.AgentRecord{}, err
 	}
-	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Charter: rec.Charter}, nil
+	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Charter: rec.Charter, AgentIDs: parseAgentIDs(rec.AgentIDs)}, nil
 }
 
 func (a *agentsLookupAdapter) GetByVMCUID(ctx context.Context, vmCUID string) (invocation.AgentRecord, error) {
@@ -584,7 +621,7 @@ func (a *agentsLookupAdapter) GetByVMCUID(ctx context.Context, vmCUID string) (i
 	if err != nil {
 		return invocation.AgentRecord{}, err
 	}
-	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Charter: rec.Charter}, nil
+	return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Charter: rec.Charter, AgentIDs: parseAgentIDs(rec.AgentIDs)}, nil
 }
 
 // llmConfigsLookupAdapter bridges store.LLMConfigsRepo → invocation.LLMConfigProvider.
@@ -597,13 +634,33 @@ func (a *llmConfigsLookupAdapter) GetLLMConfig(ctx context.Context, id string) (
 	if err != nil {
 		return invocation.LocalLLMConfig{}, err
 	}
+	return toLocalLLMConfig(cfg), nil
+}
+
+// DefaultLLMConfig returns the first enabled LLM config, for evaluator calls
+// that carry no rule-specific config ID (e.g. the plan adherence judge
+// reviewing a human-approved plan).
+func (a *llmConfigsLookupAdapter) DefaultLLMConfig(ctx context.Context) (invocation.LocalLLMConfig, error) {
+	configs, err := a.repo.List(ctx)
+	if err != nil {
+		return invocation.LocalLLMConfig{}, err
+	}
+	for _, cfg := range configs {
+		if cfg.Enabled {
+			return toLocalLLMConfig(cfg), nil
+		}
+	}
+	return invocation.LocalLLMConfig{}, fmt.Errorf("no enabled LLM config available")
+}
+
+func toLocalLLMConfig(cfg store.LLMConfig) invocation.LocalLLMConfig {
 	return invocation.LocalLLMConfig{
 		ID:       cfg.ID,
 		Provider: string(cfg.Provider),
 		Model:    cfg.Model,
 		APIKey:   cfg.APIKey,
 		BaseURL:  cfg.BaseURL,
-	}, nil
+	}
 }
 
 // syncSettingsAdapter bridges store.AgentSyncSettingsRepo → invocation.SyncSettingsProvider.

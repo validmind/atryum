@@ -225,8 +225,12 @@ func TestApplyInstallUninstallHookConfigCursor(t *testing.T) {
 
 	applyInstallHookConfig(settings, "cursor")
 	hooks := settings["hooks"].(map[string]any)
+	start := hooks["sessionStart"].([]any)
 	pre := hooks["preToolUse"].([]any)
 	post := hooks["postToolUse"].([]any)
+	if len(start) != 1 {
+		t.Fatalf("expected 1 session-start hook after install, got %d", len(start))
+	}
 	if len(pre) != 2 {
 		t.Fatalf("expected 2 pre hooks after install, got %d", len(pre))
 	}
@@ -235,8 +239,12 @@ func TestApplyInstallUninstallHookConfigCursor(t *testing.T) {
 	}
 
 	applyUninstallHookConfig(settings, "cursor")
+	start = hooks["sessionStart"].([]any)
 	pre = hooks["preToolUse"].([]any)
 	post = hooks["postToolUse"].([]any)
+	if len(start) != 0 {
+		t.Fatalf("expected session-start Atryum hook removed, got %d", len(start))
+	}
 	if len(pre) != 1 {
 		t.Fatalf("expected original pre hook to remain, got %d", len(pre))
 	}
@@ -265,8 +273,12 @@ func TestApplyInstallUninstallHookConfigClaudeCode(t *testing.T) {
 
 	applyInstallHookConfig(settings, "claude-code")
 	hooks := settings["hooks"].(map[string]any)
+	start := hooks["SessionStart"].([]any)
 	pre := hooks["PreToolUse"].([]any)
 	post := hooks["PostToolUse"].([]any)
+	if len(start) != 1 {
+		t.Fatalf("expected 1 session-start entry after install, got %d", len(start))
+	}
 	if len(pre) != 2 {
 		t.Fatalf("expected 2 pre entries after install, got %d", len(pre))
 	}
@@ -275,8 +287,12 @@ func TestApplyInstallUninstallHookConfigClaudeCode(t *testing.T) {
 	}
 
 	applyUninstallHookConfig(settings, "claude-code")
+	start = hooks["SessionStart"].([]any)
 	pre = hooks["PreToolUse"].([]any)
 	post = hooks["PostToolUse"].([]any)
+	if len(start) != 0 {
+		t.Fatalf("expected Atryum session-start entry removed, got %d", len(start))
+	}
 	if len(pre) != 1 {
 		t.Fatalf("expected non-Atryum pre entry to remain, got %d", len(pre))
 	}
@@ -310,8 +326,12 @@ func TestApplyInstallUninstallHookConfigCodex(t *testing.T) {
 
 	applyInstallHookConfig(settings, "codex")
 	hooks := settings["hooks"].(map[string]any)
+	start := hooks["SessionStart"].([]any)
 	pre := hooks["PreToolUse"].([]any)
 	post := hooks["PostToolUse"].([]any)
+	if len(start) != 1 {
+		t.Fatalf("expected 1 session-start entry after install, got %d", len(start))
+	}
 	if len(pre) != 2 {
 		t.Fatalf("expected 2 pre entries after install, got %d", len(pre))
 	}
@@ -325,8 +345,12 @@ func TestApplyInstallUninstallHookConfigCodex(t *testing.T) {
 	}
 
 	applyUninstallHookConfig(settings, "codex")
+	start = hooks["SessionStart"].([]any)
 	pre = hooks["PreToolUse"].([]any)
 	post = hooks["PostToolUse"].([]any)
+	if len(start) != 0 {
+		t.Fatalf("expected Atryum session-start entry removed, got %d", len(start))
+	}
 	if len(pre) != 1 {
 		t.Fatalf("expected non-Atryum pre entry to remain, got %d", len(pre))
 	}

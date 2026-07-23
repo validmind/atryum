@@ -18,6 +18,7 @@ import {
   Icon,
   IconButton,
   Input,
+  Link,
   Menu,
   MenuButton,
   MenuItem,
@@ -42,6 +43,7 @@ import {
   useToast,
 } from "@chakra-ui/react";
 import { Select } from "chakra-react-select";
+import { Link as RouterLink } from "react-router-dom";
 import {
   QueueListIcon,
   ChevronDownIcon,
@@ -1026,6 +1028,17 @@ const Invocations: React.FC = () => {
                           <Text fontSize="xs" color="text.subtle">
                             Matched rule:{" "}
                             <Code fontSize="xs">{detail.matched_rule_id}</Code>
+                          </Text>
+                        )}
+                        {detail.plan_id && (
+                          <Text fontSize="xs" color="text.subtle">
+                            Approved plan:{" "}
+                            <Link
+                              as={RouterLink}
+                              to={`/plans?focus=${encodeURIComponent(detail.plan_id)}`}
+                              color="blue.500">
+                              <Code fontSize="xs">{detail.plan_id}</Code>
+                            </Link>
                           </Text>
                         )}
 
