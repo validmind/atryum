@@ -75,8 +75,8 @@ func (c *Client) invokeStdioStream(ctx context.Context, upstream Upstream, tool 
 		return InvokeResult{}, err
 	}
 	if _, err := readRPCWithLimit(reader, rpcIDMessage(initID), opts.maxMessageBytes()); err != nil {
-		if reason := guard.reason(); reason != "" {
-			return InvokeResult{}, fmt.Errorf("upstream %q: %s during stdio initialize: %w", upstream.Name, reason, ErrStreamTimeout)
+		if timeoutErr := guard.timeoutErr(upstream.Name, "during stdio initialize", nil); timeoutErr != nil {
+			return InvokeResult{}, timeoutErr
 		}
 		if stderr.Len() > 0 {
 			return InvokeResult{}, fmt.Errorf("stdio upstream error: %s", strings.TrimSpace(stderr.String()))
@@ -113,8 +113,8 @@ func (c *Client) relayStdioToolCall(reader *bufio.Reader, sink StreamSink, guard
 	for {
 		line, err := readLineLimited(reader, maxMessageBytes)
 		if err != nil {
-			if reason := guard.reason(); reason != "" {
-				return InvokeResult{}, fmt.Errorf("upstream %q %s: %w", upstream.Name, reason, ErrStreamTimeout)
+			if timeoutErr := guard.timeoutErr(upstream.Name, "", nil); timeoutErr != nil {
+				return InvokeResult{}, timeoutErr
 			}
 			if stderr.Len() > 0 {
 				return InvokeResult{}, fmt.Errorf("stdio upstream error: %s", strings.TrimSpace(stderr.String()))

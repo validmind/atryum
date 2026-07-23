@@ -1369,8 +1369,13 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			// close (the agent would be left with a request that ended
 			// without any response).
 			if sink != nil && sink.started {
+				// The full error is logged server-side; the wire gets a
+				// static message. The only errors reachable with a started
+				// stream are internal finalization failures (result
+				// persistence), whose text can carry SQL/driver detail the
+				// agent has no business seeing.
 				h.debugf("mcp tools.call error after stream started server=%s tool=%s err=%v", server, params.Name, err)
-				errBody, _ := json.Marshal(map[string]any{"code": -32000, "message": err.Error()})
+				errBody, _ := json.Marshal(map[string]any{"code": -32000, "message": "failed to finalize invocation"})
 				terminal, _ := json.Marshal(jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: errBody})
 				deliveryErr := sink.finishStream(terminal)
 				h.recordStreamDelivery(r.Context(), resp.InvocationID, deliveryErr)

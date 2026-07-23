@@ -94,3 +94,25 @@ func TestSSEEventReaderDoesNotAccumulateCommentBytesAcrossEvents(t *testing.T) {
 		t.Fatalf("event data = %q, want ok", evt.Data)
 	}
 }
+
+// TestSSEEventReaderOnActivityFiresPerLineIncludingComments pins the
+// liveness hook streaming consumers rely on for idle-timeout resets: every
+// line read counts as activity, including comment/keepalive lines that never
+// surface as events.
+func TestSSEEventReaderOnActivityFiresPerLineIncludingComments(t *testing.T) {
+	reader := newSSEEventReader(strings.NewReader(": keepalive\n: keepalive\ndata: {\"a\":1}\n\n"))
+	activity := 0
+	reader.onActivity = func() { activity++ }
+
+	evt, err := reader.NextEvent()
+	if err != nil {
+		t.Fatalf("NextEvent returned error: %v", err)
+	}
+	if !evt.HasData {
+		t.Fatalf("expected the data event, got %#v", evt)
+	}
+	// Two comment lines + one data line + the blank event terminator.
+	if activity != 4 {
+		t.Fatalf("onActivity fired %d times, want 4 (comments must count as activity)", activity)
+	}
+}

@@ -67,9 +67,12 @@ type StreamOptions struct {
 	// handshake. Zero leaves setup bounded only by ctx's deadline, if any.
 	HeaderTimeout time.Duration
 	// IdleTimeout bounds response-reading inactivity. Streaming transports
-	// reset it when upstream activity arrives, including events routed over
-	// the shared standalone HTTP stream. For a plain HTTP JSON response it
-	// bounds the complete body read. Zero disables the check.
+	// reset it when upstream activity arrives: events routed over the shared
+	// standalone HTTP stream, stdio lines, and any SSE line on the call's
+	// own response — including comment (":keepalive") lines, so an upstream
+	// heartbeating through a long tool run is not treated as idle. For a
+	// plain HTTP JSON response it bounds the complete body read. Zero
+	// disables the check.
 	IdleTimeout time.Duration
 	// MaxDuration bounds the complete response-reading phase after HTTP
 	// headers or the stdio handshake. Zero disables the check.

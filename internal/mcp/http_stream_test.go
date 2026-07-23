@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -82,10 +84,12 @@ func TestInvokeStreamRelaysEventsBeforeTerminalResponseExists(t *testing.T) {
 }
 
 func TestInvokeStreamResumesAfterUpstreamClosesSSEBeforeTerminalResponse(t *testing.T) {
-	var resumeRequests int
+	// Handler goroutines and the test goroutine share this with no
+	// happens-before edge the race detector recognizes; keep it atomic.
+	var resumeRequests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
-			resumeRequests++
+			resumeRequests.Add(1)
 			if got := r.Header.Get("Last-Event-ID"); got != "evt-1" {
 				t.Fatalf("resume Last-Event-ID = %q, want evt-1", got)
 			}
@@ -134,8 +138,8 @@ func TestInvokeStreamResumesAfterUpstreamClosesSSEBeforeTerminalResponse(t *test
 	if err != nil {
 		t.Fatalf("InvokeStream returned error: %v", err)
 	}
-	if resumeRequests != 1 {
-		t.Fatalf("resume request count = %d, want 1", resumeRequests)
+	if got := resumeRequests.Load(); got != 1 {
+		t.Fatalf("resume request count = %d, want 1", got)
 	}
 	if len(sink.events) != 1 || !strings.Contains(string(sink.events[0].Data), "notifications/progress") {
 		t.Fatalf("expected exactly the pre-disconnect progress event, got %#v", sink.events)
@@ -466,6 +470,9 @@ func TestInvokeStreamMapsTerminalRPCErrorAfterRelayedEvents(t *testing.T) {
 }
 
 func TestInvokeStreamRetriesOnceWhenMissingSessionBeforeAnyEventRelayed(t *testing.T) {
+	// Handler goroutines and the test goroutine share these with no
+	// happens-before edge the race detector recognizes; guard them.
+	var stateMu sync.Mutex
 	var sessions []string
 	var toolsCallCount int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -475,20 +482,25 @@ func TestInvokeStreamRetriesOnceWhenMissingSessionBeforeAnyEventRelayed(t *testi
 		}
 		switch req.Method {
 		case "initialize":
+			stateMu.Lock()
 			sessionID := "sid-1"
 			if len(sessions) > 0 {
 				sessionID = "sid-2"
 			}
 			sessions = append(sessions, sessionID)
+			stateMu.Unlock()
 			w.Header().Set("Mcp-Session-Id", sessionID)
 			writeTestRPC(w, req.ID, map[string]any{"protocolVersion": r.Header.Get("MCP-Protocol-Version"), "capabilities": map[string]any{}}, nil)
 		case "notifications/initialized":
 			w.WriteHeader(http.StatusAccepted)
 		case "tools/call":
+			stateMu.Lock()
 			toolsCallCount++
+			call := toolsCallCount
+			stateMu.Unlock()
 			w.Header().Set("Content-Type", "text/event-stream")
 			flusher := w.(http.Flusher)
-			if toolsCallCount == 1 {
+			if call == 1 {
 				writeTestSSEEventFlush(w, flusher, `{"jsonrpc":"2.0","id":"1","error":{"code":-32000,"message":"No session ID provided for non-initialization request"}}`)
 				return
 			}
@@ -510,11 +522,14 @@ func TestInvokeStreamRetriesOnceWhenMissingSessionBeforeAnyEventRelayed(t *testi
 	if err != nil {
 		t.Fatalf("InvokeStream returned error: %v", err)
 	}
-	if toolsCallCount != 2 {
-		t.Fatalf("tools/call count = %d, want 2", toolsCallCount)
+	stateMu.Lock()
+	gotCalls, gotSessions := toolsCallCount, len(sessions)
+	stateMu.Unlock()
+	if gotCalls != 2 {
+		t.Fatalf("tools/call count = %d, want 2", gotCalls)
 	}
-	if len(sessions) != 2 {
-		t.Fatalf("initialize sessions = %#v, want two sessions", sessions)
+	if gotSessions != 2 {
+		t.Fatalf("initialize session count = %d, want 2", gotSessions)
 	}
 	if !strings.Contains(string(result.Body), "done") {
 		t.Fatalf("expected terminal result body after retry, got %s", result.Body)
@@ -525,8 +540,9 @@ func TestInvokeStreamRetriesOnceWhenMissingSessionBeforeAnyEventRelayed(t *testi
 }
 
 func TestInvokeStreamRefusesRetryAfterEventsAlreadyRelayed(t *testing.T) {
-	var initializeCount int
-	var toolsCallCount int
+	// Atomics: shared between handler goroutines and the test goroutine.
+	var initializeCount atomic.Int32
+	var toolsCallCount atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req Envelope
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -534,13 +550,13 @@ func TestInvokeStreamRefusesRetryAfterEventsAlreadyRelayed(t *testing.T) {
 		}
 		switch req.Method {
 		case "initialize":
-			initializeCount++
+			initializeCount.Add(1)
 			w.Header().Set("Mcp-Session-Id", "sid-1")
 			writeTestRPC(w, req.ID, map[string]any{"protocolVersion": r.Header.Get("MCP-Protocol-Version"), "capabilities": map[string]any{}}, nil)
 		case "notifications/initialized":
 			w.WriteHeader(http.StatusAccepted)
 		case "tools/call":
-			toolsCallCount++
+			toolsCallCount.Add(1)
 			w.Header().Set("Content-Type", "text/event-stream")
 			flusher := w.(http.Flusher)
 			writeTestSSEEventFlush(w, flusher, `{"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1}}`)
@@ -565,11 +581,11 @@ func TestInvokeStreamRefusesRetryAfterEventsAlreadyRelayed(t *testing.T) {
 	if !errors.Is(err, ErrStreamSessionRetryRefused) {
 		t.Fatalf("expected errors.Is(err, ErrStreamSessionRetryRefused) to hold, got %v", err)
 	}
-	if toolsCallCount != 1 {
-		t.Fatalf("tools/call count = %d, want 1 (no retry once events were relayed)", toolsCallCount)
+	if got := toolsCallCount.Load(); got != 1 {
+		t.Fatalf("tools/call count = %d, want 1 (no retry once events were relayed)", got)
 	}
-	if initializeCount != 1 {
-		t.Fatalf("initialize count = %d, want 1 (no reinitialize attempt)", initializeCount)
+	if got := initializeCount.Load(); got != 1 {
+		t.Fatalf("initialize count = %d, want 1 (no reinitialize attempt)", got)
 	}
 	if len(sink.events) != 1 {
 		t.Fatalf("expected the one notification before the terminal error to have been relayed, got %d", len(sink.events))
@@ -614,5 +630,281 @@ func TestInvokeStreamIdleTimeoutAbortsRead(t *testing.T) {
 	}
 	if len(sink.events) != 1 {
 		t.Fatalf("expected exactly one relayed event before the timeout, got %d", len(sink.events))
+	}
+}
+
+func TestDrainTrailingProgressDrainsBufferedBurstThenStopsAtClose(t *testing.T) {
+	progressCh := make(chan StreamEvent, 3)
+	progressCh <- StreamEvent{Data: []byte(`{"progress":1}`)}
+	progressCh <- StreamEvent{Data: []byte(`{"progress":2}`)}
+	progressCh <- StreamEvent{Data: []byte(`{"progress":3}`)}
+	close(progressCh)
+
+	var delivered []StreamEvent
+	deliver := func(evt StreamEvent) error {
+		delivered = append(delivered, evt)
+		return nil
+	}
+	// An hour-long window cannot elapse during the test: returning at all
+	// proves the closed channel — not the timer — ended the drain, after the
+	// full buffered burst was delivered.
+	if err := drainTrailingProgress(progressCh, deliver, time.Hour); err != nil {
+		t.Fatalf("drainTrailingProgress returned error: %v", err)
+	}
+	if len(delivered) != 3 {
+		t.Fatalf("delivered %d events, want the full burst of 3", len(delivered))
+	}
+	if !strings.Contains(string(delivered[2].Data), `"progress":3`) {
+		t.Fatalf("expected in-order burst delivery, got %#v", delivered)
+	}
+}
+
+func TestDrainTrailingProgressStopsAtDeliverError(t *testing.T) {
+	progressCh := make(chan StreamEvent, 2)
+	progressCh <- StreamEvent{Data: []byte(`{"progress":1}`)}
+	progressCh <- StreamEvent{Data: []byte(`{"progress":2}`)}
+
+	sinkErr := errors.New("sink rejected event")
+	deliverCalls := 0
+	deliver := func(StreamEvent) error {
+		deliverCalls++
+		return sinkErr
+	}
+	if err := drainTrailingProgress(progressCh, deliver, time.Hour); !errors.Is(err, sinkErr) {
+		t.Fatalf("drainTrailingProgress error = %v, want the deliver error", err)
+	}
+	if deliverCalls != 1 {
+		t.Fatalf("deliver called %d times, want 1 (abort on first failure)", deliverCalls)
+	}
+}
+
+func TestDrainTrailingProgressReturnsOnceWindowElapsesWithNoArrival(t *testing.T) {
+	progressCh := make(chan StreamEvent) // open, never receives anything
+	deliver := func(StreamEvent) error {
+		t.Error("deliver must not be called when nothing arrives")
+		return nil
+	}
+	start := time.Now()
+	if err := drainTrailingProgress(progressCh, deliver, 20*time.Millisecond); err != nil {
+		t.Fatalf("drainTrailingProgress returned error: %v", err)
+	}
+	// Generous bound: only pins that the timer path returns at all rather
+	// than blocking on the open channel forever.
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("window-elapse return took %s", elapsed)
+	}
+}
+
+func TestDrainTrailingProgressResetsWindowPerArrival(t *testing.T) {
+	// Three events spaced 300ms apart against a 500ms window. Each gap is
+	// under the window (200ms margin), but the cumulative spacing is not:
+	// without the per-arrival reset the single 500ms timer fires between the
+	// second and third event and the drain returns having delivered only 2.
+	const window = 500 * time.Millisecond
+	const gap = 300 * time.Millisecond
+
+	progressCh := make(chan StreamEvent, 1)
+	go func() {
+		for range 3 {
+			progressCh <- StreamEvent{Data: []byte(`{"progress":1}`)}
+			time.Sleep(gap)
+		}
+	}()
+
+	delivered := 0
+	deliver := func(StreamEvent) error {
+		delivered++
+		return nil
+	}
+	if err := drainTrailingProgress(progressCh, deliver, window); err != nil {
+		t.Fatalf("drainTrailingProgress returned error: %v", err)
+	}
+	if delivered != 3 {
+		t.Fatalf("delivered %d events, want all 3 (window must reset on each arrival)", delivered)
+	}
+}
+
+// TestInvokeStreamMaxDurationAbortsStreamThatNeverGoesIdle pins the one
+// behavior that distinguishes MaxDuration from IdleTimeout: an upstream
+// emitting events frequently enough that the idle bound never fires must
+// still be cut off once the total response-reading phase exceeds
+// MaxDuration.
+func TestInvokeStreamMaxDurationAbortsStreamThatNeverGoesIdle(t *testing.T) {
+	serverDone := make(chan struct{})
+	server := invokeStreamTestServer(t, "sid-max-duration", func(w http.ResponseWriter, r *http.Request, req Envelope) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		for {
+			select {
+			case <-serverDone:
+				return
+			case <-time.After(25 * time.Millisecond):
+			}
+			if _, err := io.WriteString(w, "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{\"progress\":1}}\n\n"); err != nil {
+				return // client gave up; stop emitting
+			}
+			flusher.Flush()
+		}
+	})
+	t.Cleanup(func() {
+		close(serverDone)
+		server.Close()
+	})
+
+	client := NewHTTPClient()
+	client.httpClient = server.Client()
+	sink := &fakeStreamSink{}
+
+	start := time.Now()
+	_, err := client.InvokeStream(
+		context.Background(),
+		Upstream{Name: "shortcut", Mode: UpstreamModeHTTP, BaseURL: server.URL},
+		"stories.get", map[string]any{}, nil, nil, sink,
+		StreamOptions{IdleTimeout: 2 * time.Second, MaxDuration: 300 * time.Millisecond},
+	)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected a max-duration timeout error")
+	}
+	if !strings.Contains(err.Error(), "max stream duration") {
+		t.Fatalf("expected a max stream duration error, got %v", err)
+	}
+	if !errors.Is(err, ErrStreamTimeout) {
+		t.Fatalf("expected errors.Is(err, ErrStreamTimeout) to hold, got %v", err)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("max-duration abort took too long: %s", elapsed)
+	}
+	if len(sink.events) == 0 {
+		t.Fatal("expected events to have been relayed before the max-duration cutoff")
+	}
+}
+
+// TestInvokeStreamSSECommentKeepalivesResetIdleTimeout pins that comment
+// (":keepalive") lines count as upstream activity for the idle bound: a
+// long-quiet tool heartbeating through SSE comments must not be cut off,
+// even though no event arrives for longer than IdleTimeout.
+func TestInvokeStreamSSECommentKeepalivesResetIdleTimeout(t *testing.T) {
+	server := invokeStreamTestServer(t, "sid-keepalive", func(w http.ResponseWriter, r *http.Request, req Envelope) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		// 600ms of comment-only heartbeats against a 250ms idle timeout:
+		// no event arrives until well past the idle bound, so only the
+		// comments can be keeping the call alive.
+		for range 12 {
+			time.Sleep(50 * time.Millisecond)
+			if _, err := io.WriteString(w, ": keepalive\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+		writeTestSSEEventFlush(w, flusher, `{"jsonrpc":"2.0","id":"1","result":{"content":[{"type":"text","text":"done after heartbeats"}]}}`)
+	})
+	defer server.Close()
+
+	client := NewHTTPClient()
+	client.httpClient = server.Client()
+	sink := &fakeStreamSink{}
+
+	result, err := client.InvokeStream(
+		context.Background(),
+		Upstream{Name: "shortcut", Mode: UpstreamModeHTTP, BaseURL: server.URL},
+		"stories.get", map[string]any{}, nil, nil, sink,
+		StreamOptions{IdleTimeout: 250 * time.Millisecond},
+	)
+	if err != nil {
+		t.Fatalf("InvokeStream returned error: %v", err)
+	}
+	if !strings.Contains(string(result.Body), "done after heartbeats") {
+		t.Fatalf("expected terminal result body, got %s", result.Body)
+	}
+	if len(sink.events) != 0 {
+		t.Fatalf("comments are not events; expected none relayed, got %d", len(sink.events))
+	}
+}
+
+// resumeFailureTestServer serves a tools/call SSE response that ends without
+// a terminal message (forcing a resume) and dispatches the resume GET to
+// getHandler. "retry: 1" keeps the reconnect delay at its 200ms floor.
+func resumeFailureTestServer(t *testing.T, getHandler func(w http.ResponseWriter, r *http.Request)) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			getHandler(w, r)
+			return
+		}
+		var req Envelope
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		switch req.Method {
+		case "initialize":
+			w.Header().Set("Mcp-Session-Id", "sid-resume-fail")
+			writeTestRPC(w, req.ID, map[string]any{"protocolVersion": r.Header.Get("MCP-Protocol-Version"), "capabilities": map[string]any{}}, nil)
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/call":
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher := w.(http.Flusher)
+			_, _ = io.WriteString(w, "id: evt-1\nretry: 1\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{\"progress\":1}}\n\n")
+			flusher.Flush()
+			// Close without the terminal response → client resumes via GET.
+		default:
+			t.Errorf("unexpected method %q", req.Method)
+		}
+	}))
+}
+
+func TestInvokeStreamResumeFailureSurfacesUpstreamHTTPError(t *testing.T) {
+	server := resumeFailureTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "resume rejected", http.StatusInternalServerError)
+	})
+	defer server.Close()
+
+	client := NewHTTPClient()
+	client.httpClient = server.Client()
+	sink := &fakeStreamSink{}
+
+	_, err := client.InvokeStream(
+		context.Background(),
+		Upstream{Name: "shortcut", Mode: UpstreamModeHTTP, BaseURL: server.URL},
+		"stories.get", map[string]any{}, nil, nil, sink,
+		StreamOptions{IdleTimeout: 2 * time.Second, MaxDuration: 5 * time.Second},
+	)
+	if err == nil {
+		t.Fatal("expected an error when the resume GET fails")
+	}
+	if !strings.Contains(err.Error(), "resume failed with HTTP 500") {
+		t.Fatalf("expected the resume HTTP status surfaced, got %v", err)
+	}
+	if len(sink.events) != 1 {
+		t.Fatalf("expected the pre-disconnect event to have been relayed, got %d", len(sink.events))
+	}
+}
+
+func TestInvokeStreamResumeRejectsNonSSEContentType(t *testing.T) {
+	server := resumeFailureTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"unexpected":"plain body"}`)
+	})
+	defer server.Close()
+
+	client := NewHTTPClient()
+	client.httpClient = server.Client()
+	sink := &fakeStreamSink{}
+
+	_, err := client.InvokeStream(
+		context.Background(),
+		Upstream{Name: "shortcut", Mode: UpstreamModeHTTP, BaseURL: server.URL},
+		"stories.get", map[string]any{}, nil, nil, sink,
+		StreamOptions{IdleTimeout: 2 * time.Second, MaxDuration: 5 * time.Second},
+	)
+	if err == nil {
+		t.Fatal("expected an error when the resume response is not SSE")
+	}
+	if !strings.Contains(err.Error(), "want text/event-stream") {
+		t.Fatalf("expected the content-type mismatch surfaced, got %v", err)
 	}
 }

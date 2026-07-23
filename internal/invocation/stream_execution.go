@@ -16,7 +16,7 @@ import (
 // after this method returns.
 func (s *Service) finishExecutionStreaming(ctx context.Context, inv Invocation, upstream mcp.Upstream, req CreateInvocationRequest, sink mcp.StreamSink) (InvocationResponse, error) {
 	audited := newAuditingSink(sink, s.events, inv.InvocationID, req.RequestID, upstream.Name, s.streamAuditLimits)
-	result, err := s.client.InvokeStream(ctx, upstream, req.Tool, req.Input, req.RequestID, req.Meta, audited, s.streamOptions)
+	result, err := s.client.InvokeStream(ctx, upstream, req.Tool, req.Input, req.RequestID, req.Meta, audited, s.effectiveStreamOptions())
 	completed := time.Now().UTC()
 	inv.CompletedAt = &completed
 
@@ -38,7 +38,7 @@ func (s *Service) finishExecutionStreaming(ctx context.Context, inv Invocation, 
 		// narrative order, even though both share the same timestamp.
 		_ = s.events.Create(persistCtx, Event{
 			InvocationID: inv.InvocationID, EventType: "invocation.failed",
-			Payload:   mustJSON(map[string]any{"reason": reason, "message": message, "events_relayed": audited.seq}),
+			Payload:   mustJSON(map[string]any{"reason": reason, "message": message, "events_total": audited.seq}),
 			CreatedAt: completed,
 		})
 		return s.toResponse(inv), nil
@@ -88,7 +88,12 @@ func classifyStreamError(ctx context.Context, audited *auditingSink, err error) 
 		return "stream_aborted_downstream", audited.downstreamErr.Error()
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
-		return "stream_aborted_downstream", err.Error()
+		// The request context died with no failed downstream write to prove
+		// who went away: a quietly-disconnected agent and a server shutdown
+		// are indistinguishable from here, so the reason stays neutral
+		// rather than blaming the downstream for every in-flight call when
+		// the process stops.
+		return "stream_canceled", err.Error()
 	}
 	if errors.Is(err, mcp.ErrStreamTimeout) {
 		return "stream_timeout", err.Error()

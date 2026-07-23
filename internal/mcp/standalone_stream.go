@@ -248,6 +248,11 @@ func (c *Client) routeStandaloneEvent(s *standaloneStream, payload []byte) {
 	if _, hasMethod := message["method"]; !hasMethod {
 		return
 	}
+	// method plus id is a server-to-client request, not a notification — the
+	// same distinction classifyRPCMessage draws on the POST stream. Flag it
+	// so a sampling/elicitation request arriving here is audited as what it
+	// is instead of being mislabeled a notification.
+	_, isServerRequest := message["id"]
 	wireToken, hasToken := extractProgressToken(message)
 
 	s.mu.Lock()
@@ -271,7 +276,7 @@ func (c *Client) routeStandaloneEvent(s *standaloneStream, payload []byte) {
 	// itself (matching on its own wireToken), so the raw payload is sent
 	// through unmodified here.
 	select {
-	case waiter.events <- StreamEvent{Data: payload}:
+	case waiter.events <- StreamEvent{Data: payload, ServerRequest: isServerRequest}:
 	default:
 		// Buffer full, or the receiving call already stopped draining it —
 		// drop rather than block this shared reader goroutine, which also

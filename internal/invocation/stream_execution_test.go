@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -402,7 +403,7 @@ func TestInvokeStreamingSinkAbortPersistsFailureAfterRequestContextCancellation(
 	t.Fatal("expected persisted invocation.failed event with reason stream_aborted_downstream")
 }
 
-func TestInvokeStreamingQuietRequestCancellationIsDownstreamAbort(t *testing.T) {
+func TestInvokeStreamingQuietRequestCancellationIsAuditedAsCanceled(t *testing.T) {
 	callStarted := make(chan struct{})
 	upstream := sseToolCallUpstream(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -440,11 +441,15 @@ func TestInvokeStreamingQuietRequestCancellationIsDownstreamAbort(t *testing.T) 
 		t.Fatal(err)
 	}
 	for _, evt := range events.Items {
-		if evt.Type == "invocation.failed" && jsonContains(evt.Data, "stream_aborted_downstream") {
+		// stream_canceled, not stream_aborted_downstream: with no failed
+		// downstream write to prove who went away, a quiet disconnect and a
+		// server shutdown are indistinguishable, so the audit reason must
+		// not blame the agent.
+		if evt.Type == "invocation.failed" && jsonContains(evt.Data, "stream_canceled") {
 			return
 		}
 	}
-	t.Fatal("quiet request cancellation was not audited as stream_aborted_downstream")
+	t.Fatal("quiet request cancellation was not audited as stream_canceled")
 }
 
 func TestInvokeStreamingDoesNotAuditSuccessBeforeTerminalPersistence(t *testing.T) {
@@ -552,9 +557,10 @@ func TestInvokeStreamingIdleTimeoutMarksFailedAsStreamTimeout(t *testing.T) {
 }
 
 func TestInvokeStreamingMidStreamSessionRetryRefusalMarksFailedWithDistinctReason(t *testing.T) {
-	var toolsCallCount int
+	// Atomic: incremented on handler goroutines, read on the test goroutine.
+	var toolsCallCount atomic.Int32
 	upstream := sseToolCallUpstream(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
-		toolsCallCount++
+		toolsCallCount.Add(1)
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher := w.(http.Flusher)
 		writeSSEEvent(w, flusher, `{"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1}}`)
@@ -575,8 +581,8 @@ func TestInvokeStreamingMidStreamSessionRetryRefusalMarksFailedWithDistinctReaso
 	if resp.Status != invocation.StatusFailed {
 		t.Fatalf("expected failed status, got %s", resp.Status)
 	}
-	if toolsCallCount != 1 {
-		t.Fatalf("tools/call count = %d, want 1 (no retry once events were relayed mid-stream)", toolsCallCount)
+	if got := toolsCallCount.Load(); got != 1 {
+		t.Fatalf("tools/call count = %d, want 1 (no retry once events were relayed mid-stream)", got)
 	}
 
 	events, err := service.Events(context.Background(), resp.InvocationID, invocation.EventListFilter{})
@@ -617,16 +623,35 @@ func TestInvokeStreamingApprovalGateDoesNotTouchSinkBeforeApproval(t *testing.T)
 
 	sink := &recordingSink{}
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		// Poll for the invocation to actually reach pending_approval rather
+		// than sleeping a fixed interval: on a slow machine a fixed sleep can
+		// catch the row while still "received", making Approve fail and
+		// InvokeStreaming block on the approval channel until the suite
+		// timeout.
+		var pendingID string
+		deadline := time.Now().Add(10 * time.Second)
+		for pendingID == "" && time.Now().Before(deadline) {
+			list, err := service.List(context.Background(), invocation.InvocationListFilter{Limit: 10})
+			if err == nil {
+				for _, item := range list.Items {
+					if item.Status == invocation.StatusPendingApproval {
+						pendingID = item.InvocationID
+						break
+					}
+				}
+			}
+			if pendingID == "" {
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+		if pendingID == "" {
+			t.Error("timed out waiting for a pending-approval invocation")
+			return
+		}
 		if sink.touched() {
 			t.Errorf("sink touched before approval — approval gating must precede any relay")
 		}
-		list, err := service.List(context.Background(), invocation.InvocationListFilter{Limit: 10})
-		if err != nil || len(list.Items) == 0 {
-			t.Errorf("expected a pending invocation to approve")
-			return
-		}
-		if err := service.Approve(context.Background(), list.Items[0].InvocationID, ""); err != nil {
+		if err := service.Approve(context.Background(), pendingID, ""); err != nil {
 			t.Errorf("approve: %v", err)
 		}
 	}()

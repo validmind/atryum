@@ -13,6 +13,32 @@ import (
 	"time"
 )
 
+// This file merges two independent sources of upstream messages into one
+// ordered sequence for a single tools/call, while enforcing timeouts and
+// supporting reconnection. Read it in this order:
+//
+//  1. invokeHTTPStream, the entry point. It mints a per-call progress token
+//     (rewriteProgressToken, in standalone_stream.go) so the shared
+//     standalone stream can attribute progress to this specific call, then
+//     calls doHTTPToolCallStream and retries once on a missing-session
+//     response.
+//  2. doHTTPToolCallStream sends the request. A plain JSON response is
+//     handled right there and never reaches step 3; an SSE response is
+//     handed to relaySSEToolCall.
+//  3. relaySSEToolCall is the merge point: one select loop reading two
+//     channels — postStreamPump's msgs (this call's own POST response,
+//     including any resume after a disconnect) and progressCh (this call's
+//     slice of the standalone stream, routed by standalone_stream.go's
+//     routeStandaloneEvent). Every sink call happens on this one goroutine,
+//     so the sink itself never needs its own locking.
+//  4. postStreamPump owns the POST response's read loop on its own
+//     goroutine, purely so relaySSEToolCall's select never blocks on it. It
+//     is the only place that resumes a disconnected stream.
+//
+// The three time limits live in callTimeoutGuard (stream_timeout.go). The
+// stdio equivalent of this whole file is stdio_stream.go, and is much
+// simpler: one reader, no shared connection, no resume.
+
 // streamCallOutcome is the result of one attempt to send a streaming
 // tools/call request. missingSession mirrors doHTTPEnvelope's
 // SessionExpired signal so invokeHTTPStream can apply the same
@@ -39,10 +65,7 @@ func (c *Client) doHTTPToolCallStream(ctx context.Context, upstream Upstream, bo
 	h, err := c.doHTTPEnvelopeHeaders(guard.ctx, upstream, body, DefaultMCPProtocolVersion, true)
 	guard.disarmSetupTimeout()
 	if err != nil {
-		if reason := guard.reason(); reason != "" {
-			return streamCallOutcome{}, fmt.Errorf("upstream %q: %s: %w", upstream.Name, reason, ErrStreamTimeout)
-		}
-		return streamCallOutcome{}, err
+		return streamCallOutcome{}, guard.timeoutErr(upstream.Name, "", err)
 	}
 	resp := h.resp
 
@@ -58,7 +81,11 @@ func (c *Client) doHTTPToolCallStream(ctx context.Context, upstream Upstream, bo
 
 	if h.sessionExpired {
 		defer resp.Body.Close()
-		_, _ = io.Copy(io.Discard, resp.Body)
+		// Drain (bounded) so the connection can be reused. A session-expired
+		// body is a small error payload; cap it rather than trust the
+		// upstream, since the guard's timers are the only other bound here
+		// and both are disableable by configuration.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64*1024))
 		return streamCallOutcome{missingSession: true, sessionID: h.sessionID}, nil
 	}
 
@@ -66,10 +93,7 @@ func (c *Client) doHTTPToolCallStream(ctx context.Context, upstream Upstream, bo
 		defer resp.Body.Close()
 		bodyBytes, err := readAllLimited(resp.Body, opts.maxMessageBytes())
 		if err != nil {
-			if reason := guard.reason(); reason != "" {
-				return streamCallOutcome{}, fmt.Errorf("upstream %q: %s: %w", upstream.Name, reason, ErrStreamTimeout)
-			}
-			return streamCallOutcome{}, err
+			return streamCallOutcome{}, guard.timeoutErr(upstream.Name, "", err)
 		}
 		forward := ForwardResult{StatusCode: resp.StatusCode, Body: bodyBytes, ContentType: h.contentType, ProtocolVersion: h.protocolVersion, SessionID: h.sessionID}
 		invoke, missingSession, err := toolCallResultFromForward(forward)
@@ -211,7 +235,11 @@ func sseReconnectDelay(serverDelay time.Duration, attempt int) time.Duration {
 
 func (p *postStreamPump) run(c *Client, guard *callTimeoutGuard, upstream Upstream, maxMessageBytes int) {
 	defer close(p.msgs)
+	// Per-line activity (not per-event) resets the idle timer, so an
+	// upstream keepalive comment during a long-running tool counts as
+	// liveness. This subsumes a per-event reset: every event is lines.
 	reader := newSSEEventReaderWithLimit(p.current.Body, maxMessageBytes)
+	reader.onActivity = guard.resetIdle
 	lastEventID := ""
 	retryDelay := time.Duration(0)
 	reconnectAttempt := 0
@@ -231,8 +259,8 @@ func (p *postStreamPump) run(c *Client, guard *callTimeoutGuard, upstream Upstre
 			if stopped {
 				return
 			}
-			if reason := guard.reason(); reason != "" {
-				p.send(postStreamMsg{err: fmt.Errorf("upstream %q %s: %w", upstream.Name, reason, ErrStreamTimeout)})
+			if timeoutErr := guard.timeoutErr(upstream.Name, "", nil); timeoutErr != nil {
+				p.send(postStreamMsg{err: timeoutErr})
 				return
 			}
 			if err != io.EOF {
@@ -246,20 +274,12 @@ func (p *postStreamPump) run(c *Client, guard *callTimeoutGuard, upstream Upstre
 			delay := sseReconnectDelay(retryDelay, reconnectAttempt)
 			reconnectAttempt++
 			if err := waitForSSEReconnect(guard.ctx, delay); err != nil {
-				if reason := guard.reason(); reason != "" {
-					p.send(postStreamMsg{err: fmt.Errorf("upstream %q %s while waiting to resume: %w", upstream.Name, reason, ErrStreamTimeout)})
-					return
-				}
-				p.send(postStreamMsg{err: err})
+				p.send(postStreamMsg{err: guard.timeoutErr(upstream.Name, "while waiting to resume", err)})
 				return
 			}
 			resumed, err := c.resumeSSEStream(guard.ctx, upstream, lastEventID)
 			if err != nil {
-				if reason := guard.reason(); reason != "" {
-					p.send(postStreamMsg{err: fmt.Errorf("upstream %q %s while resuming: %w", upstream.Name, reason, ErrStreamTimeout)})
-					return
-				}
-				p.send(postStreamMsg{err: err})
+				p.send(postStreamMsg{err: guard.timeoutErr(upstream.Name, "while resuming", err)})
 				return
 			}
 			if !p.setCurrent(resumed) {
@@ -267,10 +287,10 @@ func (p *postStreamPump) run(c *Client, guard *callTimeoutGuard, upstream Upstre
 				return
 			}
 			reader = newSSEEventReaderWithLimit(resumed.Body, maxMessageBytes)
+			reader.onActivity = guard.resetIdle
 			resumedFrom = lastEventID
 			continue
 		}
-		guard.resetIdle()
 		reconnectAttempt = 0
 		if evt.HasRetry {
 			retryDelay = evt.Retry
@@ -297,7 +317,7 @@ func (p *postStreamPump) run(c *Client, guard *callTimeoutGuard, upstream Upstre
 // pump owns the response body, including resumed responses. StreamStarted is
 // withheld only when a zero-event missing-session response will be retried.
 func (c *Client) relaySSEToolCall(resp *http.Response, sink StreamSink, progressCh <-chan StreamEvent, guard *callTimeoutGuard, upstream Upstream, sessionID string, maxMessageBytes int) (streamCallOutcome, error) {
-	expectedID := json.RawMessage([]byte("1"))
+	expectedID := toolCallEnvelopeID
 	statusCode := resp.StatusCode
 	relayed := 0
 	started := false
@@ -312,6 +332,12 @@ func (c *Client) relaySSEToolCall(resp *http.Response, sink StreamSink, progress
 		ensureStarted()
 		relayed++
 		return sink.Event(evt)
+	}
+	// fail builds the outcome every early-return-with-error site below
+	// shares: relayed and sessionID as they stood at the moment of failure,
+	// paired with whatever error caused it.
+	fail := func(err error) (streamCallOutcome, error) {
+		return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, err
 	}
 
 	pump := newPostStreamPump(c, guard, upstream, resp, maxMessageBytes)
@@ -328,46 +354,26 @@ func (c *Client) relaySSEToolCall(resp *http.Response, sink StreamSink, progress
 				continue
 			}
 			if err := deliver(evt); err != nil {
-				return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, err
+				return fail(err)
 			}
 		case msg, ok := <-pump.msgs:
 			if !ok {
-				return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, fmt.Errorf("upstream %q: stream ended unexpectedly", upstream.Name)
+				return fail(fmt.Errorf("upstream %q: stream ended unexpectedly", upstream.Name))
 			}
 			if msg.err != nil {
-				return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, msg.err
+				return fail(msg.err)
 			}
 			payload := msg.data
 			switch classifyRPCMessage(payload, expectedID) {
 			case rpcMessageTerminalResponse:
 				var rpcResp rpcResponse
 				if err := json.Unmarshal(payload, &rpcResp); err != nil {
-					return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, err
+					return fail(err)
 				}
 				invoke, missingSession := toolCallResultFromRPCResponse(rpcResp, statusCode)
 				if progressCh != nil {
-					// See terminalSettleWindow: give a notification already in
-					// flight on the standalone stream a brief, bounded chance
-					// to arrive before finalizing.
-					settle := time.NewTimer(terminalSettleWindow)
-				settleLoop:
-					for {
-						select {
-						case evt, ok := <-progressCh:
-							if !ok {
-								break settleLoop
-							}
-							if err := deliver(evt); err != nil {
-								settle.Stop()
-								return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, err
-							}
-							if !settle.Stop() {
-								<-settle.C
-							}
-							settle.Reset(terminalSettleWindow)
-						case <-settle.C:
-							break settleLoop
-						}
+					if err := drainTrailingProgress(progressCh, deliver, terminalSettleWindow); err != nil {
+						return fail(err)
 					}
 				}
 				if !(missingSession && relayed == 0) {
@@ -376,16 +382,44 @@ func (c *Client) relaySSEToolCall(resp *http.Response, sink StreamSink, progress
 				return streamCallOutcome{invoke: invoke, missingSession: missingSession, eventsRelayed: relayed, sessionID: sessionID}, nil
 			case rpcMessageServerRequest:
 				if err := deliver(StreamEvent{Data: payload, ServerRequest: true}); err != nil {
-					return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, err
+					return fail(err)
 				}
 			case rpcMessageNotification:
 				if err := deliver(StreamEvent{Data: payload}); err != nil {
-					return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, err
+					return fail(err)
 				}
 			default:
 				// Unrecognized payload shape (e.g. a response to some other id).
 				// Not ours to interpret; ignore and keep reading.
 			}
+		}
+	}
+}
+
+// drainTrailingProgress gives a standalone-stream notification already in
+// flight a brief, bounded chance to arrive before the terminal response is
+// finalized (the caller passes terminalSettleWindow as window). Each arrival
+// resets the window so a trailing burst is drained completely. It returns
+// once the window elapses with no new arrival, progressCh closes, or deliver
+// fails.
+func drainTrailingProgress(progressCh <-chan StreamEvent, deliver func(StreamEvent) error, window time.Duration) error {
+	settle := time.NewTimer(window)
+	defer settle.Stop()
+	for {
+		select {
+		case evt, ok := <-progressCh:
+			if !ok {
+				return nil
+			}
+			if err := deliver(evt); err != nil {
+				return err
+			}
+			if !settle.Stop() {
+				<-settle.C
+			}
+			settle.Reset(window)
+		case <-settle.C:
+			return nil
 		}
 	}
 }

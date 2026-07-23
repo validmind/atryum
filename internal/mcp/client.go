@@ -633,10 +633,16 @@ func (c *Client) TestConnection(ctx context.Context, upstream Upstream) Connecti
 	return result
 }
 
+// toolCallEnvelopeID is the fixed JSON-RPC id every Atryum-built tools/call
+// envelope carries. Everything that correlates a terminal response back to
+// the request — buffered decode and the streaming relays alike — must match
+// against this same value.
+var toolCallEnvelopeID = json.RawMessage("1")
+
 // marshalToolCallEnvelope builds the JSON-RPC tools/call request body Atryum
-// sends upstream. The envelope always uses id "1" — Atryum's own request id,
-// if any, travels only in the caller-facing InvocationResponse, not on the
-// wire to the upstream.
+// sends upstream. The envelope always uses toolCallEnvelopeID — Atryum's own
+// request id, if any, travels only in the caller-facing InvocationResponse,
+// not on the wire to the upstream.
 func marshalToolCallEnvelope(tool string, input map[string]any, requestID *string, meta map[string]any) ([]byte, error) {
 	return marshalToolCallEnvelopeWithMeta(tool, input, mergeRequestMeta(meta, requestID))
 }
@@ -650,7 +656,7 @@ func marshalToolCallEnvelopeWithMeta(tool string, input map[string]any, meta map
 	if meta != nil {
 		params["_meta"] = meta
 	}
-	return json.Marshal(Envelope{JSONRPC: "2.0", ID: json.RawMessage([]byte("1")), Method: "tools/call", Params: mustRawJSON(params)})
+	return json.Marshal(Envelope{JSONRPC: "2.0", ID: toolCallEnvelopeID, Method: "tools/call", Params: mustRawJSON(params)})
 }
 
 // toolCallResultFromRPCResponse maps an already-decoded tools/call JSON-RPC
@@ -673,7 +679,7 @@ func toolCallResultFromRPCResponse(rpcResp rpcResponse, statusCode int) (InvokeR
 // toolCallResultFromForward decodes a raw tools/call ForwardResult (JSON or
 // SSE-wrapped) and maps it via toolCallResultFromRPCResponse.
 func toolCallResultFromForward(result ForwardResult) (InvokeResult, bool, error) {
-	rpcResp, err := decodeRPCResponse(result, json.RawMessage([]byte("1")))
+	rpcResp, err := decodeRPCResponse(result, toolCallEnvelopeID)
 	if err != nil {
 		return InvokeResult{}, false, err
 	}
@@ -1096,7 +1102,13 @@ const stdioStderrCap = 64 * 1024
 // for bounding diagnostic text. Write always reports success for the full
 // input, including the discarded portion: the subprocess's stderr pipe
 // must never see a short write or an error from this side.
+//
+// The mutex is required, not defensive: os/exec copies the stderr pipe into
+// this buffer on its own goroutine, which only stops once cmd.Wait reaps it —
+// and the error paths call Len/String before their deferred Wait runs, so a
+// subprocess still writing stderr as it dies races those reads.
 type boundedBuffer struct {
+	mu    sync.Mutex
 	buf   bytes.Buffer
 	limit int
 }
@@ -1106,6 +1118,8 @@ func newBoundedBuffer(limit int) *boundedBuffer {
 }
 
 func (b *boundedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	remaining := b.limit - b.buf.Len()
 	if remaining <= 0 {
 		return len(p), nil
@@ -1120,8 +1134,17 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (b *boundedBuffer) Len() int       { return b.buf.Len() }
-func (b *boundedBuffer) String() string { return b.buf.String() }
+func (b *boundedBuffer) Len() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Len()
+}
+
+func (b *boundedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 func (c *Client) invokeStdio(ctx context.Context, upstream Upstream, tool string, input map[string]any, requestID *string, meta map[string]any) (InvokeResult, error) {
 	if upstream.Command == "" {

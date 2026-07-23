@@ -11,6 +11,18 @@ import (
 	"github.com/validmind/atryum/internal/mcp"
 )
 
+// splitSSELines splits payload data on every line terminator the SSE spec
+// recognizes — CRLF, LF, or bare CR — so a raw CR never reaches the wire
+// inside a data field, where a compliant parser treats it as a frame break.
+// This is reachable, not theoretical: JSON legally allows CR as inter-token
+// whitespace, so a stdio upstream can emit one inside an otherwise valid
+// message.
+func splitSSELines(data []byte) [][]byte {
+	normalized := bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+	normalized = bytes.ReplaceAll(normalized, []byte("\r"), []byte("\n"))
+	return bytes.Split(normalized, []byte("\n"))
+}
+
 // writeSSEEvent writes and flushes one SSE frame. Each payload line needs its
 // own data field; otherwise a compliant parser drops continuation lines. It
 // deliberately omits event IDs because the downstream relay is not resumable.
@@ -20,7 +32,7 @@ func writeSSEEvent(w io.Writer, flusher http.Flusher, event string, data []byte)
 			return err
 		}
 	}
-	for _, line := range bytes.Split(data, []byte("\n")) {
+	for _, line := range splitSSELines(data) {
 		if _, err := fmt.Fprintf(w, "data: %s\n", line); err != nil {
 			return err
 		}

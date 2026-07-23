@@ -169,3 +169,18 @@ recent_chat_messages_limit = 42
 		t.Fatalf("RecentChatMessagesLimit = %d", cfg.ManagedAgents[0].RecentChatMessagesLimit)
 	}
 }
+
+func TestEffectiveStreamHeaderTimeoutSecondsFallsBackToRequestTimeout(t *testing.T) {
+	d := DefaultsConfig{RequestTimeoutSeconds: 30}
+	if got := d.EffectiveStreamHeaderTimeoutSeconds(); got != 30 {
+		t.Fatalf("zero stream header timeout resolved to %d, want the request timeout 30", got)
+	}
+	d.StreamHeaderTimeoutSeconds = 12
+	if got := d.EffectiveStreamHeaderTimeoutSeconds(); got != 12 {
+		t.Fatalf("explicit stream header timeout resolved to %d, want 12", got)
+	}
+	d.StreamHeaderTimeoutSeconds = -1
+	if got := d.EffectiveStreamHeaderTimeoutSeconds(); got != 30 {
+		t.Fatalf("negative stream header timeout resolved to %d, want the request timeout 30", got)
+	}
+}

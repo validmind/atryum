@@ -262,13 +262,9 @@ func runServer(args []string, o options) error {
 		service.SetInvocationSummarizer(&summaryAdapter{client: backendClient})
 	}
 	service.SetSessionStore(store.NewExternalSessionRepoWithDialect(db, dialect))
-	streamHeaderTimeoutSeconds := cfg.Defaults.StreamHeaderTimeoutSeconds
-	if streamHeaderTimeoutSeconds <= 0 {
-		streamHeaderTimeoutSeconds = cfg.Defaults.RequestTimeoutSeconds
-	}
 	service.SetStreamOptions(
 		mcp.StreamOptions{
-			HeaderTimeout:   time.Duration(streamHeaderTimeoutSeconds) * time.Second,
+			HeaderTimeout:   time.Duration(cfg.Defaults.EffectiveStreamHeaderTimeoutSeconds()) * time.Second,
 			IdleTimeout:     time.Duration(cfg.Defaults.StreamIdleTimeoutSeconds) * time.Second,
 			MaxDuration:     time.Duration(cfg.Defaults.StreamMaxDurationSeconds) * time.Second,
 			MaxMessageBytes: cfg.Defaults.StreamMaxMessageBytes,

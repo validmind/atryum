@@ -57,8 +57,9 @@ stream_relay_enabled = true
 # Bounds HTTP session initialization and tools/call response headers, or the
 # stdio initialize handshake. 0 falls back to request_timeout_seconds above.
 stream_header_timeout_seconds = 0
-# Bounds the gap between upstream messages while reading the response.
-# Resets on every message. Does not bound the call's total duration.
+# Bounds the gap in upstream activity while reading the response. Resets on
+# every message, and on SSE keepalive/comment lines, so a quiet-but-alive
+# upstream is not cut off. Does not bound the call's total duration.
 stream_idle_timeout_seconds = 60
 # Bounds the complete upstream response-reading phase. 0 = unlimited.
 stream_max_duration_seconds = 600

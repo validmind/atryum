@@ -255,8 +255,13 @@ func TestMCPToolsCallErrorAfterStreamStartedWritesTerminalErrorFrame(t *testing.
 	if !strings.Contains(body, `"id":77`) {
 		t.Fatalf("expected the terminal error frame rewritten to the agent's id 77, got %q", body)
 	}
-	if !strings.Contains(body, `"error"`) || !strings.Contains(body, "persisting result failed") {
-		t.Fatalf("expected a terminal JSON-RPC error frame, got %q", body)
+	if !strings.Contains(body, `"error"`) || !strings.Contains(body, "failed to finalize invocation") {
+		t.Fatalf("expected a terminal JSON-RPC error frame with the static message, got %q", body)
+	}
+	// The internal error text must never reach the wire: it can carry
+	// SQL/driver detail. It is logged server-side instead.
+	if strings.Contains(body, "persisting result failed") {
+		t.Fatalf("internal error detail leaked into the terminal frame: %q", body)
 	}
 }
 
@@ -572,5 +577,25 @@ func TestMCPToolsCallEndToEndRelaysLiveBeforeTerminalResponseExists(t *testing.T
 	}
 	if !strings.Contains(terminal.data, "all done") {
 		t.Fatalf("expected the terminal result body, got %q", terminal.data)
+	}
+}
+
+// TestWriteSSEEventNormalizesCarriageReturns pins that no raw CR ever
+// reaches the wire inside a data field: CR is an SSE line terminator, so an
+// upstream that embeds one (legal JSON inter-token whitespace) would
+// otherwise have its frame split mid-message by a compliant agent parser.
+func TestWriteSSEEventNormalizesCarriageReturns(t *testing.T) {
+	rec := httptest.NewRecorder()
+	payload := []byte("{\"a\":\r\r1,\r\n\"b\":2}")
+	if err := writeSSEEvent(rec, rec, "", payload); err != nil {
+		t.Fatalf("writeSSEEvent returned error: %v", err)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "\r") {
+		t.Fatalf("raw CR reached the wire: %q", body)
+	}
+	want := "data: {\"a\":\ndata: \ndata: 1,\ndata: \"b\":2}\n\n"
+	if body != want {
+		t.Fatalf("framed body = %q, want %q", body, want)
 	}
 }

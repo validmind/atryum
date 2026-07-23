@@ -26,6 +26,12 @@ type sseEventReader struct {
 	hasData   bool
 	hasID     bool
 	hasRetry  bool
+	// onActivity, when set, fires once per line read from the stream —
+	// including comment (":keepalive") and other control lines that never
+	// surface as events. Streaming consumers hook their idle-timeout reset
+	// here so an upstream heartbeating via SSE comments during a long tool
+	// run counts as liveness even though no event arrives.
+	onActivity func()
 }
 
 type sseWireEvent struct {
@@ -55,6 +61,9 @@ func newSSEEventReaderWithLimit(r io.Reader, maxBytes int) *sseEventReader {
 // needed to resume a Streamable HTTP response after the upstream closes it.
 func (r *sseEventReader) NextEvent() (sseWireEvent, error) {
 	for r.scanner.Scan() {
+		if r.onActivity != nil {
+			r.onActivity()
+		}
 		line := r.scanner.Text()
 		if line == "" {
 			if !r.hasData && !r.hasID && !r.hasRetry {

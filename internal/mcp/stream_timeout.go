@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -146,4 +147,21 @@ func (g *callTimeoutGuard) reason() string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.trippedWhy
+}
+
+// timeoutErr distinguishes "the guard's own bound fired" from "the transport
+// failed on its own", a check every streaming read path needs after a read
+// error: if the guard tripped, it wraps upstreamName and the trip reason
+// (plus situation, a short phrase like "while resuming" — or "" for none) as
+// ErrStreamTimeout; otherwise it returns fallback unchanged, letting the
+// caller pass nil when it still has its own fallback logic to run.
+func (g *callTimeoutGuard) timeoutErr(upstreamName, situation string, fallback error) error {
+	reason := g.reason()
+	if reason == "" {
+		return fallback
+	}
+	if situation == "" {
+		return fmt.Errorf("upstream %q: %s: %w", upstreamName, reason, ErrStreamTimeout)
+	}
+	return fmt.Errorf("upstream %q %s %s: %w", upstreamName, reason, situation, ErrStreamTimeout)
 }

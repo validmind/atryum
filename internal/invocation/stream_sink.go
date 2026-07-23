@@ -215,6 +215,17 @@ func (a *auditingSink) waitForAuditWrites() bool {
 
 // finish records the invocation.stream_completed totals row. terminal is
 // "succeeded", "failed", or "persistence_failed".
+//
+// finish blocks its caller — and therefore the agent's terminal frame, which
+// the handler writes only after InvokeStreaming returns — for up to
+// streamAuditFlushTimeout + streamAuditWriteTimeout when the audit store is
+// stalled. That is deliberate: the flush wait is what makes the persisted/
+// failed/dropped totals truthful, and writing stream_completed synchronously
+// here keeps it ordered before the invocation-level failed/succeeded event
+// (see finishExecutionStreaming's narrative-order comment). With a healthy
+// store the cost is a few milliseconds; with a stalled store the invocation
+// is already paying UpdateResult's own 5s bound, so the added tail is
+// accepted rather than trading away audit ordering.
 func (a *auditingSink) finish(completed time.Time, terminal string) {
 	if a.events == nil {
 		return

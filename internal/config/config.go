@@ -149,6 +149,18 @@ type DefaultsConfig struct {
 	StreamAuditMaxEventBytes int `toml:"stream_audit_max_event_bytes"`
 }
 
+// EffectiveStreamHeaderTimeoutSeconds resolves the documented zero-value
+// fallback for stream_header_timeout_seconds: zero (or negative) falls back
+// to request_timeout_seconds. Lives here so every consumer of DefaultsConfig
+// resolves the fallback identically instead of re-implementing it at each
+// wiring site.
+func (d DefaultsConfig) EffectiveStreamHeaderTimeoutSeconds() int {
+	if d.StreamHeaderTimeoutSeconds > 0 {
+		return d.StreamHeaderTimeoutSeconds
+	}
+	return d.RequestTimeoutSeconds
+}
+
 type UpstreamConfig struct {
 	Name           string            `toml:"name"`
 	Mode           string            `toml:"mode"`

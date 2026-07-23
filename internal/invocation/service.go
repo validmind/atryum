@@ -218,9 +218,12 @@ type Service struct {
 	pendingApprovals map[string]chan approvalDecision
 
 	// streamOptions and streamAuditLimits govern InvokeStreaming's execution
-	// once a sink is present (see finishExecutionStreaming). The zero value
-	// of each disables its bounds; SetStreamOptions installs real values.
+	// once a sink is present (see finishExecutionStreaming). SetStreamOptions
+	// installs configured values; until then effectiveStreamOptions
+	// substitutes safe derived bounds so the zero value never means
+	// "unbounded relay".
 	streamOptions     mcp.StreamOptions
+	streamOptionsSet  bool
 	streamAuditLimits StreamAuditLimits
 
 	toolCatalogMu sync.Mutex
@@ -266,7 +269,38 @@ func (s *Service) SetInvocationSummarizer(client SummaryClient) {
 // sink (see finishExecutionStreaming). Calls with a nil sink are unaffected.
 func (s *Service) SetStreamOptions(opts mcp.StreamOptions, auditLimits StreamAuditLimits) {
 	s.streamOptions = opts
+	s.streamOptionsSet = true
 	s.streamAuditLimits = auditLimits
+}
+
+// Fallback stream bounds for a Service whose owner never called
+// SetStreamOptions. They mirror the documented config defaults
+// (stream_idle_timeout_seconds / stream_max_duration_seconds in
+// atryum.example.toml) so an embedder wiring NewService directly gets the
+// same protection the stock binary configures explicitly.
+const (
+	fallbackStreamIdleTimeout = 60 * time.Second
+	fallbackStreamMaxDuration = 10 * time.Minute
+)
+
+// effectiveStreamOptions returns the configured stream bounds, or — when
+// SetStreamOptions was never called — bounds derived from the service's own
+// default timeout plus the documented defaults. A zero mcp.StreamOptions
+// disables every bound, and the api-layer heartbeat keeps idle proxies from
+// killing the connection, so passing the zero value through would turn "the
+// embedder skipped optional wiring" into "relays run unbounded" — strictly
+// worse than the buffered path, which is always bounded by defaultTimeout.
+// The explicit flag (not a zero-value comparison) keeps an operator's
+// deliberate all-zeros configuration meaning what it says: unbounded.
+func (s *Service) effectiveStreamOptions() mcp.StreamOptions {
+	if s.streamOptionsSet {
+		return s.streamOptions
+	}
+	return mcp.StreamOptions{
+		HeaderTimeout: s.defaultTimeout,
+		IdleTimeout:   fallbackStreamIdleTimeout,
+		MaxDuration:   fallbackStreamMaxDuration,
+	}
 }
 
 // RecordStreamDelivery records whether the handler delivered the terminal SSE

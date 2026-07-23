@@ -371,7 +371,7 @@ total-duration, and message-size limits:
 | Limit | Configuration | What it measures |
 |---|---|---|
 | Header timeout | `stream_header_timeout_seconds` | How long Atryum waits for HTTP session initialization and response headers, or stdio session initialization. |
-| Idle timeout | `stream_idle_timeout_seconds` | The longest allowed gap between upstream messages. It resets after every message. |
+| Idle timeout | `stream_idle_timeout_seconds` | The longest allowed gap in upstream activity. It resets after every message, and after SSE keepalive/comment lines, so a busy-but-quiet upstream that heartbeats is not cut off. |
 | Maximum duration | `stream_max_duration_seconds` | A hard limit for the upstream execution phase, even if progress continues. |
 | Message size | `stream_max_message_bytes` | The largest accepted SSE event, stdio JSON-RPC line, or plain JSON response body. The default is 4 MiB. |
 

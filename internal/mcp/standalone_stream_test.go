@@ -824,3 +824,77 @@ func TestInvokeStreamStandaloneStreamWrongContentTypeDoesNotFailCall(t *testing.
 		t.Fatalf("expected no relayed events when the standalone stream has the wrong content type, got %#v", sink.snapshotEvents())
 	}
 }
+
+// TestRouteStandaloneEventFlagsServerRequests pins that a server-to-client
+// request (id + method) routed via the standalone stream carries
+// ServerRequest — the same distinction relaySSEToolCall draws on the POST
+// stream — so audit doesn't mislabel a sampling/elicitation request as a
+// notification just because of which connection carried it.
+func TestRouteStandaloneEventFlagsServerRequests(t *testing.T) {
+	client := NewHTTPClient()
+	events := make(chan StreamEvent, 2)
+	stream := &standaloneStream{waiters: map[string]progressWaiter{
+		"tok": {events: events},
+	}}
+
+	client.routeStandaloneEvent(stream, []byte(`{"jsonrpc":"2.0","id":"srv-9","method":"sampling/createMessage","params":{}}`))
+	client.routeStandaloneEvent(stream, []byte(`{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"hi"}}`))
+
+	request := <-events
+	if !request.ServerRequest {
+		t.Fatalf("expected a standalone-routed server request to be flagged, got %#v", request)
+	}
+	notification := <-events
+	if notification.ServerRequest {
+		t.Fatalf("expected a standalone-routed notification to stay unflagged, got %#v", notification)
+	}
+}
+
+// statsRecordingSink is a fakeStreamSink that also implements
+// StreamStatsSink, so tests can pin the wiring that hands standalone-stream
+// drop accounting to the sink when the call finishes.
+type statsRecordingSink struct {
+	fakeStreamSink
+	statsCalls int
+	lastStats  StreamStats
+}
+
+func (s *statsRecordingSink) StreamStats(stats StreamStats) {
+	s.statsCalls++
+	s.lastStats = stats
+}
+
+// TestInvokeStreamDeliversStreamStatsToStatsSink pins the delivery path for
+// standalone-stream statistics: a progressToken-bearing call must report
+// StreamStats exactly once to a sink that implements StreamStatsSink —
+// through the callSink wrapper — before InvokeStream returns. A broken type
+// assertion or defer wiring in invokeHTTPStream would otherwise pass every
+// other test silently.
+func TestInvokeStreamDeliversStreamStatsToStatsSink(t *testing.T) {
+	server := invokeStreamTestServer(t, "sid-stats", func(w http.ResponseWriter, r *http.Request, req Envelope) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeTestSSEEventFlush(w, w.(http.Flusher), `{"jsonrpc":"2.0","id":"1","result":{"content":[{"type":"text","text":"done"}]}}`)
+	})
+	defer server.Close()
+
+	client := NewHTTPClient()
+	client.httpClient = server.Client()
+	sink := &statsRecordingSink{}
+
+	_, err := client.InvokeStream(
+		context.Background(),
+		Upstream{Name: "stats", Mode: UpstreamModeHTTP, BaseURL: server.URL},
+		"demo", map[string]any{}, nil,
+		map[string]any{"progressToken": "caller-token"},
+		sink, StreamOptions{},
+	)
+	if err != nil {
+		t.Fatalf("InvokeStream returned error: %v", err)
+	}
+	if sink.statsCalls != 1 {
+		t.Fatalf("StreamStats called %d times, want exactly 1", sink.statsCalls)
+	}
+	if sink.lastStats.StandaloneEventsDropped != 0 {
+		t.Fatalf("StandaloneEventsDropped = %d, want 0 (nothing was dropped)", sink.lastStats.StandaloneEventsDropped)
+	}
+}
