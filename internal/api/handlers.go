@@ -172,7 +172,7 @@ type Handler struct {
 
 	// managedAgents is the optional Claude Managed Agents events bridge.
 	// nil when not configured (no anthropic api key).
-	managedAgents managedAgentsAdmin
+	managedAgents managedAgentsOperator
 
 	// extraRoutes are registrations contributed by embedding programs (via
 	// pkg/atryum WithRoutes). They are applied to the mux after the built-in
@@ -190,9 +190,9 @@ func (h *Handler) AddExtraRoutes(register func(mux *http.ServeMux)) {
 	}
 }
 
-// managedAgentsAdmin is the slice of the managed-agents service the admin API
-// needs for session registration and Claude agent discovery.
-type managedAgentsAdmin interface {
+// managedAgentsOperator is the slice of the managed-agents service the
+// operator API needs for session registration and Claude agent discovery.
+type managedAgentsOperator interface {
 	RegisterSession(ctx context.Context, req managedagents.RegisterSessionRequest) (managedagents.SessionRegistration, error)
 	ListSessions(ctx context.Context) ([]managedagents.SessionRegistration, error)
 	DeleteSession(ctx context.Context, sessionID string) error
@@ -390,7 +390,7 @@ type RuleListResponse struct {
 	Items []AdminRule `json:"items"`
 }
 
-// ─── Agent admin types ────────────────────────────────────────────────────────
+// ─── Agent operator types ─────────────────────────────────────────────────────
 
 type AdminAgent struct {
 	CUID                string                     `json:"cuid"`
@@ -828,8 +828,8 @@ func (h *Handler) SetAuthDebugSkipVerify(enabled bool) {
 }
 
 // SetManagedAgents installs the optional Claude Managed Agents events bridge,
-// enabling the POST /api/v1/admin/managed-agents/sessions endpoint.
-func (h *Handler) SetManagedAgents(m managedAgentsAdmin) {
+// enabling the POST /api/v1/managed-agents/sessions endpoint.
+func (h *Handler) SetManagedAgents(m managedAgentsOperator) {
 	h.managedAgents = m
 }
 
@@ -857,7 +857,7 @@ func (h *Handler) protectedResourceMetadata() http.Handler {
 	})
 }
 
-func (h *Handler) adminAuthConfig(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) authConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -896,36 +896,44 @@ func (h *Handler) Routes() http.Handler {
 		mux.Handle("/.well-known/oauth-protected-resource", h.protectedResourceMetadata())
 	}
 	mcpHandler := h.agentRuntimeHandler(http.HandlerFunc(h.invokeUpstream))
-	adminAuthMW := auth.AdminMiddleware(h.authValidator, h.apiKeyAuth, auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})
-	admin := func(fn http.HandlerFunc) http.Handler {
-		return adminAuthMW(fn)
+	operatorAuthMW := auth.AdminMiddleware(h.authValidator, h.apiKeyAuth, auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})
+	// Review and operator routes currently share Atryum's legacy admin-token
+	// middleware. Keeping separate wrappers makes their authorization roles
+	// explicit and lets embedders split the capabilities without renaming the
+	// route layer again.
+	reviewAuthMW := operatorAuthMW
+	review := func(fn http.HandlerFunc) http.Handler {
+		return reviewAuthMW(fn)
+	}
+	operator := func(fn http.HandlerFunc) http.Handler {
+		return operatorAuthMW(fn)
 	}
 	mux.HandleFunc("/mcp", h.mcpRootNotFound)
 	mux.Handle("/mcp/", mcpHandler)
 	mux.Handle("/api/v1/invocations", h.agentRuntimeHandler(http.HandlerFunc(h.invocations)))
-	mux.HandleFunc("/api/v1/admin-auth/config", h.adminAuthConfig)
-	mux.Handle("/api/v1/admin/invocations", admin(h.adminInvocations))
-	mux.Handle("/api/v1/admin/invocations/stream", admin(h.adminInvocationStream))
-	mux.Handle("/api/v1/admin/invocations/", admin(h.adminInvocationDetail))
-	mux.Handle("/api/v1/admin/servers", admin(h.adminServers))
-	mux.Handle("/api/v1/admin/servers/", admin(h.adminServerDetail))
-	mux.Handle("/api/v1/admin/rules", admin(h.adminRules))
-	mux.Handle("/api/v1/admin/rules/", admin(h.adminRuleDetail))
-	mux.Handle("/api/v1/admin/agents", admin(h.adminAgents))
-	mux.Handle("/api/v1/admin/agents/", admin(h.adminAgentDetail))
-	mux.Handle("/api/v1/admin/model-configs", admin(h.adminModelConfigs))
-	mux.Handle("/api/v1/admin/llm-configs", admin(h.adminLLMConfigs))
-	mux.Handle("/api/v1/admin/llm-configs/", admin(h.adminLLMConfigDetail))
-	mux.Handle("/api/v1/admin/settings", admin(h.adminSettings))
-	mux.Handle("/api/v1/admin/vm/organizations", admin(h.adminVMOrganizations))
-	mux.Handle("/api/v1/admin/vm/record-types", admin(h.adminVMRecordTypes))
-	mux.Handle("/api/v1/admin/vm/custom-fields", admin(h.adminVMCustomFields))
+	mux.HandleFunc("/api/v1/auth/config", h.authConfig)
+	mux.Handle("/api/v1/review/invocations", review(h.reviewInvocations))
+	mux.Handle("/api/v1/review/invocations/stream", review(h.reviewInvocationStream))
+	mux.Handle("/api/v1/review/invocations/", review(h.reviewInvocationDetail))
+	mux.Handle("/api/v1/servers", operator(h.operatorServers))
+	mux.Handle("/api/v1/servers/", operator(h.operatorServerDetail))
+	mux.Handle("/api/v1/rules", operator(h.operatorRules))
+	mux.Handle("/api/v1/rules/", operator(h.operatorRuleDetail))
+	mux.Handle("/api/v1/agents", operator(h.operatorAgents))
+	mux.Handle("/api/v1/agents/", operator(h.operatorAgentDetail))
+	mux.Handle("/api/v1/model-configs", operator(h.operatorModelConfigs))
+	mux.Handle("/api/v1/llm-configs", operator(h.operatorLLMConfigs))
+	mux.Handle("/api/v1/llm-configs/", operator(h.operatorLLMConfigDetail))
+	mux.Handle("/api/v1/settings", operator(h.operatorSettings))
+	mux.Handle("/api/v1/vm/organizations", operator(h.operatorVMOrganizations))
+	mux.Handle("/api/v1/vm/record-types", operator(h.operatorVMRecordTypes))
+	mux.Handle("/api/v1/vm/custom-fields", operator(h.operatorVMCustomFields))
 	mux.HandleFunc(upstreamMCPOAuthCallbackPath, h.oauthCallback)
-	mux.Handle("/api/v1/admin/policy", admin(h.adminPolicy))
-	mux.Handle("/api/v1/admin/managed-agents/accounts", admin(h.adminManagedAgentAccounts))
-	mux.Handle("/api/v1/admin/managed-agents/agents", admin(h.adminManagedAgents))
-	mux.Handle("/api/v1/admin/managed-agents/sessions/", admin(h.adminManagedAgentSessionDetail))
-	mux.Handle("/api/v1/admin/managed-agents/sessions", admin(h.adminManagedAgentSessions))
+	mux.Handle("/api/v1/policy", operator(h.operatorPolicy))
+	mux.Handle("/api/v1/managed-agents/accounts", operator(h.operatorManagedAgentAccounts))
+	mux.Handle("/api/v1/managed-agents/agents", operator(h.operatorManagedAgents))
+	mux.Handle("/api/v1/managed-agents/sessions/", operator(h.operatorManagedAgentSessionDetail))
+	mux.Handle("/api/v1/managed-agents/sessions", operator(h.operatorManagedAgentSessions))
 	agentRulesHandler := h.agentRuntimeHandler(http.HandlerFunc(h.agentRules))
 	mux.Handle("/api/v1/agent/rules", agentRulesHandler)
 	mux.Handle("/api/v1/external/invocations", h.agentRuntimeHandler(http.HandlerFunc(h.externalInvocations)))
@@ -933,9 +941,9 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("/api/v1/external/sessions", h.agentRuntimeHandler(http.HandlerFunc(h.externalSessions)))
 	mux.Handle("/api/v1/external/plans", h.agentRuntimeHandler(http.HandlerFunc(h.externalPlans)))
 	mux.Handle("/api/v1/external/plans/", h.agentRuntimeHandler(http.HandlerFunc(h.externalPlanDetail)))
-	mux.Handle("/api/v1/admin/plans", admin(h.adminPlans))
-	mux.Handle("/api/v1/admin/plans/stream", admin(h.adminPlanStream))
-	mux.Handle("/api/v1/admin/plans/", admin(h.adminPlanDetail))
+	mux.Handle("/api/v1/plans", review(h.reviewPlans))
+	mux.Handle("/api/v1/plans/stream", review(h.reviewPlanStream))
+	mux.Handle("/api/v1/plans/", review(h.reviewPlanDetail))
 	apiKeyMW := auth.APIKeyMiddleware(h.apiKeyAuth)
 	mux.Handle("/agent_ids", apiKeyMW(http.HandlerFunc(h.agentIDs)))
 	mux.Handle("/invocations/", apiKeyMW(http.HandlerFunc(h.invocationsByAgentID)))
@@ -1934,7 +1942,7 @@ func (h *Handler) appendRulesContextToToolResult(ctx context.Context, result any
 	return m
 }
 
-func (h *Handler) adminInvocations(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) reviewInvocations(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -1955,7 +1963,7 @@ func (h *Handler) adminInvocations(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *Handler) adminInvocationStream(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) reviewInvocationStream(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming unsupported")
@@ -1996,8 +2004,8 @@ func (h *Handler) adminInvocationStream(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) {
-	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/invocations/")
+func (h *Handler) reviewInvocationDetail(w http.ResponseWriter, r *http.Request) {
+	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/review/invocations/")
 	trimmed = strings.Trim(trimmed, "/")
 	if trimmed == "" {
 		writeError(w, http.StatusNotFound, "not found")
@@ -2144,13 +2152,13 @@ func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) 
 }
 
 // SummarizeInvocationRequest is the JSON body accepted by
-// POST /api/v1/admin/invocations/{id}/summarize.
+// POST /api/v1/review/invocations/{id}/summarize.
 type SummarizeInvocationRequest struct {
 	ModelConfigCUID string `json:"model_config_cuid"`
 }
 
 // SummarizeInvocationResponse is the JSON shape returned by
-// POST /api/v1/admin/invocations/{id}/summarize.
+// POST /api/v1/review/invocations/{id}/summarize.
 type SummarizeInvocationResponse struct {
 	InvocationID string `json:"invocation_id"`
 	Summary      string `json:"summary"`
@@ -2192,7 +2200,7 @@ func (h *Handler) summarizeInvocation(w http.ResponseWriter, r *http.Request, id
 		return
 	}
 
-	// Round-trip via JSON so the backend sees the same shape as the admin
+	// Round-trip via JSON so the backend sees the same shape as the review
 	// detail endpoint (input/result/error are json.RawMessage on the wire).
 	raw, err := json.Marshal(inv)
 	if err != nil {
@@ -2265,7 +2273,7 @@ func (h *Handler) summarizeInvocation(w http.ResponseWriter, r *http.Request, id
 	})
 }
 
-func (h *Handler) adminServers(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorServers(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		filter := mcp.ServerFilter{Offset: readUintQuery(r, "offset", 0), Limit: readUintQuery(r, "limit", 50)}
@@ -2300,8 +2308,8 @@ func (h *Handler) adminServers(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Handler) adminServerDetail(w http.ResponseWriter, r *http.Request) {
-	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/servers/")
+func (h *Handler) operatorServerDetail(w http.ResponseWriter, r *http.Request) {
+	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/servers/")
 	trimmed = strings.Trim(trimmed, "/")
 	if trimmed == "" {
 		writeError(w, http.StatusNotFound, "not found")
@@ -2332,14 +2340,14 @@ func (h *Handler) adminServerDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		name := strings.TrimSuffix(trimmed, "/test")
 		name = strings.TrimSuffix(name, "/")
-		h.debugf("admin server test request method=%s path=%s server=%s remote=%s origin=%q referer=%q user_agent=%q content_length=%d", r.Method, r.URL.Path, name, r.RemoteAddr, r.Header.Get("Origin"), r.Header.Get("Referer"), r.UserAgent(), r.ContentLength)
+		h.debugf("operator server test request method=%s path=%s server=%s remote=%s origin=%q referer=%q user_agent=%q content_length=%d", r.Method, r.URL.Path, name, r.RemoteAddr, r.Header.Get("Origin"), r.Header.Get("Referer"), r.UserAgent(), r.ContentLength)
 		resp, err := h.serverSvc.Test(r.Context(), name)
 		if err != nil {
-			h.debugf("admin server test error server=%s err=%v", name, err)
+			h.debugf("operator server test error server=%s err=%v", name, err)
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		h.debugf("admin server test response server=%s ok=%t connection_status=%s auth_status=%s reauth_needed=%t last_check_ok=%t message=%q action_required=%q", name, resp.Ok, resp.ConnectionStatus, resp.AuthStatus, resp.ReauthNeeded, resp.LastCheckOK, resp.Message, debugStringPtr(resp.ActionRequired))
+		h.debugf("operator server test response server=%s ok=%t connection_status=%s auth_status=%s reauth_needed=%t last_check_ok=%t message=%q action_required=%q", name, resp.Ok, resp.ConnectionStatus, resp.AuthStatus, resp.ReauthNeeded, resp.LastCheckOK, resp.Message, debugStringPtr(resp.ActionRequired))
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
@@ -2433,7 +2441,7 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`<html><body><h1>OAuth connect complete</h1><p>` + escapeHTMLString(message) + `</p><script>window.close && window.close()</script></body></html>`))
 }
 
-func (h *Handler) adminPolicy(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorPolicy(w http.ResponseWriter, r *http.Request) {
 	if h.policyRegistry == nil {
 		writeError(w, http.StatusServiceUnavailable, "policy registry not configured")
 		return
@@ -2496,7 +2504,7 @@ func debugStringPtr(value *string) string {
 	return *value
 }
 
-func (h *Handler) adminRules(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorRules(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		rules, err := h.rulesRepo.List(r.Context())
@@ -2563,8 +2571,8 @@ func (h *Handler) adminRules(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Handler) adminRuleDetail(w http.ResponseWriter, r *http.Request) {
-	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/rules/")
+func (h *Handler) operatorRuleDetail(w http.ResponseWriter, r *http.Request) {
+	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/rules/")
 	trimmed = strings.Trim(trimmed, "/")
 	if trimmed == "" {
 		writeError(w, http.StatusNotFound, "not found")
@@ -2673,7 +2681,7 @@ func (h *Handler) adminRuleDetail(w http.ResponseWriter, r *http.Request) {
 
 // ─── Model config handler ─────────────────────────────────────────────────────
 
-func (h *Handler) adminModelConfigs(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorModelConfigs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -2696,8 +2704,8 @@ func (h *Handler) adminModelConfigs(w http.ResponseWriter, r *http.Request) {
 
 // ─── Agent Sync Settings handlers ────────────────────────────────────────────
 
-// AgentSyncSettingsResponse is the JSON shape returned by GET /admin/settings
-// and PUT /admin/settings. SyncError is non-empty when the post-save agent
+// AgentSyncSettingsResponse is the JSON shape returned by GET /api/v1/settings
+// and PUT /api/v1/settings. SyncError is non-empty when the post-save agent
 // sync failed; settings are persisted regardless.
 type AgentSyncSettingsResponse struct {
 	OrgCUID                  string `json:"org_cuid"`
@@ -2711,7 +2719,7 @@ type AgentSyncSettingsResponse struct {
 	BackendConfigured        bool   `json:"backend_configured"`
 }
 
-// AgentSyncSettingsInput is the JSON body accepted by PUT /admin/settings.
+// AgentSyncSettingsInput is the JSON body accepted by PUT /api/v1/settings.
 type AgentSyncSettingsInput struct {
 	OrgCUID                  string `json:"org_cuid"`
 	AgentRecordTypeSlug      string `json:"agent_record_type_slug"`
@@ -2723,7 +2731,7 @@ type AgentSyncSettingsInput struct {
 
 // ─── Local LLM Config handlers ────────────────────────────────────────────────
 
-func (h *Handler) adminLLMConfigs(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorLLMConfigs(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		if h.llmConfigsRepo == nil {
@@ -2769,13 +2777,13 @@ func (h *Handler) adminLLMConfigs(w http.ResponseWriter, r *http.Request) {
 			Enabled:  enabled,
 		}
 		if err := h.llmConfigsRepo.Create(r.Context(), cfg); err != nil {
-			log.Printf("[adminLLMConfigs] create failed id=%s provider=%s: %v", cfg.ID, cfg.Provider, err)
+			log.Printf("[operatorLLMConfigs] create failed id=%s provider=%s: %v", cfg.ID, cfg.Provider, err)
 			writeError(w, http.StatusInternalServerError, "failed to create llm config")
 			return
 		}
 		created, err := h.llmConfigsRepo.Get(r.Context(), cfg.ID)
 		if err != nil {
-			log.Printf("[adminLLMConfigs] get after create failed id=%s: %v", cfg.ID, err)
+			log.Printf("[operatorLLMConfigs] get after create failed id=%s: %v", cfg.ID, err)
 			writeError(w, http.StatusInternalServerError, "failed to retrieve llm config")
 			return
 		}
@@ -2786,8 +2794,8 @@ func (h *Handler) adminLLMConfigs(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Handler) adminLLMConfigDetail(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/llm-configs/")
+func (h *Handler) operatorLLMConfigDetail(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/llm-configs/")
 	id = strings.Trim(id, "/")
 	if id == "" {
 		writeError(w, http.StatusNotFound, "not found")
@@ -2908,7 +2916,7 @@ func validateLLMConfigInput(req AdminLLMConfigInput) error {
 
 // ─── Settings handler ─────────────────────────────────────────────────────────
 
-func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorSettings(w http.ResponseWriter, r *http.Request) {
 	if h.agentSyncSettingsRepo == nil {
 		writeError(w, http.StatusServiceUnavailable, "settings not available")
 		return
@@ -2980,7 +2988,7 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to read saved settings: "+err.Error())
 			return
 		}
-		log.Printf("[adminSettings] GET after save: org_cuid=%q record_type=%q", s.OrgCUID, s.AgentRecordTypeSlug)
+		log.Printf("[operatorSettings] GET after save: org_cuid=%q record_type=%q", s.OrgCUID, s.AgentRecordTypeSlug)
 		resp := AgentSyncSettingsResponse{
 			OrgCUID:                  s.OrgCUID,
 			AgentRecordTypeSlug:      s.AgentRecordTypeSlug,
@@ -3036,7 +3044,7 @@ type VMCustomFieldListResponse struct {
 	Total int                 `json:"total"`
 }
 
-func (h *Handler) adminVMOrganizations(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorVMOrganizations(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -3057,7 +3065,7 @@ func (h *Handler) adminVMOrganizations(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, VMOrgListResponse{Items: items, Total: len(items), AuthMode: resp.AuthMode, SingleOrg: resp.SingleOrg})
 }
 
-func (h *Handler) adminVMRecordTypes(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorVMRecordTypes(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -3083,7 +3091,7 @@ func (h *Handler) adminVMRecordTypes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, VMRecordTypeListResponse{Items: items, Total: len(items)})
 }
 
-func (h *Handler) adminVMCustomFields(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorVMCustomFields(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -3150,7 +3158,7 @@ func normalizePatternSlice(s []string) []string {
 
 // ─── Agent handlers ───────────────────────────────────────────────────────────
 
-func (h *Handler) adminAgents(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorAgents(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		records, err := h.agentsRepo.List(r.Context())
@@ -3237,15 +3245,15 @@ func (h *Handler) adminAgents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
-	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/agents/")
+func (h *Handler) operatorAgentDetail(w http.ResponseWriter, r *http.Request) {
+	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/agents/")
 	trimmed = strings.Trim(trimmed, "/")
 	if trimmed == "" {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 
-	// POST /api/v1/admin/agents/sync — trigger a backend sync
+	// POST /api/v1/agents/sync — trigger a backend sync
 	if trimmed == "sync" {
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -3272,15 +3280,15 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// GET /api/v1/admin/agents/:id/charter-preview — assemble the charter hierarchy
+	// GET /api/v1/agents/:id/charter-preview — assemble the charter hierarchy
 	if strings.HasSuffix(trimmed, "/charter-preview") {
 		id := strings.TrimSuffix(trimmed, "/charter-preview")
 		id = strings.Trim(id, "/")
-		h.adminAgentCharterPreview(w, r, id)
+		h.operatorAgentCharterPreview(w, r, id)
 		return
 	}
 
-	// /api/v1/admin/agents/:id — GET / PATCH / DELETE
+	// /api/v1/agents/:id — GET / PATCH / DELETE
 	id := trimmed
 	switch r.Method {
 	case http.MethodGet:
@@ -3427,10 +3435,10 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// adminAgentCharterPreview assembles the per-agent charter hierarchy. For synced
+// operatorAgentCharterPreview assembles the per-agent charter hierarchy. For synced
 // agents (with a VM cuid) it delegates to the ValidMind backend; for local
 // agents it returns the agent's own stored charter.
-func (h *Handler) adminAgentCharterPreview(w http.ResponseWriter, r *http.Request, id string) {
+func (h *Handler) operatorAgentCharterPreview(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -3565,7 +3573,7 @@ func (s *ServerAdminService) List(ctx context.Context, filter mcp.ServerFilter) 
 	}
 	servers := make([]AdminServer, 0, len(items))
 	for _, item := range items {
-		servers = append(servers, s.adminViewWithGrantedScopes(ctx, item))
+		servers = append(servers, s.operatorViewWithGrantedScopes(ctx, item))
 	}
 	return ServerListResponse{Items: servers, Total: total, Offset: filter.Offset, Limit: normalizeLimit(filter.Limit, 50)}, nil
 }
@@ -3575,14 +3583,14 @@ func (s *ServerAdminService) Get(ctx context.Context, name string) (AdminServer,
 	if err != nil {
 		return AdminServer{}, err
 	}
-	return s.adminViewWithGrantedScopes(ctx, upstream), nil
+	return s.operatorViewWithGrantedScopes(ctx, upstream), nil
 }
 
-// adminViewWithGrantedScopes is toAdminServer + an overlay of the actual
+// operatorViewWithGrantedScopes is toAdminServer + an overlay of the actual
 // scope string the AS granted on the latest successful token exchange.
 // Pulled separately from oauth_credentials.scope so the UI can show both
 // what we requested and what's actually live.
-func (s *ServerAdminService) adminViewWithGrantedScopes(ctx context.Context, upstream mcp.Upstream) AdminServer {
+func (s *ServerAdminService) operatorViewWithGrantedScopes(ctx context.Context, upstream mcp.Upstream) AdminServer {
 	view := toAdminServer(upstream)
 	view.EndpointURL = s.endpointURL(view.EndpointSlug)
 	if cred, err := s.oauthRepo.GetCredential(ctx, upstream.Name); err == nil {
@@ -3675,7 +3683,7 @@ func (s *ServerAdminService) Upsert(ctx context.Context, name string, req AdminS
 	if err := s.repo.UpsertServer(ctx, upstream); err != nil {
 		return AdminServer{}, err
 	}
-	return s.adminViewWithGrantedScopes(ctx, upstream), nil
+	return s.operatorViewWithGrantedScopes(ctx, upstream), nil
 }
 
 func (s *ServerAdminService) validateEndpointSlugAvailable(ctx context.Context, serverName string, slug string) error {
@@ -3958,7 +3966,7 @@ type PlanReviseRequest struct {
 	Feedback string `json:"feedback"`
 }
 
-// PlanDetailResponse is the admin detail view: the plan plus its direct revisions.
+// PlanDetailResponse is the review detail view: the plan plus its direct revisions.
 type PlanDetailResponse struct {
 	invocation.Plan
 	Revisions []invocation.Plan `json:"revisions"`
@@ -4075,8 +4083,8 @@ func (h *Handler) externalPlanDetail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, plan)
 }
 
-// adminPlans handles GET /api/v1/admin/plans.
-func (h *Handler) adminPlans(w http.ResponseWriter, r *http.Request) {
+// reviewPlans handles GET /api/v1/plans.
+func (h *Handler) reviewPlans(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -4095,7 +4103,7 @@ func (h *Handler) adminPlans(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *Handler) adminPlanStream(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) reviewPlanStream(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -4137,10 +4145,10 @@ func (h *Handler) adminPlanStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// adminPlanDetail handles GET /api/v1/admin/plans/{id}, GET .../{id}/events,
+// reviewPlanDetail handles GET /api/v1/plans/{id}, GET .../{id}/events,
 // and POST .../{id}/approve|deny|revise|expire.
-func (h *Handler) adminPlanDetail(w http.ResponseWriter, r *http.Request) {
-	trimmed := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/admin/plans/"), "/")
+func (h *Handler) reviewPlanDetail(w http.ResponseWriter, r *http.Request) {
+	trimmed := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/plans/"), "/")
 	if trimmed == "" {
 		writeError(w, http.StatusNotFound, "not found")
 		return
@@ -4247,10 +4255,10 @@ func (h *Handler) adminPlanDetail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, PlanDetailResponse{Plan: plan, Revisions: revisions})
 }
 
-// adminManagedAgentSessions registers a Claude Managed Agents session for
+// operatorManagedAgentSessions registers a Claude Managed Agents session for
 // Atryum to watch. Once registered, Atryum streams the session's events into
 // the invocations table and gates blocking tool calls through approval rules.
-func (h *Handler) adminManagedAgentSessions(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorManagedAgentSessions(w http.ResponseWriter, r *http.Request) {
 	if h.managedAgents == nil {
 		h.debugf("managed-agents session registration rejected: bridge not configured method=%s path=%s remote=%s", r.Method, r.URL.Path, r.RemoteAddr)
 		writeError(w, http.StatusNotImplemented, "managed agents bridge not configured (set [managed_agents].api_key)")
@@ -4296,7 +4304,7 @@ func (h *Handler) adminManagedAgentSessions(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *Handler) adminManagedAgentSessionDetail(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorManagedAgentSessionDetail(w http.ResponseWriter, r *http.Request) {
 	if h.managedAgents == nil {
 		writeError(w, http.StatusNotImplemented, "managed agents bridge not configured (set [managed_agents].api_key)")
 		return
@@ -4305,7 +4313,7 @@ func (h *Handler) adminManagedAgentSessionDetail(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	rawID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/admin/managed-agents/sessions/"), "/")
+	rawID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/managed-agents/sessions/"), "/")
 	sessionID, err := url.PathUnescape(rawID)
 	if err != nil || strings.TrimSpace(sessionID) == "" {
 		writeError(w, http.StatusNotFound, "not found")
@@ -4322,7 +4330,7 @@ func (h *Handler) adminManagedAgentSessionDetail(w http.ResponseWriter, r *http.
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *Handler) adminManagedAgentAccounts(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorManagedAgentAccounts(w http.ResponseWriter, r *http.Request) {
 	if h.managedAgents == nil {
 		writeError(w, http.StatusNotImplemented, "managed agents bridge not configured (set [managed_agents].api_key)")
 		return
@@ -4334,7 +4342,7 @@ func (h *Handler) adminManagedAgentAccounts(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, ManagedAgentAccountListResponse{Items: h.managedAgents.Accounts()})
 }
 
-func (h *Handler) adminManagedAgents(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorManagedAgents(w http.ResponseWriter, r *http.Request) {
 	if h.managedAgents == nil {
 		writeError(w, http.StatusNotImplemented, "managed agents bridge not configured (set [managed_agents].api_key)")
 		return

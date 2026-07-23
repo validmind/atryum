@@ -406,7 +406,7 @@ admin_claim = "atryum_admin"
 admin_claim_value = true
 ```
 
-Multiple admin-enabled IdPs can be configured at the same time. The frontend discovers them from `/api/v1/admin-auth/config`; with one provider it shows a sign-in screen without a provider selector, and with several it shows an identity-provider selector.
+Multiple admin-enabled IdPs can be configured at the same time. The frontend discovers them from `/api/v1/auth/config`; with one provider it shows a sign-in screen without a provider selector, and with several it shows an identity-provider selector.
 
 For local Keycloak, run the setup script after Keycloak is available:
 

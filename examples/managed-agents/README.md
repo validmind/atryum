@@ -131,7 +131,7 @@ agent and discovers its sessions automatically.
 Manual session registration still exists as an escape hatch:
 
 ```bash
-curl -sS -X POST http://localhost:8080/api/v1/admin/managed-agents/sessions \
+curl -sS -X POST http://localhost:8080/api/v1/managed-agents/sessions \
   -H "content-type: application/json" \
   -d '{
     "session_id": "sess_...",

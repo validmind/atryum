@@ -38,7 +38,7 @@ Atryum mediates three kinds of tool calls:
 
 - **Pre-tool hooks from agent harnesses.** Managed harnesses (Claude Code, Cursor, amp, Pi) and autonomous ones (Microsoft Foundry, custom orchestrators) post their intended tool call to `POST /api/v1/external/invocations` (when the harness executes the tool itself) or `POST /api/v1/invocations` (when Atryum should execute it). The harness blocks on the response and only proceeds if Atryum returns an approved status. In the hook path Atryum never touches the tool — it just answers "may this call happen."
 - **Direct MCP proxying.** Agents that speak MCP connect to `POST /mcp/{server}` as their MCP endpoint. Atryum implements the JSON-RPC surface (`initialize`, `notifications/initialized`, `tools/list`, `tools/call`) and proxies calls to the configured upstream — HTTP or stdio. Because Atryum is the MCP client to the upstream, it holds the credentials (OAuth tokens, bearer tokens, custom headers) and the agent never sees them. The same approval engine runs on every `tools/call`.
-- **Claude Managed Agents events bridge.** Anthropic's hosted harness runs the agent loop on its own infrastructure and never calls Atryum, so for those sessions Atryum dials *out*: it discovers linked Claude sessions, streams their [events](https://platform.claude.com/docs/en/managed-agents/events-and-streaming), records the raw session events on a synthetic audit invocation, and — when the session blocks on a tool call (`session.status_idle` / `requires_action`) — runs the normal approval rules and answers Claude with a `user.tool_confirmation` (or `user.custom_tool_result`). Each tool call is also recorded as its own invocation. This gates both built-in and MCP tools. Enable it by declaring one or more `[[managed_agents]]` accounts (each with a `name`, `workspace`, and `api_key`) and link Claude agents from the Agents UI. Manual session registration remains available at `POST /api/v1/admin/managed-agents/sessions`. See `examples/managed-agents/`.
+- **Claude Managed Agents events bridge.** Anthropic's hosted harness runs the agent loop on its own infrastructure and never calls Atryum, so for those sessions Atryum dials *out*: it discovers linked Claude sessions, streams their [events](https://platform.claude.com/docs/en/managed-agents/events-and-streaming), records the raw session events on a synthetic audit invocation, and — when the session blocks on a tool call (`session.status_idle` / `requires_action`) — runs the normal approval rules and answers Claude with a `user.tool_confirmation` (or `user.custom_tool_result`). Each tool call is also recorded as its own invocation. This gates both built-in and MCP tools. Enable it by declaring one or more `[[managed_agents]]` accounts (each with a `name`, `workspace`, and `api_key`) and link Claude agents from the Agents UI. Manual session registration remains available at `POST /api/v1/managed-agents/sessions`. See `examples/managed-agents/`.
 
 These paths converge on a single service so rules, audit, and the UI work identically regardless of how the call arrived.
 
@@ -123,7 +123,7 @@ admin_claim_value = true
 
 The admin client must be a browser-safe public SPA client that supports authorization code with PKCE. For Auth0, create a Single Page Application client; allow `http://localhost:5174/ui/auth/callback` for Vite development and `http://localhost:8080/ui/auth/callback` for the embedded UI, and allow the corresponding `http://localhost:5174/ui/` and `http://localhost:8080/ui/` logout URLs. For local Keycloak, run `KC_URL=http://localhost:8089 ./keycloak/setup-realm.sh`; it provisions the `atryum-admin` public client, its callback and post-logout redirect URLs, and an `atryum_admin=true` access-token claim.
 
-The frontend fetches `/api/v1/admin-auth/config`, shows a sign-in screen, redirects through the selected provider, attaches `Authorization: Bearer <access_token>` to admin API calls, and uses authenticated fetch-based SSE for `/api/v1/admin/invocations/stream`. With one configured provider, the screen skips the provider selector; with several, it shows an identity-provider selector. It attempts silent token refresh before retrying an expiry-related `401` once. Signing out uses the provider's autodiscovered OIDC `end_session_endpoint` and returns to `/ui/`; providers without a usable end-session endpoint fall back to local logout. Browser console debug logs are emitted for refresh and logout attempts and outcomes under the `[admin-auth]` prefix; access token values are never logged.
+The frontend fetches `/api/v1/auth/config`, shows a sign-in screen, redirects through the selected provider, attaches `Authorization: Bearer <access_token>` to protected API calls, and uses authenticated fetch-based SSE for `/api/v1/review/invocations/stream`. With one configured provider, the screen skips the provider selector; with several, it shows an identity-provider selector. It attempts silent token refresh before retrying an expiry-related `401` once. Signing out uses the provider's autodiscovered OIDC `end_session_endpoint` and returns to `/ui/`; providers without a usable end-session endpoint fall back to local logout. Browser console debug logs are emitted for refresh and logout attempts and outcomes under the `[admin-auth]` prefix; access token values are never logged.
 
 ## HTTP surface
 
@@ -137,23 +137,29 @@ Public (auth-protected when `[[auth]]` is configured):
 - `GET /api/v1/agent/rules` — agent-facing rule introspection.
 - `GET /healthz` — liveness.
 
-Admin (UI and operators):
+Review workflow:
 
-- `/api/v1/admin/invocations`, `/{id}`, `/{id}/events`, `/{id}/approve`, `/{id}/deny`, `/stream` (SSE)
-- `/api/v1/admin/servers`, `/{name}`, `/{name}/test`, `/{name}/connect`, `/{name}/connect/status`
-- `/api/v1/admin/rules`, `/{id}` (including reorder/move)
-- `/api/v1/admin/agents`, `/{id}`
-- `/api/v1/admin/settings`, `/api/v1/admin/policy`
-- `/api/v1/admin/managed-agents/accounts`, `/managed-agents/agents` — discover configured Anthropic accounts and Claude agents for UI linking
-- `/api/v1/admin/managed-agents/sessions` — manually register a Claude Managed Agents session for the events bridge to watch; kept as a debugging escape hatch
+- `/api/v1/review/invocations`, `/{id}`, `/{id}/events`, `/{id}/approve`, `/{id}/deny`, `/stream` (SSE)
+- `/api/v1/plans`, `/{id}`, `/{id}/events`, `/{id}/approve`, `/{id}/deny`, `/{id}/revise`, `/{id}/expire`, `/stream` (SSE)
+
+Operator APIs:
+
+- `/api/v1/servers`, `/{name}`, `/{name}/test`, `/{name}/connect`, `/{name}/connect/status`
+- `/api/v1/rules`, `/{id}` (including reorder/move)
+- `/api/v1/agents`, `/{id}`
+- `/api/v1/model-configs`, `/api/v1/llm-configs`, `/api/v1/llm-configs/{id}`
+- `/api/v1/settings`, `/api/v1/policy`
+- `/api/v1/vm/organizations`, `/api/v1/vm/record-types`, `/api/v1/vm/custom-fields`
+- `/api/v1/managed-agents/accounts`, `/managed-agents/agents` — discover configured Anthropic accounts and Claude agents for UI linking
+- `/api/v1/managed-agents/sessions` — manually register a Claude Managed Agents session for the events bridge to watch; kept as a debugging escape hatch
 - `/api/v1/mcp/oauth/callback` — public OAuth callback for upstream MCP server connect flows
-- `/api/v1/admin-auth/config` — public, non-secret OIDC metadata for the admin UI login screen
+- `/api/v1/auth/config` — public, non-secret OIDC metadata for the UI login screen
 
 ## Frontend
 
 The local React UI lives under `ui/`. `just build-ui` builds it and copies the Vite output into `internal/api/web`, which is embedded into the Go binary and served at `/ui/`. It covers servers, rules, invocations (list + detail with live SSE updates), agent records, and settings.
 
-The embedded invocation view subscribes to the admin SSE stream, updates list/detail/event views live, surfaces stored input arguments, and renders MCP-style text content in a friendly view alongside raw JSON.
+The embedded invocation view subscribes to the review SSE stream, updates list/detail/event views live, surfaces stored input arguments, and renders MCP-style text content in a friendly view alongside raw JSON.
 
 ## Storage
 
@@ -253,11 +259,11 @@ When `skip_verify` is on, no bearer is required, no claims are parsed, and no ag
 
 ## Server connection management
 
-Runtime server resolution uses the `mcp_servers` table as the source of truth. Manage MCP server connections through the built-in UI at `/ui/` or the admin server APIs under `/api/v1/admin/servers`; do not treat TOML as the normal place to add or edit runtime MCP servers after bootstrap.
+Runtime server resolution uses the `mcp_servers` table as the source of truth. Manage MCP server connections through the built-in UI at `/ui/` or the operator APIs under `/api/v1/servers`; do not treat TOML as the normal place to add or edit runtime MCP servers after bootstrap.
 
 For HTTP-mode servers that use hosted OAuth, Atryum owns the browser connect flow. Admins enter the server URL, Atryum detects or assigns an auth provider where practical, and the UI shows provider/status plus `Connect` / `Reconnect`. OAuth tokens are stored separately, callback completion updates server auth status fields in the database, and missing or expired OAuth auth fails fast with actionable status fields. Current pragmatic provider support includes `github_hosted` for GitHub-style hosted HTTP servers plus a generic provider framework for future providers and discovery work.
 
-`POST /api/v1/admin/servers/{name}/test` updates server connection/auth status fields and returns the latest snapshot.
+`POST /api/v1/servers/{name}/test` updates server connection/auth status fields and returns the latest snapshot.
 
 ## How it differs from "just an MCP proxy"
 

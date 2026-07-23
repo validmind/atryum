@@ -373,7 +373,7 @@ func TestUnprotectedRoutesRemainOpenWhenAuthEnabled(t *testing.T) {
 		want   int
 	}{
 		{http.MethodGet, "/healthz", "", http.StatusOK},
-		{http.MethodGet, "/api/v1/admin/invocations", "", http.StatusOK},
+		{http.MethodGet, "/api/v1/review/invocations", "", http.StatusOK},
 		{http.MethodGet, "/ui/", "", http.StatusOK},
 	}
 	for _, c := range cases {
@@ -395,7 +395,7 @@ func TestUnprotectedRoutesRemainOpenWhenAuthEnabled(t *testing.T) {
 	}
 }
 
-func TestAdminRoutesRequireAdminTokenWhenAdminAuthEnabled(t *testing.T) {
+func TestReviewRoutesRequireAdminTokenWhenAdminAuthEnabled(t *testing.T) {
 	rig := newAuthTestRig(t, func(c *auth.Config) {
 		c.AdminEnabled = true
 		c.AdminClientID = "admin-client"
@@ -404,7 +404,7 @@ func TestAdminRoutesRequireAdminTokenWhenAdminAuthEnabled(t *testing.T) {
 	})
 	h := newAuthedHandler(t, &stubService{}, rig)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/review/invocations", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusUnauthorized {
@@ -413,7 +413,7 @@ func TestAdminRoutesRequireAdminTokenWhenAdminAuthEnabled(t *testing.T) {
 
 	claims := defaultClaims()
 	tok := rig.sign(t, claims)
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/review/invocations", nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -423,12 +423,42 @@ func TestAdminRoutesRequireAdminTokenWhenAdminAuthEnabled(t *testing.T) {
 
 	claims["atryum_admin"] = true
 	tok = rig.sign(t, claims)
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/review/invocations", nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 for admin token, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestRenamedOperatorRoutesAreRegisteredAndProtected(t *testing.T) {
+	rig := newAuthTestRig(t, func(c *auth.Config) {
+		c.AdminEnabled = true
+		c.AdminClientID = "admin-client"
+		c.AdminClaim = "atryum_admin"
+		c.AdminClaimValue = "true"
+	})
+	h := newAuthedHandler(t, &stubService{}, rig)
+	for _, path := range []string{
+		"/api/v1/review/invocations",
+		"/api/v1/plans",
+		"/api/v1/servers",
+		"/api/v1/rules",
+		"/api/v1/agents",
+		"/api/v1/model-configs",
+		"/api/v1/llm-configs",
+		"/api/v1/settings",
+		"/api/v1/vm/organizations",
+		"/api/v1/policy",
+		"/api/v1/managed-agents/accounts",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("GET %s: status = %d, want 401", path, w.Code)
+		}
 	}
 }
 
@@ -440,7 +470,7 @@ func TestAdminAuthConfigEndpointReturnsSafeProviderMetadata(t *testing.T) {
 		c.AdminScopes = "openid profile email"
 	})
 	h := newAuthedHandler(t, &stubService{}, rig)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin-auth/config", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/config", nil)
 	req.Host = "atryum.example"
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -494,7 +524,7 @@ func TestAdminAuthConfigProviderIDsAreUniqueForSharedClientID(t *testing.T) {
 	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	h.SetAuthValidator(v)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin-auth/config", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/config", nil)
 	w := httptest.NewRecorder()
 	h.Routes().ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -509,6 +539,32 @@ func TestAdminAuthConfigProviderIDsAreUniqueForSharedClientID(t *testing.T) {
 	}
 	if resp.Providers[0].ID == resp.Providers[1].ID {
 		t.Fatalf("expected unique provider IDs, got %q", resp.Providers[0].ID)
+	}
+}
+
+func TestRenamedRoutesDoNotKeepLegacyAliases(t *testing.T) {
+	h := newAuthedHandler(t, &stubService{}, newAuthTestRig(t))
+	for _, path := range []string{
+		"/api/v1/admin/invocations",
+		"/api/v1/admin/invocations/inv_123",
+		"/api/v1/admin/plans",
+		"/api/v1/admin/servers",
+		"/api/v1/admin/rules",
+		"/api/v1/admin/agents",
+		"/api/v1/admin/model-configs",
+		"/api/v1/admin/llm-configs",
+		"/api/v1/admin/settings",
+		"/api/v1/admin/vm/organizations",
+		"/api/v1/admin/policy",
+		"/api/v1/admin/managed-agents/accounts",
+		"/api/v1/admin-auth/config",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("GET %s: status = %d, want 404", path, w.Code)
+		}
 	}
 }
 

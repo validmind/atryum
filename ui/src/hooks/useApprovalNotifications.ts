@@ -13,7 +13,7 @@ interface PlansPayload {
 const NOTIFICATION_TITLE = 'Atryum approval needed';
 const NOTIFICATION_ICON = '/ui/atryum-notification-icon.svg';
 const PENDING_PLANS_STREAM_URL =
-  '/api/v1/admin/plans/stream?status=pending_approval&limit=50';
+  '/api/v1/plans/stream?status=pending_approval&limit=50';
 
 const buildNotificationBody = (invocation: Invocation): string => {
   const parts = [invocation.agent_id, invocation.server_name, invocation.tool_name]
@@ -86,7 +86,7 @@ const parseInvocationStreamPayload = (
   }
 };
 
-const STREAM_URL = '/api/v1/admin/invocations/stream?status=pending_approval&limit=50';
+const STREAM_URL = '/api/v1/review/invocations/stream?status=pending_approval&limit=50';
 
 const ensurePermissionAfterUserGesture = (onPermissionGranted: () => void) => {
   if (!('Notification' in window) || Notification.permission !== 'default') {

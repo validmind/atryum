@@ -555,7 +555,7 @@ func TestAdminServerTestDebugLogsRequestContext(t *testing.T) {
 	}()
 
 	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/servers/shortcut/test", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/servers/shortcut/test", nil)
 	req.Header.Set("Origin", "http://localhost:8080")
 	req.Header.Set("Referer", "http://localhost:8080/ui/")
 	req.Header.Set("User-Agent", "debug-test")
@@ -569,11 +569,11 @@ func TestAdminServerTestDebugLogsRequestContext(t *testing.T) {
 	}
 	got := logs.String()
 	for _, want := range []string{
-		"admin server test request method=POST path=/api/v1/admin/servers/shortcut/test server=shortcut",
+		"operator server test request method=POST path=/api/v1/servers/shortcut/test server=shortcut",
 		"origin=\"http://localhost:8080\"",
 		"referer=\"http://localhost:8080/ui/\"",
 		"user_agent=\"debug-test\"",
-		"admin server test response server=shortcut",
+		"operator server test response server=shortcut",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected logs to contain %q, got:\n%s", want, got)
@@ -604,7 +604,7 @@ func TestManagedAgentSessionRegistrationDebugLogsFailure(t *testing.T) {
 		"account": "default",
 		"agent_id": "agent_013popGjeyhH8qPYqziHxdLk"
 	}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/managed-agents/sessions", body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/managed-agents/sessions", body)
 	req.Header.Set("content-type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -861,7 +861,7 @@ func TestSummarizeInvocationPersistsBackendSummary(t *testing.T) {
 	summarizer := &stubSummarizer{resp: backendclient.SummarizeInvocationResponse{Summary: "Read /tmp/a and returned hello."}}
 	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	h.summarizeClient = summarizer
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/invocations/inv_123/summarize", strings.NewReader(`{"model_config_cuid":" model_abc "}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/review/invocations/inv_123/summarize", strings.NewReader(`{"model_config_cuid":" model_abc "}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -911,7 +911,7 @@ func TestSummarizeInvocationUsesSettingsModelConfigWhenRequestBodyEmpty(t *testi
 	summarizer := &stubSummarizer{resp: backendclient.SummarizeInvocationResponse{Summary: "Read /tmp/a."}}
 	h := NewHandler(svc, stubServerService{}, nil, nil, nil, settings, nil, nil, nil, nil)
 	h.summarizeClient = summarizer
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/invocations/inv_123/summarize", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/review/invocations/inv_123/summarize", nil)
 	w := httptest.NewRecorder()
 
 	h.Routes().ServeHTTP(w, req)
@@ -2024,7 +2024,7 @@ func TestAdminInvocationsResponsesIncludeServerToolAndInput(t *testing.T) {
 	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	t.Run("list", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/review/invocations", nil)
 		w := httptest.NewRecorder()
 		h.Routes().ServeHTTP(w, req)
 		if !strings.Contains(w.Body.String(), `"server_name":"demo-server"`) {
@@ -2039,7 +2039,7 @@ func TestAdminInvocationsResponsesIncludeServerToolAndInput(t *testing.T) {
 	})
 
 	t.Run("detail", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations/inv_123", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/review/invocations/inv_123", nil)
 		w := httptest.NewRecorder()
 		h.Routes().ServeHTTP(w, req)
 		if !strings.Contains(w.Body.String(), `"server_name":"demo-server"`) {

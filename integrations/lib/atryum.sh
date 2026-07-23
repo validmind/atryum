@@ -93,7 +93,7 @@ seed_auto_approve_rules() {
     "tool_patterns": ["*"],
     "description": "integration test catch-all auto-approve"
   }'
-  curl -fsS -X POST "$ATRYUM_URL/api/v1/admin/rules" \
+  curl -fsS -X POST "$ATRYUM_URL/api/v1/rules" \
     -H 'Content-Type: application/json' \
     -d "$payload" >/dev/null || {
     warn "failed to create auto_approve rule; tailing atryum log:"
