@@ -402,6 +402,7 @@ type AdminAgent struct {
 	SyncedAt            time.Time                  `json:"synced_at"`
 	Enabled             bool                       `json:"enabled"`
 	Charter             string                     `json:"charter,omitempty"`
+	VMCUID              string                     `json:"vm_cuid,omitempty"`
 	// Synced is true when this agent originated from a ValidMind sync
 	// (vm_organization_cuid is non-empty). Synced agents cannot be deleted
 	// manually — they are removed by re-syncing with a different org/record-type.
@@ -409,7 +410,7 @@ type AdminAgent struct {
 }
 
 type AdminAgentInput struct {
-	Enabled                        bool                        `json:"enabled"`
+	Enabled                        *bool                       `json:"enabled,omitempty"`
 	AgentIDs                       []string                    `json:"agent_ids,omitempty"`
 	Name                           string                      `json:"name,omitempty"`
 	Description                    string                      `json:"description,omitempty"`
@@ -468,6 +469,7 @@ func toAdminAgent(a store.AgentRecord) AdminAgent {
 		SyncedAt:    a.SyncedAt,
 		Enabled:     a.Enabled,
 		Charter:     a.Charter,
+		VMCUID:      a.VMCUID,
 		Synced:      a.VMOrganizationCUID != "",
 	}
 }
@@ -3270,6 +3272,14 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// GET /api/v1/admin/agents/:id/charter-preview — assemble the charter hierarchy
+	if strings.HasSuffix(trimmed, "/charter-preview") {
+		id := strings.TrimSuffix(trimmed, "/charter-preview")
+		id = strings.Trim(id, "/")
+		h.adminAgentCharterPreview(w, r, id)
+		return
+	}
+
 	// /api/v1/admin/agents/:id — GET / PATCH / DELETE
 	id := trimmed
 	switch r.Method {
@@ -3334,14 +3344,16 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 				h.releaseNewManagedAgentClaims(r.Context(), id, beforeBindings, bindings)
 			}
 		}
-		if err := h.agentsRepo.UpdateEnabled(r.Context(), id, req.Enabled); err != nil {
-			cleanupNewClaims()
-			status := http.StatusInternalServerError
-			if err == sql.ErrNoRows {
-				status = http.StatusNotFound
+		if req.Enabled != nil {
+			if err := h.agentsRepo.UpdateEnabled(r.Context(), id, *req.Enabled); err != nil {
+				cleanupNewClaims()
+				status := http.StatusInternalServerError
+				if err == sql.ErrNoRows {
+					status = http.StatusNotFound
+				}
+				writeError(w, status, "agent not found")
+				return
 			}
-			writeError(w, status, "agent not found")
-			return
 		}
 		if req.AgentIDs != nil {
 			idsJSON, err := json.Marshal(req.AgentIDs)
@@ -3413,6 +3425,73 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+// adminAgentCharterPreview assembles the per-agent charter hierarchy. For synced
+// agents (with a VM cuid) it delegates to the ValidMind backend; for local
+// agents it returns the agent's own stored charter.
+func (h *Handler) adminAgentCharterPreview(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if id == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	agent, err := h.agentsRepo.Get(r.Context(), id)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if err == sql.ErrNoRows {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, "agent not found")
+		return
+	}
+
+	var charterFieldKey string
+	if h.agentSyncSettingsRepo != nil {
+		settings, _ := h.agentSyncSettingsRepo.Get(r.Context())
+		charterFieldKey = settings.CharterFieldKey
+	}
+
+	// VMOrganizationCUID (mirrored in AdminAgent.Synced) is the correct "is this
+	// a real ValidMind-synced agent" signal. VMCUID alone is NOT — manually
+	// created agents get VMCUID reused as their local id (see the create
+	// handler above) while VMOrganizationCUID stays empty, precisely so a fake
+	// VMCUID is never mistaken for a real ValidMind inventory-model cuid here.
+	if agent.VMOrganizationCUID != "" && h.backendClient != nil {
+		result, err := h.backendClient.CharterPreview(r.Context(), agent.VMCUID, charterFieldKey, agent.VMOrganizationCUID)
+		if err != nil {
+			log.Printf("charter-preview: backend call failed for agent %s: %v", id, err)
+			writeError(w, http.StatusBadGateway, "failed to assemble charter from ValidMind backend")
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+
+	// Local agent (or no backend client): show the agent's own stored charter.
+	if agent.Charter != "" {
+		header := agent.VMName
+		if header == "" {
+			header = "This agent"
+		}
+		writeJSON(w, http.StatusOK, backendclient.CharterPreviewResult{
+			Segments: []backendclient.CharterSegment{{
+				Kind:   "agent",
+				Header: header,
+				Text:   agent.Charter,
+			}},
+			Combined: agent.Charter,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, backendclient.CharterPreviewResult{
+		Segments: []backendclient.CharterSegment{},
+		Combined: "",
+	})
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
