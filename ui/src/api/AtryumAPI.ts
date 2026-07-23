@@ -420,6 +420,19 @@ export interface Agent {
   synced: boolean;
   /** Governing text used by local LLM-as-judge evaluation. Only editable for non-synced agents. */
   charter?: string;
+  /** ValidMind inventory model cuid; present only for synced agents. */
+  vm_cuid?: string;
+}
+
+export interface CharterSegment {
+  kind: string;
+  header: string;
+  text: string;
+}
+
+export interface CharterPreview {
+  segments: CharterSegment[];
+  combined: string;
 }
 
 export interface AgentCreateInput {
@@ -503,6 +516,13 @@ export const agentsApi = {
 
   sync: async (): Promise<void> => {
     await atryumApi.post('/api/v1/admin/agents/sync');
+  },
+
+  getAgentCharterPreview: async (id: string): Promise<CharterPreview> => {
+    const { data } = await atryumApi.get(
+      `/api/v1/admin/agents/${encodeURIComponent(id)}/charter-preview`,
+    );
+    return data;
   },
 
   managedAgentAccounts: async (): Promise<{ items: ClaudeManagedAgentAccount[] }> => {
