@@ -253,6 +253,14 @@ type Client struct {
 	sessionInitLocks map[string]*sync.Mutex
 	sessions         map[string]string
 	sessionProtocols map[string]string
+
+	// standaloneStreams holds, per upstream name, the shared "standalone"
+	// SSE GET connection used to receive server-initiated messages that
+	// aren't tied to any specific request — notably progress notifications
+	// from servers (e.g. the reference Python SDK) that don't attribute
+	// them to the request that triggered them. See standaloneStream.
+	standaloneMu      sync.Mutex
+	standaloneStreams map[string]*standaloneStream
 }
 
 type InvokeResult struct {
@@ -325,7 +333,7 @@ func (r *Resolver) WithCredentials(credentials CredentialStore) *Resolver {
 
 func NewHTTPClient() *Client {
 	debug := strings.EqualFold(os.Getenv("ATRYUM_MCP_DEBUG"), "1") || strings.EqualFold(os.Getenv("ATRYUM_MCP_DEBUG"), "true")
-	return &Client{httpClient: &http.Client{}, debug: debug, sessionInitLocks: make(map[string]*sync.Mutex), sessions: make(map[string]string), sessionProtocols: make(map[string]string)}
+	return &Client{httpClient: &http.Client{}, debug: debug, sessionInitLocks: make(map[string]*sync.Mutex), sessions: make(map[string]string), sessionProtocols: make(map[string]string), standaloneStreams: make(map[string]*standaloneStream)}
 }
 
 func (r *Resolver) Resolve(name string) (Upstream, error) {
@@ -632,9 +640,17 @@ func (c *Client) TestConnection(ctx context.Context, upstream Upstream) Connecti
 // if any, travels only in the caller-facing InvocationResponse, not on the
 // wire to the upstream.
 func marshalToolCallEnvelope(tool string, input map[string]any, requestID *string, meta map[string]any) ([]byte, error) {
+	return marshalToolCallEnvelopeWithMeta(tool, input, mergeRequestMeta(meta, requestID))
+}
+
+// marshalToolCallEnvelopeWithMeta builds the tools/call request body from an
+// already-fully-merged _meta map (see mergeRequestMeta), skipping that merge
+// step. Used by the streaming path, which may need to rewrite a caller's
+// progressToken after merging but before marshaling (see rewriteProgressToken).
+func marshalToolCallEnvelopeWithMeta(tool string, input map[string]any, meta map[string]any) ([]byte, error) {
 	params := map[string]any{"name": tool, "arguments": input}
-	if merged := mergeRequestMeta(meta, requestID); merged != nil {
-		params["_meta"] = merged
+	if meta != nil {
+		params["_meta"] = meta
 	}
 	return json.Marshal(Envelope{JSONRPC: "2.0", ID: json.RawMessage([]byte("1")), Method: "tools/call", Params: mustRawJSON(params)})
 }
@@ -960,7 +976,7 @@ type streamCallOutcome struct {
 // plain JSON body (mapped exactly like the buffered path) or, for an SSE
 // response, relays intermediate events to sink live and returns once the
 // terminal response is read.
-func (c *Client) doHTTPToolCallStream(ctx context.Context, upstream Upstream, body []byte, sink StreamSink, opts StreamOptions) (streamCallOutcome, error) {
+func (c *Client) doHTTPToolCallStream(ctx context.Context, upstream Upstream, body []byte, sink StreamSink, progressCh <-chan StreamEvent, opts StreamOptions) (streamCallOutcome, error) {
 	guard := newCallTimeoutGuard(ctx)
 	defer guard.stop()
 	guard.armHeaderTimeout(opts.HeaderTimeout)
@@ -1010,33 +1026,88 @@ func (c *Client) doHTTPToolCallStream(ctx context.Context, upstream Upstream, bo
 
 	// relaySSEToolCall owns resp.Body because it may replace this response
 	// with one or more resumed GET streams before the terminal response.
-	return c.relaySSEToolCall(resp, sink, guard, upstream, h.sessionID)
+	return c.relaySSEToolCall(resp, sink, progressCh, guard, upstream, h.sessionID)
 }
 
-// relaySSEToolCall reads resp's SSE body incrementally via an
-// sseEventReader, relaying every intermediate (non-terminal) message to
-// sink as it arrives, and returns once the terminal JSON-RPC response for
-// id "1" is read. resp.Body is not closed here — the caller does that.
-// sessionID is the session this attempt was sent under; it is always
-// stamped onto the returned outcome (even a missing-session terminal
-// response) so a caller retry can identify and clear the right session —
-// mirroring doHTTPEnvelope's ForwardResult.SessionID contract.
-//
-// sink.StreamStarted fires lazily, right before the first thing is actually
-// delivered — not simply because the response's Content-Type was SSE. This
-// matters for the missing-session retry: if the very first (and only)
-// message is a missing-session terminal error, the whole attempt is
-// discarded and silently retried (see invokeHTTPStream), so the sink must
-// never have been told a stream started for it. Once a real event has been
-// relayed, or the terminal response is anything other than a
-// zero-events missing-session error, the attempt is the one that counts and
-// StreamStarted fires exactly once for it.
-func (c *Client) relaySSEToolCall(resp *http.Response, sink StreamSink, guard *callTimeoutGuard, upstream Upstream, sessionID string) (streamCallOutcome, error) {
-	expectedID := json.RawMessage([]byte("1"))
-	currentResp := resp
-	reader := newSSEEventReader(currentResp.Body)
-	relayed := 0
-	started := false
+// postStreamMsg is one message pumped from a tools/call POST response by
+// postStreamPump: either a data-bearing JSON-RPC payload (data != nil), or a
+// terminal error ending the stream (err != nil).
+type postStreamMsg struct {
+	data []byte
+	err  error
+}
+
+// postStreamPump owns the tools/call POST response's read loop — including
+// SSE resumption — on its own goroutine, feeding relaySSEToolCall with only
+// the data-bearing JSON-RPC payloads (or a final error) through msgs. This
+// lets relaySSEToolCall select between this stream and a per-call
+// standalone-stream channel (progressCh) without either blocking the
+// other, so a call is only ever done reading (and only ever returns to its
+// caller) once both are accounted for — see progressWaiter for why that
+// matters.
+type postStreamPump struct {
+	msgs chan postStreamMsg
+
+	mu       sync.Mutex
+	current  *http.Response
+	stopped  bool
+	stopOnce sync.Once
+	done     chan struct{}
+}
+
+func newPostStreamPump(c *Client, guard *callTimeoutGuard, upstream Upstream, resp *http.Response) *postStreamPump {
+	p := &postStreamPump{msgs: make(chan postStreamMsg), current: resp, done: make(chan struct{})}
+	go p.run(c, guard, upstream)
+	return p
+}
+
+// stop closes the currently-active response body, if any — causing a
+// blocked Read to return promptly — and marks the pump stopped so it exits
+// instead of trying to resume. Safe to call more than once; only the first
+// call has any effect. Always safe to call even if the pump has already
+// finished on its own.
+func (p *postStreamPump) stop() {
+	p.stopOnce.Do(func() {
+		p.mu.Lock()
+		p.stopped = true
+		cur := p.current
+		p.mu.Unlock()
+		close(p.done)
+		if cur != nil {
+			_ = cur.Body.Close()
+		}
+	})
+}
+
+// setCurrent installs resp as the response the pump is currently reading
+// from (after a resume). Returns false — and leaves resp to the caller to
+// close — if stop was already called, so a resume racing a stop can't
+// resurrect a pump that's supposed to be shutting down.
+func (p *postStreamPump) setCurrent(resp *http.Response) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.stopped {
+		return false
+	}
+	p.current = resp
+	return true
+}
+
+// send delivers msg, or exits early if stop is called while blocked trying
+// to (msgs is unbuffered: without this, a caller that stops reading msgs
+// after its own terminal response — see relaySSEToolCall — would otherwise
+// leave this goroutine permanently blocked on a send nobody will ever
+// receive).
+func (p *postStreamPump) send(msg postStreamMsg) {
+	select {
+	case p.msgs <- msg:
+	case <-p.done:
+	}
+}
+
+func (p *postStreamPump) run(c *Client, guard *callTimeoutGuard, upstream Upstream) {
+	defer close(p.msgs)
+	reader := newSSEEventReader(p.current.Body)
 	lastEventID := ""
 	retryDelay := time.Duration(0)
 	// resumedFrom holds, after a resume, the cursor id the Last-Event-ID
@@ -1046,41 +1117,49 @@ func (c *Client) relaySSEToolCall(resp *http.Response, sink StreamSink, guard *c
 	// The guard window closes at the first event bearing any other id, so a
 	// server legitimately reusing the id much later is unaffected.
 	resumedFrom := ""
-	ensureStarted := func() {
-		if !started {
-			started = true
-			sink.StreamStarted()
-		}
-	}
 	for {
 		evt, err := reader.NextEvent()
 		if err != nil {
+			p.mu.Lock()
+			stopped := p.stopped
+			p.mu.Unlock()
+			if stopped {
+				return
+			}
 			if reason := guard.reason(); reason != "" {
-				_ = currentResp.Body.Close()
-				return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, fmt.Errorf("upstream %q %s after %d relayed event(s): %w", upstream.Name, reason, relayed, ErrStreamTimeout)
+				p.send(postStreamMsg{err: fmt.Errorf("upstream %q %s: %w", upstream.Name, reason, ErrStreamTimeout)})
+				return
 			}
 			if err != io.EOF {
-				_ = currentResp.Body.Close()
-				return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, err
+				p.send(postStreamMsg{err: err})
+				return
 			}
-			_ = currentResp.Body.Close()
 			if lastEventID == "" {
-				return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, fmt.Errorf("upstream %q closed the stream without a JSON-RPC response or resumable event id", upstream.Name)
+				p.send(postStreamMsg{err: fmt.Errorf("upstream %q closed the stream without a JSON-RPC response or resumable event id", upstream.Name)})
+				return
 			}
 			if err := waitForSSEReconnect(guard.ctx, retryDelay); err != nil {
 				if reason := guard.reason(); reason != "" {
-					return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, fmt.Errorf("upstream %q %s while waiting to resume after %d relayed event(s): %w", upstream.Name, reason, relayed, ErrStreamTimeout)
+					p.send(postStreamMsg{err: fmt.Errorf("upstream %q %s while waiting to resume: %w", upstream.Name, reason, ErrStreamTimeout)})
+					return
 				}
-				return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, err
+				p.send(postStreamMsg{err: err})
+				return
 			}
-			currentResp, err = c.resumeSSEStream(guard.ctx, upstream, lastEventID)
+			resumed, err := c.resumeSSEStream(guard.ctx, upstream, lastEventID)
 			if err != nil {
 				if reason := guard.reason(); reason != "" {
-					return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, fmt.Errorf("upstream %q %s while resuming after %d relayed event(s): %w", upstream.Name, reason, relayed, ErrStreamTimeout)
+					p.send(postStreamMsg{err: fmt.Errorf("upstream %q %s while resuming: %w", upstream.Name, reason, ErrStreamTimeout)})
+					return
 				}
-				return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, err
+				p.send(postStreamMsg{err: err})
+				return
 			}
-			reader = newSSEEventReader(currentResp.Body)
+			if !p.setCurrent(resumed) {
+				_ = resumed.Body.Close()
+				return
+			}
+			reader = newSSEEventReader(resumed.Body)
 			resumedFrom = lastEventID
 			continue
 		}
@@ -1101,38 +1180,124 @@ func (c *Client) relaySSEToolCall(resp *http.Response, sink StreamSink, guard *c
 		if !evt.HasData {
 			continue
 		}
-		payload := evt.Data
+		p.send(postStreamMsg{data: evt.Data})
+	}
+}
 
-		switch classifyRPCMessage(payload, expectedID) {
-		case rpcMessageTerminalResponse:
-			var rpcResp rpcResponse
-			if err := json.Unmarshal(payload, &rpcResp); err != nil {
-				_ = currentResp.Body.Close()
+// relaySSEToolCall reads resp's SSE body incrementally (via postStreamPump,
+// on a dedicated goroutine), relaying every intermediate (non-terminal)
+// message to sink as it arrives, and returns once the terminal JSON-RPC
+// response for id "1" is read. It also drains progressCh — standalone-
+// stream notifications matched to this call (see progressWaiter) — via the
+// same select loop, so exactly one goroutine ever calls sink.Event for a
+// given call. resp.Body is not closed here directly; postStreamPump owns
+// that (including across resumes, which replace it with a new response).
+// sessionID is the session this attempt was sent under; it is always
+// stamped onto the returned outcome (even a missing-session terminal
+// response) so a caller retry can identify and clear the right session —
+// mirroring doHTTPEnvelope's ForwardResult.SessionID contract.
+//
+// sink.StreamStarted fires lazily, right before the first thing is actually
+// delivered — not simply because the response's Content-Type was SSE. This
+// matters for the missing-session retry: if the very first (and only)
+// message is a missing-session terminal error, the whole attempt is
+// discarded and silently retried (see invokeHTTPStream), so the sink must
+// never have been told a stream started for it. Once a real event has been
+// relayed, or the terminal response is anything other than a
+// zero-events missing-session error, the attempt is the one that counts and
+// StreamStarted fires exactly once for it.
+func (c *Client) relaySSEToolCall(resp *http.Response, sink StreamSink, progressCh <-chan StreamEvent, guard *callTimeoutGuard, upstream Upstream, sessionID string) (streamCallOutcome, error) {
+	expectedID := json.RawMessage([]byte("1"))
+	statusCode := resp.StatusCode
+	relayed := 0
+	started := false
+	ensureStarted := func() {
+		if !started {
+			started = true
+			sink.StreamStarted()
+		}
+	}
+
+	pump := newPostStreamPump(c, guard, upstream, resp)
+	defer pump.stop()
+
+	for {
+		select {
+		case evt, ok := <-progressCh:
+			if !ok {
+				// Never actually closed (its registration outlives this
+				// call — see invokeHTTPStream's grace period), but nil this
+				// out defensively so a closed channel can't busy-loop.
+				progressCh = nil
+				continue
+			}
+			ensureStarted()
+			relayed++
+			if err := sink.Event(evt); err != nil {
 				return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, err
 			}
-			invoke, missingSession := toolCallResultFromRPCResponse(rpcResp, currentResp.StatusCode)
-			if !(missingSession && relayed == 0) {
+		case msg, ok := <-pump.msgs:
+			if !ok {
+				return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, fmt.Errorf("upstream %q: stream ended unexpectedly", upstream.Name)
+			}
+			if msg.err != nil {
+				return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, msg.err
+			}
+			payload := msg.data
+			switch classifyRPCMessage(payload, expectedID) {
+			case rpcMessageTerminalResponse:
+				var rpcResp rpcResponse
+				if err := json.Unmarshal(payload, &rpcResp); err != nil {
+					return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, err
+				}
+				invoke, missingSession := toolCallResultFromRPCResponse(rpcResp, statusCode)
+				if progressCh != nil {
+					// See terminalSettleWindow: give a notification already in
+					// flight on the standalone stream a brief, bounded chance
+					// to arrive before finalizing.
+					settle := time.NewTimer(terminalSettleWindow)
+				settleLoop:
+					for {
+						select {
+						case evt, ok := <-progressCh:
+							if !ok {
+								break settleLoop
+							}
+							ensureStarted()
+							relayed++
+							if err := sink.Event(evt); err != nil {
+								settle.Stop()
+								return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, err
+							}
+							if !settle.Stop() {
+								<-settle.C
+							}
+							settle.Reset(terminalSettleWindow)
+						case <-settle.C:
+							break settleLoop
+						}
+					}
+				}
+				if !(missingSession && relayed == 0) {
+					ensureStarted()
+				}
+				return streamCallOutcome{invoke: invoke, missingSession: missingSession, eventsRelayed: relayed, sessionID: sessionID}, nil
+			case rpcMessageServerRequest:
 				ensureStarted()
+				relayed++
+				if err := sink.Event(StreamEvent{Data: payload, ServerRequest: true}); err != nil {
+					return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, err
+				}
+			case rpcMessageNotification:
+				ensureStarted()
+				relayed++
+				if err := sink.Event(StreamEvent{Data: payload}); err != nil {
+					return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, err
+				}
+			default:
+				// Unrecognized payload shape (e.g. a response to some other id).
+				// Not ours to interpret; ignore and keep reading.
 			}
-			_ = currentResp.Body.Close()
-			return streamCallOutcome{invoke: invoke, missingSession: missingSession, eventsRelayed: relayed, sessionID: sessionID}, nil
-		case rpcMessageServerRequest:
-			ensureStarted()
-			relayed++
-			if err := sink.Event(StreamEvent{Data: payload, ServerRequest: true}); err != nil {
-				_ = currentResp.Body.Close()
-				return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, err
-			}
-		case rpcMessageNotification:
-			ensureStarted()
-			relayed++
-			if err := sink.Event(StreamEvent{Data: payload}); err != nil {
-				_ = currentResp.Body.Close()
-				return streamCallOutcome{eventsRelayed: relayed, sessionID: sessionID}, err
-			}
-		default:
-			// Unrecognized payload shape (e.g. a response to some other id).
-			// Not ours to interpret; ignore and keep reading.
 		}
 	}
 }
@@ -1149,6 +1314,360 @@ func waitForSSEReconnect(ctx context.Context, delay time.Duration) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// progressWaiter is one streaming call's registration with a
+// standaloneStream: a notification matching wireToken has its raw payload
+// sent to events. events is buffered and drained only by
+// relaySSEToolCall's own goroutine (via select, alongside that call's own
+// POST-response reads — see postStreamPump) rather than delivered directly
+// to the sink from the shared reader goroutine that owns routeStandaloneEvent.
+// That indirection is what makes it safe: without it, a notification for
+// this call and this call's own terminal response race across two
+// independent goroutines with no ordering guarantee, and a delivery
+// attempt could land after the call has already returned to its caller —
+// which, at the HTTP handler layer, may already have written the terminal
+// SSE frame and returned, making a later write to the same
+// http.ResponseWriter unsafe.
+type progressWaiter struct {
+	events chan StreamEvent
+}
+
+// standaloneWaiterEventBuffer bounds progressWaiter.events. Sized generously
+// relative to realistic progress-update rates: a full buffer means the
+// receiving call's own goroutine isn't draining it (already finished, or
+// deep in its own resume/retry handling), in which case routeStandaloneEvent
+// drops the event rather than blocking — a shared reader goroutine also
+// serving other concurrent calls must never block on one slow receiver.
+const standaloneWaiterEventBuffer = 32
+
+// standaloneStream manages one shared "standalone" SSE GET connection per
+// upstream — the channel the MCP Streamable HTTP transport defines for
+// server-initiated messages that aren't tied to any specific request.
+//
+// This exists because the reference MCP Python SDK's Context.report_progress
+// does not attribute its notification to the request that triggered it (it
+// calls send_progress_notification without related_request_id), so the
+// server's message router sends it to this standalone stream, never to the
+// tools/call POST response body that relaySSEToolCall reads. Without this,
+// Atryum cannot see those notifications at all.
+//
+// Atryum multiplexes every downstream caller of a given upstream onto one
+// shared session, so this stream is refcounted across concurrent streaming
+// calls rather than opened per call: acquireStandaloneStream starts the
+// connection for the first waiter and releaseStandaloneStream tears it down
+// once the last waiter is gone. It deliberately does not implement
+// Last-Event-ID resumption (unlike relaySSEToolCall's per-call stream): if
+// the connection drops mid-flight, any calls still waiting on it simply stop
+// receiving standalone-routed notifications until the next acquire cycle
+// reopens it — an accepted limitation, not a correctness hazard, since the
+// call's own terminal response still arrives normally on its POST stream.
+//
+// standaloneWaiterGracePeriod bounds how long a call's progressWaiter
+// lingers in the waiters map after the call itself has completed, before
+// invokeHTTPStream's deferred cleanup actually removes it. See that cleanup
+// for why immediate removal is unsafe.
+const standaloneWaiterGracePeriod = 2 * time.Second
+
+// terminalSettleWindow bounds how long relaySSEToolCall waits, once it has
+// read this call's terminal response, for anything further to arrive on
+// progressCh before finalizing — reset each time something does arrive, so
+// a burst of trailing notifications is fully drained rather than cut off
+// after one. This call's own POST response and the shared standalone
+// stream are independent connections read by independent goroutines: even
+// with progressWaiter's channel already holding a pending notification by
+// the time the terminal is read, Go's select has no rule preferring one
+// ready case over another, so without this window a notification that
+// arrived at essentially the same instant as the terminal could be skipped
+// — not because it never arrived, but because select happened not to pick
+// it up first.
+const terminalSettleWindow = 25 * time.Millisecond
+
+type standaloneStream struct {
+	mu       sync.Mutex
+	refCount int
+	cancel   context.CancelFunc
+	done     chan struct{}
+	waiters  map[string]progressWaiter
+	// unsupported is set once opening the connection fails outright (e.g. a
+	// 404/405, which some upstreams legitimately return for this endpoint
+	// per spec). It stops every later acquire from re-attempting a doomed
+	// connection on every single streaming call; it resets naturally the
+	// next time refCount drops to zero and this entry is evicted.
+	unsupported bool
+}
+
+// acquireStandaloneStream returns the shared standaloneStream for upstream,
+// creating it and starting its reader goroutine if this is the first
+// waiter. Callers must pair this with exactly one releaseStandaloneStream.
+func (c *Client) acquireStandaloneStream(upstream Upstream) *standaloneStream {
+	c.standaloneMu.Lock()
+	s := c.standaloneStreams[upstream.Name]
+	if s == nil {
+		s = &standaloneStream{waiters: make(map[string]progressWaiter)}
+		c.standaloneStreams[upstream.Name] = s
+	}
+	c.standaloneMu.Unlock()
+
+	s.mu.Lock()
+	s.refCount++
+	start := s.refCount == 1 && !s.unsupported
+	if start {
+		streamCtx, cancel := context.WithCancel(context.Background())
+		s.cancel = cancel
+		s.done = make(chan struct{})
+		go c.runStandaloneStream(streamCtx, upstream, s)
+	}
+	s.mu.Unlock()
+	return s
+}
+
+// releaseStandaloneStream drops one reference acquired via
+// acquireStandaloneStream. Once the last reference is gone, it cancels the
+// reader goroutine, waits for it to fully exit, and evicts the entry so a
+// future acquire opens a fresh connection (picking up, e.g., a session that
+// was reinitialized in the meantime).
+func (c *Client) releaseStandaloneStream(upstream Upstream, s *standaloneStream) {
+	s.mu.Lock()
+	s.refCount--
+	last := s.refCount <= 0
+	var cancel context.CancelFunc
+	var done chan struct{}
+	if last {
+		cancel = s.cancel
+		done = s.done
+		s.cancel = nil
+		s.done = nil
+	}
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+		<-done
+	}
+	if last {
+		c.standaloneMu.Lock()
+		if c.standaloneStreams[upstream.Name] == s {
+			delete(c.standaloneStreams, upstream.Name)
+		}
+		c.standaloneMu.Unlock()
+	}
+}
+
+func (s *standaloneStream) registerWaiter(token string, w progressWaiter) {
+	s.mu.Lock()
+	s.waiters[token] = w
+	s.mu.Unlock()
+}
+
+func (s *standaloneStream) unregisterWaiter(token string) {
+	s.mu.Lock()
+	delete(s.waiters, token)
+	s.mu.Unlock()
+}
+
+// openStandaloneGET opens the standalone SSE stream: a bare GET carrying the
+// session's headers, no Last-Event-ID (see standaloneStream doc comment).
+// Mirrors resumeSSEStream's header handling.
+func (c *Client) openStandaloneGET(ctx context.Context, upstream Upstream) (*http.Response, error) {
+	endpoint := strings.TrimRight(upstream.BaseURL, "/")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	if protocol := c.getSessionProtocol(upstream.Name); protocol != "" {
+		req.Header.Set("MCP-Protocol-Version", protocol)
+	}
+	if sessionID := c.getSession(upstream.Name); sessionID != "" {
+		req.Header.Set("Mcp-Session-Id", sessionID)
+	}
+	applyAuthHeaders(req, upstream)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		return nil, fmt.Errorf("upstream %q standalone stream returned HTTP %d: %s", upstream.Name, resp.StatusCode, extractErrorDetail(body))
+	}
+	if !strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+		defer resp.Body.Close()
+		return nil, fmt.Errorf("upstream %q standalone stream returned content type %q, want text/event-stream", upstream.Name, resp.Header.Get("Content-Type"))
+	}
+	return resp, nil
+}
+
+func (c *Client) runStandaloneStream(ctx context.Context, upstream Upstream, s *standaloneStream) {
+	defer close(s.done)
+	resp, err := c.openStandaloneGET(ctx, upstream)
+	if err != nil {
+		c.debugf("standalone stream unavailable server=%s err=%v", upstream.Name, err)
+		s.mu.Lock()
+		s.unsupported = true
+		s.mu.Unlock()
+		return
+	}
+	defer resp.Body.Close()
+	reader := newSSEEventReader(resp.Body)
+	for {
+		evt, err := reader.NextEvent()
+		if err != nil {
+			return
+		}
+		if !evt.HasData {
+			continue
+		}
+		c.routeStandaloneEvent(s, evt.Data)
+	}
+}
+
+// routeStandaloneEvent attributes one standalone-stream message to whichever
+// registered call it belongs to. Progress notifications carry the token
+// Atryum minted for that call (see rewriteProgressToken) in
+// params.progressToken, giving an unambiguous match. Anything else (e.g. a
+// logging notification) carries no per-call correlator at all; it is
+// delivered only when exactly one call is currently waiting on this stream,
+// since there is no way to attribute it correctly when several calls are
+// in flight concurrently — and silently guessing wrong would leak one
+// caller's message to another.
+func (c *Client) routeStandaloneEvent(s *standaloneStream, payload []byte) {
+	var message map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &message); err != nil {
+		return
+	}
+	if _, hasMethod := message["method"]; !hasMethod {
+		return
+	}
+	wireToken, hasToken := extractProgressToken(message)
+
+	s.mu.Lock()
+	var waiter progressWaiter
+	var ok bool
+	if hasToken {
+		waiter, ok = s.waiters[wireToken]
+	} else if len(s.waiters) == 1 {
+		for _, w := range s.waiters {
+			waiter, ok = w, true
+		}
+	}
+	s.mu.Unlock()
+	if !ok {
+		return
+	}
+
+	// Handed off to the matching call's own goroutine via its channel — see
+	// progressWaiter for why this indirection matters. callSink.Event (on
+	// the receiving end) restores the caller's original progressToken
+	// itself (matching on its own wireToken), so the raw payload is sent
+	// through unmodified here.
+	select {
+	case waiter.events <- StreamEvent{Data: payload}:
+	default:
+		// Buffer full, or the receiving call already stopped draining it —
+		// drop rather than block this shared reader goroutine, which also
+		// serves every other call currently sharing this connection.
+	}
+}
+
+// extractProgressToken reads params.progressToken from an already-decoded
+// JSON-RPC message, normalizing it to a bare string for map lookup
+// regardless of whether the upstream echoed it back as a JSON string or a
+// number.
+func extractProgressToken(message map[string]json.RawMessage) (string, bool) {
+	paramsRaw, ok := message["params"]
+	if !ok {
+		return "", false
+	}
+	var params struct {
+		ProgressToken json.RawMessage `json:"progressToken"`
+	}
+	if err := json.Unmarshal(paramsRaw, &params); err != nil || len(params.ProgressToken) == 0 {
+		return "", false
+	}
+	return strings.Trim(string(params.ProgressToken), `"`), true
+}
+
+// rewriteProgressTokenInPayload replaces params.progressToken in an
+// already-wire-formatted JSON-RPC message with originalToken, restoring the
+// value the caller actually supplied before relaying the message onward.
+func rewriteProgressTokenInPayload(payload []byte, originalToken any) ([]byte, error) {
+	var generic map[string]any
+	if err := json.Unmarshal(payload, &generic); err != nil {
+		return nil, err
+	}
+	params, ok := generic["params"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("message has no params object")
+	}
+	params["progressToken"] = originalToken
+	generic["params"] = params
+	return json.Marshal(generic)
+}
+
+// rewriteProgressToken replaces meta's progressToken, if any, with a value
+// unique to this specific call, returning the rewritten meta, that wire
+// token, and the caller's original token. Atryum multiplexes every
+// downstream caller of a given upstream onto one shared session, so two
+// unrelated concurrent calls could independently pick the same
+// caller-supplied progressToken; rewriting to a per-call value here is what
+// lets routeStandaloneEvent attribute a notification to the right call
+// instead of risking a cross-call delivery.
+func (c *Client) rewriteProgressToken(meta map[string]any) (rewritten map[string]any, wireToken string, original any, ok bool) {
+	if meta == nil {
+		return meta, "", nil, false
+	}
+	original, ok = meta["progressToken"]
+	if !ok {
+		return meta, "", nil, false
+	}
+	wireToken = fmt.Sprintf("atryum-pt-%d", c.nextID.Add(1))
+	rewritten = make(map[string]any, len(meta))
+	for k, v := range meta {
+		rewritten[k] = v
+	}
+	rewritten["progressToken"] = wireToken
+	return rewritten, wireToken, original, true
+}
+
+// callSink wraps the caller's sink for one streaming call that requested
+// progress tracking, restoring the caller's original progressToken in
+// place of the wire-level token Atryum minted (see rewriteProgressToken) on
+// every Event call — regardless of whether relaySSEToolCall read the
+// message from the call's own POST response or from the standalone
+// stream's per-call channel (see progressWaiter). Some upstreams echo a
+// call's progress notifications on the tools/call POST response itself
+// rather than the standalone stream — that's the more spec-typical case,
+// in fact — so the restore can't live only in the standalone-delivery
+// path, or the agent would see Atryum's internal token leak through there.
+//
+// relaySSEToolCall drains both sources from a single goroutine (see
+// postStreamPump), so, unlike an earlier version of this type, Event and
+// StreamStarted need no guard against concurrent calls.
+type callSink struct {
+	inner         StreamSink
+	wireToken     string
+	originalToken any
+}
+
+func newCallSink(inner StreamSink, wireToken string, originalToken any) *callSink {
+	return &callSink{inner: inner, wireToken: wireToken, originalToken: originalToken}
+}
+
+func (s *callSink) StreamStarted() {
+	s.inner.StreamStarted()
+}
+
+func (s *callSink) Event(evt StreamEvent) error {
+	var message map[string]json.RawMessage
+	if err := json.Unmarshal(evt.Data, &message); err == nil {
+		if token, ok := extractProgressToken(message); ok && token == s.wireToken {
+			if rewritten, err := rewriteProgressTokenInPayload(evt.Data, s.originalToken); err == nil {
+				evt.Data = rewritten
+			}
+		}
+	}
+	return s.inner.Event(evt)
 }
 
 // resumeSSEStream continues a server-closed Streamable HTTP response. The
@@ -1220,12 +1739,49 @@ func (c *Client) invokeHTTPStream(ctx context.Context, upstream Upstream, tool s
 	}); err != nil {
 		return InvokeResult{}, err
 	}
-	body, err := marshalToolCallEnvelope(tool, input, requestID, meta)
+
+	merged := mergeRequestMeta(meta, requestID)
+	// effectiveSink is what actually gets passed to doHTTPToolCallStream.
+	// When this call requested progress tracking, it becomes a *callSink
+	// that restores the caller's original progressToken on every Event
+	// call, regardless of which of the two upstream channels (this call's
+	// own POST response, or the standalone stream via progressCh) the
+	// underlying message arrived on.
+	effectiveSink := sink
+	var progressCh chan StreamEvent
+	if rewritten, wireToken, original, ok := c.rewriteProgressToken(merged); ok {
+		merged = rewritten
+		effectiveSink = newCallSink(sink, wireToken, original)
+		progressCh = make(chan StreamEvent, standaloneWaiterEventBuffer)
+		standalone := c.acquireStandaloneStream(upstream)
+		standalone.registerWaiter(wireToken, progressWaiter{events: progressCh})
+		defer func() {
+			c.releaseStandaloneStream(upstream, standalone)
+			// Deliberately not unregistered synchronously here: this call's
+			// own POST-response stream and the shared standalone connection
+			// are two independent connections read by two independent
+			// goroutines, with no ordering guarantee between them. A
+			// notification for this exact call can still be in flight on the
+			// standalone connection at the moment this call's own terminal
+			// response arrives — removing the waiter immediately risks the
+			// reader goroutine finding nothing for a notification that was
+			// legitimately on its way, silently dropping it. Wire tokens are
+			// never reused (always a fresh atomic counter value), so nothing
+			// is unsafe about the waiter lingering a little longer; delaying
+			// the removal trades a small, bounded amount of memory for
+			// closing that window.
+			time.AfterFunc(standaloneWaiterGracePeriod, func() {
+				standalone.unregisterWaiter(wireToken)
+			})
+		}()
+	}
+
+	body, err := marshalToolCallEnvelopeWithMeta(tool, input, merged)
 	if err != nil {
 		return InvokeResult{}, err
 	}
 
-	outcome, err := c.doHTTPToolCallStream(ctx, upstream, body, sink, opts)
+	outcome, err := c.doHTTPToolCallStream(ctx, upstream, body, effectiveSink, progressCh, opts)
 	if err != nil {
 		return InvokeResult{}, err
 	}
@@ -1239,7 +1795,7 @@ func (c *Client) invokeHTTPStream(ctx context.Context, upstream Upstream, tool s
 		}); retryErr != nil {
 			return InvokeResult{}, retryErr
 		}
-		outcome, err = c.doHTTPToolCallStream(ctx, upstream, body, sink, opts)
+		outcome, err = c.doHTTPToolCallStream(ctx, upstream, body, effectiveSink, progressCh, opts)
 		if err != nil {
 			return InvokeResult{}, err
 		}

@@ -26,6 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `stream_max_duration_seconds`, `stream_audit_max_events`,
   `stream_audit_max_event_bytes`. See `docs/architecture.md` for the full
   design.
+- The relay also listens on the Streamable HTTP standalone SSE stream (a GET
+  to the upstream endpoint, independent of any specific `tools/call`), since
+  some upstream SDKs (e.g. the reference MCP Python SDK's
+  `Context.report_progress`) send progress notifications there rather than on
+  the `tools/call` response itself. Atryum rewrites each call's
+  `_meta.progressToken` to a value unique to that call before forwarding it
+  upstream, so two unrelated concurrent callers who happen to choose the same
+  token can never have their progress notifications cross-delivered.
 
 ## [0.2.0] - 2026-07-14
 

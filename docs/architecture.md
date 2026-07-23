@@ -219,6 +219,31 @@ sees them live instead of waiting in silence until the call finishes.
 If the upstream tool answers with a single plain response and no streaming, the agent
 simply receives that response. There are no live updates to relay in that case.
 
+**Some upstream tools use a second, separate connection for progress updates instead of
+the one above.** The wire protocol actually allows two different channels for anything a
+tool sends before its final answer: updates riding along on the same connection as the
+call itself (the channel described above), and a second, independent connection carrying
+updates that aren't tied to any one specific call. Some widely-used tool-building
+frameworks always use this second channel for progress updates rather than the first.
+Atryum listens on both, so it makes no difference which channel a given upstream tool
+happens to prefer — the agent sees the same live updates either way.
+
+**Because that second channel isn't tied to any one call, Atryum has to work out whose
+update belongs to whom.** Several agents can have calls in flight against the same
+upstream tool server at once, all sharing that one second channel. Each update on it
+carries a tracking number the calling agent chose — but two unrelated agents could easily
+pick the same tracking number, since neither knows about the other. Atryum doesn't know in
+advance which of the two channels a given upstream will actually use to answer, so for
+every call that asks for update tracking it swaps in its own guaranteed-unique tracking
+number in place of whatever the agent supplied, before the call ever goes upstream — not
+only for calls that end up using the second channel. It restores the agent's own original
+number before handing an update back, the same way no matter which of the two channels
+that update actually arrives on. That's what makes a coincidental match between two
+unrelated agents' tracking numbers harmless either way. An update on the second channel
+with no tracking number at all (a plain log-style message, say) is only ever handed to an
+agent when exactly one call is currently sharing that channel; with more than one, there's
+no way to know whose it is, and Atryum drops it rather than guess wrong.
+
 **The three layers involved**, in order: the part of Atryum facing the agent decides
 whether to relay live and writes the response back; the part in the middle runs
 approval rules and keeps the audit trail; the part facing the upstream tool speaks the
@@ -240,6 +265,7 @@ sequenceDiagram
     Client->>Upstream: Call the tool
     alt Upstream streams progress before answering
         Upstream-->>Client: Starts streaming
+        Note over Client,Upstream: some tools send updates on a second, separate<br/>connection instead — Atryum listens on that one too
         Client->>Middle: A progress update arrived
         Middle->>Middle: Record it for the audit trail (in the background)
         Middle->>Facing: Forward the update
@@ -257,6 +283,41 @@ sequenceDiagram
         Middle-->>Facing: Done
         Facing-->>Agent: Send the one reply
     end
+```
+
+The diagram above shows updates arriving on the same connection as the call itself —
+the most common case, and the only one some upstream tools use at all. Here's what
+happens instead when an upstream tool sends its updates on the second, standalone
+connection described earlier:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Agent
+    participant Facing as Atryum: agent-facing layer
+    participant Middle as Atryum: rules & audit layer
+    participant Client as Atryum: upstream-facing layer
+    participant Upstream as Upstream tool server
+
+    Agent->>Facing: Call a tool, willing to receive live updates
+    Facing->>Middle: Run the call
+    Middle->>Client: Send the call upstream
+    Client->>Client: Swap the agent's tracking number for a unique one
+    Client->>Upstream: Call the tool (this connection will carry the final answer)
+    Client->>Upstream: Open the second, standalone connection<br/>(shared with any other call in flight against this upstream)
+    Note over Upstream: This upstream tool sends its updates on the standalone<br/>connection, never on the call's own connection
+    Upstream-->>Client: Update arrives on the standalone connection
+    Client->>Client: Match it, by tracking number, back to this call
+    Client->>Middle: A progress update arrived (tracking number restored)
+    Middle->>Middle: Record it for the audit trail (in the background)
+    Middle->>Facing: Forward the update
+    Facing-->>Agent: Relay it live, with the agent's own original tracking number
+    Note over Upstream,Client: repeats for every update sent this way
+    Upstream-->>Client: Final answer, on the call's own connection
+    Client-->>Middle: Done
+    Middle->>Middle: Save the result, close out the audit trail
+    Middle-->>Facing: Done
+    Facing-->>Agent: Send the final answer
 ```
 
 **Approval gating applies before any streaming can start.** If a rule says a tool call
@@ -354,6 +415,20 @@ support.
   restart takes effect — ending a call that was actually still healthy. Atryum
   double-checks how much time has *really* passed before deciding to end a call, so a
   well-timed update can never be wrongly punished by bad luck in the timing.
+- **Two agents that happen to pick the same tracking number for their updates must
+  never get mixed up.** The second, standalone update channel described above is shared
+  across every call currently in flight against a given upstream tool server, and
+  agents don't know about each other's choices. Since Atryum can't tell in advance which
+  channel a given upstream will actually use to answer, it assigns its own
+  guaranteed-unique tracking number to *every* call that asks for update tracking, not
+  only ones that end up using the second channel, and restores the agent's original
+  number the same way regardless of which channel the update comes back on — so a
+  coincidental match can never cross-deliver one agent's update to another either way.
+- **An upstream tool that doesn't support the second, standalone channel at all doesn't
+  affect the call itself.** Some tool servers simply don't offer it. Atryum notices on
+  the first attempt and stops trying again for the rest of that session, but the actual
+  tool call still completes and answers normally either way — the only thing lost is any
+  update that server would have sent exclusively on that unsupported channel.
 
 ## Decision-only calls
 

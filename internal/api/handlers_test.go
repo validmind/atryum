@@ -1656,6 +1656,15 @@ func readNextSSEFrame(t *testing.T, reader *bufio.Reader) sseEventFrame {
 func TestMCPToolsCallEndToEndRelaysLiveBeforeTerminalResponseExists(t *testing.T) {
 	releaseTerminal := make(chan struct{})
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			// The standalone SSE stream Atryum opens alongside a
+			// progressToken-bearing tools/call. This fake upstream doesn't
+			// support it (a legitimate, spec-allowed response); the agent's
+			// progress notification arrives via the tools/call POST
+			// response itself below, exercised independently of this.
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("decode upstream request: %v", err)
