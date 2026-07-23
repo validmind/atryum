@@ -74,7 +74,7 @@ func (c *Client) invokeStdioStream(ctx context.Context, upstream Upstream, tool 
 	}); err != nil {
 		return InvokeResult{}, err
 	}
-	if _, err := readRPC(reader, rpcIDMessage(initID)); err != nil {
+	if _, err := readRPCWithLimit(reader, rpcIDMessage(initID), opts.maxMessageBytes()); err != nil {
 		if reason := guard.reason(); reason != "" {
 			return InvokeResult{}, fmt.Errorf("upstream %q: %s during stdio initialize: %w", upstream.Name, reason, ErrStreamTimeout)
 		}
@@ -95,13 +95,13 @@ func (c *Client) invokeStdioStream(ctx context.Context, upstream Upstream, tool 
 	}
 
 	guard.armBodyTimeouts(opts.IdleTimeout, opts.MaxDuration)
-	return c.relayStdioToolCall(reader, sink, guard, upstream, callID, stderr)
+	return c.relayStdioToolCall(reader, sink, guard, upstream, callID, stderr, opts.maxMessageBytes())
 }
 
 // relayStdioToolCall reads reader's newline-delimited JSON-RPC messages,
 // relaying every intermediate (non-terminal) message to sink as it arrives,
 // and returns once the terminal response for callID is read.
-func (c *Client) relayStdioToolCall(reader *bufio.Reader, sink StreamSink, guard *callTimeoutGuard, upstream Upstream, callID int64, stderr *boundedBuffer) (InvokeResult, error) {
+func (c *Client) relayStdioToolCall(reader *bufio.Reader, sink StreamSink, guard *callTimeoutGuard, upstream Upstream, callID int64, stderr *boundedBuffer, maxMessageBytes int) (InvokeResult, error) {
 	expectedID := rpcIDMessage(callID)
 	started := false
 	ensureStarted := func() {
@@ -111,7 +111,7 @@ func (c *Client) relayStdioToolCall(reader *bufio.Reader, sink StreamSink, guard
 		}
 	}
 	for {
-		line, err := reader.ReadBytes('\n')
+		line, err := readLineLimited(reader, maxMessageBytes)
 		if err != nil {
 			if reason := guard.reason(); reason != "" {
 				return InvokeResult{}, fmt.Errorf("upstream %q %s: %w", upstream.Name, reason, ErrStreamTimeout)

@@ -3,6 +3,7 @@ package mcp
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -17,6 +18,8 @@ import (
 // streaming relay (relaySSEToolCall) — one parser, two ways of consuming it.
 type sseEventReader struct {
 	scanner   *bufio.Scanner
+	maxBytes  int
+	eventSize int
 	dataLines []string
 	eventID   string
 	retry     time.Duration
@@ -35,9 +38,17 @@ type sseWireEvent struct {
 }
 
 func newSSEEventReader(r io.Reader) *sseEventReader {
+	return newSSEEventReaderWithLimit(r, defaultStreamMaxMessageBytes)
+}
+
+func newSSEEventReaderWithLimit(r io.Reader, maxBytes int) *sseEventReader {
+	if maxBytes <= 0 {
+		maxBytes = defaultStreamMaxMessageBytes
+	}
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 1024*1024), 4*1024*1024)
-	return &sseEventReader{scanner: scanner}
+	initialSize := min(maxBytes, 64*1024)
+	scanner.Buffer(make([]byte, initialSize), maxBytes)
+	return &sseEventReader{scanner: scanner, maxBytes: maxBytes}
 }
 
 // NextEvent returns one complete SSE event, including the id/retry fields
@@ -47,10 +58,15 @@ func (r *sseEventReader) NextEvent() (sseWireEvent, error) {
 		line := r.scanner.Text()
 		if line == "" {
 			if !r.hasData && !r.hasID && !r.hasRetry {
+				r.eventSize = 0
 				continue
 			}
 			return r.takeEvent(), nil
 		}
+		if len(line)+1 > r.maxBytes-r.eventSize {
+			return sseWireEvent{}, ErrStreamMessageTooLarge
+		}
+		r.eventSize += len(line) + 1
 		if strings.HasPrefix(line, ":") {
 			continue
 		}
@@ -85,6 +101,9 @@ func (r *sseEventReader) NextEvent() (sseWireEvent, error) {
 		}
 	}
 	if err := r.scanner.Err(); err != nil {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return sseWireEvent{}, ErrStreamMessageTooLarge
+		}
 		return sseWireEvent{}, err
 	}
 	if r.hasData || r.hasID || r.hasRetry {
@@ -108,6 +127,7 @@ func (r *sseEventReader) takeEvent() sseWireEvent {
 	r.hasData = false
 	r.hasID = false
 	r.hasRetry = false
+	r.eventSize = 0
 	return evt
 }
 

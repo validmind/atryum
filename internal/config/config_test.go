@@ -87,6 +87,9 @@ func TestLoadMissingConfigUsesDefaultsAndEnv(t *testing.T) {
 	if cfg.Defaults.StreamAuditMaxEventBytes != 4096 {
 		t.Fatalf("Defaults.StreamAuditMaxEventBytes = %d, want 4096", cfg.Defaults.StreamAuditMaxEventBytes)
 	}
+	if cfg.Defaults.StreamMaxMessageBytes != 4*1024*1024 {
+		t.Fatalf("Defaults.StreamMaxMessageBytes = %d, want 4194304", cfg.Defaults.StreamMaxMessageBytes)
+	}
 	if cfg.Defaults.StreamHeaderTimeoutSeconds != 0 {
 		t.Fatalf("Defaults.StreamHeaderTimeoutSeconds = %d, want 0 (falls back to RequestTimeoutSeconds at the call site)", cfg.Defaults.StreamHeaderTimeoutSeconds)
 	}

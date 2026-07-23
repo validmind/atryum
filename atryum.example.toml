@@ -49,30 +49,26 @@ connection_timeout_seconds = 5
 [defaults]
 request_timeout_seconds = 30
 
-# Live SSE relay for tools/call: when an upstream MCP server answers a
-# tools/call with a Server-Sent Events stream (per the Streamable HTTP
-# transport, MCP spec 2025-11-25), Atryum relays intermediate messages
-# (progress, logging, other notifications) to the agent as they arrive,
-# instead of buffering the whole response and returning only the terminal
-# result. This only ever activates when the agent's own request also sends
-# Accept: text/event-stream and the upstream responds with one; non-streaming
-# tool calls are completely unaffected. stream_relay_enabled is a kill-switch
-# to disable the relay globally without a rollback.
+# Live relay for tools/call. When the agent accepts SSE, Atryum can forward
+# intermediate HTTP SSE or stdio JSON-RPC messages as they arrive, followed
+# by one terminal SSE response. A plain upstream JSON response remains plain
+# downstream. stream_relay_enabled disables the relay without a rollback.
 stream_relay_enabled = true
-# Bounds waiting for the upstream's response headers on a streaming
-# tools/call (the connect phase, before Atryum knows whether the response
-# will stream). 0 falls back to request_timeout_seconds above.
+# Bounds HTTP session initialization and tools/call response headers, or the
+# stdio initialize handshake. 0 falls back to request_timeout_seconds above.
 stream_header_timeout_seconds = 0
-# Bounds the gap between successive relayed events once a stream has
-# started; resets on every event. Does not bound the call's total duration.
+# Bounds the gap between upstream messages while reading the response.
+# Resets on every message. Does not bound the call's total duration.
 stream_idle_timeout_seconds = 60
-# Bounds the whole call once a stream has started. 0 = unlimited.
+# Bounds the complete upstream response-reading phase. 0 = unlimited.
 stream_max_duration_seconds = 600
+# Rejects one upstream SSE event, stdio JSON-RPC line, or plain JSON response
+# body larger than this many bytes. This bounds memory used by one message.
+stream_max_message_bytes = 4194304
 # Caps how many invocation.stream_event audit rows are persisted per call.
 # Beyond the cap, events are still relayed live to the agent but only
-# counted, not stored individually. 0 disables this count cap; the bounded
-# audit queue can still drop events if storage cannot keep up, and reports
-# those drops in invocation.stream_completed.
+# counted, not stored individually. 0 disables this count cap. The bounded
+# shared audit queue reports storage backpressure drops in stream_completed.
 stream_audit_max_events = 100
 # Truncates each persisted stream_event row's data field beyond this many
 # bytes. 0 = no truncation.

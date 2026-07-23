@@ -3,11 +3,13 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -15,7 +17,8 @@ import (
 // owns the sink. This prevents shared-reader writes from racing the call's
 // terminal response.
 type progressWaiter struct {
-	events chan StreamEvent
+	events  chan StreamEvent
+	dropped *atomic.Int64
 }
 
 // A full waiter buffer drops that call's event rather than blocking the one
@@ -25,19 +28,13 @@ const standaloneWaiterEventBuffer = 32
 // standaloneStream manages the shared SSE GET used for server-initiated
 // messages. It is needed for SDKs that send progress without a related
 // request ID, placing it on this connection instead of the tools/call POST.
-// One ref-counted stream serves all calls sharing an upstream session. It is
-// not resumable; a later acquire opens a fresh connection.
-//
-// standaloneWaiterGracePeriod lets an in-flight progress message arrive after
-// the POST terminal response without keeping its unique-token waiter forever.
-const standaloneWaiterGracePeriod = 2 * time.Second
-
 // terminalSettleWindow briefly drains progress that races the terminal across
 // the independent POST and standalone connections. Each arrival resets it so
 // a trailing burst is drained completely.
 const terminalSettleWindow = 25 * time.Millisecond
 
 type standaloneStream struct {
+	key      standaloneStreamKey
 	mu       sync.Mutex
 	refCount int
 	cancel   context.CancelFunc
@@ -49,39 +46,72 @@ type standaloneStream struct {
 	// connection on every single streaming call; it resets naturally the
 	// next time refCount drops to zero and this entry is evicted.
 	unsupported bool
+	maxBytes    int
+}
+
+type standaloneStreamKey struct {
+	upstreamName string
+	sessionID    string
+	protocol     string
+}
+
+type standaloneUnsupportedError struct {
+	err error
+}
+
+func (e *standaloneUnsupportedError) Error() string {
+	return e.err.Error()
+}
+
+func (e *standaloneUnsupportedError) Unwrap() error {
+	return e.err
 }
 
 // acquireStandaloneStream returns the shared standaloneStream for upstream,
 // creating it and starting its reader goroutine if this is the first
 // waiter. Callers must pair this with exactly one releaseStandaloneStream.
 func (c *Client) acquireStandaloneStream(upstream Upstream) *standaloneStream {
-	c.standaloneMu.Lock()
-	s := c.standaloneStreams[upstream.Name]
-	if s == nil {
-		s = &standaloneStream{waiters: make(map[string]progressWaiter)}
-		c.standaloneStreams[upstream.Name] = s
-	}
-	c.standaloneMu.Unlock()
+	return c.acquireStandaloneStreamWithLimit(upstream, defaultStreamMaxMessageBytes)
+}
 
+func (c *Client) acquireStandaloneStreamWithLimit(upstream Upstream, maxMessageBytes int) *standaloneStream {
+	key := standaloneStreamKey{
+		upstreamName: upstream.Name,
+		sessionID:    c.getSession(upstream.Name),
+		protocol:     c.getSessionProtocol(upstream.Name),
+	}
+	c.standaloneMu.Lock()
+	s := c.standaloneStreams[key]
+	if s == nil {
+		s = &standaloneStream{
+			key:      key,
+			waiters:  make(map[string]progressWaiter),
+			maxBytes: maxMessageBytes,
+		}
+		c.standaloneStreams[key] = s
+	}
 	s.mu.Lock()
 	s.refCount++
 	start := s.refCount == 1 && !s.unsupported
 	if start {
 		streamCtx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
 		s.cancel = cancel
-		s.done = make(chan struct{})
-		go c.runStandaloneStream(streamCtx, upstream, s)
+		s.done = done
+		go c.runStandaloneStream(streamCtx, upstream, s, done)
 	}
 	s.mu.Unlock()
+	c.standaloneMu.Unlock()
 	return s
 }
 
 // releaseStandaloneStream drops one reference acquired via
-// acquireStandaloneStream. Once the last reference is gone, it cancels the
-// reader goroutine, waits for it to fully exit, and evicts the entry so a
-// future acquire opens a fresh connection (picking up, e.g., a session that
-// was reinitialized in the meantime).
-func (c *Client) releaseStandaloneStream(upstream Upstream, s *standaloneStream) {
+// acquireStandaloneStream. The map and reference count change atomically so a
+// concurrent acquire cannot reuse an entry that this release is about to
+// evict. Once the last reference is gone, it cancels the reader goroutine and
+// waits for it to fully exit.
+func (c *Client) releaseStandaloneStream(s *standaloneStream) {
+	c.standaloneMu.Lock()
 	s.mu.Lock()
 	s.refCount--
 	last := s.refCount <= 0
@@ -92,18 +122,15 @@ func (c *Client) releaseStandaloneStream(upstream Upstream, s *standaloneStream)
 		done = s.done
 		s.cancel = nil
 		s.done = nil
+		if c.standaloneStreams[s.key] == s {
+			delete(c.standaloneStreams, s.key)
+		}
 	}
 	s.mu.Unlock()
+	c.standaloneMu.Unlock()
 	if cancel != nil {
 		cancel()
 		<-done
-	}
-	if last {
-		c.standaloneMu.Lock()
-		if c.standaloneStreams[upstream.Name] == s {
-			delete(c.standaloneStreams, upstream.Name)
-		}
-		c.standaloneMu.Unlock()
 	}
 }
 
@@ -122,17 +149,17 @@ func (s *standaloneStream) unregisterWaiter(token string) {
 // openStandaloneGET opens the standalone SSE stream: a bare GET carrying the
 // session's headers, no Last-Event-ID (see standaloneStream doc comment).
 // Mirrors resumeSSEStream's header handling.
-func (c *Client) openStandaloneGET(ctx context.Context, upstream Upstream) (*http.Response, error) {
+func (c *Client) openStandaloneGET(ctx context.Context, upstream Upstream, sessionID, protocol string) (*http.Response, error) {
 	endpoint := strings.TrimRight(upstream.BaseURL, "/")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Accept", "text/event-stream")
-	if protocol := c.getSessionProtocol(upstream.Name); protocol != "" {
+	if protocol != "" {
 		req.Header.Set("MCP-Protocol-Version", protocol)
 	}
-	if sessionID := c.getSession(upstream.Name); sessionID != "" {
+	if sessionID != "" {
 		req.Header.Set("Mcp-Session-Id", sessionID)
 	}
 	applyAuthHeaders(req, upstream)
@@ -143,36 +170,64 @@ func (c *Client) openStandaloneGET(ctx context.Context, upstream Upstream) (*htt
 	if resp.StatusCode >= http.StatusBadRequest {
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-		return nil, fmt.Errorf("upstream %q standalone stream returned HTTP %d: %s", upstream.Name, resp.StatusCode, extractErrorDetail(body))
+		err := fmt.Errorf("upstream %q standalone stream returned HTTP %d: %s", upstream.Name, resp.StatusCode, extractErrorDetail(body))
+		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
+			return nil, &standaloneUnsupportedError{err: err}
+		}
+		return nil, err
 	}
 	if !strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
 		defer resp.Body.Close()
-		return nil, fmt.Errorf("upstream %q standalone stream returned content type %q, want text/event-stream", upstream.Name, resp.Header.Get("Content-Type"))
+		return nil, &standaloneUnsupportedError{err: fmt.Errorf("upstream %q standalone stream returned content type %q, want text/event-stream", upstream.Name, resp.Header.Get("Content-Type"))}
 	}
 	return resp, nil
 }
 
-func (c *Client) runStandaloneStream(ctx context.Context, upstream Upstream, s *standaloneStream) {
-	defer close(s.done)
-	resp, err := c.openStandaloneGET(ctx, upstream)
-	if err != nil {
-		c.debugf("standalone stream unavailable server=%s err=%v", upstream.Name, err)
-		s.mu.Lock()
-		s.unsupported = true
-		s.mu.Unlock()
-		return
-	}
-	defer resp.Body.Close()
-	reader := newSSEEventReader(resp.Body)
+func (c *Client) runStandaloneStream(ctx context.Context, upstream Upstream, s *standaloneStream, done chan<- struct{}) {
+	defer close(done)
+	attempt := 0
 	for {
-		evt, err := reader.NextEvent()
+		resp, err := c.openStandaloneGET(ctx, upstream, s.key.sessionID, s.key.protocol)
 		if err != nil {
-			return
-		}
-		if !evt.HasData {
+			if ctx.Err() != nil {
+				return
+			}
+			var unsupported *standaloneUnsupportedError
+			if errors.As(err, &unsupported) {
+				c.debugf("standalone stream unsupported server=%s session=%q err=%v", upstream.Name, s.key.sessionID, err)
+				s.mu.Lock()
+				s.unsupported = true
+				s.mu.Unlock()
+				return
+			}
+			c.debugf("standalone stream open failed; retrying server=%s session=%q err=%v", upstream.Name, s.key.sessionID, err)
+			if waitForSSEReconnect(ctx, sseReconnectDelay(0, attempt)) != nil {
+				return
+			}
+			attempt++
 			continue
 		}
-		c.routeStandaloneEvent(s, evt.Data)
+
+		reader := newSSEEventReaderWithLimit(resp.Body, s.maxBytes)
+		for {
+			evt, readErr := reader.NextEvent()
+			if readErr != nil {
+				_ = resp.Body.Close()
+				if ctx.Err() != nil {
+					return
+				}
+				c.debugf("standalone stream disconnected; retrying server=%s session=%q err=%v", upstream.Name, s.key.sessionID, readErr)
+				break
+			}
+			attempt = 0
+			if evt.HasData {
+				c.routeStandaloneEvent(s, evt.Data)
+			}
+		}
+		if waitForSSEReconnect(ctx, sseReconnectDelay(0, attempt)) != nil {
+			return
+		}
+		attempt++
 	}
 }
 
@@ -221,6 +276,9 @@ func (c *Client) routeStandaloneEvent(s *standaloneStream, payload []byte) {
 		// Buffer full, or the receiving call already stopped draining it —
 		// drop rather than block this shared reader goroutine, which also
 		// serves every other call currently sharing this connection.
+		if waiter.dropped != nil {
+			waiter.dropped.Add(1)
+		}
 	}
 }
 
@@ -311,4 +369,10 @@ func (s *callSink) Event(evt StreamEvent) error {
 		}
 	}
 	return s.inner.Event(evt)
+}
+
+func (s *callSink) StreamStats(stats StreamStats) {
+	if sink, ok := s.inner.(StreamStatsSink); ok {
+		sink.StreamStats(stats)
+	}
 }

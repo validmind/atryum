@@ -145,6 +145,52 @@ func TestInvokeStreamResumesAfterUpstreamClosesSSEBeforeTerminalResponse(t *test
 	}
 }
 
+func TestSSEReconnectDelayUsesBoundedExponentialBackoff(t *testing.T) {
+	first := sseReconnectDelay(0, 0)
+	second := sseReconnectDelay(0, 1)
+
+	if first < minSSEReconnectDelay || first > minSSEReconnectDelay+sseReconnectJitter(minSSEReconnectDelay) {
+		t.Fatalf("first reconnect delay = %s, want bounded minimum-delay jitter", first)
+	}
+	if second < 2*minSSEReconnectDelay || second > 2*minSSEReconnectDelay+sseReconnectJitter(2*minSSEReconnectDelay) {
+		t.Fatalf("second reconnect delay = %s, want bounded exponential-delay jitter", second)
+	}
+	if got := sseReconnectDelay(time.Nanosecond, 0); got < minSSEReconnectDelay {
+		t.Fatalf("server retry below minimum produced %s, want at least %s", got, minSSEReconnectDelay)
+	}
+	if got := sseReconnectDelay(24*time.Hour, 0); got > maxSSEReconnectDelay {
+		t.Fatalf("server retry above maximum produced %s, want at most %s", got, maxSSEReconnectDelay)
+	}
+	for range 100 {
+		if got := sseReconnectDelay(maxSSEReconnectDelay-time.Second, 0); got > maxSSEReconnectDelay {
+			t.Fatalf("jitter pushed reconnect delay above maximum: %s", got)
+		}
+	}
+}
+
+func TestInvokeStreamRejectsOversizedPlainJSONResponse(t *testing.T) {
+	server := invokeStreamTestServer(t, "sid-large-json", func(w http.ResponseWriter, r *http.Request, req Envelope) {
+		writeTestRPC(w, req.ID, map[string]any{"content": strings.Repeat("x", 256)}, nil)
+	})
+	defer server.Close()
+
+	client := NewHTTPClient()
+	client.httpClient = server.Client()
+	_, err := client.InvokeStream(
+		context.Background(),
+		Upstream{Name: "large-json", Mode: UpstreamModeHTTP, BaseURL: server.URL},
+		"demo",
+		map[string]any{},
+		nil,
+		nil,
+		&fakeStreamSink{},
+		StreamOptions{MaxMessageBytes: 128},
+	)
+	if !errors.Is(err, ErrStreamMessageTooLarge) {
+		t.Fatalf("InvokeStream error = %v, want ErrStreamMessageTooLarge", err)
+	}
+}
+
 // TestInvokeStreamResumeSkipsInclusivelyReplayedCursorEvent is a regression
 // test for reconnect duplicate delivery: Last-Event-ID replay is exclusive
 // of the cursor, but the classic server off-by-one replays the cursor event

@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -55,5 +56,41 @@ func TestSSEEventReaderSaturatesOversizedRetryWithoutOverflow(t *testing.T) {
 	}
 	if evt.Retry <= 0 {
 		t.Fatalf("oversized retry overflowed to %s; want a positive saturated duration", evt.Retry)
+	}
+}
+
+func TestSSEEventReaderRejectsAggregateEventOverLimit(t *testing.T) {
+	reader := newSSEEventReaderWithLimit(
+		strings.NewReader("data: 12345678\ndata: 12345678\n\n"),
+		16,
+	)
+
+	_, err := reader.NextEvent()
+	if !errors.Is(err, ErrStreamMessageTooLarge) {
+		t.Fatalf("NextEvent error = %v, want ErrStreamMessageTooLarge", err)
+	}
+}
+
+func TestSSEEventReaderRejectsSingleLineOverLimitWithTypedError(t *testing.T) {
+	reader := newSSEEventReaderWithLimit(strings.NewReader("data: 1234567890\n\n"), 12)
+
+	_, err := reader.NextEvent()
+	if !errors.Is(err, ErrStreamMessageTooLarge) {
+		t.Fatalf("NextEvent error = %v, want ErrStreamMessageTooLarge", err)
+	}
+}
+
+func TestSSEEventReaderDoesNotAccumulateCommentBytesAcrossEvents(t *testing.T) {
+	reader := newSSEEventReaderWithLimit(
+		strings.NewReader(": ping\n\n: ping\n\n: ping\n\ndata: ok\n\n"),
+		12,
+	)
+
+	evt, err := reader.NextEvent()
+	if err != nil {
+		t.Fatalf("NextEvent returned error after bounded comment events: %v", err)
+	}
+	if string(evt.Data) != "ok" {
+		t.Fatalf("event data = %q, want ok", evt.Data)
 	}
 }

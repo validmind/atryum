@@ -134,6 +134,9 @@ type DefaultsConfig struct {
 	// StreamMaxDurationSeconds bounds response reading after setup completes.
 	// Zero disables the bound (unlimited).
 	StreamMaxDurationSeconds int `toml:"stream_max_duration_seconds"`
+	// StreamMaxMessageBytes bounds one upstream JSON-RPC message or plain
+	// response body. Zero at the mcp package boundary uses its 4 MiB default.
+	StreamMaxMessageBytes int `toml:"stream_max_message_bytes"`
 	// StreamAuditMaxEvents caps how many invocation.stream_event audit
 	// rows get persisted per call; beyond the cap, events are still
 	// relayed live to the agent but only counted, not stored
@@ -183,6 +186,7 @@ func Load(path string) (Config, error) {
 			StreamRelayEnabled:       true,
 			StreamIdleTimeoutSeconds: 60,
 			StreamMaxDurationSeconds: 600,
+			StreamMaxMessageBytes:    4 * 1024 * 1024,
 			StreamAuditMaxEvents:     100,
 			StreamAuditMaxEventBytes: 4096,
 		},

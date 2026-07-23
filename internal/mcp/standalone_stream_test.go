@@ -143,6 +143,25 @@ func TestRouteStandaloneEventAttributesTokenlessNotificationOnlyWhenUnambiguous(
 	}
 }
 
+func TestRouteStandaloneEventCountsDropsForFullWaiter(t *testing.T) {
+	client := NewHTTPClient()
+	events := make(chan StreamEvent, 1)
+	events <- StreamEvent{Data: []byte(`{"already":"queued"}`)}
+	var dropped atomic.Int64
+	stream := &standaloneStream{waiters: map[string]progressWaiter{
+		"tok": {events: events, dropped: &dropped},
+	}}
+
+	client.routeStandaloneEvent(
+		stream,
+		[]byte(`{"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":"tok","progress":2}}`),
+	)
+
+	if got := dropped.Load(); got != 1 {
+		t.Fatalf("standalone dropped count = %d, want 1", got)
+	}
+}
+
 // TestInvokeStreamStandaloneStreamRelaysProgressNotification is the
 // regression test for the real end-to-end gap this feature fixes: the
 // reference MCP Python SDK's Context.report_progress sends progress
@@ -295,6 +314,184 @@ func TestInvokeStreamStandaloneProgressResetsIdleTimeout(t *testing.T) {
 	}
 	if events := sink.snapshotEvents(); len(events) != 4 {
 		t.Fatalf("expected four relayed progress events, got %d", len(events))
+	}
+}
+
+func TestInvokeStreamRebindsStandaloneStreamAfterSessionRenewal(t *testing.T) {
+	var initializeCount atomic.Int32
+	var toolsCallCount atomic.Int32
+	sid1Connected := make(chan struct{})
+	sid2Connected := make(chan struct{})
+	tokenForRetry := make(chan string, 1)
+	progressSent := make(chan struct{})
+	var closeSID1, closeSID2, closeProgress sync.Once
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.(http.Flusher).Flush()
+			switch r.Header.Get("Mcp-Session-Id") {
+			case "sid-1":
+				closeSID1.Do(func() { close(sid1Connected) })
+			case "sid-2":
+				closeSID2.Do(func() { close(sid2Connected) })
+				token := <-tokenForRetry
+				writeTestSSEEventFlush(w, w.(http.Flusher), fmt.Sprintf(
+					`{"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":%q,"progress":2}}`,
+					token,
+				))
+				closeProgress.Do(func() { close(progressSent) })
+			}
+			<-r.Context().Done()
+			return
+		}
+
+		var req Envelope
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		switch req.Method {
+		case "initialize":
+			count := initializeCount.Add(1)
+			w.Header().Set("Mcp-Session-Id", fmt.Sprintf("sid-%d", count))
+			writeTestRPC(w, req.ID, map[string]any{"protocolVersion": r.Header.Get("MCP-Protocol-Version"), "capabilities": map[string]any{}}, nil)
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/call":
+			count := toolsCallCount.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher := w.(http.Flusher)
+			if count == 1 {
+				<-sid1Connected
+				writeTestSSEEventFlush(w, flusher, `{"jsonrpc":"2.0","id":"1","error":{"code":-32000,"message":"No session ID provided for non-initialization request"}}`)
+				return
+			}
+			if got := r.Header.Get("Mcp-Session-Id"); got != "sid-2" {
+				t.Errorf("retry tools/call session = %q, want sid-2", got)
+			}
+			var params struct {
+				Meta struct {
+					ProgressToken string `json:"progressToken"`
+				} `json:"_meta"`
+			}
+			_ = json.Unmarshal(req.Params, &params)
+			tokenForRetry <- params.Meta.ProgressToken
+			select {
+			case <-sid2Connected:
+			case <-time.After(2 * time.Second):
+				t.Error("standalone stream never reconnected with sid-2")
+			}
+			select {
+			case <-progressSent:
+			case <-time.After(2 * time.Second):
+				t.Error("sid-2 standalone stream never delivered progress")
+			}
+			writeTestSSEEventFlush(w, flusher, `{"jsonrpc":"2.0","id":"1","result":{"content":[{"type":"text","text":"done"}]}}`)
+		default:
+			t.Fatalf("unexpected method %q", req.Method)
+		}
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient()
+	client.httpClient = server.Client()
+	sink := newSyncFakeStreamSink()
+	result, err := client.InvokeStream(
+		context.Background(),
+		Upstream{Name: "renew-session", Mode: UpstreamModeHTTP, BaseURL: server.URL},
+		"tool",
+		map[string]any{},
+		nil,
+		map[string]any{"progressToken": "caller-token"},
+		sink,
+		StreamOptions{},
+	)
+	if err != nil {
+		t.Fatalf("InvokeStream returned error: %v", err)
+	}
+	if !strings.Contains(string(result.Body), "done") {
+		t.Fatalf("terminal result = %s, want done", result.Body)
+	}
+	events := sink.snapshotEvents()
+	if len(events) != 1 || !strings.Contains(string(events[0].Data), `"progressToken":"caller-token"`) {
+		t.Fatalf("relayed events = %#v, want sid-2 progress with restored token", events)
+	}
+}
+
+func TestInvokeStreamStandaloneRetriesTransientOpenFailure(t *testing.T) {
+	var getCount atomic.Int32
+	tokenCh := make(chan string, 1)
+	progressSent := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			if getCount.Add(1) == 1 {
+				http.Error(w, "temporary failure", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher := w.(http.Flusher)
+			token := <-tokenCh
+			writeTestSSEEventFlush(w, flusher, fmt.Sprintf(
+				`{"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":%q,"progress":1}}`,
+				token,
+			))
+			close(progressSent)
+			<-r.Context().Done()
+			return
+		}
+
+		var req Envelope
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		switch req.Method {
+		case "initialize":
+			w.Header().Set("Mcp-Session-Id", "sid-transient")
+			writeTestRPC(w, req.ID, map[string]any{"protocolVersion": r.Header.Get("MCP-Protocol-Version"), "capabilities": map[string]any{}}, nil)
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/call":
+			var params struct {
+				Meta struct {
+					ProgressToken string `json:"progressToken"`
+				} `json:"_meta"`
+			}
+			_ = json.Unmarshal(req.Params, &params)
+			tokenCh <- params.Meta.ProgressToken
+			select {
+			case <-progressSent:
+			case <-time.After(3 * time.Second):
+				t.Error("standalone stream did not retry its transient 500 response")
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			writeTestSSEEventFlush(w, w.(http.Flusher), `{"jsonrpc":"2.0","id":"1","result":{"content":[{"type":"text","text":"done"}]}}`)
+		default:
+			t.Fatalf("unexpected method %q", req.Method)
+		}
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient()
+	client.httpClient = server.Client()
+	sink := newSyncFakeStreamSink()
+	_, err := client.InvokeStream(
+		context.Background(),
+		Upstream{Name: "transient", Mode: UpstreamModeHTTP, BaseURL: server.URL},
+		"tool",
+		map[string]any{},
+		nil,
+		map[string]any{"progressToken": "caller-token"},
+		sink,
+		StreamOptions{},
+	)
+	if err != nil {
+		t.Fatalf("InvokeStream returned error: %v", err)
+	}
+	if got := getCount.Load(); got < 2 {
+		t.Fatalf("standalone GET count = %d, want a retry after the transient failure", got)
+	}
+	if len(sink.snapshotEvents()) != 1 {
+		t.Fatalf("relayed events = %#v, want progress from retried standalone stream", sink.snapshotEvents())
 	}
 }
 
@@ -480,11 +677,11 @@ func TestStandaloneStreamRefcountsSharedConnection(t *testing.T) {
 		t.Fatalf("expected exactly 1 standalone connection while both waiters are active, got %d", got)
 	}
 
-	client.releaseStandaloneStream(upstream, s1)
+	client.releaseStandaloneStream(s1)
 	if got := atomic.LoadInt32(&connections); got != 1 {
 		t.Fatalf("releasing one of two references should not close the connection yet, got %d", got)
 	}
-	client.releaseStandaloneStream(upstream, s2)
+	client.releaseStandaloneStream(s2)
 
 	s3 := client.acquireStandaloneStream(upstream)
 	if s3 == s1 {
@@ -497,7 +694,40 @@ func TestStandaloneStreamRefcountsSharedConnection(t *testing.T) {
 	if got := atomic.LoadInt32(&connections); got != 2 {
 		t.Fatalf("expected a new connection after full release + reacquire, got %d", got)
 	}
-	client.releaseStandaloneStream(upstream, s3)
+	client.releaseStandaloneStream(s3)
+}
+
+func TestStandaloneStreamConcurrentLastReleaseAndAcquireKeepsLiveEntry(t *testing.T) {
+	client := NewHTTPClient()
+	upstream := Upstream{Name: "release-acquire-race", Mode: UpstreamModeHTTP}
+
+	for i := 0; i < 1000; i++ {
+		current := client.acquireStandaloneStream(upstream)
+		start := make(chan struct{})
+		var next *standaloneStream
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			client.releaseStandaloneStream(current)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			next = client.acquireStandaloneStream(upstream)
+		}()
+		close(start)
+		wg.Wait()
+
+		client.standaloneMu.Lock()
+		live := client.standaloneStreams[next.key]
+		client.standaloneMu.Unlock()
+		if live != next {
+			t.Fatalf("iteration %d: newly acquired stream was evicted by concurrent release", i)
+		}
+		client.releaseStandaloneStream(next)
+	}
 }
 
 // TestInvokeStreamStandaloneStreamUnsupportedDoesNotFailCall covers an

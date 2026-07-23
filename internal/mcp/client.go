@@ -254,13 +254,11 @@ type Client struct {
 	sessions         map[string]string
 	sessionProtocols map[string]string
 
-	// standaloneStreams holds, per upstream name, the shared "standalone"
-	// SSE GET connection used to receive server-initiated messages that
-	// aren't tied to any specific request — notably progress notifications
-	// from servers (e.g. the reference Python SDK) that don't attribute
-	// them to the request that triggered them. See standaloneStream.
+	// standaloneStreams holds one shared standalone SSE GET per upstream
+	// session. Including the session ID in the key prevents a renewed session
+	// from reusing the dead connection associated with its predecessor.
 	standaloneMu      sync.Mutex
-	standaloneStreams map[string]*standaloneStream
+	standaloneStreams map[standaloneStreamKey]*standaloneStream
 }
 
 type InvokeResult struct {
@@ -333,7 +331,7 @@ func (r *Resolver) WithCredentials(credentials CredentialStore) *Resolver {
 
 func NewHTTPClient() *Client {
 	debug := strings.EqualFold(os.Getenv("ATRYUM_MCP_DEBUG"), "1") || strings.EqualFold(os.Getenv("ATRYUM_MCP_DEBUG"), "true")
-	return &Client{httpClient: &http.Client{}, debug: debug, sessionInitLocks: make(map[string]*sync.Mutex), sessions: make(map[string]string), sessionProtocols: make(map[string]string), standaloneStreams: make(map[string]*standaloneStream)}
+	return &Client{httpClient: &http.Client{}, debug: debug, sessionInitLocks: make(map[string]*sync.Mutex), sessions: make(map[string]string), sessionProtocols: make(map[string]string), standaloneStreams: make(map[standaloneStreamKey]*standaloneStream)}
 }
 
 func (r *Resolver) Resolve(name string) (Upstream, error) {
@@ -1667,8 +1665,12 @@ func writeRPC(w interface{ Write([]byte) (int, error) }, id int64, method string
 // request (which also carries an id) could be misread as the answer to our
 // own call, since it was indistinguishable from a response by that check.
 func readRPC(reader *bufio.Reader, expectedID json.RawMessage) (rpcResponse, error) {
+	return readRPCWithLimit(reader, expectedID, defaultStreamMaxMessageBytes)
+}
+
+func readRPCWithLimit(reader *bufio.Reader, expectedID json.RawMessage, maxMessageBytes int) (rpcResponse, error) {
 	for {
-		line, err := reader.ReadBytes('\n')
+		line, err := readLineLimited(reader, maxMessageBytes)
 		if err != nil {
 			return rpcResponse{}, err
 		}
@@ -1684,6 +1686,26 @@ func readRPC(reader *bufio.Reader, expectedID json.RawMessage) (rpcResponse, err
 			continue
 		}
 		return resp, nil
+	}
+}
+
+func readLineLimited(reader *bufio.Reader, maxBytes int) ([]byte, error) {
+	if maxBytes <= 0 {
+		maxBytes = defaultStreamMaxMessageBytes
+	}
+	line := make([]byte, 0, min(maxBytes, 64*1024))
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(fragment) > maxBytes-len(line) {
+			return nil, ErrStreamMessageTooLarge
+		}
+		line = append(line, fragment...)
+		if err == nil {
+			return line, nil
+		}
+		if err != bufio.ErrBufferFull {
+			return nil, err
+		}
 	}
 }
 

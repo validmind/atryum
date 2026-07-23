@@ -268,9 +268,10 @@ func runServer(args []string, o options) error {
 	}
 	service.SetStreamOptions(
 		mcp.StreamOptions{
-			HeaderTimeout: time.Duration(streamHeaderTimeoutSeconds) * time.Second,
-			IdleTimeout:   time.Duration(cfg.Defaults.StreamIdleTimeoutSeconds) * time.Second,
-			MaxDuration:   time.Duration(cfg.Defaults.StreamMaxDurationSeconds) * time.Second,
+			HeaderTimeout:   time.Duration(streamHeaderTimeoutSeconds) * time.Second,
+			IdleTimeout:     time.Duration(cfg.Defaults.StreamIdleTimeoutSeconds) * time.Second,
+			MaxDuration:     time.Duration(cfg.Defaults.StreamMaxDurationSeconds) * time.Second,
+			MaxMessageBytes: cfg.Defaults.StreamMaxMessageBytes,
 		},
 		invocation.StreamAuditLimits{
 			MaxEvents:     cfg.Defaults.StreamAuditMaxEvents,

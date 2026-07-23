@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -62,7 +64,7 @@ func (c *Client) doHTTPToolCallStream(ctx context.Context, upstream Upstream, bo
 
 	if !strings.Contains(strings.ToLower(h.contentType), "text/event-stream") {
 		defer resp.Body.Close()
-		bodyBytes, err := io.ReadAll(resp.Body)
+		bodyBytes, err := readAllLimited(resp.Body, opts.maxMessageBytes())
 		if err != nil {
 			if reason := guard.reason(); reason != "" {
 				return streamCallOutcome{}, fmt.Errorf("upstream %q: %s: %w", upstream.Name, reason, ErrStreamTimeout)
@@ -79,7 +81,26 @@ func (c *Client) doHTTPToolCallStream(ctx context.Context, upstream Upstream, bo
 
 	// relaySSEToolCall owns resp.Body because it may replace this response
 	// with one or more resumed GET streams before the terminal response.
-	return c.relaySSEToolCall(resp, sink, progressCh, guard, upstream, h.sessionID)
+	return c.relaySSEToolCall(resp, sink, progressCh, guard, upstream, h.sessionID, opts.maxMessageBytes())
+}
+
+func readAllLimited(r io.Reader, maxBytes int) ([]byte, error) {
+	if maxBytes <= 0 {
+		maxBytes = defaultStreamMaxMessageBytes
+	}
+	const maxInt64 = int64(^uint64(0) >> 1)
+	limit := int64(maxBytes)
+	if limit < maxInt64 {
+		limit++
+	}
+	body, err := io.ReadAll(io.LimitReader(r, limit))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxBytes {
+		return nil, ErrStreamMessageTooLarge
+	}
+	return body, nil
 }
 
 // postStreamMsg is one message pumped from a tools/call POST response by
@@ -108,9 +129,9 @@ type postStreamPump struct {
 	done     chan struct{}
 }
 
-func newPostStreamPump(c *Client, guard *callTimeoutGuard, upstream Upstream, resp *http.Response) *postStreamPump {
+func newPostStreamPump(c *Client, guard *callTimeoutGuard, upstream Upstream, resp *http.Response, maxMessageBytes int) *postStreamPump {
 	p := &postStreamPump{msgs: make(chan postStreamMsg), current: resp, done: make(chan struct{})}
-	go p.run(c, guard, upstream)
+	go p.run(c, guard, upstream, maxMessageBytes)
 	return p
 }
 
@@ -158,11 +179,42 @@ func (p *postStreamPump) send(msg postStreamMsg) {
 	}
 }
 
-func (p *postStreamPump) run(c *Client, guard *callTimeoutGuard, upstream Upstream) {
+const (
+	minSSEReconnectDelay = 200 * time.Millisecond
+	maxSSEReconnectDelay = 30 * time.Second
+)
+
+func sseReconnectJitter(base time.Duration) time.Duration {
+	return base / 5
+}
+
+func sseReconnectDelay(serverDelay time.Duration, attempt int) time.Duration {
+	base := serverDelay
+	if base <= 0 {
+		base = minSSEReconnectDelay
+		for range min(attempt, 8) {
+			if base >= maxSSEReconnectDelay/2 {
+				base = maxSSEReconnectDelay
+				break
+			}
+			base *= 2
+		}
+	}
+	base = max(base, minSSEReconnectDelay)
+	base = min(base, maxSSEReconnectDelay)
+	jitter := sseReconnectJitter(base)
+	if jitter == 0 || base == maxSSEReconnectDelay {
+		return base
+	}
+	return min(base+time.Duration(rand.Int64N(int64(jitter)+1)), maxSSEReconnectDelay)
+}
+
+func (p *postStreamPump) run(c *Client, guard *callTimeoutGuard, upstream Upstream, maxMessageBytes int) {
 	defer close(p.msgs)
-	reader := newSSEEventReader(p.current.Body)
+	reader := newSSEEventReaderWithLimit(p.current.Body, maxMessageBytes)
 	lastEventID := ""
 	retryDelay := time.Duration(0)
+	reconnectAttempt := 0
 	// resumedFrom holds, after a resume, the cursor id the Last-Event-ID
 	// header carried. Replay semantics are exclusive of the cursor, but the
 	// classic server off-by-one replays it inclusively — without this guard
@@ -191,7 +243,9 @@ func (p *postStreamPump) run(c *Client, guard *callTimeoutGuard, upstream Upstre
 				p.send(postStreamMsg{err: fmt.Errorf("upstream %q closed the stream without a JSON-RPC response or resumable event id", upstream.Name)})
 				return
 			}
-			if err := waitForSSEReconnect(guard.ctx, retryDelay); err != nil {
+			delay := sseReconnectDelay(retryDelay, reconnectAttempt)
+			reconnectAttempt++
+			if err := waitForSSEReconnect(guard.ctx, delay); err != nil {
 				if reason := guard.reason(); reason != "" {
 					p.send(postStreamMsg{err: fmt.Errorf("upstream %q %s while waiting to resume: %w", upstream.Name, reason, ErrStreamTimeout)})
 					return
@@ -212,11 +266,12 @@ func (p *postStreamPump) run(c *Client, guard *callTimeoutGuard, upstream Upstre
 				_ = resumed.Body.Close()
 				return
 			}
-			reader = newSSEEventReader(resumed.Body)
+			reader = newSSEEventReaderWithLimit(resumed.Body, maxMessageBytes)
 			resumedFrom = lastEventID
 			continue
 		}
 		guard.resetIdle()
+		reconnectAttempt = 0
 		if evt.HasRetry {
 			retryDelay = evt.Retry
 		}
@@ -241,7 +296,7 @@ func (p *postStreamPump) run(c *Client, guard *callTimeoutGuard, upstream Upstre
 // standalone progress channel, keeping all sink calls on one goroutine. The
 // pump owns the response body, including resumed responses. StreamStarted is
 // withheld only when a zero-event missing-session response will be retried.
-func (c *Client) relaySSEToolCall(resp *http.Response, sink StreamSink, progressCh <-chan StreamEvent, guard *callTimeoutGuard, upstream Upstream, sessionID string) (streamCallOutcome, error) {
+func (c *Client) relaySSEToolCall(resp *http.Response, sink StreamSink, progressCh <-chan StreamEvent, guard *callTimeoutGuard, upstream Upstream, sessionID string, maxMessageBytes int) (streamCallOutcome, error) {
 	expectedID := json.RawMessage([]byte("1"))
 	statusCode := resp.StatusCode
 	relayed := 0
@@ -259,7 +314,7 @@ func (c *Client) relaySSEToolCall(resp *http.Response, sink StreamSink, progress
 		return sink.Event(evt)
 	}
 
-	pump := newPostStreamPump(c, guard, upstream, resp)
+	pump := newPostStreamPump(c, guard, upstream, resp, maxMessageBytes)
 	defer pump.stop()
 
 	for {
@@ -424,20 +479,23 @@ func (c *Client) invokeHTTPStream(ctx context.Context, upstream Upstream, tool s
 	// from either the POST response or the standalone stream.
 	effectiveSink := sink
 	var progressCh chan StreamEvent
-	if rewritten, wireToken, original, ok := c.rewriteProgressToken(merged); ok {
+	var standalone *standaloneStream
+	var standaloneDropped atomic.Int64
+	var wireToken string
+	if rewritten, token, original, ok := c.rewriteProgressToken(merged); ok {
+		wireToken = token
 		merged = rewritten
 		effectiveSink = newCallSink(sink, wireToken, original)
 		progressCh = make(chan StreamEvent, standaloneWaiterEventBuffer)
-		standalone := c.acquireStandaloneStream(upstream)
-		standalone.registerWaiter(wireToken, progressWaiter{events: progressCh})
+		standalone = c.acquireStandaloneStreamWithLimit(upstream, opts.maxMessageBytes())
+		standalone.registerWaiter(wireToken, progressWaiter{events: progressCh, dropped: &standaloneDropped})
 		defer func() {
-			c.releaseStandaloneStream(upstream, standalone)
-			// The POST and standalone connections can finish out of order.
-			// Keep the unique-token waiter briefly so an in-flight progress
-			// message is not dropped after the terminal response arrives.
-			time.AfterFunc(standaloneWaiterGracePeriod, func() {
-				standalone.unregisterWaiter(wireToken)
-			})
+			current := standalone
+			current.unregisterWaiter(wireToken)
+			c.releaseStandaloneStream(current)
+			if statsSink, ok := effectiveSink.(StreamStatsSink); ok {
+				statsSink.StreamStats(StreamStats{StandaloneEventsDropped: standaloneDropped.Load()})
+			}
 		}()
 	}
 
@@ -459,6 +517,12 @@ func (c *Client) invokeHTTPStream(ctx context.Context, upstream Upstream, tool s
 			return c.reinitializeRequiredHTTPSession(initCtx, upstream, outcome.sessionID)
 		}); retryErr != nil {
 			return InvokeResult{}, retryErr
+		}
+		if standalone != nil {
+			standalone.unregisterWaiter(wireToken)
+			c.releaseStandaloneStream(standalone)
+			standalone = c.acquireStandaloneStreamWithLimit(upstream, opts.maxMessageBytes())
+			standalone.registerWaiter(wireToken, progressWaiter{events: progressCh, dropped: &standaloneDropped})
 		}
 		outcome, err = c.doHTTPToolCallStream(ctx, upstream, body, effectiveSink, progressCh, opts)
 		if err != nil {

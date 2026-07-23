@@ -93,6 +93,28 @@ func TestInvokeStreamStdioTerminalOnlyResponseNeverTouchesSink(t *testing.T) {
 	}
 }
 
+func TestInvokeStreamStdioRejectsOversizedMessage(t *testing.T) {
+	script := writeFakeStdioServer(t, ""+
+		"    printf '%0200d\\n' 0\n",
+	)
+
+	client := NewHTTPClient()
+	upstream := Upstream{Name: "fake-stdio", Mode: UpstreamModeStdio, Command: script}
+	_, err := client.InvokeStream(
+		context.Background(),
+		upstream,
+		"demo",
+		map[string]any{},
+		nil,
+		nil,
+		&fakeStreamSink{},
+		StreamOptions{MaxMessageBytes: 128},
+	)
+	if !errors.Is(err, ErrStreamMessageTooLarge) {
+		t.Fatalf("InvokeStream error = %v, want ErrStreamMessageTooLarge", err)
+	}
+}
+
 func TestInvokeStreamStdioTerminalErrorAfterNotification(t *testing.T) {
 	script := writeFakeStdioServer(t, ""+
 		"    printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{\"progress\":1}}'\n"+

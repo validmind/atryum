@@ -3,9 +3,16 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
+
+const defaultStreamMaxMessageBytes = 4 * 1024 * 1024
+
+// ErrStreamMessageTooLarge marks an upstream response whose encoded JSON-RPC
+// message exceeds StreamOptions.MaxMessageBytes.
+var ErrStreamMessageTooLarge = errors.New("stream message exceeds configured byte limit")
 
 // StreamEvent is one intermediate upstream JSON-RPC message, independent of
 // whether HTTP SSE or stdio carried it. It is either a notification (progress,
@@ -21,6 +28,19 @@ type StreamEvent struct {
 	// roots); these are surfaced to the sink for audit only, never relayed
 	// to the agent.
 	ServerRequest bool
+}
+
+// StreamStats contains transport observations that are not themselves
+// relayed JSON-RPC messages.
+type StreamStats struct {
+	StandaloneEventsDropped int64
+}
+
+// StreamStatsSink is an optional extension implemented by sinks that record
+// transport-level statistics. HTTP calls using the standalone progress path
+// call it once before return.
+type StreamStatsSink interface {
+	StreamStats(stats StreamStats)
 }
 
 // StreamSink receives intermediate upstream messages live, as InvokeStream
@@ -54,6 +74,16 @@ type StreamOptions struct {
 	// MaxDuration bounds the complete response-reading phase after HTTP
 	// headers or the stdio handshake. Zero disables the check.
 	MaxDuration time.Duration
+	// MaxMessageBytes bounds one decoded SSE event, one stdio JSON-RPC line,
+	// or one plain JSON response body. Zero uses the safe 4 MiB default.
+	MaxMessageBytes int
+}
+
+func (o StreamOptions) maxMessageBytes() int {
+	if o.MaxMessageBytes > 0 {
+		return o.MaxMessageBytes
+	}
+	return defaultStreamMaxMessageBytes
 }
 
 // InvokeStream behaves like Invoke while also relaying intermediate JSON-RPC
