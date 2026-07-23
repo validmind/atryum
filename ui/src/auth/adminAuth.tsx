@@ -311,7 +311,11 @@ export const AdminAuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const signOut = useCallback(async () => {
     if (activeManager) {
-      await activeManager.removeUser();
+      try {
+        await activeManager.removeUser();
+      } catch {
+        console.debug('[admin-auth] failed to remove stored user during sign out');
+      }
     }
     activeUser = null;
     setUser(null);
