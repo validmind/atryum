@@ -90,6 +90,8 @@ export interface Invocation {
   approval?: InvocationApproval | null;
   request_id?: string | null;
   matched_rule_id?: string | null;
+  /** Set when an approved plan's pass auto-approved this invocation. */
+  plan_id?: string | null;
   agent_id?: string | null;
   summary?: string;
   agent_client_name?: string | null;
@@ -406,6 +408,120 @@ export const rulesApi = {
   },
 };
 
+// ─── Plans ────────────────────────────────────────────────────────────────────
+
+export type PlanStatus =
+  | 'received'
+  | 'pending_approval'
+  | 'approved'
+  | 'denied'
+  | 'needs_revision'
+  | 'superseded'
+  | 'completed'
+  | 'expired'
+  | 'cancelled';
+
+export interface PlanAction {
+  tool: string;
+  server?: string;
+  description?: string;
+  input_summary?: string;
+}
+
+export interface Plan {
+  plan_id: string;
+  agent_id: string;
+  source?: string;
+  thread_id?: string;
+  goal: string;
+  rationale?: string;
+  actions: PlanAction[];
+  status: PlanStatus;
+  approval?: InvocationApproval | null;
+  matched_rule_id?: string | null;
+  feedback?: string;
+  parent_plan_id?: string | null;
+  revision: number;
+  ttl_seconds: number;
+  client_name?: string | null;
+  client_version?: string | null;
+  expires_at?: string | null;
+  submitted_at: string;
+  decided_at?: string | null;
+}
+
+export interface PlanDetail extends Plan {
+  revisions: Plan[];
+}
+
+export interface PlanFilters {
+  status?: string;
+  agent_id?: string;
+  offset?: number;
+  limit?: number;
+}
+
+export const plansApi = {
+  list: async (
+    filters: PlanFilters = {},
+  ): Promise<{ items: Plan[]; total: number; offset: number; limit: number }> => {
+    const params = new URLSearchParams();
+    if (filters.status) params.set('status', filters.status);
+    if (filters.agent_id) params.set('agent_id', filters.agent_id);
+    if (filters.offset != null) params.set('offset', String(filters.offset));
+    params.set('limit', String(filters.limit ?? 50));
+    const { data } = await atryumApi.get(`/api/v1/admin/plans?${params.toString()}`);
+    return data;
+  },
+
+  detail: async (id: string): Promise<PlanDetail> => {
+    const { data } = await atryumApi.get(
+      `/api/v1/admin/plans/${encodeURIComponent(id)}`,
+    );
+    return data;
+  },
+
+  events: async (id: string): Promise<{ items: InvocationEvent[] }> => {
+    const { data } = await atryumApi.get(
+      `/api/v1/admin/plans/${encodeURIComponent(id)}/events?limit=200`,
+    );
+    return data;
+  },
+
+  approve: async (id: string, ttlSeconds?: number): Promise<Plan> => {
+    const body = ttlSeconds ? { ttl_seconds: ttlSeconds } : {};
+    const { data } = await atryumApi.post(
+      `/api/v1/admin/plans/${encodeURIComponent(id)}/approve`,
+      body,
+    );
+    return data;
+  },
+
+  deny: async (id: string, message?: string): Promise<Plan> => {
+    const body = message ? { message } : {};
+    const { data } = await atryumApi.post(
+      `/api/v1/admin/plans/${encodeURIComponent(id)}/deny`,
+      body,
+    );
+    return data;
+  },
+
+  revise: async (id: string, feedback: string): Promise<Plan> => {
+    const { data } = await atryumApi.post(
+      `/api/v1/admin/plans/${encodeURIComponent(id)}/revise`,
+      { feedback },
+    );
+    return data;
+  },
+
+  expire: async (id: string): Promise<Plan> => {
+    const { data } = await atryumApi.post(
+      `/api/v1/admin/plans/${encodeURIComponent(id)}/expire`,
+    );
+    return data;
+  },
+};
+
 // ─── Agents ───────────────────────────────────────────────────────────────────
 
 export interface Agent {
@@ -422,6 +538,19 @@ export interface Agent {
   charter?: string;
   /** Free-form tags. Atryum-native and editable for all agents (including synced ones). */
   tags: string[];
+  /** ValidMind inventory model cuid; present only for synced agents. */
+  vm_cuid?: string;
+}
+
+export interface CharterSegment {
+  kind: string;
+  header: string;
+  text: string;
+}
+
+export interface CharterPreview {
+  segments: CharterSegment[];
+  combined: string;
 }
 
 export interface AgentCreateInput {
@@ -507,6 +636,13 @@ export const agentsApi = {
 
   sync: async (): Promise<void> => {
     await atryumApi.post('/api/v1/admin/agents/sync');
+  },
+
+  getAgentCharterPreview: async (id: string): Promise<CharterPreview> => {
+    const { data } = await atryumApi.get(
+      `/api/v1/admin/agents/${encodeURIComponent(id)}/charter-preview`,
+    );
+    return data;
   },
 
   managedAgentAccounts: async (): Promise<{ items: ClaudeManagedAgentAccount[] }> => {

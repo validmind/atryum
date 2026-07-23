@@ -14,9 +14,9 @@ import (
 
 	jwt "github.com/golang-jwt/jwt/v5"
 
-	"atryum/internal/auth"
-	"atryum/internal/invocation"
-	"atryum/internal/store"
+	"github.com/validmind/atryum/internal/auth"
+	"github.com/validmind/atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/store"
 )
 
 // jwksHandler serves a minimal JWKS document for the given RSA public key so
@@ -180,6 +180,37 @@ func TestMCPAcceptsValidTokenAndPlumbsAgentID(t *testing.T) {
 	id := auth.AgentIDFromContext(svc.invokedCtx)
 	if id != "agent-007" {
 		t.Fatalf("expected agent_id agent-007 on invoke ctx, got %q", id)
+	}
+}
+
+func TestMCPPlanGetRejectsAnotherAuthenticatedAgentsPlan(t *testing.T) {
+	rig := newAuthTestRig(t)
+	now := time.Now().UTC()
+	svc := &stubService{plan: invocation.Plan{
+		PlanID:      "plan_other_agent",
+		AgentID:     "agent-other",
+		Goal:        "sensitive plan",
+		Actions:     []invocation.PlanAction{{Tool: "Bash"}},
+		Status:      invocation.PlanStatusApproved,
+		Revision:    1,
+		TTLSeconds:  3600,
+		SubmittedAt: now,
+	}}
+	h := newAuthedHandler(t, svc, rig)
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"atryum.plan.get","arguments":{"plan_id":"plan_other_agent"}}}`))
+	req.Header.Set("Authorization", "Bearer "+rig.sign(t, defaultClaims())) // agent-007
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected JSON-RPC response, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"plan not found"`) {
+		t.Fatalf("expected ownership error, got %s", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), `"sensitive plan"`) {
+		t.Fatalf("response leaked another agent's plan: %s", w.Body.String())
 	}
 }
 

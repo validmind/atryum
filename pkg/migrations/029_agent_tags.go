@@ -1,9 +1,9 @@
 package migrations
 
-func migration027() Definition {
+func migration029() Definition {
 	return Definition{
-		Version: 27,
-		Name:    "027_agent_tags",
+		Version: 29,
+		Name:    "029_agent_tags",
 		Steps: []Step{
 			// AddColumnIfMissing (not a bare ADD COLUMN): migrations on this
 			// shared sequence have been renumbered by rebases before, so a

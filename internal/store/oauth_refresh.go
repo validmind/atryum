@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"atryum/internal/mcp"
+	"github.com/validmind/atryum/internal/mcp"
 )
 
 const defaultOAuthRefreshSkew = 2 * time.Minute

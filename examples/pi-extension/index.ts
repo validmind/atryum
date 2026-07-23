@@ -26,7 +26,11 @@ const envMs = (name: string, fallback: number) => {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 };
 const TOKEN_REFRESH_SKEW_MS = envMs("ATRYUM_TOKEN_REFRESH_SKEW_MS", 60000);
-const TOKEN_COMMAND_TIMEOUT_MS = envMs("ATRYUM_TOKEN_COMMAND_TIMEOUT_MS", 10000);
+const TOKEN_COMMAND_TIMEOUT_MS = envMs(
+  "ATRYUM_TOKEN_COMMAND_TIMEOUT_MS",
+  10000,
+);
+const PLAN_SUPPORT_CACHE_TTL_MS = 30000;
 const STATE_DIR =
   process.env.ATRYUM_STATE_DIR ||
   join(homedir(), ".atryum", "pi-extension-state");
@@ -224,9 +228,21 @@ type InvocationResponse = {
   error?: unknown;
 };
 
+type AgentRulesResponse = {
+  plan_submission?: {
+    enabled?: boolean;
+    endpoint?: string;
+    message?: string;
+  };
+};
 type ToolInput = Record<string, unknown>;
 
 const invocationMap = new Map<string, string>();
+type PlanSupportCacheEntry = {
+  promise: Promise<AgentRulesResponse | undefined>;
+  expiresAt: number;
+};
+const planSupportCache = new Map<string, PlanSupportCacheEntry>();
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -250,6 +266,59 @@ function rulesEndpointHint(tool: string): string {
   url.searchParams.set("tool", tool);
   if (AGENT_ID && !ACCESS_TOKEN) url.searchParams.set("agent_id", AGENT_ID);
   return `atryum: to see the approval rules that apply to this call, GET ${url.toString()} (advisory only; Atryum re-checks policy during the actual gated call).`;
+}
+function agentRulesURL(tool?: string): string {
+  const url = new URL("/api/v1/agent/rules", API);
+  url.searchParams.set("source", SOURCE);
+  if (tool) url.searchParams.set("tool", tool);
+  if (AGENT_ID) url.searchParams.set("agent_id", AGENT_ID);
+  return url.toString();
+}
+
+async function loadAgentRules(
+  tool?: string,
+): Promise<AgentRulesResponse | undefined> {
+  const res = await fetch(agentRulesURL(tool), {
+    headers: await atryumHeaders(),
+  });
+  if (!res.ok) return undefined;
+  return (await res.json()) as AgentRulesResponse;
+}
+
+function cachedAgentRules(
+  tool?: string,
+): Promise<AgentRulesResponse | undefined> {
+  const key = tool || "";
+  const cached = planSupportCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.promise;
+
+  let entry: PlanSupportCacheEntry;
+  const promise = loadAgentRules(tool).then(
+    (rules) => {
+      if (planSupportCache.get(key) === entry) {
+        if (rules) entry.expiresAt = Date.now() + PLAN_SUPPORT_CACHE_TTL_MS;
+        else planSupportCache.delete(key);
+      }
+      return rules;
+    },
+    () => {
+      if (planSupportCache.get(key) === entry) planSupportCache.delete(key);
+      return undefined;
+    },
+  );
+  entry = { promise, expiresAt: Number.POSITIVE_INFINITY };
+  planSupportCache.set(key, entry);
+  return promise;
+}
+
+async function planHint(tool?: string): Promise<string> {
+  const rules = await cachedAgentRules(tool);
+  if (!rules?.plan_submission?.enabled) return "";
+  // The server-authored message is the single source of truth for the plan
+  // workflow (including the source-scoped submission endpoint), so guidance
+  // stays current when plan semantics change server-side.
+  const message = (rules.plan_submission.message || "").trim();
+  return message ? ` ${message}` : "";
 }
 
 // Pi's own session identifier, sent as client_session_id (and thread_id) on
@@ -343,6 +412,30 @@ async function patchExecution(
 }
 
 export default function (pi: ExtensionAPI) {
+  // session_start also fires for resumed, forked, and reloaded sessions. Pi
+  // permits context injection immediately before the first agent turn, so arm
+  // it here and consume it exactly once in before_agent_start. Start armed as
+  // a fallback for runtimes that load an extension after session_start.
+  let planGuidancePending = true;
+
+  pi.on("session_start", async () => {
+    planGuidancePending = true;
+  });
+
+  pi.on("before_agent_start", async () => {
+    if (!planGuidancePending) return;
+    planGuidancePending = false;
+    const guidance = (await planHint()).trim();
+    if (!guidance) return;
+    return {
+      message: {
+        customType: "atryum-plan-guidance",
+        content: guidance,
+        display: false,
+      },
+    };
+  });
+
   pi.on("tool_call", async (event, ctx) => {
     try {
       const input = (event.input || {}) as ToolInput;
@@ -379,7 +472,7 @@ export default function (pi: ExtensionAPI) {
         : "";
       return {
         block: true,
-        reason: `atryum: tool call '${event.toolName}' was ${decided.status} by reviewer.${reviewerReason} ${rulesEndpointHint(event.toolName)}`,
+        reason: `atryum: tool call '${event.toolName}' was ${decided.status} by reviewer.${reviewerReason} ${rulesEndpointHint(event.toolName)}${await planHint(event.toolName)}`,
       };
     } catch (err) {
       ctx.ui.setStatus("atryum", "gate failed");

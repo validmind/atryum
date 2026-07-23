@@ -300,6 +300,12 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
 	const updateMutation = useUpdateAgent();
 	const deleteMutation = useDeleteAgent();
 	const { data: agentsData } = useAgents();
+	const previewDisclosure = useDisclosure();
+	const charterPreviewQuery = useQuery(
+		['agent-charter-preview', agent.cuid],
+		() => agentsApi.getAgentCharterPreview(agent.cuid),
+		{ enabled: previewDisclosure.isOpen, refetchOnWindowFocus: false, retry: false },
+	);
 	const accountsQuery = useQuery(
     ['claude-managed-agent-accounts'],
     () => agentsApi.managedAgentAccounts(),
@@ -385,6 +391,7 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
   const isBusy = updateMutation.isLoading || deleteMutation.isLoading;
 
   return (
+    <>
     <Modal size="xl" isCentered isOpen={isOpen} onClose={onClose}>
       <ModalOverlay />
       <ModalContent>
@@ -434,14 +441,19 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
             <Divider />
 
             <FormControl>
-              <FormLabel fontSize="sm">
-                Charter
-                {agent.synced && (
-                  <Text as="span" fontSize="xs" color="text.subtle" fontWeight="normal" ml={2}>
-                    (read-only — managed by ValidMind sync)
-                  </Text>
-                )}
-              </FormLabel>
+              <Flex align="center" justify="space-between">
+                <FormLabel fontSize="sm" mb={0}>
+                  Charter
+                  {agent.synced && (
+                    <Text as="span" fontSize="xs" color="text.subtle" fontWeight="normal" ml={2}>
+                      (read-only — managed by ValidMind sync)
+                    </Text>
+                  )}
+                </FormLabel>
+                <Button size="xs" variant="outline" onClick={previewDisclosure.onOpen}>
+                  Preview charter
+                </Button>
+              </Flex>
               <Textarea
                 size="sm"
                 value={charter}
@@ -663,6 +675,62 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
         </ModalFooter>
       </ModalContent>
     </Modal>
+
+    <Modal size="xl" isCentered isOpen={previewDisclosure.isOpen} onClose={previewDisclosure.onClose}>
+      <ModalOverlay />
+      <ModalContent>
+        <ModalHeader>Charter preview — {agent.name}</ModalHeader>
+        <ModalCloseButton />
+        <ModalBody>
+          {charterPreviewQuery.isLoading ? (
+            <Flex align="center" justify="center" py={8}>
+              <Spinner size="md" />
+            </Flex>
+          ) : charterPreviewQuery.isError ? (
+            <Alert status="error" borderRadius="md" py={2}>
+              <AlertIcon />
+              <AlertDescription fontSize="sm">
+                {apiErrorMessage(charterPreviewQuery.error, 'Failed to load charter preview.')}
+              </AlertDescription>
+            </Alert>
+          ) : !charterPreviewQuery.data || charterPreviewQuery.data.segments.length === 0 ? (
+            <Text fontSize="sm" color="text.subtle" py={4}>
+              No charter configured for this agent.
+            </Text>
+          ) : (
+            <VStack align="stretch" gap={4}>
+              {charterPreviewQuery.data.segments.map((segment, idx) => (
+                <Box key={`${segment.header}-${idx}`}>
+                  <HStack mb={1}>
+                    <Badge colorScheme="purple" textTransform="none">
+                      {segment.header || 'Charter'}
+                    </Badge>
+                  </HStack>
+                  <Box
+                    as="pre"
+                    fontFamily="mono"
+                    fontSize="xs"
+                    whiteSpace="pre-wrap"
+                    borderWidth="1px"
+                    borderRadius="md"
+                    p={3}
+                    bg="bg.subtle"
+                  >
+                    {segment.text}
+                  </Box>
+                </Box>
+              ))}
+            </VStack>
+          )}
+        </ModalBody>
+        <ModalFooter>
+          <Button variant="ghost" size="sm" onClick={previewDisclosure.onClose}>
+            Close
+          </Button>
+        </ModalFooter>
+      </ModalContent>
+    </Modal>
+    </>
   );
 };
 
