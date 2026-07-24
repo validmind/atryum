@@ -85,7 +85,7 @@ start_atryum() {
 }
 
 seed_auto_approve_rules() {
-  log "Seeding catch-all auto_approve rule via admin API"
+  log "Seeding catch-all auto_approve rule via operator API"
   local payload
   payload='{
     "action": "auto_approve",

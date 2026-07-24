@@ -2167,7 +2167,7 @@ func TestExternalInvocationPatchErrorStatusMapping(t *testing.T) {
 
 func TestAddExtraRoutesMountsRoutesOutsideAuthChains(t *testing.T) {
 	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
-	// A configured validator protects the normal runtime and admin routes;
+	// A configured validator protects the normal runtime and privileged routes;
 	// extra routes are registered outside those middleware chains.
 	h.SetAuthValidator(&auth.Validator{})
 	h.AddExtraRoutes(func(mux *http.ServeMux) {

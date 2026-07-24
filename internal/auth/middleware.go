@@ -74,8 +74,8 @@ func MiddlewareWithOptions(v *Validator, resourceMetadataPath string, opts Middl
 	}
 }
 
-// AdminMiddleware returns an http middleware that authenticates admin API
-// requests. It accepts two credential paths:
+// AdminMiddleware returns an HTTP middleware that authenticates privileged
+// review and operator API requests. It accepts two credential paths:
 //
 //  1. Machine-key path: when the request carries matching X-API-Key and
 //     X-API-Secret headers (checked against apiKeyCfg), the request is
@@ -96,7 +96,7 @@ func AdminMiddleware(v *Validator, apiKeyCfg APIKeyConfig, opts MiddlewareOption
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Machine-key fast path: if the caller sends matching API key/secret
-			// headers, admit as a trusted admin without requiring a JWT.
+			// headers, admit as a trusted machine caller without requiring a JWT.
 			if apiKeyCfg.Enabled() {
 				gotKey := strings.TrimSpace(r.Header.Get(apiKeyHeader))
 				gotSecret := strings.TrimSpace(r.Header.Get(apiSecretHeader))
@@ -118,7 +118,7 @@ func AdminMiddleware(v *Validator, apiKeyCfg APIKeyConfig, opts MiddlewareOption
 				}
 			}
 
-			// Bearer-token path for human admin UI logins.
+			// Bearer-token path for human UI logins.
 			header := strings.TrimSpace(r.Header.Get("Authorization"))
 			if header == "" {
 				logAuthFailure(r, "invalid_token", "missing bearer token", "")

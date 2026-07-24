@@ -84,9 +84,9 @@ When inbound auth is configured, all agent runtime surfaces require OAuth bearer
 
 The Settings UI can also select a default ValidMind agent record. AI Evaluation uses that record when an incoming runtime agent ID is missing or does not map to a synced agent, allowing local no-auth runs to evaluate against a known charter without adding TOML.
 
-## Admin authentication
+## UI and privileged API authentication
 
-Admin UI and admin API authentication is optional. When no `[[auth]]` block has `admin_enabled = true`, the admin UI/API behave as before and remain open. When one or more blocks are admin-enabled, Atryum requires a browser OIDC access token for admin API calls and accepts tokens from any admin-enabled issuer. The upstream MCP OAuth callback at `/api/v1/mcp/oauth/callback` remains public so external identity providers can complete browser redirects.
+Authentication for the UI and the review/operator APIs is optional. When no `[[auth]]` block has `admin_enabled = true`, the UI and those privileged APIs remain open. When one or more blocks are admin-enabled, Atryum requires a browser OIDC access token for review/operator API calls and accepts tokens from any admin-enabled issuer. The upstream MCP OAuth callback at `/api/v1/mcp/oauth/callback` remains public so external identity providers can complete browser redirects.
 
 Admin auth reuses the same issuer/audience/JWKS validation as agent auth, then checks the admin claim configured on the matched `[[auth]]` block. This means different IdPs can use different admin claims at the same time.
 
@@ -139,19 +139,19 @@ Public (auth-protected when `[[auth]]` is configured):
 
 Review workflow:
 
-- `/api/v1/review/invocations`, `/{id}`, `/{id}/events`, `/{id}/approve`, `/{id}/deny`, `/stream` (SSE)
+- `/api/v1/review/invocations`, `/{id}`, `/{id}/events`, `/{id}/approve`, `/{id}/deny`, `/{id}/summarize`, `/stream` (SSE)
 - `/api/v1/plans`, `/{id}`, `/{id}/events`, `/{id}/approve`, `/{id}/deny`, `/{id}/revise`, `/{id}/expire`, `/stream` (SSE)
 
 Operator APIs:
 
-- `/api/v1/servers`, `/{name}`, `/{name}/test`, `/{name}/connect`, `/{name}/connect/status`
+- `/api/v1/servers`, `/{name}`, `/{name}/test`, `/{name}/tools`, `/{name}/connect`, `/{name}/connect/status`
 - `/api/v1/rules`, `/{id}` (including reorder/move)
-- `/api/v1/agents`, `/{id}`
+- `/api/v1/agents`, `/{id}`, `/sync`, `/{id}/charter-preview`
 - `/api/v1/model-configs`, `/api/v1/llm-configs`, `/api/v1/llm-configs/{id}`
 - `/api/v1/settings`, `/api/v1/policy`
 - `/api/v1/vm/organizations`, `/api/v1/vm/record-types`, `/api/v1/vm/custom-fields`
-- `/api/v1/managed-agents/accounts`, `/managed-agents/agents` — discover configured Anthropic accounts and Claude agents for UI linking
-- `/api/v1/managed-agents/sessions` — manually register a Claude Managed Agents session for the events bridge to watch; kept as a debugging escape hatch
+- `/api/v1/managed-agents/accounts`, `/api/v1/managed-agents/agents` — discover configured Anthropic accounts and Claude agents for UI linking
+- `/api/v1/managed-agents/sessions`, `/{session_id}` — list, register, clear, or delete Claude Managed Agents sessions watched by the events bridge; manual registration remains a debugging escape hatch
 - `/api/v1/mcp/oauth/callback` — public OAuth callback for upstream MCP server connect flows
 - `/api/v1/auth/config` — public, non-secret OIDC metadata for the UI login screen
 

@@ -395,44 +395,64 @@ func TestUnprotectedRoutesRemainOpenWhenAuthEnabled(t *testing.T) {
 	}
 }
 
-func TestReviewRoutesRequireAdminTokenWhenAdminAuthEnabled(t *testing.T) {
+func TestPrivilegedRoutesAcceptAdminTokenAndMachineCredentials(t *testing.T) {
 	rig := newAuthTestRig(t, func(c *auth.Config) {
 		c.AdminEnabled = true
 		c.AdminClientID = "admin-client"
 		c.AdminClaim = "atryum_admin"
 		c.AdminClaimValue = "true"
 	})
-	h := newAuthedHandler(t, &stubService{}, rig)
+	handler := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	handler.SetAuthValidator(rig.v)
+	handler.SetAPIKeyAuth(auth.APIKeyConfig{Key: "vm-key", Secret: "vm-secret"})
+	h := handler.Routes()
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/review/invocations", nil)
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401 without bearer, got %d body=%s", w.Code, w.Body.String())
+	paths := []string{
+		"/api/v1/review/invocations",
+		"/api/v1/servers",
 	}
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("expected 401 without credentials, got %d body=%s", w.Code, w.Body.String())
+			}
 
-	claims := defaultClaims()
-	tok := rig.sign(t, claims)
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/review/invocations", nil)
-	req.Header.Set("Authorization", "Bearer "+tok)
-	w = httptest.NewRecorder()
-	h.ServeHTTP(w, req)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 for non-admin token, got %d body=%s", w.Code, w.Body.String())
-	}
+			claims := defaultClaims()
+			tok := rig.sign(t, claims)
+			req = httptest.NewRequest(http.MethodGet, path, nil)
+			req.Header.Set("Authorization", "Bearer "+tok)
+			w = httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("expected 403 for non-admin token, got %d body=%s", w.Code, w.Body.String())
+			}
 
-	claims["atryum_admin"] = true
-	tok = rig.sign(t, claims)
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/review/invocations", nil)
-	req.Header.Set("Authorization", "Bearer "+tok)
-	w = httptest.NewRecorder()
-	h.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 for admin token, got %d body=%s", w.Code, w.Body.String())
+			claims["atryum_admin"] = true
+			tok = rig.sign(t, claims)
+			req = httptest.NewRequest(http.MethodGet, path, nil)
+			req.Header.Set("Authorization", "Bearer "+tok)
+			w = httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200 for admin token, got %d body=%s", w.Code, w.Body.String())
+			}
+
+			req = httptest.NewRequest(http.MethodGet, path, nil)
+			req.Header.Set("X-API-Key", "vm-key")
+			req.Header.Set("X-API-Secret", "vm-secret")
+			w = httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200 for machine credentials, got %d body=%s", w.Code, w.Body.String())
+			}
+		})
 	}
 }
 
-func TestRenamedOperatorRoutesAreRegisteredAndProtected(t *testing.T) {
+func TestRenamedPrivilegedRoutesAreRegisteredAndProtected(t *testing.T) {
 	rig := newAuthTestRig(t, func(c *auth.Config) {
 		c.AdminEnabled = true
 		c.AdminClientID = "admin-client"
@@ -450,8 +470,12 @@ func TestRenamedOperatorRoutesAreRegisteredAndProtected(t *testing.T) {
 		"/api/v1/llm-configs",
 		"/api/v1/settings",
 		"/api/v1/vm/organizations",
+		"/api/v1/vm/record-types",
+		"/api/v1/vm/custom-fields",
 		"/api/v1/policy",
 		"/api/v1/managed-agents/accounts",
+		"/api/v1/managed-agents/agents",
+		"/api/v1/managed-agents/sessions",
 	} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		w := httptest.NewRecorder()
@@ -555,8 +579,13 @@ func TestRenamedRoutesDoNotKeepLegacyAliases(t *testing.T) {
 		"/api/v1/admin/llm-configs",
 		"/api/v1/admin/settings",
 		"/api/v1/admin/vm/organizations",
+		"/api/v1/admin/vm/record-types",
+		"/api/v1/admin/vm/custom-fields",
 		"/api/v1/admin/policy",
 		"/api/v1/admin/managed-agents/accounts",
+		"/api/v1/admin/managed-agents/agents",
+		"/api/v1/admin/managed-agents/sessions",
+		"/api/v1/admin/managed-agents/sessions/session_123",
 		"/api/v1/admin-auth/config",
 	} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)

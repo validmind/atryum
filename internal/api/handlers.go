@@ -840,8 +840,9 @@ func (h *Handler) SetManagedAgentBindings(repo managedAgentBindingsRepo) {
 	h.managedAgentBindings = repo
 }
 
-// SetAPIKeyAuth installs the static api-key/secret pair used to protect the
-// read-only invocation reporting endpoints.
+// SetAPIKeyAuth installs the static API-key/secret pair accepted by read-only
+// reporting endpoints and as a trusted machine credential for privileged
+// review and operator endpoints.
 func (h *Handler) SetAPIKeyAuth(cfg auth.APIKeyConfig) {
 	h.apiKeyAuth = cfg
 }
@@ -897,7 +898,7 @@ func (h *Handler) Routes() http.Handler {
 	}
 	mcpHandler := h.agentRuntimeHandler(http.HandlerFunc(h.invokeUpstream))
 	operatorAuthMW := auth.AdminMiddleware(h.authValidator, h.apiKeyAuth, auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})
-	// Review and operator routes currently share Atryum's legacy admin-token
+	// Review and operator routes currently share Atryum's privileged API
 	// middleware. Keeping separate wrappers makes their authorization roles
 	// explicit and lets embedders split the capabilities without renaming the
 	// route layer again.

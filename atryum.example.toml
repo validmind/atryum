@@ -95,10 +95,12 @@ api_key = ""          # Anthropic API key created in that workspace
 # values. The credentials grant access to:
 #   - Read-only invocation reporting endpoints (GET /invocations/{agent_id},
 #     GET /agent_ids, GET /models/{cuid})
-#   - Operator API endpoints (/api/v1/*), as a trusted machine-caller path
-#     in addition to the OAuth Bearer-token path used by the human admin UI
+#   - Review and operator API endpoints listed in the README, as a trusted
+#     machine-caller path in addition to the OAuth Bearer-token path used by
+#     the human UI
 # When either field is empty, the reporting endpoints refuse every request with
-# 503. Admin endpoints fall through to Bearer-token validation instead.
+# 503. Review and operator endpoints fall through to Bearer-token validation
+# instead.
 [api_key]
 key = ""
 secret = ""

@@ -7,15 +7,15 @@ the [README](../README.md).
 ## System context
 
 Atryum is a Go service that mediates tool calls. It exposes runtime endpoints to agent
-harnesses, an MCP-compatible proxy, and an admin API/UI. All ingress paths share the
-same invocation service, rule evaluation, and audit store.
+harnesses, an MCP-compatible proxy, and review/operator APIs used by its UI. All ingress
+paths share the same invocation service, rule evaluation, and audit store.
 
 ```mermaid
 flowchart LR
     Hook[Agent harness or hook]
     MCP[MCP client]
     Claude[Claude Managed Agents API]
-    Admin[Admin UI or API client]
+    Operator[Reviewer, operator, or UI client]
 
     subgraph Atryum[Atryum process]
         API[HTTP and MCP handlers]
@@ -28,7 +28,7 @@ flowchart LR
 
     Hook -->|submit, poll, report outcome| API
     MCP -->|MCP JSON-RPC| API
-    Admin -->|review and configuration| API
+    Operator -->|review and configuration| API
     Watcher <-->|events and confirmations| Claude
     API --> Service
     Watcher --> Service
@@ -69,7 +69,8 @@ or audit records are evaluated.
 | `internal/managedagents` | Anthropic session discovery, event replay, confirmation delivery | Independent rule evaluation |
 
 The React application in `ui/` is compiled into `internal/api/web/` for the production
-binary. During development it can run separately, but it still uses the same admin API.
+binary. During development it can run separately, but it still uses the same review and
+operator APIs.
 
 ## Decision pipeline
 
@@ -147,7 +148,7 @@ sequenceDiagram
     participant API as API or MCP handler
     participant Service as invocation.Service
     participant Store as Invocation and event stores
-    participant Admin as Admin API or UI
+    participant Operator as Reviewer, operator, or UI
     participant MCP as Upstream MCP server
 
     Caller->>API: Invoke tool
@@ -167,7 +168,7 @@ sequenceDiagram
     else human approval
         Service->>Store: Persist pending_approval status and event
         Note over Service: Wait on pendingApprovals invocation channel
-        Admin->>API: Approve or deny
+        Operator->>API: Approve or deny
         API->>Service: Approve or Deny
         Service->>Service: Deliver decision to waiter
         alt approved
@@ -292,7 +293,7 @@ such.
 `atryum.toml` owns process bootstrap concerns: listening, database selection, inbound
 auth, optional external service credentials, default policy, and initial upstreams.
 After the first successful bootstrap, MCP server definitions, rules, agents, evaluator
-settings, and connection state are database-owned and managed through the admin API.
+settings, and connection state are database-owned and managed through the operator APIs.
 
 This separation prevents runtime changes from being overwritten by a restart. In
 particular, `[[upstreams]]` seeds an empty `mcp_servers` table; it is not continuous
@@ -305,7 +306,7 @@ Inbound and upstream authentication are separate trust boundaries:
 - Agent runtime auth validates bearer tokens and places the configured agent identity
   claim in request context. The invocation service uses that trusted identity for rule
   targeting and ownership checks.
-- Admin auth protects the UI and admin API when an auth provider has
+- Privileged API auth protects review and operator APIs when an auth provider has
   `admin_enabled = true` and the configured admin claim is present.
 - Upstream MCP authentication is owned by `internal/mcp/auth_provider`; credentials and
   OAuth tokens are never returned to the agent caller.
