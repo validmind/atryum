@@ -349,6 +349,7 @@ type EvaluateRequest struct {
 	ModelConfigCUID string         `json:"model_config_cuid"`
 	OrgCUID         string         `json:"org_cuid,omitempty"`
 	AgentVMCUID     string         `json:"agent_vm_cuid,omitempty"`
+	AgentTags       []string       `json:"agent_tags"`
 	CharterFieldKey string         `json:"charter_field_key,omitempty"`
 	ServerName      string         `json:"server_name"`
 	ToolName        string         `json:"tool_name"`

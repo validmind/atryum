@@ -729,8 +729,18 @@ func (s *stubAgentsRepo) ListEnabled(context.Context) ([]store.AgentRecord, erro
 	}
 	return out, s.err
 }
-func (s *stubAgentsRepo) Get(context.Context, string) (store.AgentRecord, error) {
-	return store.AgentRecord{}, nil
+func (s *stubAgentsRepo) Get(_ context.Context, id string) (store.AgentRecord, error) {
+	for _, r := range s.records {
+		if r.ID == id {
+			return r, nil
+		}
+	}
+	if len(s.records) == 0 {
+		// Preserve the historical zero-value/no-error default for tests that
+		// construct a stub with no records and don't care about Get's result.
+		return store.AgentRecord{}, nil
+	}
+	return store.AgentRecord{}, sql.ErrNoRows
 }
 func (s *stubAgentsRepo) GetByAgentID(_ context.Context, agentID string) (store.AgentRecord, error) {
 	for _, r := range s.records {
@@ -760,6 +770,9 @@ func (s *stubAgentsRepo) UpdateAgentIDs(context.Context, string, string) error {
 	return nil
 }
 func (s *stubAgentsRepo) UpdateMeta(context.Context, string, string, string, string) error {
+	return nil
+}
+func (s *stubAgentsRepo) UpdateTags(context.Context, string, []string) error {
 	return nil
 }
 func (s *stubAgentsRepo) CheckAgentIDConflict(_ context.Context, excludeID string, agentIDs []string) (string, string, error) {
@@ -2197,4 +2210,82 @@ func TestAddExtraRoutesMountsRoutesOutsideAuthChains(t *testing.T) {
 			t.Fatalf("GET /healthz status = %d, want %d", w.Code, http.StatusOK)
 		}
 	})
+}
+
+func TestAdminAgentCharterPreviewLocalAgentUsesStoredCharter(t *testing.T) {
+	// A manually-created agent: VMOrganizationCUID is empty (the only reliable
+	// "is this VM-synced" signal), even though VMCUID is non-empty (reused as
+	// the agent's own local id — see the create handler). Regression test for
+	// a bug where checking VMCUID instead of VMOrganizationCUID here caused
+	// manually-created agents to 502 against the (absent) backend client.
+	agent := store.AgentRecord{
+		ID:                 "local-agent-1",
+		VMCUID:             "local-agent-1",
+		VMOrganizationCUID: "",
+		VMName:             "Local Test Agent",
+		Charter:            "Never delete production data.",
+	}
+	agents := &stubAgentsRepo{records: []store.AgentRecord{agent}}
+	settings := &stubAgentSyncSettingsRepo{settings: store.AgentSyncSettings{CharterFieldKey: "charter"}}
+	// backendClient is nil: if the handler mistakenly took the VM-synced
+	// branch, it would either nil-deref or 502 — either way the test fails.
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, agents, settings, nil, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/agents/local-agent-1/charter-preview", nil)
+	w := httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Segments []struct {
+			Kind   string `json:"kind"`
+			Header string `json:"header"`
+			Text   string `json:"text"`
+		} `json:"segments"`
+		Combined string `json:"combined"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v (body=%s)", err, w.Body.String())
+	}
+	if len(resp.Segments) != 1 {
+		t.Fatalf("expected exactly one segment (the local charter), got %#v", resp.Segments)
+	}
+	if resp.Segments[0].Text != agent.Charter {
+		t.Fatalf("expected local charter text %q, got %q", agent.Charter, resp.Segments[0].Text)
+	}
+	if resp.Combined != agent.Charter {
+		t.Fatalf("expected combined = local charter text, got %q", resp.Combined)
+	}
+}
+
+func TestAdminAgentCharterPreviewLocalAgentNoCharterYieldsEmptyResult(t *testing.T) {
+	agent := store.AgentRecord{
+		ID:                 "local-agent-2",
+		VMCUID:             "local-agent-2",
+		VMOrganizationCUID: "",
+		VMName:             "Local Test Agent Two",
+	}
+	agents := &stubAgentsRepo{records: []store.AgentRecord{agent}}
+	settings := &stubAgentSyncSettingsRepo{}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, agents, settings, nil, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/agents/local-agent-2/charter-preview", nil)
+	w := httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Segments []any  `json:"segments"`
+		Combined string `json:"combined"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(resp.Segments) != 0 || resp.Combined != "" {
+		t.Fatalf("expected empty result for an agent with no charter, got %#v", resp)
+	}
 }

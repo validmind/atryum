@@ -68,10 +68,11 @@ type AgentLookup interface {
 // AgentRecord is a lightweight copy of store.AgentRecord used within the
 // invocation package to avoid a circular import.
 type AgentRecord struct {
-	ID                 string // local Atryum agent UUID (used for rule matching)
-	VMCUID             string // VM inventory model CUID (used for charter lookup)
-	VMOrganizationCUID string // VM organization CUID (used for cross-tenant validation)
-	Charter            string // governing text for local LLM-as-judge evaluation
+	ID                 string   // local Atryum agent UUID (used for rule matching)
+	VMCUID             string   // VM inventory model CUID (used for charter lookup)
+	VMOrganizationCUID string   // VM organization CUID (used for cross-tenant validation)
+	Charter            string   // governing text for local LLM-as-judge evaluation
+	Tags               []string // Atryum-native tags, forwarded to the evaluate payload
 	// AgentIDs lists every runtime identity string registered to this same
 	// agent record (agents.agent_ids). Different channels reporting the same
 	// logical agent under no-auth (e.g. an MCP client's self-declared
@@ -106,10 +107,11 @@ type SyncSettingsProvider interface {
 // EvaluateRequest mirrors backend.EvaluateRequest so the service package does
 // not import the backend package directly.
 type EvaluateRequest struct {
-	ModelConfigCUID string `json:"model_config_cuid"`
-	OrgCUID         string `json:"org_cuid,omitempty"`
-	AgentVMCUID     string `json:"agent_vm_cuid,omitempty"`
-	CharterFieldKey string `json:"charter_field_key,omitempty"`
+	ModelConfigCUID string   `json:"model_config_cuid"`
+	OrgCUID         string   `json:"org_cuid,omitempty"`
+	AgentVMCUID     string   `json:"agent_vm_cuid,omitempty"`
+	AgentTags       []string `json:"agent_tags"`
+	CharterFieldKey string   `json:"charter_field_key,omitempty"`
 	// AtryumLLMConfigID references a local LLM config for native evaluation.
 	// When set, the local evaluator is used instead of the VM backend.
 	AtryumLLMConfigID string `json:"atryum_llm_config_id,omitempty"`
@@ -703,6 +705,7 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 		resp, err := s.evaluator.EvaluateToolCall(evalCtx, EvaluateRequest{
 			AtryumLLMConfigID: rule.AtryumLLMConfigID,
 			Charter:           agentRec.Charter,
+			AgentTags:         agentRec.Tags,
 			ServerName:        serverName,
 			ToolName:          toolName,
 			ToolArgs:          toolArgs,
@@ -769,6 +772,7 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 		ModelConfigCUID: rule.ModelConfigCUID,
 		OrgCUID:         orgCUID,
 		AgentVMCUID:     agentVMCUID,
+		AgentTags:       agentRec.Tags,
 		CharterFieldKey: charterFieldKey,
 		ServerName:      serverName,
 		ToolName:        toolName,
