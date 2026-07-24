@@ -19,7 +19,7 @@ const buildStreamUrl = (filters: PlanFilters): string => {
   if (filters.agent_id) params.set('agent_id', filters.agent_id);
   if (filters.offset != null) params.set('offset', String(filters.offset));
   params.set('limit', String(filters.limit ?? 50));
-  return `/api/v1/admin/plans/stream?${params.toString()}`;
+  return `/api/v1/plans/stream?${params.toString()}`;
 };
 
 export const usePlanStream = (

@@ -709,7 +709,7 @@ func TestMiddlewareNilValidatorIsPassThrough(t *testing.T) {
 	}
 }
 
-func TestAdminMiddlewareLogsMissingToken(t *testing.T) {
+func TestOperatorMiddlewareLogsMissingToken(t *testing.T) {
 	idp := newTestIdP(t)
 	v := newValidatorForIdP(t, idp, func(c *Config) {
 		c.AdminEnabled = true
@@ -721,8 +721,8 @@ func TestAdminMiddlewareLogsMissingToken(t *testing.T) {
 	t.Cleanup(func() { log.SetOutput(origWriter) })
 
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
-	h := AdminMiddleware(v, APIKeyConfig{}, MiddlewareOptions{})(next)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)
+	h := OperatorMiddleware(v, APIKeyConfig{}, MiddlewareOptions{})(next)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/review/invocations", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
@@ -735,7 +735,7 @@ func TestAdminMiddlewareLogsMissingToken(t *testing.T) {
 	}
 }
 
-func TestAdminMiddlewareLogsInvalidScheme(t *testing.T) {
+func TestOperatorMiddlewareLogsInvalidScheme(t *testing.T) {
 	idp := newTestIdP(t)
 	v := newValidatorForIdP(t, idp, func(c *Config) {
 		c.AdminEnabled = true
@@ -747,8 +747,8 @@ func TestAdminMiddlewareLogsInvalidScheme(t *testing.T) {
 	t.Cleanup(func() { log.SetOutput(origWriter) })
 
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
-	h := AdminMiddleware(v, APIKeyConfig{}, MiddlewareOptions{})(next)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)
+	h := OperatorMiddleware(v, APIKeyConfig{}, MiddlewareOptions{})(next)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/review/invocations", nil)
 	req.Header.Set("Authorization", "Basic abc")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -765,7 +765,7 @@ func TestAdminMiddlewareLogsInvalidScheme(t *testing.T) {
 	}
 }
 
-func TestAdminMiddlewareMachineKeyBypassesBearer(t *testing.T) {
+func TestOperatorMiddlewareMachineKeyBypassesBearer(t *testing.T) {
 	idp := newTestIdP(t)
 	v := newValidatorForIdP(t, idp, func(c *Config) {
 		c.AdminEnabled = true
@@ -775,10 +775,10 @@ func TestAdminMiddlewareMachineKeyBypassesBearer(t *testing.T) {
 
 	admitted := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { admitted = true })
-	h := AdminMiddleware(v, apiKeyCfg, MiddlewareOptions{})(next)
+	h := OperatorMiddleware(v, apiKeyCfg, MiddlewareOptions{})(next)
 
 	// Correct machine key/secret — should be admitted without a Bearer token.
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/review/invocations", nil)
 	req.Header.Set("X-API-Key", "vm-key")
 	req.Header.Set("X-API-Secret", "vm-secret")
 	w := httptest.NewRecorder()
@@ -789,7 +789,7 @@ func TestAdminMiddlewareMachineKeyBypassesBearer(t *testing.T) {
 
 	// Wrong secret — should be rejected.
 	admitted = false
-	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/review/invocations", nil)
 	req2.Header.Set("X-API-Key", "vm-key")
 	req2.Header.Set("X-API-Secret", "wrong-secret")
 	w2 := httptest.NewRecorder()

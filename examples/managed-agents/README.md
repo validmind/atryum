@@ -93,7 +93,7 @@ api_key = "sk-ant-..."
 ```
 
 Entries with an empty `api_key` are skipped; when no account has a usable key
-the bridge is disabled and the admin endpoint returns `501`. The
+the bridge is disabled and the operator endpoint returns `501`. The
 `ATRYUM_MANAGED_AGENTS_API_KEY` / `ANTHROPIC_API_KEY` env overrides apply only
 when zero or one `[[managed_agents]]` entry is configured. `workspace` is
 required whenever `api_key` is set, but it is not sent as an Anthropic request
@@ -131,7 +131,7 @@ agent and discovers its sessions automatically.
 Manual session registration still exists as an escape hatch:
 
 ```bash
-curl -sS -X POST http://localhost:8080/api/v1/admin/managed-agents/sessions \
+curl -sS -X POST http://localhost:8080/api/v1/managed-agents/sessions \
   -H "content-type: application/json" \
   -d '{
     "session_id": "sess_...",

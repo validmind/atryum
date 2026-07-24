@@ -101,7 +101,7 @@ func (e OutboundEvent) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// RegisterSessionRequest is the admin API payload to start watching a session.
+// RegisterSessionRequest is the operator API payload to start watching a session.
 // Account selects which configured Anthropic account watches the session; it may
 // be omitted when only one account is configured.
 type RegisterSessionRequest struct {
