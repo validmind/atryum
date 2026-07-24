@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 
@@ -29,6 +30,38 @@ type Config struct {
 	// repeated `[[managed_agents]]` table. An entry with an empty api_key is
 	// skipped.
 	ManagedAgents []ManagedAgentsConfig `toml:"managed_agents"`
+	// Plans bounds the lifetime of approved agent preapproval plans.
+	Plans PlansConfig `toml:"plans"`
+}
+
+// PlansConfig bounds how long an approved plan keeps granting its pass.
+// MaxTTLSeconds is the deployment's hard ceiling: agent-requested TTLs and
+// human per-plan overrides are both clamped to it. DefaultTTLSeconds applies
+// when a submitted plan omits ttl_seconds. Zero means "use the built-in
+// value" (default 3600, max 86400); negative values are rejected at startup.
+type PlansConfig struct {
+	DefaultTTLSeconds int `toml:"default_ttl_seconds"`
+	MaxTTLSeconds     int `toml:"max_ttl_seconds"`
+}
+
+// normalize fills unset TTL bounds and rejects contradictory ones. When only
+// max_ttl_seconds is set and it is lower than the built-in default, the
+// default follows it down rather than erroring on a value the operator never
+// wrote.
+func (c *PlansConfig) normalize() error {
+	if c.MaxTTLSeconds < 0 || c.DefaultTTLSeconds < 0 {
+		return fmt.Errorf("plans: default_ttl_seconds and max_ttl_seconds must not be negative")
+	}
+	if c.MaxTTLSeconds == 0 {
+		c.MaxTTLSeconds = 86400
+	}
+	if c.DefaultTTLSeconds == 0 {
+		c.DefaultTTLSeconds = min(3600, c.MaxTTLSeconds)
+	}
+	if c.DefaultTTLSeconds > c.MaxTTLSeconds {
+		return fmt.Errorf("plans: default_ttl_seconds (%d) exceeds max_ttl_seconds (%d)", c.DefaultTTLSeconds, c.MaxTTLSeconds)
+	}
+	return nil
 }
 
 // ManagedAgentsConfig configures one outbound connection to Anthropic's Claude
@@ -209,6 +242,9 @@ func Load(path string) (Config, error) {
 	}
 	cfg.Backend.ApplyEnv()
 	cfg.applyManagedAgentsEnv()
+	if err := cfg.Plans.normalize(); err != nil {
+		return cfg, err
+	}
 	return cfg, nil
 }
 

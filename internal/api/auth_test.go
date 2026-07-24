@@ -183,6 +183,37 @@ func TestMCPAcceptsValidTokenAndPlumbsAgentID(t *testing.T) {
 	}
 }
 
+func TestMCPPlanGetRejectsAnotherAuthenticatedAgentsPlan(t *testing.T) {
+	rig := newAuthTestRig(t)
+	now := time.Now().UTC()
+	svc := &stubService{plan: invocation.Plan{
+		PlanID:      "plan_other_agent",
+		AgentID:     "agent-other",
+		Goal:        "sensitive plan",
+		Actions:     []invocation.PlanAction{{Tool: "Bash"}},
+		Status:      invocation.PlanStatusApproved,
+		Revision:    1,
+		TTLSeconds:  3600,
+		SubmittedAt: now,
+	}}
+	h := newAuthedHandler(t, svc, rig)
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"atryum.plan.get","arguments":{"plan_id":"plan_other_agent"}}}`))
+	req.Header.Set("Authorization", "Bearer "+rig.sign(t, defaultClaims())) // agent-007
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected JSON-RPC response, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"plan not found"`) {
+		t.Fatalf("expected ownership error, got %s", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), `"sensitive plan"`) {
+		t.Fatalf("response leaked another agent's plan: %s", w.Body.String())
+	}
+}
+
 func TestAgentRulesRequiresAuthAndUsesTokenAgentID(t *testing.T) {
 	rig := newAuthTestRig(t)
 	tokenAgent := store.AgentRecord{ID: "agent-cuid-007", AgentIDs: `["agent-007"]`}

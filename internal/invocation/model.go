@@ -38,7 +38,14 @@ type Invocation struct {
 	Status         Status    `json:"status"`
 	Approval       *Approval `json:"approval"`
 	MatchedRuleID  *string   `json:"matched_rule_id,omitempty"`
-	AgentID        *string   `json:"agent_id,omitempty"`
+	// PlanID links this invocation to the approved plan whose pass
+	// auto-approved it, when applicable.
+	PlanID *string `json:"plan_id,omitempty"`
+	// PlanStepIndex is the zero-based position of the declared plan action
+	// matched by this invocation. It is internal state used to prevent a plan
+	// from moving backwards after a later step has run.
+	PlanStepIndex *int    `json:"-"`
+	AgentID       *string `json:"agent_id,omitempty"`
 	// SessionID links this invocation to an external harness session (see
 	// ExternalSession). Set on the Invocations API path so the judge can be
 	// given the session's prior tool calls as context.
@@ -72,6 +79,7 @@ type InvocationListFilter struct {
 	Tool       string
 	Status     string
 	AgentIDs   []string // filters to invocations whose agent_id is in this list
+	PlanID     string   // filters to invocations linked to one approved plan
 	SessionID  string   // filters to invocations belonging to one external session
 	ClientName string
 	StartDate  *time.Time
@@ -181,6 +189,7 @@ type InvocationResponse struct {
 	Status        Status    `json:"status"`
 	Approval      *Approval `json:"approval"`
 	MatchedRuleID *string   `json:"matched_rule_id,omitempty"`
+	PlanID        *string   `json:"plan_id,omitempty"`
 	AgentID       *string   `json:"agent_id,omitempty"`
 	// SessionID is the internal Atryum session (ses_...) this invocation was
 	// linked to, if any. Exposed for observability/debugging — clients never

@@ -382,6 +382,7 @@ def inline_format(text: str) -> str:
     text = html.escape(text, quote=False)
     text = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", text)
     text = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<em>\1</em>", text)
+    text = re.sub(r"(?<!\w)_([^_]+)_(?!\w)", r"<em>\1</em>", text)
     text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
     text = re.sub(
         r"\[([^\]]+)\]\(([^)]+)\)",
@@ -525,12 +526,9 @@ def dedent_block_lines(lines: list[str], base_indent: int) -> list[str]:
         if not line.strip():
             dedented.append("")
             continue
-        if line.startswith(" " * (base_indent + 4)):
-            dedented.append(line[base_indent + 4 :])
-        elif line.startswith(" " * (base_indent + 1)):
-            dedented.append(line[base_indent + 4 :] if len(line) > base_indent + 4 else line.lstrip())
-        else:
-            dedented.append(line.lstrip())
+        indent = len(line) - len(line.lstrip(" "))
+        strip_count = min(indent, base_indent + 4)
+        dedented.append(line[strip_count:])
     return dedented
 
 

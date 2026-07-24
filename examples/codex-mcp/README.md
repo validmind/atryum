@@ -23,6 +23,17 @@ Then add this to `~/.codex/hooks.json`:
 ```json
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ATRYUM_HOOK_HOST=codex ATRYUM_HOOK_EVENT=SessionStart ATRYUM_SOURCE=codex node ~/.atryum/hooks/atryum-hook.mjs"
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "*",
@@ -84,6 +95,20 @@ the bearer token (auth mode). With neither, the caller is anonymous and Atryum
 resolves no session, evaluating the call history-free (tool calls are still
 gated, just without prior-call context).
 
+## Preapproval plans
+
+When plans are enabled, the shared hook discovers that via
+`GET /api/v1/agent/rules` and injects plan-submission guidance at
+`SessionStart`. It also includes the guidance in a blocked tool message as a
+fallback. The agent can submit a batch plan to
+`POST /api/v1/external/plans?source=<source>` (the hint provides the exact
+endpoint; the source parameter scopes the plan's actions to this harness so
+later tool calls match), wait for approval, and then continue with normal
+tool calls. Atryum's adherence judge checks each call matching a declared
+action against the approved plan: confirmed calls are preapproved until the
+final action succeeds or the plan expires, off-plan calls are denied, and polling the approved plan's
+status URL is always allowed.
+
 ## MCP proxy
 
 You can also configure Codex to use Atryum's MCP proxy instead of connecting
@@ -101,7 +126,9 @@ args = [
 ```
 
 Replace `leanctx` with the Atryum MCP server name you configured in the Atryum
-server registry.
+server registry. When plans are enabled, `tools/list` also exposes
+`atryum.plan.submit` and `atryum.plan.get`; MCP agents can call those synthetic
+tools to submit and poll a plan without using the raw HTTP endpoint directly.
 
 ## MCP coverage
 

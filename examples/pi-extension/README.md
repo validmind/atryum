@@ -104,6 +104,20 @@ If the caller has no agent binding, Atryum simply resolves no session and
 evaluates the call history-free (tool calls are still gated, just without
 prior-call context) rather than blocking the agent.
 
+## Preapproval plans
+
+When plans are enabled, the extension injects plan submission guidance before
+the first agent turn after every `session_start`
+and also repeats it in blocked tool messages as a fallback. It discovers
+support via `GET /api/v1/agent/rules`. The agent can submit a batch plan to
+`POST /api/v1/external/plans?source=<source>` (the hint provides the exact
+endpoint; the source parameter scopes the plan's actions to this harness so
+later tool calls match), wait for approval, and then continue with normal
+tool calls. Atryum's adherence judge checks each call matching a declared
+action against the approved plan: confirmed calls are preapproved until the
+final action succeeds or the plan expires, off-plan calls are denied, and polling the approved plan's
+status URL is always allowed.
+
 ## Tagging invocations to an Agent Record
 
 By default the extension sends no agent identity, so invocations show up in

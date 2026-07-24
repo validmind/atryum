@@ -184,3 +184,49 @@ func TestEffectiveStreamHeaderTimeoutSecondsFallsBackToRequestTimeout(t *testing
 		t.Fatalf("negative stream header timeout resolved to %d, want the request timeout 30", got)
 	}
 }
+
+func TestLoadPlansTTLBounds(t *testing.T) {
+	dir := t.TempDir()
+
+	write := func(name, body string) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		return path
+	}
+
+	cfg, err := Load(filepath.Join(dir, "missing.toml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Plans.DefaultTTLSeconds != 3600 || cfg.Plans.MaxTTLSeconds != 86400 {
+		t.Fatalf("built-in plan TTL bounds = %+v", cfg.Plans)
+	}
+
+	cfg, err = Load(write("explicit.toml", "[plans]\ndefault_ttl_seconds = 300\nmax_ttl_seconds = 1200\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Plans.DefaultTTLSeconds != 300 || cfg.Plans.MaxTTLSeconds != 1200 {
+		t.Fatalf("explicit plan TTL bounds = %+v", cfg.Plans)
+	}
+
+	// When only the ceiling is set below the built-in default, the default
+	// follows it down instead of erroring on a value the operator never wrote.
+	cfg, err = Load(write("low-max.toml", "[plans]\nmax_ttl_seconds = 600\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Plans.DefaultTTLSeconds != 600 || cfg.Plans.MaxTTLSeconds != 600 {
+		t.Fatalf("low-max plan TTL bounds = %+v", cfg.Plans)
+	}
+
+	if _, err = Load(write("contradictory.toml", "[plans]\ndefault_ttl_seconds = 700\nmax_ttl_seconds = 600\n")); err == nil {
+		t.Fatal("default above max must fail to load")
+	}
+	if _, err = Load(write("negative.toml", "[plans]\nmax_ttl_seconds = -1\n")); err == nil {
+		t.Fatal("negative ttl must fail to load")
+	}
+}

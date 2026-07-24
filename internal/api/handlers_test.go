@@ -26,17 +26,18 @@ import (
 )
 
 type stubService struct {
-	tools    []mcp.Tool
-	invoke   invocation.InvocationResponse
-	invErr   error
-	getErr   error
-	setResp  invocation.InvocationResponse
-	setID    string
-	setText  string
-	listErr  error
-	upstream mcp.Upstream
-	forward  mcp.ForwardResult
-	fwdErr   error
+	tools         []mcp.Tool
+	invoke        invocation.InvocationResponse
+	invErr        error
+	getErr        error
+	setResp       invocation.InvocationResponse
+	setID         string
+	setText       string
+	listErr       error
+	upstream      mcp.Upstream
+	forward       mcp.ForwardResult
+	fwdErr        error
+	plansDisabled bool
 
 	invokedReq *invocation.CreateInvocationRequest
 	invokedCtx context.Context
@@ -58,6 +59,18 @@ type stubService struct {
 	// test can simulate the sink actually being used. Nil means
 	// InvokeStreaming behaves exactly like Invoke (sink untouched).
 	invokeStreamingFn func(ctx context.Context, req invocation.CreateInvocationRequest, sink mcp.StreamSink) (invocation.InvocationResponse, error)
+
+	plan          invocation.Plan
+	planErr       error
+	planSubmitReq *invocation.PlanSubmitRequest
+	planApproveID string
+	planTTL       int
+	planDenyID    string
+	planDenyMsg   string
+	planReviseID  string
+	planFeedback  string
+	planExpireID  string
+	planCancelID  string
 }
 
 func (s *stubService) Invoke(ctx context.Context, req invocation.CreateInvocationRequest) (invocation.InvocationResponse, error) {
@@ -138,6 +151,47 @@ func (s *stubService) RecordExecution(ctx context.Context, id string, req invoca
 		return s.invoke, s.invErr
 	}
 	return invocation.InvocationResponse{InvocationID: id, Status: invocation.StatusSucceeded}, s.invErr
+}
+func (s *stubService) SubmitPlan(_ context.Context, req invocation.PlanSubmitRequest) (invocation.Plan, error) {
+	s.planSubmitReq = &req
+	return s.plan, s.planErr
+}
+func (s *stubService) GetPlan(context.Context, string) (invocation.Plan, error) {
+	return s.plan, s.planErr
+}
+func (s *stubService) ListPlans(_ context.Context, filter invocation.PlanListFilter) (invocation.PlanListResponse, error) {
+	return invocation.PlanListResponse{Items: []invocation.Plan{s.plan}, Total: 1, Limit: filter.Limit}, s.planErr
+}
+func (s *stubService) ListPlanRevisions(context.Context, string) ([]invocation.Plan, error) {
+	return []invocation.Plan{}, nil
+}
+func (s *stubService) ApprovePlan(_ context.Context, id string, ttlSeconds int) (invocation.Plan, error) {
+	s.planApproveID = id
+	s.planTTL = ttlSeconds
+	return s.plan, s.planErr
+}
+func (s *stubService) DenyPlan(_ context.Context, id string, message string) (invocation.Plan, error) {
+	s.planDenyID = id
+	s.planDenyMsg = message
+	return s.plan, s.planErr
+}
+func (s *stubService) RequestPlanRevision(_ context.Context, id string, feedback string) (invocation.Plan, error) {
+	s.planReviseID = id
+	s.planFeedback = feedback
+	return s.plan, s.planErr
+}
+func (s *stubService) ExpirePlan(_ context.Context, id string) (invocation.Plan, error) {
+	s.planExpireID = id
+	return s.plan, s.planErr
+}
+func (s *stubService) CancelPlan(_ context.Context, id string) (invocation.Plan, error) {
+	s.planCancelID = id
+	return s.plan, s.planErr
+}
+func (s *stubService) PlansEnabled() bool { return !s.plansDisabled }
+
+func (s *stubService) PlanEvents(context.Context, string, invocation.EventListFilter) (invocation.EventListResponse, error) {
+	return invocation.EventListResponse{}, nil
 }
 func (s *stubService) ForwardEnvelope(context.Context, mcp.Upstream, mcp.Envelope, string) (mcp.ForwardResult, error) {
 	return s.forward, s.fwdErr
@@ -1298,6 +1352,62 @@ func TestMCPRulesToolReturnsAgentRulesWithoutInvocation(t *testing.T) {
 		t.Fatalf("expected read-auto match, got %#v", rulesResp.MatchedRuleID)
 	}
 }
+func TestMCPPlanSubmitToolSubmitsPlan(t *testing.T) {
+	now := time.Now().UTC()
+	svc := &stubService{plan: invocation.Plan{
+		PlanID:      "plan_123",
+		AgentID:     "agent-1",
+		Source:      "demo",
+		Goal:        "Read files before editing",
+		Actions:     []invocation.PlanAction{{Tool: "Read"}},
+		Status:      invocation.PlanStatusPendingApproval,
+		Revision:    1,
+		TTLSeconds:  3600,
+		SubmittedAt: now,
+	}}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"atryum.plan.submit","arguments":{"goal":"Read files before editing","actions":[{"tool":"Read"}],"ttl_seconds":600}}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if svc.planSubmitReq == nil {
+		t.Fatal("expected plan submission request")
+	}
+	if svc.planSubmitReq.Source != "demo" {
+		t.Fatalf("source = %q, want demo", svc.planSubmitReq.Source)
+	}
+	if svc.planSubmitReq.Goal != "Read files before editing" || len(svc.planSubmitReq.Actions) != 1 || svc.planSubmitReq.Actions[0].Tool != "Read" {
+		t.Fatalf("unexpected plan request: %#v", svc.planSubmitReq)
+	}
+	if !strings.Contains(w.Body.String(), `"plan_123"`) {
+		t.Fatalf("expected plan response, got %s", w.Body.String())
+	}
+}
+
+func TestMCPPlanGetToolGetsPlan(t *testing.T) {
+	now := time.Now().UTC()
+	svc := &stubService{plan: invocation.Plan{
+		PlanID:      "plan_123",
+		AgentID:     "agent-1",
+		Source:      "demo",
+		Goal:        "Read files before editing",
+		Actions:     []invocation.PlanAction{{Tool: "Read"}},
+		Status:      invocation.PlanStatusApproved,
+		Revision:    1,
+		TTLSeconds:  3600,
+		SubmittedAt: now,
+	}}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"atryum.plan.get","arguments":{"plan_id":"plan_123"}}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if !strings.Contains(w.Body.String(), `"approved"`) || !strings.Contains(w.Body.String(), `"plan_123"`) {
+		t.Fatalf("expected plan status response, got %s", w.Body.String())
+	}
+}
 
 func TestMCPNoAuthAgentIDQueryHintSetsIdentity(t *testing.T) {
 	now := time.Now().UTC()
@@ -1366,6 +1476,7 @@ func TestAgentRulesListsApplicableRulesAndDisposition(t *testing.T) {
 		{ID: "bash-deny", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Bash"}, Enabled: true, Order: 0},
 		{ID: "read-auto", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, Description: "Read is safe", Enabled: true, Order: 1},
 		{ID: "fallback-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 2},
+		{ID: "later-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, Enabled: true, Order: 3},
 		{ID: "disabled", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, Enabled: false, Order: 3},
 	}}
 	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
@@ -1399,10 +1510,32 @@ func TestAgentRulesListsApplicableRulesAndDisposition(t *testing.T) {
 	if !strings.Contains(resp.Explanation, "advisory") {
 		t.Fatalf("expected advisory explanation, got %q", resp.Explanation)
 	}
-	if len(resp.Items) != 3 {
-		t.Fatalf("expected three applicable rules, got %#v", resp.Items)
+	if resp.PlanSubmission == nil || !resp.PlanSubmission.Enabled {
+		t.Fatalf("expected plan submission capability, got %#v", resp.PlanSubmission)
 	}
-	if resp.Items[0].ID != "bash-deny" || resp.Items[1].ID != "read-auto" || resp.Items[2].ID != "fallback-human" {
+	if resp.PlanSubmission.Endpoint != "/api/v1/external/plans?source=amp" {
+		t.Fatalf("plan submission endpoint must carry the caller's source, got %q", resp.PlanSubmission.Endpoint)
+	}
+	if !strings.Contains(resp.PlanSubmission.Message, resp.PlanSubmission.Endpoint) {
+		t.Fatalf("plan submission message must contain the endpoint so hooks can inject it verbatim, got %q", resp.PlanSubmission.Message)
+	}
+	if !strings.Contains(resp.PlanSubmission.Message, "never move backwards") {
+		t.Fatalf("plan submission message must state the execution-order rule, got %q", resp.PlanSubmission.Message)
+	}
+	if !strings.Contains(resp.PlanSubmission.Message, `Set each action's server to "amp"`) {
+		t.Fatalf("plan submission message must name the caller's source for action servers, got %q", resp.PlanSubmission.Message)
+	}
+	// The caller's already-known identity (query-hinted here; verified OAuth
+	// in auth mode) must be echoed verbatim so an agent submitting a plan
+	// doesn't invent a different agent_id that its own tool calls can never
+	// match.
+	if !strings.Contains(resp.PlanSubmission.Message, `agent_id set to exactly "agent-007"`) {
+		t.Fatalf("plan submission message must echo the caller's resolved agent id, got %q", resp.PlanSubmission.Message)
+	}
+	if len(resp.Items) != 4 {
+		t.Fatalf("expected four applicable rules, got %#v", resp.Items)
+	}
+	if resp.Items[0].ID != "bash-deny" || resp.Items[1].ID != "read-auto" || resp.Items[2].ID != "fallback-human" || resp.Items[3].ID != "later-human" {
 		t.Fatalf("unexpected applicable rules order: %#v", resp.Items)
 	}
 	if resp.Items[1].Guidance == "" {
@@ -1445,6 +1578,125 @@ func TestAgentRulesFiltersOutRulesScopedToOtherAgents(t *testing.T) {
 		if item.ID == "other-agent" {
 			t.Fatalf("other-agent scoped rule leaked into response: %#v", resp.Items)
 		}
+	}
+}
+
+func TestAgentRulesAdvertisesPlanSubmissionWithInvocationRules(t *testing.T) {
+	// Plan submission is advertised whenever the feature is enabled; the same
+	// invocation rules are used to evaluate submitted plans.
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "fallback-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 0},
+	}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?agent_id=agent-007&source=cursor", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.PlanSubmission == nil || !resp.PlanSubmission.Enabled {
+		t.Fatalf("expected plan submission capability, got %#v", resp.PlanSubmission)
+	}
+	if resp.PlanSubmission.Endpoint != "/api/v1/external/plans?source=cursor" {
+		t.Fatalf("plan submission endpoint must carry the caller's source, got %q", resp.PlanSubmission.Endpoint)
+	}
+}
+
+// TestAgentRulesPlanSubmissionFallsBackToGenericAgentIDGuidanceWhenAnonymous
+// covers a caller with no resolvable identity at all (no auth, no agent_id
+// hint): the message can't echo an identity that doesn't exist, so it must
+// fall back to telling the agent to invent and reuse a stable one.
+func TestAgentRulesPlanSubmissionFallsBackToGenericAgentIDGuidanceWhenAnonymous(t *testing.T) {
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "fallback-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 0},
+	}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?source=cursor", nil) // no agent_id
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.PlanSubmission == nil {
+		t.Fatalf("expected plan submission capability, got %#v", resp.PlanSubmission)
+	}
+	if strings.Contains(resp.PlanSubmission.Message, "agent_id set to exactly") {
+		t.Fatalf("message must not fabricate an identity to echo when none is known, got %q", resp.PlanSubmission.Message)
+	}
+	if !strings.Contains(resp.PlanSubmission.Message, "a stable identifier for this agent") {
+		t.Fatalf("message must fall back to generic agent_id guidance, got %q", resp.PlanSubmission.Message)
+	}
+}
+
+// TestAgentRulesPlanSubmissionDoesNotEchoRequestIDAsStableIdentity covers a
+// caller identified only by request_id — a single in-flight tool call's id,
+// meant for previewing that one call's disposition, not a stable agent
+// identity. It must still surface as AgentID (existing rule-preview
+// behavior), but the plan message must not tell the agent to submit a plan
+// under it: a later invocation carries a different request_id and would
+// never match, so the plan would silently expire unactioned.
+func TestAgentRulesPlanSubmissionDoesNotEchoRequestIDAsStableIdentity(t *testing.T) {
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "fallback-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 0},
+	}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?source=cursor&request_id=req-12345", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.AgentID != "req-12345" {
+		t.Fatalf("expected existing request_id fallback preserved in AgentID, got %q", resp.AgentID)
+	}
+	if resp.PlanSubmission == nil {
+		t.Fatalf("expected plan submission capability, got %#v", resp.PlanSubmission)
+	}
+	if strings.Contains(resp.PlanSubmission.Message, "req-12345") {
+		t.Fatalf("message must not present the request-scoped id as a stable identity to submit a plan under, got %q", resp.PlanSubmission.Message)
+	}
+	if !strings.Contains(resp.PlanSubmission.Message, "a stable identifier for this agent") {
+		t.Fatalf("message must fall back to generic agent_id guidance, got %q", resp.PlanSubmission.Message)
+	}
+}
+
+func TestAgentRulesOmitsPlanSubmissionWhenPlansDisabled(t *testing.T) {
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "human-any", Action: invocation.RuleActionHumanApproval, Enabled: true, Order: 0},
+	}}
+	h := NewHandler(&stubService{plansDisabled: true}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?agent_id=agent-007&source=cursor", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.PlanSubmission != nil {
+		t.Fatalf("expected no plan submission capability when the plan feature is not wired, got %#v", resp.PlanSubmission)
 	}
 }
 
@@ -1646,10 +1898,17 @@ func TestMCPToolsListAnnotationsUseDefaultAgentScopedRules(t *testing.T) {
 	if len(rpcResp.Result.Tools) == 0 {
 		t.Fatalf("expected tools, got %#v", rpcResp.Result.Tools)
 	}
-	bashTool := rpcResp.Result.Tools[0]
-	if bashTool.Name != "Bash" {
-		t.Fatalf("expected Bash tool, got %q", bashTool.Name)
+	bashIdx := -1
+	for i, tool := range rpcResp.Result.Tools {
+		if tool.Name == "Bash" {
+			bashIdx = i
+			break
+		}
 	}
+	if bashIdx < 0 {
+		t.Fatalf("expected Bash tool, got %#v", rpcResp.Result.Tools)
+	}
+	bashTool := rpcResp.Result.Tools[bashIdx]
 	if bashTool.Annotations == nil || bashTool.Annotations.Atryum.EffectiveAction != invocation.RuleActionAutoApprove {
 		t.Fatalf("Bash tool annotations: %#v", bashTool.Annotations)
 	}
