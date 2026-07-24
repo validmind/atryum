@@ -44,3 +44,37 @@ mcp_targets:
     prompt: |
       Use the calc_via_atryum MCP server's math tool to evaluate 17 + 23.
       Reply with only the numeric result, nothing else.
+
+  - id: everything-streaming
+    display_name: "@modelcontextprotocol/server-everything (stdio)"
+    description: >
+      Official MCP reference "everything" server, run over stdio. Its
+      trigger-long-running-operation tool sends live progress notifications
+      before the terminal result, so this target exercises Atryum's SSE
+      relay end-to-end over a real HTTP connection to a real running atryum
+      process — the "real process boundary" fake_agent.py's other targets
+      don't cover (see docs/architecture.md, "Live SSE relay for tools/call").
+      Shares its upstream dependency with the Go mcp-everything-test — an
+      accepted, minor redundancy in exchange for not maintaining a second
+      hand-rolled MCP fixture. verify.streaming tells verify_upstream_direct
+      to run fake_agent.py with --stream instead of the plain one-shot check
+      the other targets use.
+    upstream:
+      name: everything-streaming
+      mode: stdio
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-everything"]
+      timeout_seconds: 30
+      enabled: true
+    verify:
+      tool: trigger-long-running-operation
+      arguments:
+        duration: 3
+        steps: 3
+      expect_substrings: ["Long running operation completed"]
+      streaming: true
+      min_progress_events: 3
+    prompt: |
+      Use the everything_streaming_via_atryum MCP server's
+      trigger-long-running-operation tool with duration 3 and steps 3.
+      Reply with only the final message, nothing else.
