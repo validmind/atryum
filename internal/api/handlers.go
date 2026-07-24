@@ -80,8 +80,8 @@ type localInvocationSummarizer interface {
 
 type serverService interface {
 	List(ctx context.Context, filter mcp.ServerFilter) (ServerListResponse, error)
-	Get(ctx context.Context, name string) (AdminServer, error)
-	Upsert(ctx context.Context, name string, req AdminServerUpsertRequest) (AdminServer, error)
+	Get(ctx context.Context, name string) (OperatorServer, error)
+	Upsert(ctx context.Context, name string, req OperatorServerUpsertRequest) (OperatorServer, error)
 	Delete(ctx context.Context, name string, disable bool) error
 	Test(ctx context.Context, name string) (ServerTestResponse, error)
 	StartConnect(ctx context.Context, name string, baseURL string) (OAuthConnectStartResponse, error)
@@ -219,17 +219,17 @@ type PolicyUpdateRequest struct {
 }
 
 type ApproveRequest struct {
-	CreateRule *AdminRuleInput `json:"create_rule,omitempty"`
-	ActorID    string          `json:"actor_id,omitempty"`
+	CreateRule *OperatorRuleInput `json:"create_rule,omitempty"`
+	ActorID    string             `json:"actor_id,omitempty"`
 }
 
 type DenyRequest struct {
-	Message    string          `json:"message,omitempty"`
-	CreateRule *AdminRuleInput `json:"create_rule,omitempty"`
-	ActorID    string          `json:"actor_id,omitempty"`
+	Message    string             `json:"message,omitempty"`
+	CreateRule *OperatorRuleInput `json:"create_rule,omitempty"`
+	ActorID    string             `json:"actor_id,omitempty"`
 }
 
-type AdminServer struct {
+type OperatorServer struct {
 	Name                    string            `json:"name"`
 	EndpointSlug            string            `json:"endpoint_slug"`
 	EndpointURL             string            `json:"endpoint_url,omitempty"`
@@ -266,7 +266,7 @@ type AdminServer struct {
 	OAuthGrantedScopes string `json:"oauth_granted_scopes,omitempty"`
 }
 
-type AdminServerUpsertRequest struct {
+type OperatorServerUpsertRequest struct {
 	Name              string            `json:"name,omitempty"`
 	Mode              string            `json:"mode"`
 	BaseURL           string            `json:"base_url,omitempty"`
@@ -285,10 +285,10 @@ type AdminServerUpsertRequest struct {
 }
 
 type ServerListResponse struct {
-	Items  []AdminServer `json:"items"`
-	Total  int           `json:"total"`
-	Offset uint64        `json:"offset"`
-	Limit  uint64        `json:"limit"`
+	Items  []OperatorServer `json:"items"`
+	Total  int              `json:"total"`
+	Offset uint64           `json:"offset"`
+	Limit  uint64           `json:"limit"`
 }
 
 type ServerTestResponse struct {
@@ -317,7 +317,7 @@ type OAuthConnectStatusResponse struct {
 
 // ─── Rules ───────────────────────────────────────────────────────────────────
 
-type AdminRule struct {
+type OperatorRule struct {
 	ID                string    `json:"id"`
 	Action            string    `json:"action"`
 	ServerPatterns    []string  `json:"server_patterns"`
@@ -332,7 +332,7 @@ type AdminRule struct {
 	UpdatedAt         time.Time `json:"updated_at"`
 }
 
-type AdminRuleInput struct {
+type OperatorRuleInput struct {
 	Action            string   `json:"action"`
 	ServerPatterns    []string `json:"server_patterns"`
 	ToolPatterns      []string `json:"tool_patterns"`
@@ -347,22 +347,22 @@ type AdminRuleInput struct {
 	InsertBefore *string `json:"insert_before,omitempty"`
 }
 
-// AdminModelConfig is the API representation of a VM agent model configuration.
-type AdminModelConfig struct {
+// OperatorModelConfig is the API representation of a VM agent model configuration.
+type OperatorModelConfig struct {
 	CUID string `json:"cuid"`
 	Name string `json:"name"`
 }
 
 type ModelConfigListResponse struct {
-	Items []AdminModelConfig `json:"items"`
-	Total int                `json:"total"`
+	Items []OperatorModelConfig `json:"items"`
+	Total int                   `json:"total"`
 }
 
 // ─── Local LLM Config types ───────────────────────────────────────────────────
 
-// AdminLLMConfig is the API representation of a locally-configured LLM.
+// OperatorLLMConfig is the API representation of a locally-configured LLM.
 // APIKey is write-only — on reads it is returned as "***" when set.
-type AdminLLMConfig struct {
+type OperatorLLMConfig struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
 	Provider  string    `json:"provider"`
@@ -373,7 +373,7 @@ type AdminLLMConfig struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-type AdminLLMConfigInput struct {
+type OperatorLLMConfigInput struct {
 	Name     string `json:"name"`
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
@@ -383,53 +383,53 @@ type AdminLLMConfigInput struct {
 }
 
 type LLMConfigListResponse struct {
-	Items []AdminLLMConfig `json:"items"`
+	Items []OperatorLLMConfig `json:"items"`
 }
 
 type RuleListResponse struct {
-	Items []AdminRule `json:"items"`
+	Items []OperatorRule `json:"items"`
 }
 
 // ─── Agent operator types ─────────────────────────────────────────────────────
 
-type AdminAgent struct {
-	CUID                string                     `json:"cuid"`
-	OrgName             string                     `json:"org_name"`
-	Name                string                     `json:"name"`
-	Description         string                     `json:"description,omitempty"`
-	AgentIDs            []string                   `json:"agent_ids"`
-	ClaudeManagedAgents []AdminManagedAgentBinding `json:"claude_managed_agents,omitempty"`
-	SyncedAt            time.Time                  `json:"synced_at"`
-	Enabled             bool                       `json:"enabled"`
-	Charter             string                     `json:"charter,omitempty"`
-	VMCUID              string                     `json:"vm_cuid,omitempty"`
+type OperatorAgent struct {
+	CUID                string                        `json:"cuid"`
+	OrgName             string                        `json:"org_name"`
+	Name                string                        `json:"name"`
+	Description         string                        `json:"description,omitempty"`
+	AgentIDs            []string                      `json:"agent_ids"`
+	ClaudeManagedAgents []OperatorManagedAgentBinding `json:"claude_managed_agents,omitempty"`
+	SyncedAt            time.Time                     `json:"synced_at"`
+	Enabled             bool                          `json:"enabled"`
+	Charter             string                        `json:"charter,omitempty"`
+	VMCUID              string                        `json:"vm_cuid,omitempty"`
 	// Synced is true when this agent originated from a ValidMind sync
 	// (vm_organization_cuid is non-empty). Synced agents cannot be deleted
 	// manually — they are removed by re-syncing with a different org/record-type.
 	Synced bool `json:"synced"`
 }
 
-type AdminAgentInput struct {
-	Enabled                        *bool                       `json:"enabled,omitempty"`
-	AgentIDs                       []string                    `json:"agent_ids,omitempty"`
-	Name                           string                      `json:"name,omitempty"`
-	Description                    string                      `json:"description,omitempty"`
-	Charter                        string                      `json:"charter,omitempty"`
-	ClaudeManagedAgents            *[]AdminManagedAgentBinding `json:"claude_managed_agents,omitempty"`
-	ForceClaudeManagedAgentConnect bool                        `json:"force_claude_managed_agent_connect,omitempty"`
+type OperatorAgentInput struct {
+	Enabled                        *bool                          `json:"enabled,omitempty"`
+	AgentIDs                       []string                       `json:"agent_ids,omitempty"`
+	Name                           string                         `json:"name,omitempty"`
+	Description                    string                         `json:"description,omitempty"`
+	Charter                        string                         `json:"charter,omitempty"`
+	ClaudeManagedAgents            *[]OperatorManagedAgentBinding `json:"claude_managed_agents,omitempty"`
+	ForceClaudeManagedAgentConnect bool                           `json:"force_claude_managed_agent_connect,omitempty"`
 }
 
-type AdminAgentCreateInput struct {
-	Name                           string                     `json:"name"`
-	Description                    string                     `json:"description,omitempty"`
-	Enabled                        bool                       `json:"enabled"`
-	AgentIDs                       []string                   `json:"agent_ids,omitempty"`
-	Charter                        string                     `json:"charter,omitempty"`
-	ClaudeManagedAgents            []AdminManagedAgentBinding `json:"claude_managed_agents,omitempty"`
-	ForceClaudeManagedAgentConnect bool                       `json:"force_claude_managed_agent_connect,omitempty"`
+type OperatorAgentCreateInput struct {
+	Name                           string                        `json:"name"`
+	Description                    string                        `json:"description,omitempty"`
+	Enabled                        bool                          `json:"enabled"`
+	AgentIDs                       []string                      `json:"agent_ids,omitempty"`
+	Charter                        string                        `json:"charter,omitempty"`
+	ClaudeManagedAgents            []OperatorManagedAgentBinding `json:"claude_managed_agents,omitempty"`
+	ForceClaudeManagedAgentConnect bool                          `json:"force_claude_managed_agent_connect,omitempty"`
 }
 
-type AdminManagedAgentBinding struct {
+type OperatorManagedAgentBinding struct {
 	ID                 string `json:"id,omitempty"`
 	Account            string `json:"account"`
 	ClaudeAgentID      string `json:"claude_agent_id"`
@@ -455,12 +455,12 @@ type ManagedAgentListResponse struct {
 }
 
 type AgentListResponse struct {
-	Items []AdminAgent `json:"items"`
+	Items []OperatorAgent `json:"items"`
 }
 
-func toAdminAgent(a store.AgentRecord) AdminAgent {
+func toOperatorAgent(a store.AgentRecord) OperatorAgent {
 	ids := parseAgentIDs(a.AgentIDs)
-	return AdminAgent{
+	return OperatorAgent{
 		CUID:        a.ID,
 		OrgName:     a.VMOrganizationName,
 		Name:        a.VMName,
@@ -474,8 +474,8 @@ func toAdminAgent(a store.AgentRecord) AdminAgent {
 	}
 }
 
-func (h *Handler) toAdminAgent(ctx context.Context, a store.AgentRecord) AdminAgent {
-	out := toAdminAgent(a)
+func (h *Handler) toOperatorAgent(ctx context.Context, a store.AgentRecord) OperatorAgent {
+	out := toOperatorAgent(a)
 	if h.managedAgentBindings == nil {
 		return out
 	}
@@ -483,14 +483,14 @@ func (h *Handler) toAdminAgent(ctx context.Context, a store.AgentRecord) AdminAg
 	if err != nil {
 		return out
 	}
-	out.ClaudeManagedAgents = toAdminManagedAgentBindings(bindings)
+	out.ClaudeManagedAgents = toOperatorManagedAgentBindings(bindings)
 	return out
 }
 
-func toAdminManagedAgentBindings(bindings []store.ManagedAgentBinding) []AdminManagedAgentBinding {
-	out := make([]AdminManagedAgentBinding, 0, len(bindings))
+func toOperatorManagedAgentBindings(bindings []store.ManagedAgentBinding) []OperatorManagedAgentBinding {
+	out := make([]OperatorManagedAgentBinding, 0, len(bindings))
 	for _, b := range bindings {
-		out = append(out, AdminManagedAgentBinding{
+		out = append(out, OperatorManagedAgentBinding{
 			ID:                 b.ID,
 			Account:            b.Account,
 			ClaudeAgentID:      b.ClaudeAgentID,
@@ -502,7 +502,7 @@ func toAdminManagedAgentBindings(bindings []store.ManagedAgentBinding) []AdminMa
 	return out
 }
 
-func toStoreManagedAgentBindings(agentCUID string, bindings []AdminManagedAgentBinding) []store.ManagedAgentBinding {
+func toStoreManagedAgentBindings(agentCUID string, bindings []OperatorManagedAgentBinding) []store.ManagedAgentBinding {
 	out := make([]store.ManagedAgentBinding, 0, len(bindings))
 	seen := make(map[string]bool, len(bindings))
 	for _, b := range bindings {
@@ -787,11 +787,11 @@ type invocationStreamEnvelope struct {
 	Items []invocation.InvocationResponse `json:"items"`
 }
 
-type AdminAuthConfigResponse struct {
-	Providers []AdminAuthProvider `json:"providers"`
+type AuthConfigResponse struct {
+	Providers []AuthProvider `json:"providers"`
 }
 
-type AdminAuthProvider struct {
+type AuthProvider struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Provider    string `json:"provider"`
@@ -863,7 +863,7 @@ func (h *Handler) authConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	resp := AdminAuthConfigResponse{Providers: []AdminAuthProvider{}}
+	resp := AuthConfigResponse{Providers: []AuthProvider{}}
 	if h.authValidator == nil {
 		writeJSON(w, http.StatusOK, resp)
 		return
@@ -875,7 +875,7 @@ func (h *Handler) authConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		// AdminClientID is guaranteed non-empty for admin-enabled configs
 		// (validated in auth.NewValidator).
-		resp.Providers = append(resp.Providers, AdminAuthProvider{
+		resp.Providers = append(resp.Providers, AuthProvider{
 			ID:          cfg.AdminProvider + "-" + cfg.AdminClientID + "-" + cfg.Issuer,
 			Name:        cfg.AdminProvider + " (" + cfg.Issuer + ")",
 			Provider:    cfg.AdminProvider,
@@ -2293,7 +2293,7 @@ func (h *Handler) operatorServers(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, resp)
 	case http.MethodPost:
-		var req AdminServerUpsertRequest
+		var req OperatorServerUpsertRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
@@ -2396,7 +2396,7 @@ func (h *Handler) operatorServerDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, server)
 	case http.MethodPut:
-		var req AdminServerUpsertRequest
+		var req OperatorServerUpsertRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
@@ -2513,13 +2513,13 @@ func (h *Handler) operatorRules(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		items := make([]AdminRule, 0, len(rules))
+		items := make([]OperatorRule, 0, len(rules))
 		for _, rule := range rules {
-			items = append(items, toAdminRule(rule))
+			items = append(items, toOperatorRule(rule))
 		}
 		writeJSON(w, http.StatusOK, RuleListResponse{Items: items})
 	case http.MethodPost:
-		var req AdminRuleInput
+		var req OperatorRuleInput
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
@@ -2566,7 +2566,7 @@ func (h *Handler) operatorRules(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusCreated, toAdminRule(created))
+		writeJSON(w, http.StatusCreated, toOperatorRule(created))
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
@@ -2603,9 +2603,9 @@ func (h *Handler) operatorRuleDetail(w http.ResponseWriter, r *http.Request) {
 			writeError(w, status, err.Error())
 			return
 		}
-		items := make([]AdminRule, 0, len(rules))
+		items := make([]OperatorRule, 0, len(rules))
 		for _, rule := range rules {
-			items = append(items, toAdminRule(rule))
+			items = append(items, toOperatorRule(rule))
 		}
 		writeJSON(w, http.StatusOK, RuleListResponse{Items: items})
 		return
@@ -2623,9 +2623,9 @@ func (h *Handler) operatorRuleDetail(w http.ResponseWriter, r *http.Request) {
 			writeError(w, status, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, toAdminRule(rule))
+		writeJSON(w, http.StatusOK, toOperatorRule(rule))
 	case http.MethodPut:
-		var req AdminRuleInput
+		var req OperatorRuleInput
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
@@ -2664,7 +2664,7 @@ func (h *Handler) operatorRuleDetail(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, toAdminRule(updated))
+		writeJSON(w, http.StatusOK, toOperatorRule(updated))
 	case http.MethodDelete:
 		if err := h.rulesRepo.Delete(r.Context(), id); err != nil {
 			status := http.StatusInternalServerError
@@ -2696,9 +2696,9 @@ func (h *Handler) operatorModelConfigs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "failed to fetch model configs: "+err.Error())
 		return
 	}
-	items := make([]AdminModelConfig, 0, len(resp.Items))
+	items := make([]OperatorModelConfig, 0, len(resp.Items))
 	for _, c := range resp.Items {
-		items = append(items, AdminModelConfig{CUID: c.CUID, Name: c.Name})
+		items = append(items, OperatorModelConfig{CUID: c.CUID, Name: c.Name})
 	}
 	writeJSON(w, http.StatusOK, ModelConfigListResponse{Items: items, Total: len(items)})
 }
@@ -2736,7 +2736,7 @@ func (h *Handler) operatorLLMConfigs(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		if h.llmConfigsRepo == nil {
-			writeJSON(w, http.StatusOK, LLMConfigListResponse{Items: []AdminLLMConfig{}})
+			writeJSON(w, http.StatusOK, LLMConfigListResponse{Items: []OperatorLLMConfig{}})
 			return
 		}
 		cfgs, err := h.llmConfigsRepo.List(r.Context())
@@ -2744,9 +2744,9 @@ func (h *Handler) operatorLLMConfigs(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to list llm configs")
 			return
 		}
-		items := make([]AdminLLMConfig, 0, len(cfgs))
+		items := make([]OperatorLLMConfig, 0, len(cfgs))
 		for _, c := range cfgs {
-			items = append(items, toAdminLLMConfig(c))
+			items = append(items, toOperatorLLMConfig(c))
 		}
 		writeJSON(w, http.StatusOK, LLMConfigListResponse{Items: items})
 
@@ -2755,7 +2755,7 @@ func (h *Handler) operatorLLMConfigs(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusServiceUnavailable, "llm configs not available")
 			return
 		}
-		var req AdminLLMConfigInput
+		var req OperatorLLMConfigInput
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
@@ -2788,7 +2788,7 @@ func (h *Handler) operatorLLMConfigs(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to retrieve llm config")
 			return
 		}
-		writeJSON(w, http.StatusCreated, toAdminLLMConfig(created))
+		writeJSON(w, http.StatusCreated, toOperatorLLMConfig(created))
 
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -2818,10 +2818,10 @@ func (h *Handler) operatorLLMConfigDetail(w http.ResponseWriter, r *http.Request
 			writeError(w, status, "llm config not found")
 			return
 		}
-		writeJSON(w, http.StatusOK, toAdminLLMConfig(cfg))
+		writeJSON(w, http.StatusOK, toOperatorLLMConfig(cfg))
 
 	case http.MethodPatch:
-		var req AdminLLMConfigInput
+		var req OperatorLLMConfigInput
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
@@ -2862,7 +2862,7 @@ func (h *Handler) operatorLLMConfigDetail(w http.ResponseWriter, r *http.Request
 			writeError(w, http.StatusInternalServerError, "failed to retrieve llm config")
 			return
 		}
-		writeJSON(w, http.StatusOK, toAdminLLMConfig(updated))
+		writeJSON(w, http.StatusOK, toOperatorLLMConfig(updated))
 
 	case http.MethodDelete:
 		if err := h.llmConfigsRepo.Delete(r.Context(), id); err != nil {
@@ -2880,12 +2880,12 @@ func (h *Handler) operatorLLMConfigDetail(w http.ResponseWriter, r *http.Request
 	}
 }
 
-func toAdminLLMConfig(c store.LLMConfig) AdminLLMConfig {
+func toOperatorLLMConfig(c store.LLMConfig) OperatorLLMConfig {
 	apiKey := ""
 	if c.APIKey != "" {
 		apiKey = "***"
 	}
-	return AdminLLMConfig{
+	return OperatorLLMConfig{
 		ID:        c.ID,
 		Name:      c.Name,
 		Provider:  string(c.Provider),
@@ -2897,7 +2897,7 @@ func toAdminLLMConfig(c store.LLMConfig) AdminLLMConfig {
 	}
 }
 
-func validateLLMConfigInput(req AdminLLMConfigInput) error {
+func validateLLMConfigInput(req OperatorLLMConfigInput) error {
 	if strings.TrimSpace(req.Name) == "" {
 		return fmt.Errorf("name is required")
 	}
@@ -3121,7 +3121,7 @@ func (h *Handler) operatorVMCustomFields(w http.ResponseWriter, r *http.Request)
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-func toAdminRule(r store.Rule) AdminRule {
+func toOperatorRule(r store.Rule) OperatorRule {
 	sp := r.ServerPatterns
 	if sp == nil {
 		sp = []string{}
@@ -3134,7 +3134,7 @@ func toAdminRule(r store.Rule) AdminRule {
 	if ac == nil {
 		ac = []string{}
 	}
-	return AdminRule{
+	return OperatorRule{
 		ID:                r.ID,
 		Action:            r.Action,
 		ServerPatterns:    sp,
@@ -3167,14 +3167,14 @@ func (h *Handler) operatorAgents(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to list agents")
 			return
 		}
-		items := make([]AdminAgent, 0, len(records))
+		items := make([]OperatorAgent, 0, len(records))
 		for _, a := range records {
-			items = append(items, h.toAdminAgent(r.Context(), a))
+			items = append(items, h.toOperatorAgent(r.Context(), a))
 		}
 		writeJSON(w, http.StatusOK, AgentListResponse{Items: items})
 
 	case http.MethodPost:
-		var req AdminAgentCreateInput
+		var req OperatorAgentCreateInput
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
@@ -3239,7 +3239,7 @@ func (h *Handler) operatorAgents(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to retrieve created agent")
 			return
 		}
-		writeJSON(w, http.StatusCreated, h.toAdminAgent(r.Context(), record))
+		writeJSON(w, http.StatusCreated, h.toOperatorAgent(r.Context(), record))
 
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -3273,9 +3273,9 @@ func (h *Handler) operatorAgentDetail(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		items := make([]AdminAgent, 0, len(records))
+		items := make([]OperatorAgent, 0, len(records))
 		for _, a := range records {
-			items = append(items, h.toAdminAgent(r.Context(), a))
+			items = append(items, h.toOperatorAgent(r.Context(), a))
 		}
 		writeJSON(w, http.StatusOK, AgentListResponse{Items: items})
 		return
@@ -3302,10 +3302,10 @@ func (h *Handler) operatorAgentDetail(w http.ResponseWriter, r *http.Request) {
 			writeError(w, status, "agent not found")
 			return
 		}
-		writeJSON(w, http.StatusOK, h.toAdminAgent(r.Context(), record))
+		writeJSON(w, http.StatusOK, h.toOperatorAgent(r.Context(), record))
 
 	case http.MethodPatch:
-		var req AdminAgentInput
+		var req OperatorAgentInput
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
@@ -3405,7 +3405,7 @@ func (h *Handler) operatorAgentDetail(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to retrieve agent")
 			return
 		}
-		writeJSON(w, http.StatusOK, h.toAdminAgent(r.Context(), record))
+		writeJSON(w, http.StatusOK, h.toOperatorAgent(r.Context(), record))
 
 	case http.MethodDelete:
 		record, err := h.agentsRepo.Get(r.Context(), id)
@@ -3465,7 +3465,7 @@ func (h *Handler) operatorAgentCharterPreview(w http.ResponseWriter, r *http.Req
 		charterFieldKey = settings.CharterFieldKey
 	}
 
-	// VMOrganizationCUID (mirrored in AdminAgent.Synced) is the correct "is this
+	// VMOrganizationCUID (mirrored in OperatorAgent.Synced) is the correct "is this
 	// a real ValidMind-synced agent" signal. VMCUID alone is NOT — manually
 	// created agents get VMCUID reused as their local id (see the create
 	// handler above) while VMOrganizationCUID stays empty, precisely so a fake
@@ -3505,7 +3505,7 @@ func (h *Handler) operatorAgentCharterPreview(w http.ResponseWriter, r *http.Req
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-func validateRuleInput(req AdminRuleInput) error {
+func validateRuleInput(req OperatorRuleInput) error {
 	switch req.Action {
 	case "auto_approve", "auto_deny", "human_approval":
 	case "ai_evaluation":
@@ -3545,7 +3545,7 @@ func readUintQuery(r *http.Request, key string, fallback uint64) uint64 {
 	return parsed
 }
 
-type ServerAdminService struct {
+type ServerOperatorService struct {
 	repo          serverRepo
 	oauthRepo     *store.OAuthRepo
 	client        *mcp.Client
@@ -3563,36 +3563,36 @@ type serverRepo interface {
 	DisableServer(ctx context.Context, name string) error
 }
 
-func NewServerAdminService(repo serverRepo, oauthRepo *store.OAuthRepo, client *mcp.Client, timeout time.Duration, publicBaseURL string) *ServerAdminService {
-	return &ServerAdminService{repo: repo, oauthRepo: oauthRepo, client: client, timeout: timeout, publicBaseURL: strings.TrimRight(strings.TrimSpace(publicBaseURL), "/")}
+func NewServerOperatorService(repo serverRepo, oauthRepo *store.OAuthRepo, client *mcp.Client, timeout time.Duration, publicBaseURL string) *ServerOperatorService {
+	return &ServerOperatorService{repo: repo, oauthRepo: oauthRepo, client: client, timeout: timeout, publicBaseURL: strings.TrimRight(strings.TrimSpace(publicBaseURL), "/")}
 }
 
-func (s *ServerAdminService) List(ctx context.Context, filter mcp.ServerFilter) (ServerListResponse, error) {
+func (s *ServerOperatorService) List(ctx context.Context, filter mcp.ServerFilter) (ServerListResponse, error) {
 	items, total, err := s.repo.ListServers(ctx, filter)
 	if err != nil {
 		return ServerListResponse{}, err
 	}
-	servers := make([]AdminServer, 0, len(items))
+	servers := make([]OperatorServer, 0, len(items))
 	for _, item := range items {
 		servers = append(servers, s.operatorViewWithGrantedScopes(ctx, item))
 	}
 	return ServerListResponse{Items: servers, Total: total, Offset: filter.Offset, Limit: normalizeLimit(filter.Limit, 50)}, nil
 }
 
-func (s *ServerAdminService) Get(ctx context.Context, name string) (AdminServer, error) {
+func (s *ServerOperatorService) Get(ctx context.Context, name string) (OperatorServer, error) {
 	upstream, err := s.repo.GetServerAny(ctx, name)
 	if err != nil {
-		return AdminServer{}, err
+		return OperatorServer{}, err
 	}
 	return s.operatorViewWithGrantedScopes(ctx, upstream), nil
 }
 
-// operatorViewWithGrantedScopes is toAdminServer + an overlay of the actual
+// operatorViewWithGrantedScopes is toOperatorServer + an overlay of the actual
 // scope string the AS granted on the latest successful token exchange.
 // Pulled separately from oauth_credentials.scope so the UI can show both
 // what we requested and what's actually live.
-func (s *ServerAdminService) operatorViewWithGrantedScopes(ctx context.Context, upstream mcp.Upstream) AdminServer {
-	view := toAdminServer(upstream)
+func (s *ServerOperatorService) operatorViewWithGrantedScopes(ctx context.Context, upstream mcp.Upstream) OperatorServer {
+	view := toOperatorServer(upstream)
 	view.EndpointURL = s.endpointURL(view.EndpointSlug)
 	if cred, err := s.oauthRepo.GetCredential(ctx, upstream.Name); err == nil {
 		view.OAuthGrantedScopes = cred.Scope
@@ -3600,24 +3600,24 @@ func (s *ServerAdminService) operatorViewWithGrantedScopes(ctx context.Context, 
 	return view
 }
 
-func (s *ServerAdminService) Upsert(ctx context.Context, name string, req AdminServerUpsertRequest) (AdminServer, error) {
+func (s *ServerOperatorService) Upsert(ctx context.Context, name string, req OperatorServerUpsertRequest) (OperatorServer, error) {
 	serverName := strings.TrimSpace(name)
 	requestedName := strings.TrimSpace(req.Name)
 	if serverName == "" {
 		serverName = requestedName
 	}
 	if serverName != "" && requestedName != "" && requestedName != serverName {
-		return AdminServer{}, fmt.Errorf("renaming servers is not supported; create a new server instead")
+		return OperatorServer{}, fmt.Errorf("renaming servers is not supported; create a new server instead")
 	}
 	if serverName == "" {
-		return AdminServer{}, fmt.Errorf("name is required")
+		return OperatorServer{}, fmt.Errorf("name is required")
 	}
 	if mcp.EndpointSlug(serverName) == "" {
-		return AdminServer{}, fmt.Errorf("name must include at least one letter or number")
+		return OperatorServer{}, fmt.Errorf("name must include at least one letter or number")
 	}
 	mode := strings.TrimSpace(req.Mode)
 	if mode == "" {
-		return AdminServer{}, fmt.Errorf("mode is required")
+		return OperatorServer{}, fmt.Errorf("mode is required")
 	}
 	enabled := true
 	if req.Enabled != nil {
@@ -3631,7 +3631,7 @@ func (s *ServerAdminService) Upsert(ctx context.Context, name string, req AdminS
 	if endpointSlug == "" {
 		endpointSlug = mcp.EndpointSlug(serverName)
 		if err := s.validateEndpointSlugAvailable(ctx, serverName, endpointSlug); err != nil {
-			return AdminServer{}, err
+			return OperatorServer{}, err
 		}
 	}
 
@@ -3679,15 +3679,15 @@ func (s *ServerAdminService) Upsert(ctx context.Context, name string, req AdminS
 	}
 	upstream.Status = inferServerStatus(upstream)
 	if err := validateUpstream(upstream); err != nil {
-		return AdminServer{}, err
+		return OperatorServer{}, err
 	}
 	if err := s.repo.UpsertServer(ctx, upstream); err != nil {
-		return AdminServer{}, err
+		return OperatorServer{}, err
 	}
 	return s.operatorViewWithGrantedScopes(ctx, upstream), nil
 }
 
-func (s *ServerAdminService) validateEndpointSlugAvailable(ctx context.Context, serverName string, slug string) error {
+func (s *ServerOperatorService) validateEndpointSlugAvailable(ctx context.Context, serverName string, slug string) error {
 	item, err := s.repo.GetServerByEndpointSlugAny(ctx, slug)
 	if err == sql.ErrNoRows {
 		return nil
@@ -3704,7 +3704,7 @@ func (s *ServerAdminService) validateEndpointSlugAvailable(ctx context.Context, 
 	return nil
 }
 
-func (s *ServerAdminService) endpointURL(slug string) string {
+func (s *ServerOperatorService) endpointURL(slug string) string {
 	if slug == "" {
 		return ""
 	}
@@ -3714,14 +3714,14 @@ func (s *ServerAdminService) endpointURL(slug string) string {
 	return s.publicBaseURL + "/mcp/" + slug
 }
 
-func (s *ServerAdminService) Delete(ctx context.Context, name string, disable bool) error {
+func (s *ServerOperatorService) Delete(ctx context.Context, name string, disable bool) error {
 	if disable {
 		return s.repo.DisableServer(ctx, name)
 	}
 	return s.repo.DeleteServer(ctx, name)
 }
 
-func (s *ServerAdminService) Test(ctx context.Context, name string) (ServerTestResponse, error) {
+func (s *ServerOperatorService) Test(ctx context.Context, name string) (ServerTestResponse, error) {
 	upstream, err := s.repo.GetServerAny(ctx, name)
 	if err != nil {
 		return ServerTestResponse{}, err
@@ -3747,7 +3747,7 @@ func (s *ServerAdminService) Test(ctx context.Context, name string) (ServerTestR
 	return ServerTestResponse{Ok: result.Ok, Message: result.Message, ConnectionStatus: string(result.ConnectionStatus), AuthStatus: string(result.AuthStatus), ReauthNeeded: result.ReauthNeeded, LastCheckedAt: upstream.Status.LastCheckedAt, LastCheckOK: result.LastCheckOK, LastErrorSummary: result.LastErrorSummary, ActionRequired: result.ActionRequired}, nil
 }
 
-func (s *ServerAdminService) StartConnect(ctx context.Context, name string, appBaseURL string) (OAuthConnectStartResponse, error) {
+func (s *ServerOperatorService) StartConnect(ctx context.Context, name string, appBaseURL string) (OAuthConnectStartResponse, error) {
 	upstream, err := s.repo.GetServerAny(ctx, name)
 	if err != nil {
 		return OAuthConnectStartResponse{}, err
@@ -3786,7 +3786,7 @@ func (s *ServerAdminService) StartConnect(ctx context.Context, name string, appB
 	return OAuthConnectStartResponse{ConnectURL: connectReq.URL, State: stateToken}, nil
 }
 
-func (s *ServerAdminService) GetConnectStatus(ctx context.Context, name string) (OAuthConnectStatusResponse, error) {
+func (s *ServerOperatorService) GetConnectStatus(ctx context.Context, name string) (OAuthConnectStatusResponse, error) {
 	session, err := s.oauthRepo.GetLatestConnectSessionByServer(ctx, name)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -3797,7 +3797,7 @@ func (s *ServerAdminService) GetConnectStatus(ctx context.Context, name string) 
 	return OAuthConnectStatusResponse{Status: session.Status, Message: session.ErrorMessage, StartedAt: &session.StartedAt, CompletedAt: session.CompletedAt}, nil
 }
 
-func (s *ServerAdminService) CompleteConnect(ctx context.Context, state string, code string, errorText string) (OAuthConnectStatusResponse, error) {
+func (s *ServerOperatorService) CompleteConnect(ctx context.Context, state string, code string, errorText string) (OAuthConnectStatusResponse, error) {
 	if strings.TrimSpace(state) == "" {
 		return OAuthConnectStatusResponse{}, fmt.Errorf("missing oauth state")
 	}
@@ -4407,12 +4407,12 @@ func (h *Handler) externalInvocationDetail(w http.ResponseWriter, r *http.Reques
 	}
 }
 
-func toAdminServer(upstream mcp.Upstream) AdminServer {
+func toOperatorServer(upstream mcp.Upstream) OperatorServer {
 	endpointSlug := upstream.EndpointSlug
 	if endpointSlug == "" {
 		endpointSlug = mcp.EndpointSlug(upstream.Name)
 	}
-	return AdminServer{Name: upstream.Name, EndpointSlug: endpointSlug, Mode: string(upstream.Mode), BaseURL: upstream.BaseURL, AuthToken: upstream.AuthToken, AuthHeaders: append([]mcp.AuthHeader(nil), upstream.AuthHeaders...), TimeoutSeconds: int(upstream.Timeout / time.Second), Command: upstream.Command, Args: append([]string(nil), upstream.Args...), Env: cloneEnv(upstream.Env), Enabled: upstream.Enabled, AuthType: string(upstream.Status.AuthType), ConnectionStatus: string(upstream.Status.ConnectionStatus), AuthStatus: string(upstream.Status.AuthStatus), ReauthNeeded: upstream.Status.ReauthNeeded, LastCheckedAt: upstream.Status.LastCheckedAt, LastCheckOK: upstream.Status.LastCheckOK, LastErrorSummary: upstream.Status.LastErrorSummary, ActionRequired: upstream.Status.ActionRequired, OAuthProviderID: upstream.OAuthProviderID, OAuthProviderLabel: upstream.OAuthProviderLabel, OAuthClientRegistration: string(upstream.OAuthClientRegistration), OAuthClientID: upstream.OAuthClientID, OAuthAuthorizeURL: upstream.OAuthAuthorizeURL, OAuthTokenURL: upstream.OAuthTokenURL, OAuthScopes: upstream.OAuthScopes, HasOAuthClientSecret: strings.TrimSpace(upstream.OAuthClientSecret) != ""}
+	return OperatorServer{Name: upstream.Name, EndpointSlug: endpointSlug, Mode: string(upstream.Mode), BaseURL: upstream.BaseURL, AuthToken: upstream.AuthToken, AuthHeaders: append([]mcp.AuthHeader(nil), upstream.AuthHeaders...), TimeoutSeconds: int(upstream.Timeout / time.Second), Command: upstream.Command, Args: append([]string(nil), upstream.Args...), Env: cloneEnv(upstream.Env), Enabled: upstream.Enabled, AuthType: string(upstream.Status.AuthType), ConnectionStatus: string(upstream.Status.ConnectionStatus), AuthStatus: string(upstream.Status.AuthStatus), ReauthNeeded: upstream.Status.ReauthNeeded, LastCheckedAt: upstream.Status.LastCheckedAt, LastCheckOK: upstream.Status.LastCheckOK, LastErrorSummary: upstream.Status.LastErrorSummary, ActionRequired: upstream.Status.ActionRequired, OAuthProviderID: upstream.OAuthProviderID, OAuthProviderLabel: upstream.OAuthProviderLabel, OAuthClientRegistration: string(upstream.OAuthClientRegistration), OAuthClientID: upstream.OAuthClientID, OAuthAuthorizeURL: upstream.OAuthAuthorizeURL, OAuthTokenURL: upstream.OAuthTokenURL, OAuthScopes: upstream.OAuthScopes, HasOAuthClientSecret: strings.TrimSpace(upstream.OAuthClientSecret) != ""}
 }
 
 func validateUpstream(upstream mcp.Upstream) error {

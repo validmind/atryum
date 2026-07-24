@@ -501,7 +501,7 @@ func TestAdminAuthConfigEndpointReturnsSafeProviderMetadata(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
 	}
-	var resp AdminAuthConfigResponse
+	var resp AuthConfigResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
@@ -554,7 +554,7 @@ func TestAdminAuthConfigProviderIDsAreUniqueForSharedClientID(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
 	}
-	var resp AdminAuthConfigResponse
+	var resp AuthConfigResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}

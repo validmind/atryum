@@ -174,9 +174,11 @@ type stubServerService struct{}
 func (stubServerService) List(context.Context, mcp.ServerFilter) (ServerListResponse, error) {
 	return ServerListResponse{}, nil
 }
-func (stubServerService) Get(context.Context, string) (AdminServer, error) { return AdminServer{}, nil }
-func (stubServerService) Upsert(context.Context, string, AdminServerUpsertRequest) (AdminServer, error) {
-	return AdminServer{}, nil
+func (stubServerService) Get(context.Context, string) (OperatorServer, error) {
+	return OperatorServer{}, nil
+}
+func (stubServerService) Upsert(context.Context, string, OperatorServerUpsertRequest) (OperatorServer, error) {
+	return OperatorServer{}, nil
 }
 func (stubServerService) Delete(context.Context, string, bool) error { return nil }
 func (stubServerService) Test(context.Context, string) (ServerTestResponse, error) {
@@ -371,7 +373,7 @@ func TestStartConnectUsesUpstreamMCPOAuthCallbackRedirectURI(t *testing.T) {
 		t.Fatalf("UpsertServer: %v", err)
 	}
 
-	svc := NewServerAdminService(serverRepo, oauthRepo, nil, 5*time.Second, "")
+	svc := NewServerOperatorService(serverRepo, oauthRepo, nil, 5*time.Second, "")
 	resp, err := svc.StartConnect(ctx, "shortcut", "http://localhost:8080/")
 	if err != nil {
 		t.Fatalf("StartConnect: %v", err)
@@ -408,9 +410,9 @@ func TestServerAdminServiceSurfacesEndpointURLForSluggedServerName(t *testing.T)
 	ctx := context.Background()
 	serverRepo := store.NewServerRepo(db)
 	oauthRepo := store.NewOAuthRepo(db)
-	svc := NewServerAdminService(serverRepo, oauthRepo, nil, 5*time.Second, "https://atryum.example")
+	svc := NewServerOperatorService(serverRepo, oauthRepo, nil, 5*time.Second, "https://atryum.example")
 
-	server, err := svc.Upsert(ctx, "", AdminServerUpsertRequest{
+	server, err := svc.Upsert(ctx, "", OperatorServerUpsertRequest{
 		Name:           "Slack Local",
 		Mode:           string(mcp.UpstreamModeHTTP),
 		BaseURL:        "https://mcp.slack.test/mcp",
@@ -452,9 +454,9 @@ func TestServerAdminServiceRejectsDuplicateEndpointSlug(t *testing.T) {
 	ctx := context.Background()
 	serverRepo := store.NewServerRepo(db)
 	oauthRepo := store.NewOAuthRepo(db)
-	svc := NewServerAdminService(serverRepo, oauthRepo, nil, 5*time.Second, "")
+	svc := NewServerOperatorService(serverRepo, oauthRepo, nil, 5*time.Second, "")
 
-	_, err = svc.Upsert(ctx, "", AdminServerUpsertRequest{
+	_, err = svc.Upsert(ctx, "", OperatorServerUpsertRequest{
 		Name:    "Slack Local",
 		Mode:    string(mcp.UpstreamModeHTTP),
 		BaseURL: "https://mcp.slack.test/mcp",
@@ -462,7 +464,7 @@ func TestServerAdminServiceRejectsDuplicateEndpointSlug(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Upsert first server: %v", err)
 	}
-	_, err = svc.Upsert(ctx, "", AdminServerUpsertRequest{
+	_, err = svc.Upsert(ctx, "", OperatorServerUpsertRequest{
 		Name:    "slack-local",
 		Mode:    string(mcp.UpstreamModeHTTP),
 		BaseURL: "https://other.example/mcp",
@@ -485,9 +487,9 @@ func TestServerAdminServiceRejectsCaseOnlyDuplicateNameWithClearError(t *testing
 	ctx := context.Background()
 	serverRepo := store.NewServerRepo(db)
 	oauthRepo := store.NewOAuthRepo(db)
-	svc := NewServerAdminService(serverRepo, oauthRepo, nil, 5*time.Second, "")
+	svc := NewServerOperatorService(serverRepo, oauthRepo, nil, 5*time.Second, "")
 
-	_, err = svc.Upsert(ctx, "", AdminServerUpsertRequest{
+	_, err = svc.Upsert(ctx, "", OperatorServerUpsertRequest{
 		Name:    "slack local",
 		Mode:    string(mcp.UpstreamModeHTTP),
 		BaseURL: "https://mcp.slack.test/mcp",
@@ -495,7 +497,7 @@ func TestServerAdminServiceRejectsCaseOnlyDuplicateNameWithClearError(t *testing
 	if err != nil {
 		t.Fatalf("Upsert first server: %v", err)
 	}
-	_, err = svc.Upsert(ctx, "", AdminServerUpsertRequest{
+	_, err = svc.Upsert(ctx, "", OperatorServerUpsertRequest{
 		Name:    "Slack Local",
 		Mode:    string(mcp.UpstreamModeHTTP),
 		BaseURL: "https://other.example/mcp",
@@ -528,7 +530,7 @@ func TestServerAdminServiceUsesStoredEndpointSlug(t *testing.T) {
 		t.Fatalf("UpsertServer: %v", err)
 	}
 
-	svc := NewServerAdminService(serverRepo, oauthRepo, nil, 5*time.Second, "https://atryum.example")
+	svc := NewServerOperatorService(serverRepo, oauthRepo, nil, 5*time.Second, "https://atryum.example")
 	server, err := svc.Get(ctx, "Slack Local")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
