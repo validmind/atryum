@@ -46,12 +46,16 @@ render_atryum_config() {
   local auth_id="$1" target_id="$2" template_path="$3" out_path="$4"
   local upstreams
   upstreams="$(render_upstream_block "$target_id")"
+  local py="${INTEGRATIONS_PYTHON:-python3}"
   sed \
     -e "s|__ATRYUM_PORT__|${ATRYUM_PORT}|g" \
     -e "s|__RUN_DIR__|${RUN_DIR}|g" \
     -e "s|__MOCK_OIDC_ISSUER__|${MOCK_OIDC_ISSUER:-http://127.0.0.1:${MOCK_OIDC_PORT}/realms/atryum}|g" \
     "$template_path" \
-    | awk -v block="$upstreams" '{gsub(/__UPSTREAMS_BLOCK__/, block); print}' \
+    | UPSTREAMS_BLOCK="$upstreams" "$py" -c '
+import os, sys
+sys.stdout.write(sys.stdin.read().replace("__UPSTREAMS_BLOCK__", os.environ["UPSTREAMS_BLOCK"]))
+' \
     >"$out_path"
 }
 
@@ -105,7 +109,7 @@ seed_auto_approve_rules() {
 verify_upstream_direct() {
   local target_id="$1"
   local auth_id="${2:-no-auth}"
-  local parsed server_name tool_name args_json expect_joined
+  local parsed server_name tool_name args_json expect_joined streaming min_progress_events
   local py="${INTEGRATIONS_PYTHON:-python3}"
   parsed="$("$py" - "$INTEGRATIONS_ROOT" "$target_id" "$py" <<'PY'
 import json, subprocess, sys
@@ -120,14 +124,21 @@ print(u["name"])
 print(v["tool"])
 print(json.dumps(v["arguments"]))
 print("|".join(v["expect_substrings"]))
+# Normalized to a plain "true"/"false" literal regardless of whether the
+# registry loader gave a real bool (PyYAML) or a string (the no-PyYAML
+# fallback parser in lib/registry.py) — see verify.streaming below.
+print("true" if v.get("streaming") else "false")
+print(v.get("min_progress_events") or 1)
 PY
 )"
   server_name="$(echo "$parsed" | sed -n '1p')"
   tool_name="$(echo "$parsed" | sed -n '2p')"
   args_json="$(echo "$parsed" | sed -n '3p')"
   expect_joined="$(echo "$parsed" | sed -n '4p')"
+  streaming="$(echo "$parsed" | sed -n '5p')"
+  min_progress_events="$(echo "$parsed" | sed -n '6p')"
 
-  log "Direct MCP smoke via fake_agent.py (server=$server_name tool=$tool_name auth=$auth_id)"
+  log "Direct MCP smoke via fake_agent.py (server=$server_name tool=$tool_name auth=$auth_id streaming=$streaming)"
   local bearer_args=()
   case "$auth_id" in
     oauth-client-credentials|oauth-dcr|static-bearer)
@@ -136,6 +147,15 @@ PY
       bearer_args=(--bearer "$token")
       ;;
   esac
+  # verify.streaming targets (e.g. everything-streaming) prove Atryum's SSE
+  # relay works over a real HTTP connection to a real running atryum
+  # process — fake_agent.py --stream fails the case if progress doesn't
+  # actually arrive live before the terminal result, not just on a wrong
+  # final answer.
+  local stream_args=()
+  if [[ "$streaming" == "true" ]]; then
+    stream_args=(--stream --min-progress-events "$min_progress_events")
+  fi
   local output
   output="$(
     ATRYUM_URL="$ATRYUM_URL" \
@@ -143,7 +163,8 @@ PY
       "$server_name" \
       --tool "$tool_name" \
       --arguments "$args_json" \
-      "${bearer_args[@]}" 2>&1
+      "${bearer_args[@]+"${bearer_args[@]}"}" \
+      "${stream_args[@]+"${stream_args[@]}"}" 2>&1
   )" || return 1
 
   local part

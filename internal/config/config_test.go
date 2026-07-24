@@ -72,6 +72,54 @@ func TestLoadMissingConfigUsesDefaultsAndEnv(t *testing.T) {
 	if cfg.Backend.APISecret != "env-api-secret" {
 		t.Fatalf("Backend.APISecret = %q", cfg.Backend.APISecret)
 	}
+	if !cfg.Defaults.StreamRelayEnabled {
+		t.Fatal("Defaults.StreamRelayEnabled = false, want true (safe default: doubly gated on agent Accept + upstream content-type)")
+	}
+	if cfg.Defaults.StreamIdleTimeoutSeconds != 60 {
+		t.Fatalf("Defaults.StreamIdleTimeoutSeconds = %d, want 60", cfg.Defaults.StreamIdleTimeoutSeconds)
+	}
+	if cfg.Defaults.StreamMaxDurationSeconds != 600 {
+		t.Fatalf("Defaults.StreamMaxDurationSeconds = %d, want 600", cfg.Defaults.StreamMaxDurationSeconds)
+	}
+	if cfg.Defaults.StreamAuditMaxEvents != 100 {
+		t.Fatalf("Defaults.StreamAuditMaxEvents = %d, want 100", cfg.Defaults.StreamAuditMaxEvents)
+	}
+	if cfg.Defaults.StreamAuditMaxEventBytes != 4096 {
+		t.Fatalf("Defaults.StreamAuditMaxEventBytes = %d, want 4096", cfg.Defaults.StreamAuditMaxEventBytes)
+	}
+	if cfg.Defaults.StreamMaxMessageBytes != 4*1024*1024 {
+		t.Fatalf("Defaults.StreamMaxMessageBytes = %d, want 4194304", cfg.Defaults.StreamMaxMessageBytes)
+	}
+	if cfg.Defaults.StreamHeaderTimeoutSeconds != 0 {
+		t.Fatalf("Defaults.StreamHeaderTimeoutSeconds = %d, want 0 (falls back to RequestTimeoutSeconds at the call site)", cfg.Defaults.StreamHeaderTimeoutSeconds)
+	}
+}
+
+func TestLoadStreamRelayCanBeDisabledViaTOML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "atryum.toml")
+	if err := os.WriteFile(path, []byte("[defaults]\nstream_relay_enabled = false\nstream_idle_timeout_seconds = 30\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Defaults.StreamRelayEnabled {
+		t.Fatal("Defaults.StreamRelayEnabled = true, want false (explicitly disabled in TOML)")
+	}
+	if cfg.Defaults.StreamIdleTimeoutSeconds != 30 {
+		t.Fatalf("Defaults.StreamIdleTimeoutSeconds = %d, want 30 (explicit TOML override)", cfg.Defaults.StreamIdleTimeoutSeconds)
+	}
+	// Fields the TOML fragment didn't mention keep their Go-level default,
+	// proving partial overrides don't blow away the rest of [defaults].
+	if cfg.Defaults.StreamMaxDurationSeconds != 600 {
+		t.Fatalf("Defaults.StreamMaxDurationSeconds = %d, want 600 (untouched default)", cfg.Defaults.StreamMaxDurationSeconds)
+	}
+	if cfg.Defaults.RequestTimeoutSeconds != 30 {
+		t.Fatalf("Defaults.RequestTimeoutSeconds = %d, want 30 (untouched default)", cfg.Defaults.RequestTimeoutSeconds)
+	}
 }
 
 func TestLoadAuthAdminClaimValueAcceptsBool(t *testing.T) {
@@ -119,6 +167,21 @@ recent_chat_messages_limit = 42
 	}
 	if cfg.ManagedAgents[0].RecentChatMessagesLimit != 42 {
 		t.Fatalf("RecentChatMessagesLimit = %d", cfg.ManagedAgents[0].RecentChatMessagesLimit)
+	}
+}
+
+func TestEffectiveStreamHeaderTimeoutSecondsFallsBackToRequestTimeout(t *testing.T) {
+	d := DefaultsConfig{RequestTimeoutSeconds: 30}
+	if got := d.EffectiveStreamHeaderTimeoutSeconds(); got != 30 {
+		t.Fatalf("zero stream header timeout resolved to %d, want the request timeout 30", got)
+	}
+	d.StreamHeaderTimeoutSeconds = 12
+	if got := d.EffectiveStreamHeaderTimeoutSeconds(); got != 12 {
+		t.Fatalf("explicit stream header timeout resolved to %d, want 12", got)
+	}
+	d.StreamHeaderTimeoutSeconds = -1
+	if got := d.EffectiveStreamHeaderTimeoutSeconds(); got != 30 {
+		t.Fatalf("negative stream header timeout resolved to %d, want the request timeout 30", got)
 	}
 }
 

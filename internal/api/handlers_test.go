@@ -48,25 +48,56 @@ type stubService struct {
 	recordReq  *invocation.ExternalExecutionUpdate
 	recordCtx  context.Context
 
+	streamDeliveryInvocationID string
+	streamDeliveryStatus       string
+	streamDeliveryMessage      string
+
 	createSessionReq     *invocation.CreateSessionRequest
 	createSessionAgentID string
-	plan                 invocation.Plan
-	planErr              error
-	planSubmitReq        *invocation.PlanSubmitRequest
-	planApproveID        string
-	planTTL              int
-	planDenyID           string
-	planDenyMsg          string
-	planReviseID         string
-	planFeedback         string
-	planExpireID         string
-	planCancelID         string
+
+	// invokeStreamingFn, when set, overrides InvokeStreaming's behavior so a
+	// test can simulate the sink actually being used. Nil means
+	// InvokeStreaming behaves exactly like Invoke (sink untouched).
+	invokeStreamingFn func(ctx context.Context, req invocation.CreateInvocationRequest, sink mcp.StreamSink) (invocation.InvocationResponse, error)
+
+	plan          invocation.Plan
+	planErr       error
+	planSubmitReq *invocation.PlanSubmitRequest
+	planApproveID string
+	planTTL       int
+	planDenyID    string
+	planDenyMsg   string
+	planReviseID  string
+	planFeedback  string
+	planExpireID  string
+	planCancelID  string
 }
 
 func (s *stubService) Invoke(ctx context.Context, req invocation.CreateInvocationRequest) (invocation.InvocationResponse, error) {
 	s.invokedReq = &req
 	s.invokedCtx = ctx
 	return s.invoke, s.invErr
+}
+
+// InvokeStreaming records the call like Invoke and, unless invokeStreamingFn
+// is set, never touches sink — matching the real Service.InvokeStreaming's
+// nil-sink behavior for every test that doesn't care about streaming.
+// invokeStreamingFn lets a test simulate the sink actually being used (e.g.
+// calling StreamStarted/Event) to exercise handleMCPProxy's relay path.
+func (s *stubService) InvokeStreaming(ctx context.Context, req invocation.CreateInvocationRequest, sink mcp.StreamSink) (invocation.InvocationResponse, error) {
+	s.invokedReq = &req
+	s.invokedCtx = ctx
+	if s.invokeStreamingFn != nil {
+		return s.invokeStreamingFn(ctx, req, sink)
+	}
+	return s.invoke, s.invErr
+}
+
+func (s *stubService) RecordStreamDelivery(_ context.Context, invocationID, status, message string) error {
+	s.streamDeliveryInvocationID = invocationID
+	s.streamDeliveryStatus = status
+	s.streamDeliveryMessage = message
+	return nil
 }
 func (s *stubService) ListTools(context.Context, string) ([]mcp.Tool, error) {
 	return s.tools, s.listErr
@@ -1260,6 +1291,23 @@ func TestMCPToolsCallInterceptsInvocation(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), `"text":"ok"`) {
 		t.Fatalf("expected tool result, got %s", w.Body.String())
+	}
+}
+
+func TestMCPToolsCallForwardsMetaToInvocation(t *testing.T) {
+	now := time.Now().UTC()
+	svc := &stubService{invoke: invocation.InvocationResponse{InvocationID: "inv_123", ServerName: "demo", ToolName: "demo_tool", Status: invocation.StatusSucceeded, SubmittedAt: now, CompletedAt: &now, Result: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`)}}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"demo_tool","arguments":{"a":1},"_meta":{"progressToken":"tok-7"}}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if svc.invokedReq == nil {
+		t.Fatal("expected invocation request")
+	}
+	if got := svc.invokedReq.Meta["progressToken"]; got != "tok-7" {
+		t.Fatalf("expected _meta.progressToken to reach the invocation request, got %#v", svc.invokedReq.Meta)
 	}
 }
 

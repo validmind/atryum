@@ -70,12 +70,21 @@ while IFS= read -r line; do
   if [[ -z "$line" ]]; then
     continue
   fi
+  # Echo back whatever id the request actually carried — Atryum's stdio
+  # client assigns ids from a shared per-client counter (notifications
+  # consume one too, even though it's stripped before sending), so a
+  # hardcoded id here would drift from what's actually sent. Only computed
+  # inside the branches that have one: the notification line below carries
+  # no "id" field at all, and grep finding nothing there would (under
+  # pipefail) abort the script if this ran unconditionally.
   if [[ "$line" == *'"method":"initialize"'* ]]; then
-    printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"fake-shortcut","version":"0.1.0"},"capabilities":{}}}'
+    id=$(echo "$line" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+    printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":${id},\"result\":{\"serverInfo\":{\"name\":\"fake-shortcut\",\"version\":\"0.1.0\"},\"capabilities\":{}}}"
   elif [[ "$line" == *'"method":"notifications/initialized"'* ]]; then
     continue
   elif [[ "$line" == *'"method":"tools/call"'* ]]; then
-    printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"ok"}]}}'
+    id=$(echo "$line" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+    printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":${id},\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}"
     exit 0
   fi
 done

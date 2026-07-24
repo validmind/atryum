@@ -108,6 +108,11 @@ type CreateInvocationRequest struct {
 	// the per-row fallback for anonymous (no agent_id) invocations.
 	ClientName    string `json:"-"`
 	ClientVersion string `json:"-"`
+	// Meta carries the agent's MCP tools/call params._meta (e.g.
+	// progressToken) through to the upstream call so progress/logging
+	// notifications the upstream emits can be correlated back to the
+	// agent's own request.
+	Meta map[string]any `json:"-"`
 }
 
 // ExternalSubmitRequest is used by callers that execute the tool themselves

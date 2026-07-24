@@ -148,6 +148,50 @@ type ServerConfig struct {
 
 type DefaultsConfig struct {
 	RequestTimeoutSeconds int `toml:"request_timeout_seconds"`
+
+	// StreamRelayEnabled is the kill-switch for the tools/call SSE relay
+	// (see api.Handler.SetStreamRelayEnabled / docs/architecture.md). The
+	// downstream relay only activates when the agent sends Accept:
+	// text/event-stream and the upstream client enters live mode. HTTP
+	// upstreams do that by returning SSE; stdio upstreams do it when they
+	// emit an intermediate message.
+	StreamRelayEnabled bool `toml:"stream_relay_enabled"`
+	// StreamHeaderTimeoutSeconds bounds setup before tool response reading:
+	// HTTP session initialization and response headers, or the stdio
+	// initialize handshake. Zero falls back to RequestTimeoutSeconds.
+	StreamHeaderTimeoutSeconds int `toml:"stream_header_timeout_seconds"`
+	// StreamIdleTimeoutSeconds bounds response-reading inactivity. Streaming
+	// events reset it; for a plain HTTP JSON response it bounds the complete
+	// body read. It does not limit the call's total duration.
+	StreamIdleTimeoutSeconds int `toml:"stream_idle_timeout_seconds"`
+	// StreamMaxDurationSeconds bounds response reading after setup completes.
+	// Zero disables the bound (unlimited).
+	StreamMaxDurationSeconds int `toml:"stream_max_duration_seconds"`
+	// StreamMaxMessageBytes bounds one upstream JSON-RPC message or plain
+	// response body. Zero at the mcp package boundary uses its 4 MiB default.
+	StreamMaxMessageBytes int `toml:"stream_max_message_bytes"`
+	// StreamAuditMaxEvents caps how many invocation.stream_event audit
+	// rows get persisted per call; beyond the cap, events are still
+	// relayed live to the agent but only counted, not stored
+	// individually. Zero disables this count cap; the bounded audit queue
+	// may still drop events under storage backpressure, which is reported
+	// in the stream completion audit row.
+	StreamAuditMaxEvents int `toml:"stream_audit_max_events"`
+	// StreamAuditMaxEventBytes truncates each persisted stream_event
+	// row's data field beyond this size. Zero disables truncation.
+	StreamAuditMaxEventBytes int `toml:"stream_audit_max_event_bytes"`
+}
+
+// EffectiveStreamHeaderTimeoutSeconds resolves the documented zero-value
+// fallback for stream_header_timeout_seconds: zero (or negative) falls back
+// to request_timeout_seconds. Lives here so every consumer of DefaultsConfig
+// resolves the fallback identically instead of re-implementing it at each
+// wiring site.
+func (d DefaultsConfig) EffectiveStreamHeaderTimeoutSeconds() int {
+	if d.StreamHeaderTimeoutSeconds > 0 {
+		return d.StreamHeaderTimeoutSeconds
+	}
+	return d.RequestTimeoutSeconds
 }
 
 type UpstreamConfig struct {
@@ -183,7 +227,13 @@ func Load(path string) (Config, error) {
 			ConnectionTimeoutSecs: 5,
 		},
 		Defaults: DefaultsConfig{
-			RequestTimeoutSeconds: 30,
+			RequestTimeoutSeconds:    30,
+			StreamRelayEnabled:       true,
+			StreamIdleTimeoutSeconds: 60,
+			StreamMaxDurationSeconds: 600,
+			StreamMaxMessageBytes:    4 * 1024 * 1024,
+			StreamAuditMaxEvents:     100,
+			StreamAuditMaxEventBytes: 4096,
 		},
 	}
 	_, err := toml.DecodeFile(path, &cfg)

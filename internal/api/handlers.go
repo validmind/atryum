@@ -42,6 +42,8 @@ const upstreamMCPOAuthCallbackPath = "/api/v1/mcp/oauth/callback"
 
 type service interface {
 	Invoke(ctx context.Context, req invocation.CreateInvocationRequest) (invocation.InvocationResponse, error)
+	InvokeStreaming(ctx context.Context, req invocation.CreateInvocationRequest, sink mcp.StreamSink) (invocation.InvocationResponse, error)
+	RecordStreamDelivery(ctx context.Context, invocationID, status, message string) error
 	ListTools(ctx context.Context, server string) ([]mcp.Tool, error)
 	Get(ctx context.Context, id string) (invocation.InvocationResponse, error)
 	List(ctx context.Context, filter invocation.InvocationListFilter) (invocation.InvocationListResponse, error)
@@ -161,6 +163,13 @@ type Handler struct {
 	authDebugSkip         bool
 	authValidator         *auth.Validator
 	apiKeyAuth            auth.APIKeyConfig
+
+	// streamRelayEnabled is the kill-switch for the tools/call SSE relay
+	// (see handleMCPProxy). The downstream relay only activates when the
+	// agent accepts SSE and the upstream client enters live mode, either
+	// from an HTTP SSE response or an intermediate stdio message. It can be
+	// disabled globally without a rollback.
+	streamRelayEnabled bool
 
 	// clientInfoCache remembers the most recent `initialize.clientInfo`
 	// per MCP session key so that subsequent tools/call requests on the
@@ -813,7 +822,18 @@ func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Reg
 	if f, ok := svc.(mcpEnvelopeForwarder); ok {
 		forwarder = f
 	}
-	return &Handler{svc: svc, serverSvc: serverSvc, policyRegistry: policyRegistry, rulesRepo: rules, agentsRepo: agents, agentSyncSettingsRepo: agentSyncSettings, llmConfigsRepo: llmConfigs, backendClient: bc, summarizeClient: bc, localSummarizer: localSummarizer, syncAgentsFn: syncAgents, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug, clientInfoCache: make(map[string]clientInfoSnapshot)}
+	return &Handler{svc: svc, serverSvc: serverSvc, policyRegistry: policyRegistry, rulesRepo: rules, agentsRepo: agents, agentSyncSettingsRepo: agentSyncSettings, llmConfigsRepo: llmConfigs, backendClient: bc, summarizeClient: bc, localSummarizer: localSummarizer, syncAgentsFn: syncAgents, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug, clientInfoCache: make(map[string]clientInfoSnapshot), streamRelayEnabled: true}
+}
+
+// SetStreamRelayEnabled toggles the tools/call SSE relay kill-switch (on by
+// default). Disabling it forces every tools/call back to the buffered
+// application/json path regardless of what the agent's Accept header or the
+// upstream's response content-type would otherwise allow. Call it during
+// startup wiring only: the flag is an unsynchronized bool read on every
+// request, so flipping it while serving is a data race, not a runtime
+// toggle.
+func (h *Handler) SetStreamRelayEnabled(enabled bool) {
+	h.streamRelayEnabled = enabled
 }
 
 // SetAuthValidator installs the inbound auth validator. When non-nil, the
@@ -1431,6 +1451,7 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		var params struct {
 			Name      string         `json:"name"`
 			Arguments map[string]any `json:"arguments"`
+			Meta      map[string]any `json:"_meta"`
 		}
 		if err := json.Unmarshal(req.Params, &params); err != nil {
 			h.writeRPCError(w, req.ID, -32602, "invalid params")
@@ -1448,7 +1469,7 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			h.handleMCPPlanGet(w, r, req.ID, params.Arguments)
 			return
 		}
-		toolReq := invocation.CreateInvocationRequest{Server: server, Tool: params.Name, Input: params.Arguments}
+		toolReq := invocation.CreateInvocationRequest{Server: server, Tool: params.Name, Input: params.Arguments, Meta: params.Meta}
 		if requestID != "" {
 			toolReq.RequestID = stringPtr(requestID)
 		}
@@ -1459,22 +1480,81 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			toolReq.ClientName = snap.Name
 			toolReq.ClientVersion = snap.Version
 		}
-		resp, err := h.svc.Invoke(r.Context(), toolReq)
+		// A stream-capable agent gets a relay sink. The downstream response
+		// switches to SSE only when the upstream client calls StreamStarted:
+		// for an HTTP SSE response or the first intermediate stdio message.
+		// Until then nothing is written, so a buffered upstream response
+		// still follows the ordinary JSON path below.
+		var sink *sseRelaySink
+		if flusher, ok := w.(http.Flusher); ok && h.streamRelayEnabled && acceptsEventStream(r) {
+			sink = newSSERelaySink(w, flusher)
+			// Structural guarantee that the heartbeat goroutine can never
+			// outlive this handler, even on a panic path. A no-op on normal
+			// paths, where finishStream already stopped it.
+			defer sink.stopHeartbeat()
+		}
+		var resp invocation.InvocationResponse
+		var err error
+		if sink != nil {
+			resp, err = h.svc.InvokeStreaming(r.Context(), toolReq, sink)
+		} else {
+			resp, err = h.svc.Invoke(r.Context(), toolReq)
+		}
 		if err != nil {
+			// This branch IS reachable with an already-started stream:
+			// besides pre-execution validation failures (sink untouched),
+			// InvokeStreaming also returns an error if persisting the
+			// result fails after the stream completed. Once headers are
+			// out, the only spec-correct way to end the exchange is a
+			// terminal JSON-RPC error as the final SSE frame — never
+			// writeRPCError (a second WriteHeader), and never a bare
+			// close (the agent would be left with a request that ended
+			// without any response).
+			if sink != nil && sink.started {
+				// The full error is logged server-side (unconditionally —
+				// not debugf: when persistence fails, this log line is the
+				// only place the real error text survives, since the audit
+				// row can only say persistence_failed); the wire gets a
+				// static message. The only errors reachable with a started
+				// stream are internal finalization failures (result
+				// persistence), whose text can carry SQL/driver detail the
+				// agent has no business seeing.
+				log.Printf("[mcpToolsCall] finalize after stream started failed server=%s tool=%s invocation=%s: %v", server, params.Name, resp.InvocationID, err)
+				// Trace this path like the success path does: a stream that
+				// relayed events and then failed finalization is exactly the
+				// call an operator will want to find.
+				_ = h.emitTraceEvent(r.Context(), server, "mcp.tools.call", map[string]any{"request_id": requestID, "status": resp.Status, "invocation_id": resp.InvocationID, "tool": params.Name, "streamed": true, "stream_events": sink.eventCount, "finalize_failed": true})
+				errBody, _ := json.Marshal(map[string]any{"code": -32000, "message": "failed to finalize invocation"})
+				terminal, _ := json.Marshal(jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: errBody})
+				deliveryErr := sink.finishStream(terminal)
+				h.recordStreamDelivery(r.Context(), resp.InvocationID, deliveryErr)
+				return
+			}
 			h.writeRPCError(w, req.ID, -32000, err.Error())
 			return
 		}
-		tracePayload := map[string]any{"request_id": requestID, "status": resp.Status, "invocation_id": resp.InvocationID, "tool": params.Name}
+		streamed := sink != nil && sink.started
+		tracePayload := map[string]any{"request_id": requestID, "status": resp.Status, "invocation_id": resp.InvocationID, "tool": params.Name, "streamed": streamed}
+		if streamed {
+			tracePayload["stream_events"] = sink.eventCount
+		}
 		_ = h.emitTraceEvent(r.Context(), server, "mcp.tools.call", tracePayload)
-		if len(resp.Error) > 0 {
-			result := normalizeToolCallResult(resp.Error, true)
-			if resp.Status == invocation.StatusDenied {
-				result = h.appendRulesContextToToolResult(r.Context(), result, auth.AgentIDFromContext(r.Context()), server, params.Name)
-			}
-			h.writeRPCResult(w, req.ID, result)
+
+		result := h.toolCallResult(r.Context(), server, params.Name, resp)
+		if streamed {
+			// Headers were already sent when the stream started: the
+			// terminal response is the final SSE frame, rewritten to the
+			// agent's own request id (upstream always sees id "1" — see
+			// mcp.Client.invokeHTTP/invokeStream). Never writeRPCResult or
+			// WriteHeader here. finishStream also stops the heartbeat
+			// goroutine — mandatory before returning from the handler.
+			body, _ := json.Marshal(result)
+			terminal, _ := json.Marshal(jsonRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: body})
+			deliveryErr := sink.finishStream(terminal)
+			h.recordStreamDelivery(r.Context(), resp.InvocationID, deliveryErr)
 			return
 		}
-		h.writeRPCResult(w, req.ID, normalizeToolCallResult(resp.Result, false))
+		h.writeRPCResult(w, req.ID, result)
 	default:
 		forwarded, forwardedOK := h.forwardProxyEnvelope(r.Context(), server, req, protocolVersion)
 		if !forwardedOK {
@@ -1901,6 +1981,22 @@ func effectiveActionForTool(rules []store.Rule, server, tool, agentCUID string) 
 		return r.Action, r.ID
 	}
 	return invocation.RuleActionHumanApproval, ""
+}
+
+// toolCallResult builds the MCP tool-result value for a completed
+// invocation, appending rules context to a denial exactly as the
+// non-streaming path always has. Shared by both the buffered and the SSE
+// relay branches of the tools/call handler so the result shape is
+// identical either way.
+func (h *Handler) toolCallResult(ctx context.Context, server, tool string, resp invocation.InvocationResponse) any {
+	if len(resp.Error) > 0 {
+		result := normalizeToolCallResult(resp.Error, true)
+		if resp.Status == invocation.StatusDenied {
+			result = h.appendRulesContextToToolResult(ctx, result, auth.AgentIDFromContext(ctx), server, tool)
+		}
+		return result
+	}
+	return normalizeToolCallResult(resp.Result, false)
 }
 
 // appendRulesContextToToolResult adds an extra text content block to a denied
@@ -4794,4 +4890,22 @@ func (h *Handler) debugf(format string, args ...any) {
 		return
 	}
 	log.Printf("[mcp] "+format, args...)
+}
+
+func (h *Handler) recordStreamDelivery(ctx context.Context, invocationID string, deliveryErr error) {
+	if invocationID == "" {
+		return
+	}
+	status := "succeeded"
+	message := ""
+	if deliveryErr != nil {
+		status = "failed"
+		message = deliveryErr.Error()
+		h.debugf("mcp terminal stream delivery failed invocation_id=%s err=%v", invocationID, deliveryErr)
+	}
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	if err := h.svc.RecordStreamDelivery(persistCtx, invocationID, status, message); err != nil {
+		h.debugf("mcp stream delivery audit failed invocation_id=%s err=%v", invocationID, err)
+	}
 }

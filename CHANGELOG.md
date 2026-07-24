@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Live SSE relay for `tools/call`: when an upstream MCP server answers a tool
+  call with a Server-Sent Events stream (Streamable HTTP transport, MCP spec
+  2025-11-25), Atryum relays intermediate messages (progress, logging, other
+  notifications) to the connected agent as they arrive, instead of buffering
+  the whole response and returning only the terminal result. Activates only
+  when the agent's request sends `Accept: text/event-stream` and the
+  upstream responds with one; non-streaming tool calls are unaffected.
+  If an upstream closes a resumable SSE response before the terminal
+  JSON-RPC message, Atryum reconnects with `Last-Event-ID` and continues
+  from the last event acknowledged to the upstream.
+  Streamed events and terminal delivery are audited into `invocation_events`
+  (`invocation.stream_event`, `invocation.stream_completed`, and
+  `invocation.stream_delivery`). New
+  `[defaults]` config knobs: `stream_relay_enabled` (kill-switch, default
+  on), `stream_header_timeout_seconds`, `stream_idle_timeout_seconds`,
+  `stream_max_duration_seconds`, `stream_max_message_bytes`,
+  `stream_audit_max_events`,
+  `stream_audit_max_event_bytes`. See `docs/architecture.md` for the full
+  design.
+- The relay also listens on the Streamable HTTP standalone SSE stream (a GET
+  to the upstream endpoint, independent of any specific `tools/call`), since
+  some upstream SDKs (e.g. the reference MCP Python SDK's
+  `Context.report_progress`) send progress notifications there rather than on
+  the `tools/call` response itself. Atryum rewrites each call's
+  `_meta.progressToken` to a value unique to that call before forwarding it
+  upstream, so two unrelated concurrent callers who happen to choose the same
+  token can never have their progress notifications cross-delivered.
+  Standalone connections now follow session renewal and retry transient
+  failures with bounded backoff. Stream audit writes use a fixed shared worker
+  pool; standalone-buffer drops and downstream terminal-delivery outcomes are
+  recorded explicitly.
+- Relay behavior guarantees: server-initiated upstream requests (sampling,
+  elicitation, roots) are audited but never forwarded to the agent, whichever
+  connection carried them; SSE keepalive/comment lines count as upstream
+  activity for the idle timeout, so a busy-but-quiet tool heartbeating through
+  a long run is not cut off; and stream failure audit reasons distinguish a
+  proven downstream abort (`stream_aborted_downstream`, only when a write to
+  the agent failed) from a bare request-context cancellation
+  (`stream_canceled`) and upstream timeouts (`stream_timeout`).
+
+### Fixed
+
+- Buffered (non-streaming) tool calls whose downstream client disconnects
+  mid-call no longer leave the invocation row stuck `executing`: finalization
+  writes now run on their own bounded context, matching the streaming path.
+
 ## [0.2.0] - 2026-07-14
 
 ### Added

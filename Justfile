@@ -289,6 +289,24 @@ judge-eval-check:
 	go test -tags judgeeval ./internal/invocation \
 	  -run 'TestJudge(GarbageOutput|MarkdownFenced|Request|UnrecognizedVerdict)|TestConstantVerdictBaselines' -v
 
+# Real end-to-end test of the tools/call SSE relay against the official MCP
+# reference "everything" server (@modelcontextprotocol/server-everything),
+# spawned live via npx over its Streamable HTTP transport. Requires
+# Node/npm; network access on first run to fetch the package. Skips itself
+# if npx isn't on PATH. See internal/api/mcp_everything_test.go.
+mcp-everything-test:
+	go test -tags mcpeverything ./internal/api -run TestMCPToolsCallAgainstRealEverythingServer -v
+
+# Real end-to-end test of the tools/call SSE relay's standalone-stream path,
+# against a real MCP Python SDK (FastMCP) server spawned live via uv.
+# FastMCP's Context.report_progress sends progress on the standalone SSE
+# stream, never the tools/call response itself — the complement to
+# mcp-everything-test above. Requires uv (https://docs.astral.sh/uv/);
+# network access on first run to resolve the mcp package. Skips itself if uv
+# isn't on PATH. See internal/api/mcp_standalone_stream_test.go.
+mcp-standalone-stream-test:
+	go test -tags mcpstandalone ./internal/api -run TestMCPToolsCallAgainstRealStandaloneStreamServer -v
+
 # List registered harnesses, auth protocols, and MCP targets
 integration-list:
 	integrations/scripts/agent_harness_integration_tests.sh list
