@@ -47,6 +47,12 @@ type standaloneStream struct {
 	// next time refCount drops to zero and this entry is evicted.
 	unsupported bool
 	maxBytes    int
+	// ready closes once the stream's first connect attempt (success or
+	// failure) has returned. A caller about to send a request that can
+	// trigger progress on this stream must wait on it first — otherwise the
+	// request can reach the upstream and complete its first progress update
+	// before the GET has even been issued, silently dropping that update.
+	ready chan struct{}
 }
 
 type standaloneStreamKey struct {
@@ -87,6 +93,7 @@ func (c *Client) acquireStandaloneStreamWithLimit(upstream Upstream, maxMessageB
 			key:      key,
 			waiters:  make(map[string]progressWaiter),
 			maxBytes: maxMessageBytes,
+			ready:    make(chan struct{}),
 		}
 		c.standaloneStreams[key] = s
 	}
@@ -131,6 +138,29 @@ func (c *Client) releaseStandaloneStream(s *standaloneStream) {
 	if cancel != nil {
 		cancel()
 		<-done
+	}
+}
+
+// defaultStandaloneReadyTimeout bounds waitForStandaloneReady when the caller
+// supplies no header timeout, so a hung upstream can't block a call forever
+// waiting on a connection attempt that will never resolve.
+const defaultStandaloneReadyTimeout = 10 * time.Second
+
+// waitForStandaloneReady blocks until s's first connect attempt completes, so
+// the tools/call request sent right after this returns cannot race ahead of
+// the standalone GET subscribing upstream. Bounded by headerTimeout (or
+// defaultStandaloneReadyTimeout when unset) and ctx, so a slow or hanging
+// upstream degrades to the pre-fix race rather than blocking indefinitely.
+func waitForStandaloneReady(ctx context.Context, s *standaloneStream, headerTimeout time.Duration) {
+	if headerTimeout <= 0 {
+		headerTimeout = defaultStandaloneReadyTimeout
+	}
+	timer := time.NewTimer(headerTimeout)
+	defer timer.Stop()
+	select {
+	case <-s.ready:
+	case <-ctx.Done():
+	case <-timer.C:
 	}
 }
 
@@ -186,8 +216,13 @@ func (c *Client) openStandaloneGET(ctx context.Context, upstream Upstream, sessi
 func (c *Client) runStandaloneStream(ctx context.Context, upstream Upstream, s *standaloneStream, done chan<- struct{}) {
 	defer close(done)
 	attempt := 0
+	firstAttempt := true
 	for {
 		resp, err := c.openStandaloneGET(ctx, upstream, s.key.sessionID, s.key.protocol)
+		if firstAttempt {
+			firstAttempt = false
+			close(s.ready)
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				return

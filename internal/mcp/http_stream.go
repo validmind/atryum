@@ -523,6 +523,7 @@ func (c *Client) invokeHTTPStream(ctx context.Context, upstream Upstream, tool s
 		progressCh = make(chan StreamEvent, standaloneWaiterEventBuffer)
 		standalone = c.acquireStandaloneStreamWithLimit(upstream, opts.maxMessageBytes())
 		standalone.registerWaiter(wireToken, progressWaiter{events: progressCh, dropped: &standaloneDropped})
+		waitForStandaloneReady(ctx, standalone, opts.HeaderTimeout)
 		defer func() {
 			current := standalone
 			current.unregisterWaiter(wireToken)
@@ -557,6 +558,7 @@ func (c *Client) invokeHTTPStream(ctx context.Context, upstream Upstream, tool s
 			c.releaseStandaloneStream(standalone)
 			standalone = c.acquireStandaloneStreamWithLimit(upstream, opts.maxMessageBytes())
 			standalone.registerWaiter(wireToken, progressWaiter{events: progressCh, dropped: &standaloneDropped})
+			waitForStandaloneReady(ctx, standalone, opts.HeaderTimeout)
 		}
 		outcome, err = c.doHTTPToolCallStream(ctx, upstream, body, effectiveSink, progressCh, opts)
 		if err != nil {
