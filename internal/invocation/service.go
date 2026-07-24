@@ -496,10 +496,16 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 			decision = policy.Decision{Disposition: policy.DispositionHuman, Reason: "policy error: " + policyErr.Error()}
 		}
 	}
-	// Persist matched_rule_id for human-approval invocations so approve/deny handlers can reference it.
-	// Also tag AI-escalated invocations so the UI can distinguish them from direct human_approval rules.
+	// Record the rule that decided this call regardless of disposition. AI-decided
+	// invocations (DispositionNever/DispositionAuto) need it just as much as gated
+	// ones: without it the audit view has no rule to name and has to guess. The
+	// downstream denyByPolicy/executeNow calls carry inv onward and their
+	// UpdateResult persists the id, so no extra write is needed here for those.
+	inv.MatchedRuleID = matchedRuleID
+	// Human-gated invocations must be written now, before the wait, so approve/deny
+	// handlers can reference the rule. Also tag AI-escalated invocations so the UI
+	// can distinguish them from direct human_approval rules.
 	if decision.Disposition == policy.DispositionHuman || decision.Disposition == policy.DispositionWorkflow || decision.Disposition == dispositionAIEscalated {
-		inv.MatchedRuleID = matchedRuleID
 		if decision.Disposition == dispositionAIEscalated {
 			inv.Approval = newApproval("ai_escalated", decision.Reason, aiConfidence)
 		}
