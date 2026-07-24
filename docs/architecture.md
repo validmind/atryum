@@ -11,12 +11,18 @@ harnesses, an MCP-compatible proxy, and an admin API/UI. All ingress paths share
 same invocation service, rule evaluation, and audit store. The stock binary and programs
 that embed Atryum both enter through the public `pkg/atryum` bootstrap package.
 
+Two terms recur throughout this document. **Downstream** is the agent or harness side —
+the caller waiting on Atryum's response. **Upstream** is the tool-server side — where
+Atryum forwards the call to do the actual work. Atryum sits between them: a request flows
+agent → Atryum → tool server, and the result (or, for a streamed call, progress updates
+along the way) flows back the other direction.
+
 ```mermaid
 flowchart LR
     Stock[cmd/atryum stock binary]
     Embedder[Embedding Go program]
     Hook[Agent harness or hook]
-    MCP[MCP client]
+    MCP[Downstream MCP client]
     Claude[Claude Managed Agents API]
     Admin[Admin UI or API client]
 
@@ -27,7 +33,7 @@ flowchart LR
         Service[Invocation service]
         Rules[Rule evaluation]
         Store[(SQLite or PostgreSQL)]
-        Upstream[MCP client]
+        MCPClient[Upstream MCP client]
     end
 
     Stock --> Bootstrap
@@ -42,8 +48,8 @@ flowchart LR
     Service --> Rules
     Rules --> Store
     Service --> Store
-    Service --> Upstream
-    Upstream -->|HTTP or stdio| Tools[Upstream MCP servers]
+    Service --> MCPClient
+    MCPClient -->|HTTP or stdio| Tools[Upstream MCP servers]
 ```
 
 The diagram corresponds to `cmd/atryum`, `pkg/atryum`, `pkg/migrations`,
