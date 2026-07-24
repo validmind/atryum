@@ -181,7 +181,7 @@ release-build tag:
           local goarch="$2"
           local out="atryum-${goos}-${goarch}"
 
-          (cd "$build_dir" && GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build -trimpath -tags release_notices -ldflags "-X atryum/internal/version.Version={{tag}}" -o "$release_dir/$out" ./cmd/atryum)
+          (cd "$build_dir" && GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build -trimpath -tags release_notices -ldflags "-X github.com/validmind/atryum/internal/version.Version={{tag}}" -o "$release_dir/$out" ./cmd/atryum)
         }
 
         # Build targets
