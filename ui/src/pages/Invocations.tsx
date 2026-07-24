@@ -165,7 +165,14 @@ const AuditEntryRow: React.FC<{ entry: AuditEntry }> = ({ entry }) => {
             color="text.subtle"
             flexShrink={0}
           />
-          <Text fontSize="sm" fontWeight="medium" noOfLines={1}>
+          {/* The name can be a label derived from the rule's action and
+              patterns when the rule has no description, so expose the id on
+              hover — that is what pins down which rule this actually was. */}
+          <Text
+            fontSize="sm"
+            fontWeight="medium"
+            noOfLines={1}
+            title={entry.ruleId ?? undefined}>
             {entry.ruleName ?? "*No rule matched*"}
           </Text>
           {badge}

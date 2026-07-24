@@ -1,4 +1,9 @@
-import type { Invocation, Rule, InvocationEvent } from '../api/AtryumAPI';
+import type {
+  Invocation,
+  Rule,
+  RuleAction,
+  InvocationEvent,
+} from '../api/AtryumAPI';
 
 export const STATUS_COLOR: Record<string, string> = {
   pending_approval: 'orange',
@@ -200,6 +205,36 @@ export function buildInvocationAudit(
   return entries;
 }
 
+export const RULE_ACTION_LABEL: Record<RuleAction, string> = {
+  auto_approve: 'Auto Approve',
+  auto_deny: 'Auto Deny',
+  human_approval: 'Human Approval',
+  ai_evaluation: 'AI Evaluation',
+};
+
+const rulePatternLabel = (patterns: string[]): string =>
+  patterns.length === 0 ? 'all' : patterns.join(', ');
+
+/**
+ * Display name for a rule we actually hold. Description is optional on a rule,
+ * so falling straight through to an "unknown rule" label would claim ignorance
+ * about a rule sitting right there. What it does and what it matches identifies
+ * it well enough to find on the Rules page.
+ */
+export const ruleDisplayName = (rule: Rule): string =>
+  rule.description?.trim() ||
+  `${RULE_ACTION_LABEL[rule.action]} · servers: ${rulePatternLabel(
+    rule.server_patterns,
+  )} · tools: ${rulePatternLabel(rule.tool_patterns)}`;
+
+// Label for a rule we have an id for but no loaded record. A present id can never
+// refer to a deleted rule: matched_rule_id is a FK with ON DELETE SET NULL, so
+// deleting a rule nulls the column rather than leaving it dangling. The id is
+// therefore valid and simply missing from the loaded rules list (see the RULES_KEY
+// invalidation in useInvocationStream) — most often because that list has not
+// finished loading. Callers surface the id itself on hover.
+const unresolvedRuleLabel = '*Unavailable rule*';
+
 function buildAuditFromEvents(
   inv: InvocationAuditInput,
   rules: Rule[],
@@ -220,8 +255,11 @@ function buildAuditFromEvents(
     const d = (evt.data ?? {}) as RuleEvaluatedEventData;
     const ruleId = d.rule_id ?? null;
     const rule = ruleId ? (rules.find((r) => r.id === ruleId) ?? null) : null;
-    const ruleName =
-      rule?.description ?? (ruleId ? '*Deleted Rule*' : null);
+    const ruleName = rule
+      ? ruleDisplayName(rule)
+      : ruleId
+        ? unresolvedRuleLabel
+        : null;
     const isAIEval = d.action === 'ai_evaluation' && !!ruleId;
     const confidence = d.confidence;
     const aiReason =
@@ -279,19 +317,22 @@ function buildAuditFromApproval(
     approvalStatus === 'ai_escalated_approved' ||
     approvalStatus === 'ai_escalated_denied';
 
-  // When matched_rule_id is absent but the reason indicates a specific rule was
-  // AI-evaluated (not the all-deferred fallback), the rule likely existed and
-  // was since deleted. Distinguish that from a genuine no-match fallback.
+  // An AI-evaluated decision with no matched_rule_id did match a specific rule
+  // (the all-deferred fallback is the one case that didn't) — we just cannot name
+  // it. Two indistinguishable causes: the invocation predates matched_rule_id
+  // being persisted on the AI-decided paths, or the rule was deleted and the
+  // column's ON DELETE SET NULL cleared it. Name both instead of asserting the
+  // deletion, which was wrong for every pre-fix record.
   const isAIAllDeferred = reason.startsWith(
     'ai_evaluation: all matching rules deferred',
   );
-  const ruleName =
-    rule?.description ??
-    (ruleId
-      ? '*Deleted Rule*'
+  const ruleName = rule
+    ? ruleDisplayName(rule)
+    : ruleId
+      ? unresolvedRuleLabel
       : isAIEval && !isAIAllDeferred
-        ? '*Deleted Rule*'
-        : null);
+        ? '*Unrecorded or deleted rule*'
+        : null;
 
   const steps = resolveDecisionSteps(
     approvalStatus ?? '',

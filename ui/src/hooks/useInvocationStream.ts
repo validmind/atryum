@@ -71,7 +71,8 @@ export const useInvocationStream = (
 
       // Also refresh the rules cache: a new invocation may reference a rule
       // that was created after the rules list was last fetched, which would
-      // cause the audit display to show "*Deleted Rule*" for a valid rule.
+      // cause the audit display to fall back to "*Unknown rule (…)*" for a
+      // rule that is perfectly valid and simply not loaded yet.
       void queryClient.invalidateQueries([RULES_KEY]);
 
       const currentSelectedId = selectedIdRef.current;
