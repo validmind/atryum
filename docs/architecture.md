@@ -362,6 +362,309 @@ cross-delivery.
 After startup wiring, each call crosses the runtime packages in this order:
 `internal/api` → `internal/invocation` → `internal/mcp`.
 
+#### Control flow in pseudocode
+
+The table above says which package owns what; this section walks the same call in
+the order it actually runs, in pseudocode, with the reason each step exists. Nothing
+here is transport-specific until the HTTP/stdio split.
+
+**1. Deciding whether to stream at all (`internal/api`)**
+
+```
+handle tools/call request:
+    if client sent "Accept: text/event-stream" and the relay is not killed-switched:
+        sink = new SSE sink wrapping this response
+        # Constructing the sink does not commit the response to SSE. Only the
+        # upstream actually starting a stream (below) does that. This is what
+        # keeps a plain-JSON upstream response possible right up until the
+        # last moment.
+    else:
+        sink = nil
+
+    result = invocationService.InvokeStreaming(request, sink)
+
+    if sink was actually started:
+        # Headers are already committed as SSE. From here the only spec-legal
+        # way to end the exchange is one more SSE frame carrying the result
+        # (or a JSON-RPC error) — never a second status line, never a bare
+        # close.
+        write result as a final SSE event, stop the heartbeat, close
+    else:
+        # Either there was no sink, or one existed but the upstream never
+        # opened a stream (a plain JSON tool). Nothing has reached the wire
+        # yet, so the ordinary response is still available.
+        write result as one normal JSON response
+```
+
+**2. Rule and approval evaluation stay sink-agnostic (`internal/invocation`)**
+
+```
+InvokeStreaming(request, sink):
+    resolve the upstream server
+    create the durable invocation row (status = received)
+    evaluate rules, or the default policy if none match      # identical to the buffered call
+    record the decision as an audit event
+
+    switch decision:
+        auto_denied    -> persist denied, return              # sink never touched
+        auto_approved  -> finishExecution(invocation, sink)
+        human_approval ->
+            persist pending_approval
+            block on an in-memory channel until an admin decides
+            # sink stays untouched for as long as this blocks: nothing streams
+            # while a call is waiting on a human, matching the plain
+            # Atryum-executed-call flow above.
+            if approved: finishExecution(invocation, sink)
+            else: persist denied, return
+
+finishExecution(invocation, sink):
+    if sink == nil:
+        finishExecutionBuffered(invocation)         # today's non-streaming path, unchanged
+    else:
+        finishExecutionStreaming(invocation, sink)
+```
+
+Threading `sink` this deep exists so the decision pipeline never has to know streaming
+exists at all — it is the same code, gated only by whether `sink` happens to be `nil`.
+
+**3. Wrapping the sink for audit before it reaches the transport (`internal/invocation`)**
+
+```
+finishExecutionStreaming(invocation, sink):
+    audited = decorate(sink) so every relayed event is durably recorded as it passes through
+              # A decorator, not a fork: it never skips forwarding to the real
+              # sink to make its own recording succeed, and it records the
+              # event even if forwarding then fails downstream — the audit
+              # trail must reflect what the upstream actually sent, not just
+              # what the agent actually received.
+    result, err = mcpClient.InvokeStream(upstream, tool, input, audited, streamOptions)
+
+    if err:
+        reason = classify(err):
+            the audited sink saw its own forwarding call fail  -> "the agent connection died"
+            our own guard's context was the one that cancelled -> "we gave up (timeout)"
+            anything else                                      -> "the transport itself failed"
+        persist invocation as failed, with that reason on the audit row
+    else:
+        persist invocation as succeeded or failed, from the upstream's own result
+
+    audited.finish(outcome)   # one summary audit row: events seen vs. persisted vs. dropped
+    return response
+```
+
+Classifying the error exists so an operator reading the audit trail can tell "the agent
+hung up" apart from "our own bound fired" apart from "the upstream broke" — otherwise
+every one of those looks like the same generic transport error.
+
+**4. Choosing a transport (`internal/mcp`)**
+
+```
+InvokeStream(upstream, tool, input, sink, opts):
+    if sink == nil: return Invoke(...)          # buffered call, unchanged
+    if upstream is stdio: return invokeStdioStream(...)
+    else:                 return invokeHTTPStream(...)
+```
+
+**5. HTTP: the two-path merge — the core of the feature**
+
+```
+invokeHTTPStream(upstream, tool, input, sink, opts):
+    ensure the upstream HTTP session is initialized
+
+    if the caller supplied a progressToken:
+        wireToken = mint a value unique to this call; remember the caller's original token
+        # Atryum multiplexes every concurrent caller of one upstream onto a
+        # single shared session. If two unrelated callers happened to choose
+        # the same progressToken, forwarding it unchanged would let one
+        # caller's progress leak into another's stream. A per-call wire token
+        # makes routing on the standalone path (below) unambiguous, and the
+        # original token is restored before anything is relayed downstream —
+        # the caller never sees Atryum's internal value.
+
+        standalone = acquire the shared standalone-stream connection for this upstream session
+                     # Lazily created: the first concurrent caller opens it;
+                     # later ones just add themselves as listeners on the one
+                     # connection already running.
+        register this call as a listener for wireToken
+        wait for the standalone connection's first connect attempt to resolve
+                     # Acquiring only starts a background connection attempt —
+                     # it does not wait for it. If the request below reached
+                     # the upstream and produced its first progress
+                     # notification before this GET had actually subscribed,
+                     # that notification would have nowhere to land and would
+                     # be silently lost. This wait closes that race. It is
+                     # bounded by the header timeout, so a hung upstream
+                     # degrades to "no standalone progress for this call"
+                     # rather than blocking it forever.
+
+    send the tools/call request upstream, carrying wireToken in place of the caller's token
+
+    if the response is plain JSON:
+        return it directly                       # nothing below this line runs
+    else:                                          # the response is SSE
+        start a background reader for this call's own POST response (Path A, below)
+        loop:                                       # the merge loop
+            select whichever arrives first:
+                a message from the standalone stream, already routed to this call (Path B)
+                a message from this call's own POST-response reader (Path A)
+
+                on a progress/notification, from either path:
+                    restore the caller's original progressToken
+                    hand it to the audited sink (recorded, then relayed to the agent)
+
+                on the terminal response (only ever arrives via Path A):
+                    briefly keep draining any standalone progress already in flight
+                    # Progress and the terminal response travel on
+                    # independent connections, so one can race past the
+                    # other. A short settle window lets a near-simultaneous
+                    # progress notification still arrive before the call is
+                    # considered finished, instead of losing it by a few
+                    # milliseconds.
+                    unregister this call's standalone listener
+                    return the terminal result
+```
+
+Path A — this call's own reader, the only one of the two paths that can resume:
+
+```
+Path A reader (its own goroutine, one per call):
+    loop:
+        read the next SSE event from the POST response
+        if the connection drops:
+            if no event carrying an id was ever seen: give up      # nothing to resume from
+            else:
+                wait a bounded, jittered backoff
+                reconnect with "Last-Event-ID: <last id seen>"
+                # The Streamable HTTP transport lets a server end this
+                # response early and expects the client to resume from where
+                # it left off, rather than losing everything already sent or
+                # replaying the call from scratch.
+                if the server inclusively replays that same id, skip the one duplicate
+                keep reading from the resumed connection
+        else:
+            forward the event into the merge loop above
+```
+
+Path B — the standalone stream, shared by every concurrent call on the session:
+
+```
+Standalone reader (one shared goroutine per upstream session):
+    loop:
+        open a GET SSE connection to the upstream (no Last-Event-ID — this
+        isn't resuming a specific call, just listening)
+        signal "first connect attempt resolved"     # what invokeHTTPStream waits on above
+        loop:
+            read the next SSE event
+            if it carries a progressToken: hand it to whichever registered call owns that token
+            else if exactly one call is currently listening: hand it to that call
+                # With only one candidate, attributing an untokened message is
+                # safe. With several in flight, it would be a guess — and
+                # guessing wrong leaks one caller's message to another, which
+                # is worse than dropping it.
+            else: drop it                            # ambiguous; safety over completeness
+        on disconnect: reconnect with backoff          # no replay cursor on this path —
+                                                        # messages sent while disconnected can be missed
+```
+
+**6. stdio: a simpler single-reader path, no shared connections**
+
+```
+invokeStdioStream(upstream, tool, input, sink, opts):
+    start the upstream as a child process, wired to its stdin/stdout
+    run the initialize handshake, bounded by the header timeout
+    send the tools/call request as one JSON-RPC line
+
+    loop reading newline-delimited JSON-RPC messages:
+        on a notification or a server-to-client request: hand it to the sink
+        on the terminal response for this call: return it
+
+    # Always kill the whole process group on the way out, even after a
+    # timeout — killing only the direct child can leave a spawned
+    # grandchild process running forever.
+```
+
+**7. Enforcing timeouts across both transports (`internal/mcp`)**
+
+```
+callTimeoutGuard:
+    one cancellable context shared by the whole call
+
+    arm a setup timer covering "waiting on response headers" / "the initialize handshake"
+    once headers or the handshake are in: disarm the setup timer, arm two more:
+        idle timer   — reset on every relayed message, including bare SSE
+                       keepalive/comment lines
+                       # A tool that is slow but alive must not be punished
+                       # for going quiet between progress updates, as long as
+                       # something keeps proving the connection is alive.
+        max-duration timer — never reset, a hard ceiling regardless of activity
+
+    whichever timer fires first cancels the shared context and records why,
+    so the caller can tell "we gave up" apart from "the transport failed on its own"
+```
+
+The idle timer specifically re-derives elapsed time from a recorded timestamp rather
+than trusting that its callback firing means the call is genuinely idle: resetting a
+timer concurrently with its own callback is a documented race, so the callback instead
+checks real elapsed time and re-arms itself if it turns out to have fired early.
+
+**8. Auditing without blocking delivery (`internal/invocation`)**
+
+```
+recording one relayed event:
+    hand it to a fixed pool of shared background workers, sharded by call
+    # Not one goroutine per call: that design lets a stalled audit store leak
+    # one goroutine per concurrent streaming call. A fixed shared pool bounds
+    # that no matter how many calls are in flight — at the cost of the queue
+    # filling under sustained overload, which is reported, not hidden.
+    if the shard's queue is full: count it as dropped, do not block the relay
+    # Audit persistence must never slow down or stall live delivery to the
+    # agent. A full queue means "keep serving live traffic; this one row will
+    # not be written," and that trade is made visible, not silent.
+
+when the call ends:
+    wait briefly for this call's in-flight audit writes to finish
+    write one summary row: events seen / persisted / dropped / whether the wait itself timed out
+    # Per-event rows can be capped or dropped under load or by configuration;
+    # the summary row is the one place an operator can trust to see the true
+    # totals even when individual event rows are missing.
+```
+
+**9. Delivering to the agent, and auditing that delivery separately (`internal/api`)**
+
+```
+sink.StreamStarted():
+    commit to SSE: write status 200 and SSE headers, flush
+    start a background heartbeat loop
+    # Intermediaries (proxies, load balancers) commonly kill connections
+    # after ~60s of silence. A tool that is busy but has nothing to report
+    # yet would otherwise have its downstream leg cut for reasons that have
+    # nothing to do with the tool call itself.
+
+sink.Event(evt):
+    if it is a server-to-client request (sampling, elicitation, roots): drop it
+        # Atryum doesn't advertise those capabilities in initialize, and the
+        # agent has no channel to answer a request arriving on what it
+        # expects to be a tools/call response stream. Audited, never relayed.
+    else: write one SSE frame, one "data:" line per line of the payload
+        # A raw newline embedded in a single "data:" line breaks SSE framing
+        # for any compliant parser.
+
+sink.finishStream(terminal):
+    stop the heartbeat first
+    # Otherwise the heartbeat goroutine could still be writing to the
+    # response after the handler has already returned.
+    write the terminal frame as the last SSE event, using the agent's own
+        request id — never the fixed id Atryum sends upstream on the wire
+
+after the handler returns:
+    record whether that terminal write actually succeeded, as its own audit row,
+    separate from the invocation's succeeded/failed outcome
+    # The upstream tool call can succeed even though the agent never received
+    # the terminal frame (e.g. it disconnected moments earlier). Conflating
+    # the two would misreport a delivery failure as a tool failure, or the
+    # reverse.
+```
+
 #### Resource limits
 
 A single timeout is not enough for a stream. A long-running tool can be healthy as long
