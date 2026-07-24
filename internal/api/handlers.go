@@ -841,8 +841,8 @@ func (h *Handler) SetManagedAgentBindings(repo managedAgentBindingsRepo) {
 }
 
 // SetAPIKeyAuth installs the static API-key/secret pair accepted by read-only
-// reporting endpoints and as a trusted machine credential for privileged
-// review and operator endpoints.
+// reporting endpoints and as a trusted machine credential for operator
+// endpoints.
 func (h *Handler) SetAPIKeyAuth(cfg auth.APIKeyConfig) {
 	h.apiKeyAuth = cfg
 }
@@ -897,15 +897,7 @@ func (h *Handler) Routes() http.Handler {
 		mux.Handle("/.well-known/oauth-protected-resource", h.protectedResourceMetadata())
 	}
 	mcpHandler := h.agentRuntimeHandler(http.HandlerFunc(h.invokeUpstream))
-	operatorAuthMW := auth.AdminMiddleware(h.authValidator, h.apiKeyAuth, auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})
-	// Review and operator routes currently share Atryum's privileged API
-	// middleware. Keeping separate wrappers makes their authorization roles
-	// explicit and lets embedders split the capabilities without renaming the
-	// route layer again.
-	reviewAuthMW := operatorAuthMW
-	review := func(fn http.HandlerFunc) http.Handler {
-		return reviewAuthMW(fn)
-	}
+	operatorAuthMW := auth.OperatorMiddleware(h.authValidator, h.apiKeyAuth, auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})
 	operator := func(fn http.HandlerFunc) http.Handler {
 		return operatorAuthMW(fn)
 	}
@@ -913,9 +905,9 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("/mcp/", mcpHandler)
 	mux.Handle("/api/v1/invocations", h.agentRuntimeHandler(http.HandlerFunc(h.invocations)))
 	mux.HandleFunc("/api/v1/auth/config", h.authConfig)
-	mux.Handle("/api/v1/review/invocations", review(h.reviewInvocations))
-	mux.Handle("/api/v1/review/invocations/stream", review(h.reviewInvocationStream))
-	mux.Handle("/api/v1/review/invocations/", review(h.reviewInvocationDetail))
+	mux.Handle("/api/v1/review/invocations", operator(h.reviewInvocations))
+	mux.Handle("/api/v1/review/invocations/stream", operator(h.reviewInvocationStream))
+	mux.Handle("/api/v1/review/invocations/", operator(h.reviewInvocationDetail))
 	mux.Handle("/api/v1/servers", operator(h.operatorServers))
 	mux.Handle("/api/v1/servers/", operator(h.operatorServerDetail))
 	mux.Handle("/api/v1/rules", operator(h.operatorRules))
@@ -942,9 +934,9 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("/api/v1/external/sessions", h.agentRuntimeHandler(http.HandlerFunc(h.externalSessions)))
 	mux.Handle("/api/v1/external/plans", h.agentRuntimeHandler(http.HandlerFunc(h.externalPlans)))
 	mux.Handle("/api/v1/external/plans/", h.agentRuntimeHandler(http.HandlerFunc(h.externalPlanDetail)))
-	mux.Handle("/api/v1/plans", review(h.reviewPlans))
-	mux.Handle("/api/v1/plans/stream", review(h.reviewPlanStream))
-	mux.Handle("/api/v1/plans/", review(h.reviewPlanDetail))
+	mux.Handle("/api/v1/plans", operator(h.reviewPlans))
+	mux.Handle("/api/v1/plans/stream", operator(h.reviewPlanStream))
+	mux.Handle("/api/v1/plans/", operator(h.reviewPlanDetail))
 	apiKeyMW := auth.APIKeyMiddleware(h.apiKeyAuth)
 	mux.Handle("/agent_ids", apiKeyMW(http.HandlerFunc(h.agentIDs)))
 	mux.Handle("/invocations/", apiKeyMW(http.HandlerFunc(h.invocationsByAgentID)))

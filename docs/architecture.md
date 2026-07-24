@@ -15,7 +15,7 @@ flowchart LR
     Hook[Agent harness or hook]
     MCP[MCP client]
     Claude[Claude Managed Agents API]
-    Operator[Reviewer, operator, or UI client]
+    Operator[Operator or UI client]
 
     subgraph Atryum[Atryum process]
         API[HTTP and MCP handlers]
@@ -148,7 +148,7 @@ sequenceDiagram
     participant API as API or MCP handler
     participant Service as invocation.Service
     participant Store as Invocation and event stores
-    participant Operator as Reviewer, operator, or UI
+    participant Operator as Operator or UI
     participant MCP as Upstream MCP server
 
     Caller->>API: Invoke tool
@@ -306,7 +306,7 @@ Inbound and upstream authentication are separate trust boundaries:
 - Agent runtime auth validates bearer tokens and places the configured agent identity
   claim in request context. The invocation service uses that trusted identity for rule
   targeting and ownership checks.
-- Privileged API auth protects review and operator APIs when an auth provider has
+- Privileged API auth protects operator APIs when an auth provider has
   `admin_enabled = true` and the configured admin claim is present.
 - Upstream MCP authentication is owned by `internal/mcp/auth_provider`; credentials and
   OAuth tokens are never returned to the agent caller.

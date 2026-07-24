@@ -74,8 +74,8 @@ func MiddlewareWithOptions(v *Validator, resourceMetadataPath string, opts Middl
 	}
 }
 
-// AdminMiddleware returns an HTTP middleware that authenticates privileged
-// review and operator API requests. It accepts two credential paths:
+// OperatorMiddleware returns an HTTP middleware that authenticates privileged
+// operator API requests. It accepts two credential paths:
 //
 //  1. Machine-key path: when the request carries matching X-API-Key and
 //     X-API-Secret headers (checked against apiKeyCfg), the request is
@@ -89,7 +89,7 @@ func MiddlewareWithOptions(v *Validator, resourceMetadataPath string, opts Middl
 //
 // When v is nil, AdminEnabled() is false, or SkipVerify is set, the
 // middleware is a no-op (auth disabled).
-func AdminMiddleware(v *Validator, apiKeyCfg APIKeyConfig, opts MiddlewareOptions) func(http.Handler) http.Handler {
+func OperatorMiddleware(v *Validator, apiKeyCfg APIKeyConfig, opts MiddlewareOptions) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		if v == nil || !v.AdminEnabled() || opts.SkipVerify {
 			return next

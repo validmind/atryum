@@ -137,13 +137,10 @@ Public (auth-protected when `[[auth]]` is configured):
 - `GET /api/v1/agent/rules` — agent-facing rule introspection.
 - `GET /healthz` — liveness.
 
-Review workflow:
+Operator APIs:
 
 - `/api/v1/review/invocations`, `/{id}`, `/{id}/events`, `/{id}/approve`, `/{id}/deny`, `/{id}/summarize`, `/stream` (SSE)
 - `/api/v1/plans`, `/{id}`, `/{id}/events`, `/{id}/approve`, `/{id}/deny`, `/{id}/revise`, `/{id}/expire`, `/stream` (SSE)
-
-Operator APIs:
-
 - `/api/v1/servers`, `/{name}`, `/{name}/test`, `/{name}/tools`, `/{name}/connect`, `/{name}/connect/status`
 - `/api/v1/rules`, `/{id}` (including reorder/move)
 - `/api/v1/agents`, `/{id}`, `/sync`, `/{id}/charter-preview`
