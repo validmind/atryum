@@ -148,7 +148,7 @@ func runServer(args []string, o options) error {
 	planEventsRepo := store.NewPlanEventsRepoWithDialect(db, dialect)
 
 	// syncAgents is the shared sync function used both at startup and via the
-	// admin API POST /api/v1/admin/agents/sync endpoint.
+	// operator API POST /api/v1/agents/sync endpoint.
 	// org_cuid and agent_record_type_slug are read exclusively from the DB
 	// (configured via the Settings UI).
 	syncAgents := func(ctx context.Context) error {
@@ -268,9 +268,9 @@ func runServer(args []string, o options) error {
 		service.SetInvocationSummarizer(&summaryAdapter{client: backendClient})
 	}
 	service.SetSessionStore(store.NewExternalSessionRepoWithDialect(db, dialect))
-	serverAdmin := api.NewServerAdminService(serverRepo, oauthRepo, client, 5*time.Second, cfg.Server.PublicBaseURL)
+	serverOperator := api.NewServerOperatorService(serverRepo, oauthRepo, client, 5*time.Second, cfg.Server.PublicBaseURL)
 	if *initServers {
-		if err := initEnabledServerStatuses(context.Background(), serverRepo, serverAdmin); err != nil {
+		if err := initEnabledServerStatuses(context.Background(), serverRepo, serverOperator); err != nil {
 			return fmt.Errorf("init servers: %w", err)
 		}
 	}
@@ -280,7 +280,7 @@ func runServer(args []string, o options) error {
 	if backendClient != nil {
 		syncAgentsFn = syncAgents
 	}
-	handler := api.NewHandler(service, serverAdmin, policyRegistry, rulesRepo, agentsRepo, agentSyncSettingsRepo, llmConfigsRepo, syncAgentsFn, backendClient, localEvaluator)
+	handler := api.NewHandler(service, serverOperator, policyRegistry, rulesRepo, agentsRepo, agentSyncSettingsRepo, llmConfigsRepo, syncAgentsFn, backendClient, localEvaluator)
 	handler.SetManagedAgentBindings(managedAgentBindingRepo)
 	for _, register := range o.extraRoutes {
 		handler.AddExtraRoutes(register)
@@ -508,7 +508,7 @@ func (a *managedAuditAdapter) ListEvents(ctx context.Context, invocationID strin
 	return a.events.ListByInvocation(ctx, invocationID, filter)
 }
 
-func initEnabledServerStatuses(ctx context.Context, repo *store.ServerRepo, serverAdmin *api.ServerAdminService) error {
+func initEnabledServerStatuses(ctx context.Context, repo *store.ServerRepo, serverOperator *api.ServerOperatorService) error {
 	enabled := true
 	const pageSize = 100
 	var offset uint64
@@ -521,7 +521,7 @@ func initEnabledServerStatuses(ctx context.Context, repo *store.ServerRepo, serv
 			break
 		}
 		for _, server := range servers {
-			result, err := serverAdmin.Test(ctx, server.Name)
+			result, err := serverOperator.Test(ctx, server.Name)
 			if err != nil {
 				log.Printf("startup server init failed for %s: %v", server.Name, err)
 				continue

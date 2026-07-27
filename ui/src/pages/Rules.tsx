@@ -24,6 +24,7 @@ import { CreateRuleModal } from '../components/CreateRuleModal';
 import { useRules, useMoveRule } from '../hooks/useRules';
 import { useAgents } from '../hooks/useAgents';
 import { type Agent, type Rule, type RuleAction } from '../api/AtryumAPI';
+import { RULE_ACTION_LABEL } from '../utils/invocationDisplay';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -34,12 +35,9 @@ const ACTION_COLOR: Record<RuleAction, string> = {
   ai_evaluation: 'purple',
 };
 
-const ACTION_LABEL: Record<RuleAction, string> = {
-  auto_approve: 'Auto Approve',
-  auto_deny: 'Auto Deny',
-  human_approval: 'Human Approval',
-  ai_evaluation: 'AI Evaluation',
-};
+// Shared with the invocation audit view, which derives a display name for rules
+// that have no description — the two must agree on what each action is called.
+const ACTION_LABEL = RULE_ACTION_LABEL;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 

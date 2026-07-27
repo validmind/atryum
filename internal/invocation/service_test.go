@@ -1403,6 +1403,127 @@ func newTestService(t *testing.T, cfg config.Config) *invocation.Service {
 	return invocation.NewService(store.NewInvocationRepo(db), store.NewEventRepo(db), resolver, mcp.NewHTTPClient(), policy.AlwaysApproveProvider{}, 5*time.Second, nil, nil, nil, nil)
 }
 
+// AI-decided invocations on the proxy Invoke path must persist the rule that
+// decided them. When they don't, the audit view has no id to look up and
+// misreports the (still-present) rule as deleted — sc-17298.
+func TestInvokeAIEvaluationPersistsMatchedRuleID(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		verdict    string
+		wantStatus invocation.Status
+	}{
+		{name: "denied", verdict: "denied", wantStatus: invocation.StatusDenied},
+		{name: "approved", verdict: "approved", wantStatus: invocation.StatusSucceeded},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode: %v", err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				switch body["method"] {
+				case "initialize":
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"jsonrpc": "2.0", "id": body["id"],
+						"result": map[string]any{
+							"serverInfo":   map[string]any{"name": "fake-shortcut", "version": "0.1.0"},
+							"capabilities": map[string]any{},
+						},
+					})
+				case "notifications/initialized":
+					w.WriteHeader(http.StatusAccepted)
+				case "tools/list":
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"jsonrpc": "2.0", "id": body["id"],
+						"result": map[string]any{"tools": []map[string]any{{
+							"name": "stories-get-by-id", "description": "Fetch a story.",
+						}}},
+					})
+				case "tools/call":
+					_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": body["id"], "result": map[string]any{"content": []map[string]any{{"type": "text", "text": "ok"}}}})
+				default:
+					t.Errorf("unexpected method: %v", body["method"])
+					w.WriteHeader(http.StatusBadRequest)
+				}
+			}))
+			defer upstream.Close()
+
+			db := newSQLiteTestDB(t)
+			resolver := mcp.NewResolver(store.NewServerRepo(db), config.Config{
+				Upstreams: []config.UpstreamConfig{{Name: "shortcut", Mode: "http", BaseURL: upstream.URL, Enabled: true, TimeoutSeconds: 5}},
+			})
+			if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+
+			defaultAgent := invocation.AgentRecord{
+				ID:                 "agent-local-default",
+				VMCUID:             "agent-vm-default",
+				VMOrganizationCUID: "org-default",
+				Charter:            "Deny destructive tool calls, otherwise approve.",
+			}
+			// Use the real rules repo, not a stub: invocations.matched_rule_id carries
+			// a FOREIGN KEY to approval_rules(id), so only a persisted rule proves the
+			// id actually lands in the row.
+			rules := store.NewRulesRepo(db)
+			if err := rules.Create(context.Background(), store.Rule{
+				ID:              "rule-ai-shortcut",
+				Action:          string(invocation.RuleActionAIEvaluation),
+				ServerPatterns:  []string{"shortcut"},
+				ToolPatterns:    []string{"stories-get-by-id"},
+				ModelConfigCUID: "model-ai",
+				Description:     "AI-evaluate Shortcut reads",
+				Enabled:         true,
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			invocations := store.NewInvocationRepo(db)
+			service := invocation.NewService(
+				invocations,
+				store.NewEventRepo(db),
+				resolver,
+				mcp.NewHTTPClient(),
+				nil,
+				5*time.Second,
+				rules,
+				agentLookupStub{byVMCUID: map[string]invocation.AgentRecord{defaultAgent.VMCUID: defaultAgent}},
+				&evaluateClientStub{resp: invocation.EvaluateResponse{Verdict: tc.verdict, Reason: "charter says so"}},
+				summarySettingsStub{
+					charterFieldKey:    "constitution",
+					defaultAgentVMCUID: defaultAgent.VMCUID,
+				},
+			)
+
+			resp, err := service.Invoke(context.Background(), invocation.CreateInvocationRequest{
+				Server: "shortcut",
+				Tool:   "stories-get-by-id",
+				Input:  map[string]any{"storyPublicId": 17298},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.Status != tc.wantStatus {
+				t.Fatalf("status = %q, want %q", resp.Status, tc.wantStatus)
+			}
+			if resp.MatchedRuleID == nil || *resp.MatchedRuleID != "rule-ai-shortcut" {
+				t.Errorf("response matched rule id = %v, want rule-ai-shortcut", resp.MatchedRuleID)
+			}
+			// The audit view reads the stored row, not the response, so that is
+			// the assertion that actually pins the bug.
+			stored, err := invocations.Get(context.Background(), resp.InvocationID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored.MatchedRuleID == nil || *stored.MatchedRuleID != "rule-ai-shortcut" {
+				t.Fatalf("persisted matched rule id = %v, want rule-ai-shortcut", stored.MatchedRuleID)
+			}
+		})
+	}
+}
+
 type summaryClientStub struct {
 	mu      sync.Mutex
 	summary string

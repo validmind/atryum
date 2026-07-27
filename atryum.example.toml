@@ -53,7 +53,7 @@ request_timeout_seconds = 30
 # table per Anthropic account/workspace you want to watch. When an entry's
 # api_key is set, Atryum connects outbound to Anthropic's Managed Agents
 # "events and streaming" API for every session registered (via
-# POST /api/v1/admin/managed-agents/sessions) against that account. It records
+# POST /api/v1/managed-agents/sessions) against that account. It records
 # each session event in the invocations table and, when a session blocks on a
 # tool call (permission_policy = always_ask, or a custom tool), runs the normal
 # approval rules and replies to Claude with the decision. Entries with an empty
@@ -95,10 +95,12 @@ api_key = ""          # Anthropic API key created in that workspace
 # values. The credentials grant access to:
 #   - Read-only invocation reporting endpoints (GET /invocations/{agent_id},
 #     GET /agent_ids, GET /models/{cuid})
-#   - Admin API endpoints (/api/v1/admin/*), as a trusted machine-caller path
-#     in addition to the OAuth Bearer-token path used by the human admin UI
+#   - Review and operator API endpoints listed in the README, as a trusted
+#     machine-caller path in addition to the OAuth Bearer-token path used by
+#     the human UI
 # When either field is empty, the reporting endpoints refuse every request with
-# 503. Admin endpoints fall through to Bearer-token validation instead.
+# 503. Review and operator endpoints fall through to Bearer-token validation
+# instead.
 [api_key]
 key = ""
 secret = ""

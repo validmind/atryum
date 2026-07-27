@@ -5,7 +5,7 @@ servers. Exercises harness MCP quirks, hook integrations from `examples/`, and
 harness→Atryum inbound auth protocols.
 
 Approval uses **rules only** — each test run seeds a catch-all `auto_approve` rule
-via `POST /api/v1/admin/rules` (no `[policy]` provider).
+via `POST /api/v1/rules` (no `[policy]` provider).
 
 ## Quick start
 

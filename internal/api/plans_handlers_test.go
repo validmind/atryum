@@ -153,7 +153,7 @@ func TestAdminPlansListAndDetail(t *testing.T) {
 	stub := &stubService{plan: newPlanStub()}
 	h := NewHandler(stub, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/plans?status=pending_approval", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/plans?status=pending_approval", nil)
 	w := httptest.NewRecorder()
 	h.Routes().ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -170,7 +170,7 @@ func TestAdminPlansListAndDetail(t *testing.T) {
 		t.Fatalf("list = %+v", list)
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/plans/plan_123", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/plans/plan_123", nil)
 	w = httptest.NewRecorder()
 	h.Routes().ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -192,7 +192,7 @@ func TestAdminPlanDecisions(t *testing.T) {
 	stub := &stubService{plan: newPlanStub()}
 	h := NewHandler(stub, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plans/plan_123/approve", strings.NewReader(`{"ttl_seconds": 600}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/plans/plan_123/approve", strings.NewReader(`{"ttl_seconds": 600}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	h.Routes().ServeHTTP(w, req)
@@ -203,7 +203,7 @@ func TestAdminPlanDecisions(t *testing.T) {
 		t.Fatalf("approve call = id %q ttl %d", stub.planApproveID, stub.planTTL)
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/plans/plan_123/deny", strings.NewReader(`{"message": "too risky"}`))
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/plans/plan_123/deny", strings.NewReader(`{"message": "too risky"}`))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	h.Routes().ServeHTTP(w, req)
@@ -214,7 +214,7 @@ func TestAdminPlanDecisions(t *testing.T) {
 		t.Fatalf("deny call = id %q msg %q", stub.planDenyID, stub.planDenyMsg)
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/plans/plan_123/revise", strings.NewReader(`{"feedback": "pin the version"}`))
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/plans/plan_123/revise", strings.NewReader(`{"feedback": "pin the version"}`))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	h.Routes().ServeHTTP(w, req)
@@ -225,7 +225,7 @@ func TestAdminPlanDecisions(t *testing.T) {
 		t.Fatalf("revise call = id %q feedback %q", stub.planReviseID, stub.planFeedback)
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/plans/plan_123/expire", nil)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/plans/plan_123/expire", nil)
 	w = httptest.NewRecorder()
 	h.Routes().ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -237,7 +237,7 @@ func TestAdminPlanDecisions(t *testing.T) {
 
 	// Revise without feedback is rejected before hitting the service.
 	stub.planReviseID = ""
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/plans/plan_123/revise", strings.NewReader(`{}`))
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/plans/plan_123/revise", strings.NewReader(`{}`))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
 	h.Routes().ServeHTTP(w, req)
