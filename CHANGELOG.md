@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-27
+
+### Added
+
+- Agents can now carry free-form tags: editable for every agent (including
+  ValidMind-synced ones) from the Agents UI or the `tags` field on the
+  agent create/update API, and preserved across re-syncs (tags are
+  Atryum-native and are never reset by a sync). Tags are forwarded on every
+  AI-judged evaluation as `agent_tags`, laying the groundwork for the
+  commercial Global Charters feature; the FOSS charter-preview call
+  intentionally continues to omit tags, since it hits a hierarchy-only
+  backend endpoint with no concept of organization-wide charters.
+
+### Changed
+
+- **Breaking:** privileged HTTP API paths have been renamed and reorganized
+  under a flatter, non-"admin" prefix. Existing integrations, scripts, or
+  reverse-proxy rules that reference the old paths must be updated:
+  - `/api/v1/admin/invocations...` → `/api/v1/review/invocations...`
+    (also gains a `/{id}/summarize` action)
+  - `/api/v1/admin/servers...` → `/api/v1/servers...` (also gains a
+    `/{name}/tools` action)
+  - `/api/v1/admin/rules...` → `/api/v1/rules...`
+  - `/api/v1/admin/agents...` → `/api/v1/agents...` (also gains `/sync` and
+    `/{id}/charter-preview`)
+  - `/api/v1/admin/settings`, `/api/v1/admin/policy` → `/api/v1/settings`,
+    `/api/v1/policy`
+  - `/api/v1/admin/managed-agents/...` → `/api/v1/managed-agents/...`
+    (session management also gains list/clear/delete, not just register)
+  - `/api/v1/admin-auth/config` → `/api/v1/auth/config`
+  - Plan approval now has its own top-level surface:
+    `/api/v1/plans`, `/{id}`, `/{id}/events`, `/{id}/approve`, `/{id}/deny`,
+    `/{id}/revise`, `/{id}/expire`, `/stream`
+  - New `/api/v1/model-configs`, `/api/v1/llm-configs`,
+    `/api/v1/llm-configs/{id}`, and `/api/v1/vm/organizations`,
+    `/api/v1/vm/record-types`, `/api/v1/vm/custom-fields` surfaces
+  - The "Admin authentication" docs section and terminology are now
+    "UI and privileged API authentication"; behavior is unchanged.
+
+### Fixed
+
+- Generated integration docs (`connect-agents.html`) are back in sync with
+  their markdown source, which had documented post-logout URL setup and the
+  sign-out flow without the HTML being rebuilt.
+
 ## [0.3.0] - 2026-07-24
 
 ### Added
@@ -135,7 +180,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.0.3] - 2026-06-05
 
-[Unreleased]: https://github.com/validmind/atryum/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/validmind/atryum/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/validmind/atryum/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/validmind/atryum/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/validmind/atryum/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/validmind/atryum/compare/v0.0.4...v0.1.0
