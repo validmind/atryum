@@ -75,6 +75,24 @@ func startStandaloneFixtureServer(t *testing.T) (baseURL string) {
 	return baseURL
 }
 
+// TestMCPToolsCallAgainstRealStandaloneStreamServer is the standalone-stream
+// counterpart to mcp_everything_test.go's TestMCPToolsCallAgainstRealEverythingServer:
+// the same wall-clock-gap proof of live delivery, but every progress
+// notification here arrives on the standalone GET stream rather than the
+// tools/call POST response, since FastMCP's report_progress never attributes
+// progress to a related_request_id:
+//
+//	t=0     POST tools/call slow_streaming_task
+//	          steps=3, delay_seconds=1, progressToken=standalone-e2e-token
+//	t=~1s   notifications/progress (via standalone GET)  -> progressTimes[0]
+//	t=~2s   notifications/progress (via standalone GET)  -> progressTimes[1]
+//	t=~3s   notifications/progress (via standalone GET)  -> progressTimes[2]
+//	t=~3s+  terminal "done after 3 real progress notifications" -> terminalTime
+//
+// Same two assertions as the everything-server test: terminalTime minus
+// progressTimes[0] >= 1500ms, and each consecutive gap >= 500ms. Reading only
+// the tools/call POST response (the pre-fix behavior) would show 0 progress
+// notifications here — see the comment above the read loop below.
 func TestMCPToolsCallAgainstRealStandaloneStreamServer(t *testing.T) {
 	baseURL := startStandaloneFixtureServer(t)
 

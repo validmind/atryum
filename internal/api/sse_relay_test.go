@@ -162,6 +162,32 @@ func (f *switchableFailingWriter) Write(p []byte) (int, error) {
 // failure must stick and abort the relay on the next Event — the
 // synchronous relay loop is otherwise blind to the downstream connection
 // between events.
+//
+// The dead connection is discovered on a goroutine the test never calls
+// directly, and the test's own polling loop only ever observes the result
+// through the mutex-guarded sink.writeErr:
+//
+//	test (main goroutine)                      heartbeatLoop goroutine
+//	----------------------                      -----------------------
+//	StreamStarted()             -------------->  go heartbeatLoop()
+//	Event(progress=1) -> ok
+//	fw.broken.Store(true)
+//	  (connection now dead)
+//	poll sink.writeErr
+//	  (mu.Lock/Unlock in a loop)                  ticker fires (2ms)
+//	                                              mu.Lock(); writeErr == nil
+//	                                              Write(": ping\n\n") -> fails
+//	                                              writeErr = err; mu.Unlock()
+//	  sees writeErr != nil, stops polling
+//	Event(progress=2)
+//	  -> writeErr already set; returns
+//	     it without attempting a write
+//	finishStream([]byte("{}"))
+//	  -> same sticky writeErr; returns
+//	     it without writing a terminal frame
+//
+// Event and finishStream never touch the dead connection themselves — both
+// only ever observe the heartbeat goroutine's writeErr.
 func TestSSERelaySinkHeartbeatFailureSurfacesOnNextEvent(t *testing.T) {
 	fw := &switchableFailingWriter{ResponseRecorder: httptest.NewRecorder()}
 	sink := newSSERelaySink(fw, fw.ResponseRecorder)
@@ -459,6 +485,30 @@ func readNextSSEFrame(t *testing.T, reader *bufio.Reader) sseEventFrame {
 // released, which proves the intermediate event was relayed live rather
 // than after the fact from a buffered body: the terminal response cannot
 // exist yet at the point the test asserts the notification arrived.
+//
+//	test (as the agent)              agentServer (Handler+mcp.Client)     fake upstream (httptest)
+//	--------------------              ---------------------------------   ------------------------
+//	POST /mcp/demo tools/call
+//	  progressToken=tok-live  -------------------------------------------> proxies tools/call upstream
+//	                                                                        writes progress frame (tok-live)
+//	                                                                        flusher.Flush()
+//	                                   relays the frame live      <--------
+//	first := readNextSSEFrame() <---
+//	  (blocks until this exact
+//	   frame is read off the wire)
+//	assert first has tok-live
+//	                                                                        <-releaseTerminal
+//	                                                                        (blocked: the terminal response
+//	                                                                         cannot exist yet)
+//	close(releaseTerminal)   -------------------------------------------->  unblocks
+//	                                                                        writes terminal frame (id "1")
+//	                                   rewrites id "1" -> 42       <-------
+//	terminal := readNextSSEFrame() <-
+//	  (id:42, "all done")
+//
+// Because first is read before releaseTerminal is closed, the assertion on
+// first.data cannot be satisfied by a buffered replay: the terminal frame
+// literally does not exist in the upstream handler yet at that point.
 func TestMCPToolsCallEndToEndRelaysLiveBeforeTerminalResponseExists(t *testing.T) {
 	releaseTerminal := make(chan struct{})
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -736,6 +736,30 @@ func TestDrainTrailingProgressReturnsOnceWindowElapsesWithNoArrival(t *testing.T
 	}
 }
 
+// TestDrainTrailingProgressUsesAbsoluteWindowDuringContinuousArrivals proves
+// the trailing-progress window is an absolute deadline, not one that resets
+// on every arrival: a sender goroutine floods progressCh every gap (2ms),
+// far faster than window (30ms), so if an arrival reset the window it would
+// never elapse and drainTrailingProgress would hang.
+//
+//	sender goroutine                     drainTrailingProgress goroutine
+//	-----------------                     -------------------------------
+//	ticker fires every gap (2ms)
+//	  progressCh <- event   ------------> delivered; window (30ms) is
+//	  progressCh <- event   ------------>   armed once at the start and
+//	  progressCh <- event   ------------>   never extended by an arrival
+//	  ... (keeps sending until told to stop)
+//	                                      window elapses
+//	                                      result <- nil
+//	                                           |
+//	main: case err = <-result:  <--------------+  must win the race against
+//	  close(senderStop); <-senderDone              <-time.After(5*window), the
+//	                                               test's own bail-out path
+//
+// If drainTrailingProgress instead reset the window on every arrival, result
+// would never fire, the 5*window bail-out would trip, and the test would
+// fail with "continuous progress extended the terminal drain past its
+// absolute window".
 func TestDrainTrailingProgressUsesAbsoluteWindowDuringContinuousArrivals(t *testing.T) {
 	const (
 		window = 30 * time.Millisecond
@@ -808,6 +832,24 @@ func TestDrainTrailingProgressStopsWhenCallIsCanceled(t *testing.T) {
 // emitting events frequently enough that the idle bound never fires must
 // still be cut off once the total response-reading phase exceeds
 // MaxDuration.
+//
+// Two clocks race inside doHTTPToolCallStream; this server's behavior lets
+// only one of them ever fire:
+//
+//	upstream (every 25ms)           idle deadline (IdleTimeout=2s)   max-duration deadline (300ms)
+//	----------------------           ------------------------------   -----------------------------
+//	t=25ms  progress event  -------> reset to t=2025ms
+//	t=50ms  progress event  -------> reset to t=2050ms
+//	t=75ms  progress event  -------> reset to t=2075ms
+//	...  (never a 2s gap, so the
+//	     idle deadline keeps
+//	     sliding into the future)
+//	                                                                  fixed at t=300ms, never reset
+//	t=300ms -------------------------------------------------------> fires first
+//	                                 InvokeStream returns ErrStreamTimeout
+//	                                 ("max stream duration")
+//
+// serverDone (closed in t.Cleanup) then stops the emitting loop.
 func TestInvokeStreamMaxDurationAbortsStreamThatNeverGoesIdle(t *testing.T) {
 	serverDone := make(chan struct{})
 	server := invokeStreamTestServer(t, "sid-max-duration", func(w http.ResponseWriter, r *http.Request, req Envelope) {

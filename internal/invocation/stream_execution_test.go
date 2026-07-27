@@ -271,6 +271,33 @@ func TestInvokeStreamingAuditCapsEnforcedWithoutSuppressingRelay(t *testing.T) {
 	}
 }
 
+// TestInvokeStreamingBlockedAuditWriteDoesNotDelayRelay proves a stalled
+// audit repository cannot delay live delivery: recordEvent's enqueue onto
+// the shared streamAuditDispatcher is non-blocking, so the worker goroutine
+// stuck inside Create is a separate actor from the relay path. Three
+// channels pin that interleaving regardless of scheduling:
+//
+//	main goroutine                 InvokeStreaming goroutine       audit worker (runWorker)
+//	---------------                 --------------------------       ------------------------
+//	go func(){ InvokeStreaming }()
+//	                                 sink.Event -> recordEvent
+//	                                   enqueue(write) --non-blocking--> dequeues write
+//	                                                                    Create(): close(events.started),
+//	                                                                      blocks on <-writeCtx.Done()
+//	<-events.started returns
+//	                                 inner.Event(evt) -> onEvent hook
+//	                                   close(delivered)
+//	<-delivered returns (<200ms:
+//	  relay was never gated on
+//	  the still-blocked write)
+//	                                                                    writeCtx (streamAuditWriteTimeout)
+//	                                                                      expires -> Create returns ctx.Err()
+//	                                 finish() drains pending writes,
+//	                                   InvokeStreaming returns Succeeded
+//	<-done returns (<3s)
+//
+// Had the audit write instead run synchronously before relaying, "delivered"
+// could never close until the blocked write's own timeout had passed.
 func TestInvokeStreamingBlockedAuditWriteDoesNotDelayRelay(t *testing.T) {
 	upstream := sseToolCallUpstream(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -607,6 +634,28 @@ func TestInvokeStreamingMidStreamSessionRetryRefusalMarksFailedWithDistinctReaso
 	}
 }
 
+// TestInvokeStreamingApprovalGateDoesNotTouchSinkBeforeApproval races a
+// background approval against the InvokeStreaming call blocked in
+// waitForHumanApproval, proving the sink is never touched until approval
+// unblocks execution:
+//
+//	main goroutine (InvokeStreaming)        background goroutine
+//	---------------------------------        ---------------------
+//	InvokeStreaming(..., sink) called
+//	  ManualApprovalProvider -> pending
+//	  blocks in waitForHumanApproval
+//	                                           pollUntil polls service.List
+//	                                             until an item reaches
+//	                                             StatusPendingApproval
+//	                                           sink.touched() checked -> false
+//	                                           service.Approve(pendingID, "")
+//	  unblocks, executeNow runs the tool
+//	  sink.Event(...) fires -> touched=true
+//	InvokeStreaming returns Succeeded
+//
+// Polling for pending_approval (instead of a fixed sleep) is what keeps this
+// deterministic: Approve only runs once the row is confirmed pending, so the
+// sink-touched check above always happens before it.
 func TestInvokeStreamingApprovalGateDoesNotTouchSinkBeforeApproval(t *testing.T) {
 	upstream := sseToolCallUpstream(t, func(w http.ResponseWriter, r *http.Request, body map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")

@@ -243,6 +243,26 @@ func TestInvokeStreamStandaloneStreamRelaysProgressNotification(t *testing.T) {
 	}
 }
 
+// TestInvokeStreamStandaloneProgressResetsIdleTimeout proves progress
+// notifications delivered only on the standalone GET stream still count as
+// activity for the call's IdleTimeout, even though the tools/call POST
+// connection itself stays silent while waiting on them.
+//
+//	standalone GET                                      tools/call POST
+//	--------------                                      ----------------
+//	                                                     tokenCh <- progressToken
+//	token := <-tokenCh
+//	sleep 60ms; send progress=1  ---------------------> (idle timer reset;
+//	sleep 60ms; send progress=2  --------------------->  150ms IdleTimeout
+//	sleep 60ms; send progress=3  --------------------->  never sees a gap
+//	sleep 60ms; send progress=4  --------------------->  wider than 60ms)
+//	close(progressComplete)      ---------------------> <-progressComplete
+//	<-r.Context().Done()                                write terminal "done"
+//
+// Total elapsed (~240ms) exceeds IdleTimeout (150ms), but no single gap
+// between events does — if standalone-stream activity didn't reset the
+// call's idle timer, this call would time out despite the upstream still
+// actively working.
 func TestInvokeStreamStandaloneProgressResetsIdleTimeout(t *testing.T) {
 	tokenCh := make(chan string, 1)
 	progressComplete := make(chan struct{})
@@ -321,6 +341,36 @@ func TestInvokeStreamStandaloneProgressResetsIdleTimeout(t *testing.T) {
 	}
 }
 
+// TestInvokeStreamRebindsStandaloneStreamAfterSessionRenewal proves that
+// when a session goes stale mid-call, the standalone stream reconnects
+// under the renewed session rather than staying bound to the old one.
+//
+//	tools/call POST                                     standalone GET
+//	----------------                                     --------------
+//	initialize -> sid-1 (initializeCount=1)
+//	                                                      connects with
+//	                                                        Mcp-Session-Id: sid-1
+//	                                                      closes sid1Connected,
+//	                                                        blocks on ctx.Done()
+//	tools/call #1: <-sid1Connected  <---------------------
+//	  responds: error "No session ID
+//	  provided..." (session looks stale)
+//	client re-initializes -> sid-2 (initializeCount=2)
+//	                                                      reconnects with
+//	                                                        Mcp-Session-Id: sid-2
+//	                                                      closes sid2Connected,
+//	                                                        blocks on <-tokenForRetry
+//	tools/call #2 (Mcp-Session-Id: sid-2)
+//	  tokenForRetry <- progressToken  ---------------------->
+//	                                                      receives token, sends
+//	                                                        progress=2 notification,
+//	                                                      closes progressSent
+//	  <-sid2Connected, then <-progressSent  <----------------
+//	  writes terminal "done"
+//
+// The one relayed event must come from the sid-2 standalone stream, with the
+// caller's original progressToken restored, proving the rebind — not the
+// original sid-1 connection, which never got to deliver anything.
 func TestInvokeStreamRebindsStandaloneStreamAfterSessionRenewal(t *testing.T) {
 	var initializeCount atomic.Int32
 	var toolsCallCount atomic.Int32
@@ -726,6 +776,26 @@ func TestStandaloneStreamRefcountsSharedConnection(t *testing.T) {
 	client.releaseStandaloneStream(s3)
 }
 
+// TestStandaloneStreamConcurrentLastReleaseAndAcquireKeepsLiveEntry is a
+// 1000-iteration stress test for the release/acquire race on the shared
+// standaloneStreams registry: releasing the last reference to a stream and
+// acquiring a new one for the same upstream key, at the same instant, must
+// never leave the registry pointing at neither.
+//
+//	release goroutine                          acquire goroutine
+//	------------------                          ------------------
+//	<-start                                     <-start
+//	releaseStandaloneStream(current)            next = acquireStandaloneStream(upstream)
+//	  (refcount-- on current; if it
+//	   hits 0, evict current from
+//	   standaloneStreams[key])
+//
+// close(start) releases both goroutines at once, so which one the scheduler
+// runs first varies per iteration: if acquire wins, it finds current still
+// live and reuses it (next == current); if release wins first, it evicts
+// current and acquire must create a fresh entry. Either outcome is fine —
+// the assertion after wg.Wait() is that standaloneStreams[next.key] is
+// always next, never the evicted stream and never nothing.
 func TestStandaloneStreamConcurrentLastReleaseAndAcquireKeepsLiveEntry(t *testing.T) {
 	client := NewHTTPClient()
 	upstream := Upstream{Name: "release-acquire-race", Mode: UpstreamModeHTTP}

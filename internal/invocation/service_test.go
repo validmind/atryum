@@ -207,6 +207,34 @@ func TestInvokeFailsClosedWhenRuleLoadFails(t *testing.T) {
 // context is later cancelled, that goroutine wakes on ctx.Done() and
 // unconditionally overwrites the row to failed, clobbering the approval a
 // different process just persisted. The tool must never execute.
+//
+// The production comment on waitForHumanApproval shows the race in terms of
+// process A / process B / the durable row; this test drives that exact
+// sequence with its own goroutine, polling loop, and assertions:
+//
+//	background goroutine (processA)         main goroutine (test)
+//	--------------------------------         ----------------------
+//	processA.Invoke(ctx, ...)
+//	  blocks in waitForHumanApproval
+//	                                          pollUntil polls processB.List
+//	                                            until StatusPendingApproval,
+//	                                            captures invocationID
+//	                                          processB.Approve(invocationID,
+//	                                            "operator")
+//	                                          processA.Get(invocationID)
+//	                                            -> Approved
+//	                                          select done: default
+//	                                            (still blocked — the approval
+//	                                            never woke processA.Invoke)
+//	                                          cancel()
+//	  ctx.Done() fires, overwrites the row
+//	    unconditionally -> Failed
+//	  done <- {Status: Failed, "...cancelled..."}
+//	                                          <-done (within 2s)
+//	                                          assert Status == Failed
+//	                                          processA.Get(invocationID)
+//	                                            -> Failed (processB's
+//	                                            approved write is gone)
 func TestMultiReplicaApprovalRaceOverwritesApprovedRowAsFailed(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any

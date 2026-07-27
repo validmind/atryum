@@ -71,6 +71,23 @@ func startEverythingServer(t *testing.T) (baseURL string) {
 	return baseURL
 }
 
+// TestMCPToolsCallAgainstRealEverythingServer proves the relay is live, not
+// buffered, by pinning the wall-clock gaps between frames read off a real
+// subprocess:
+//
+//	t=0     POST tools/call trigger-long-running-operation
+//	          duration=3, steps=3, progressToken=real-e2e-token
+//	t=~1s   notifications/progress  -> progressTimes[0]
+//	t=~2s   notifications/progress  -> progressTimes[1]
+//	t=~3s   notifications/progress  -> progressTimes[2]
+//	t=~3s+  terminal "Long running operation completed" -> terminalTime
+//
+// The assertions pin the gaps, not just the count: terminalTime minus
+// progressTimes[0] must be >= 1500ms (a buffered-then-replayed body would
+// show the terminal moments after the first update instead), and each
+// progressTimes[i] minus progressTimes[i-1] must be >= 500ms (the three
+// updates are really spread over real seconds, not emitted back-to-back
+// once the tool finished).
 func TestMCPToolsCallAgainstRealEverythingServer(t *testing.T) {
 	baseURL := startEverythingServer(t)
 
