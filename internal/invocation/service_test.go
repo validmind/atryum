@@ -257,15 +257,14 @@ func TestMultiReplicaApprovalRaceOverwritesApprovedRowAsFailed(t *testing.T) {
 	}()
 
 	var invocationID string
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	pollUntil(t, 2*time.Second, 10*time.Millisecond, func() bool {
 		list, err := processB.List(context.Background(), invocation.InvocationListFilter{Limit: 10})
 		if err == nil && len(list.Items) == 1 && list.Items[0].Status == invocation.StatusPendingApproval {
 			invocationID = list.Items[0].InvocationID
-			break
+			return true
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return false
+	})
 	if invocationID == "" {
 		t.Fatal("invocation never reached pending_approval")
 	}
@@ -496,17 +495,13 @@ func TestSubmitPendingApprovalAutomaticallySummarizesInvocation(t *testing.T) {
 	}
 
 	var got invocation.InvocationResponse
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	pollUntil(t, 2*time.Second, 10*time.Millisecond, func() bool {
 		got, err = service.Get(context.Background(), resp.InvocationID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Summary == "Run shell command ls." {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return got.Summary == "Run shell command ls."
+	})
 	if got.Summary != "Run shell command ls." {
 		t.Fatalf("expected automatic summary, got %q", got.Summary)
 	}
@@ -1519,6 +1514,22 @@ func TestInvokeAIEvaluationToleratesMissingToolDescription(t *testing.T) {
 	if evaluator.request().Context != "" {
 		t.Fatalf("expected empty Context when tools/list fails, got %q", evaluator.request().Context)
 	}
+}
+
+// pollUntil calls cond repeatedly, sleeping interval between tries, until it
+// returns true or timeout elapses. Shared by tests waiting on asynchronous
+// state (a row reaching a given status, a field getting populated) instead
+// of sleeping a fixed guess that's either too slow or too flaky.
+func pollUntil(t *testing.T, timeout, interval time.Duration, cond func() bool) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(interval)
+	}
+	return cond()
 }
 
 func newTestService(t *testing.T, cfg config.Config) *invocation.Service {

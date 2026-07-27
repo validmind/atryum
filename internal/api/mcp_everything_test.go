@@ -23,22 +23,13 @@ package api
 
 import (
 	"bufio"
-	"context"
-	"database/sql"
 	"fmt"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/validmind/atryum/internal/config"
-	"github.com/validmind/atryum/internal/invocation"
-	"github.com/validmind/atryum/internal/invocation/policy"
-	"github.com/validmind/atryum/internal/mcp"
-	"github.com/validmind/atryum/internal/store"
 )
 
 // startEverythingServer launches the real @modelcontextprotocol/server-everything
@@ -67,49 +58,23 @@ func startEverythingServer(t *testing.T) (baseURL string) {
 	})
 
 	baseURL = fmt.Sprintf("http://127.0.0.1:%d/mcp", port)
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
+	if !pollUntil(t, 30*time.Second, 200*time.Millisecond, func() bool {
 		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 200*time.Millisecond)
-		if err == nil {
-			_ = conn.Close()
-			return baseURL
+		if err != nil {
+			return false
 		}
-		time.Sleep(200 * time.Millisecond)
+		_ = conn.Close()
+		return true
+	}) {
+		t.Fatalf("server-everything did not start listening on port within 30s (npx may need network access to fetch the package on first run)")
 	}
-	t.Fatalf("server-everything did not start listening on port within 30s (npx may need network access to fetch the package on first run)")
-	return ""
+	return baseURL
 }
 
 func TestMCPToolsCallAgainstRealEverythingServer(t *testing.T) {
 	baseURL := startEverythingServer(t)
 
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	defer db.Close()
-	if err := store.InitDB(db); err != nil {
-		t.Fatalf("InitDB: %v", err)
-	}
-	serverRepo := store.NewServerRepo(db)
-	resolver := mcp.NewResolver(serverRepo, config.Config{
-		Upstreams: []config.UpstreamConfig{{Name: "everything", Mode: "http", BaseURL: baseURL, Enabled: true, TimeoutSeconds: 30}},
-	})
-	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	svc := invocation.NewService(
-		store.NewInvocationRepo(db), store.NewEventRepo(db), resolver, mcp.NewHTTPClient(),
-		policy.AlwaysApproveProvider{}, 30*time.Second, nil, nil, nil, nil,
-	)
-	svc.SetStreamOptions(
-		mcp.StreamOptions{HeaderTimeout: 10 * time.Second, IdleTimeout: 10 * time.Second, MaxDuration: 60 * time.Second},
-		invocation.StreamAuditLimits{MaxEvents: 100, MaxEventBytes: 4096},
-	)
-
-	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
-	agentServer := httptest.NewServer(h.Routes())
-	defer agentServer.Close()
+	agentServer, _ := newTestAgentServer(t, "everything", baseURL, 30, true)
 
 	reqBody := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"trigger-long-running-operation","arguments":{"duration":3,"steps":3},"_meta":{"progressToken":"real-e2e-token"}}}`
 	req, err := http.NewRequest(http.MethodPost, agentServer.URL+"/mcp/everything", strings.NewReader(reqBody))

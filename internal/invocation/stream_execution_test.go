@@ -636,21 +636,19 @@ func TestInvokeStreamingApprovalGateDoesNotTouchSinkBeforeApproval(t *testing.T)
 		// InvokeStreaming block on the approval channel until the suite
 		// timeout.
 		var pendingID string
-		deadline := time.Now().Add(10 * time.Second)
-		for pendingID == "" && time.Now().Before(deadline) {
+		pollUntil(t, 10*time.Second, 5*time.Millisecond, func() bool {
 			list, err := service.List(context.Background(), invocation.InvocationListFilter{Limit: 10})
-			if err == nil {
-				for _, item := range list.Items {
-					if item.Status == invocation.StatusPendingApproval {
-						pendingID = item.InvocationID
-						break
-					}
+			if err != nil {
+				return false
+			}
+			for _, item := range list.Items {
+				if item.Status == invocation.StatusPendingApproval {
+					pendingID = item.InvocationID
+					return true
 				}
 			}
-			if pendingID == "" {
-				time.Sleep(5 * time.Millisecond)
-			}
-		}
+			return false
+		})
 		if pendingID == "" {
 			t.Error("timed out waiting for a pending-approval invocation")
 			return

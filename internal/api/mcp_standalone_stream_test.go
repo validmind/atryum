@@ -26,22 +26,13 @@ package api
 
 import (
 	"bufio"
-	"context"
-	"database/sql"
 	"fmt"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/validmind/atryum/internal/config"
-	"github.com/validmind/atryum/internal/invocation"
-	"github.com/validmind/atryum/internal/invocation/policy"
-	"github.com/validmind/atryum/internal/mcp"
-	"github.com/validmind/atryum/internal/store"
 )
 
 // startStandaloneFixtureServer launches the real FastMCP-based fixture
@@ -71,49 +62,23 @@ func startStandaloneFixtureServer(t *testing.T) (baseURL string) {
 	})
 
 	baseURL = fmt.Sprintf("http://127.0.0.1:%d/mcp", port)
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
+	if !pollUntil(t, 30*time.Second, 200*time.Millisecond, func() bool {
 		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 200*time.Millisecond)
-		if err == nil {
-			_ = conn.Close()
-			return baseURL
+		if err != nil {
+			return false
 		}
-		time.Sleep(200 * time.Millisecond)
+		_ = conn.Close()
+		return true
+	}) {
+		t.Fatalf("standalone fixture server did not start listening on port within 30s (uv may need network access to resolve the mcp package on first run)")
 	}
-	t.Fatalf("standalone fixture server did not start listening on port within 30s (uv may need network access to resolve the mcp package on first run)")
-	return ""
+	return baseURL
 }
 
 func TestMCPToolsCallAgainstRealStandaloneStreamServer(t *testing.T) {
 	baseURL := startStandaloneFixtureServer(t)
 
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	defer db.Close()
-	if err := store.InitDB(db); err != nil {
-		t.Fatalf("InitDB: %v", err)
-	}
-	serverRepo := store.NewServerRepo(db)
-	resolver := mcp.NewResolver(serverRepo, config.Config{
-		Upstreams: []config.UpstreamConfig{{Name: "standalone-fixture", Mode: "http", BaseURL: baseURL, Enabled: true, TimeoutSeconds: 30}},
-	})
-	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	svc := invocation.NewService(
-		store.NewInvocationRepo(db), store.NewEventRepo(db), resolver, mcp.NewHTTPClient(),
-		policy.AlwaysApproveProvider{}, 30*time.Second, nil, nil, nil, nil,
-	)
-	svc.SetStreamOptions(
-		mcp.StreamOptions{HeaderTimeout: 10 * time.Second, IdleTimeout: 10 * time.Second, MaxDuration: 60 * time.Second},
-		invocation.StreamAuditLimits{MaxEvents: 100, MaxEventBytes: 4096},
-	)
-
-	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
-	agentServer := httptest.NewServer(h.Routes())
-	defer agentServer.Close()
+	agentServer, _ := newTestAgentServer(t, "standalone-fixture", baseURL, 30, true)
 
 	reqBody := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"slow_streaming_task","arguments":{"steps":3,"delay_seconds":1},"_meta":{"progressToken":"standalone-e2e-token"}}}`
 	req, err := http.NewRequest(http.MethodPost, agentServer.URL+"/mcp/standalone-fixture", strings.NewReader(reqBody))

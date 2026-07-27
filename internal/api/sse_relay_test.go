@@ -3,7 +3,6 @@ package api
 import (
 	"bufio"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,9 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/validmind/atryum/internal/config"
 	"github.com/validmind/atryum/internal/invocation"
-	"github.com/validmind/atryum/internal/invocation/policy"
 	"github.com/validmind/atryum/internal/mcp"
 	"github.com/validmind/atryum/internal/store"
 )
@@ -518,29 +515,7 @@ func TestMCPToolsCallEndToEndRelaysLiveBeforeTerminalResponseExists(t *testing.T
 	}))
 	defer upstream.Close()
 
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	defer db.Close()
-	if err := store.InitDB(db); err != nil {
-		t.Fatalf("InitDB: %v", err)
-	}
-	serverRepo := store.NewServerRepo(db)
-	resolver := mcp.NewResolver(serverRepo, config.Config{
-		Upstreams: []config.UpstreamConfig{{Name: "demo", Mode: "http", BaseURL: upstream.URL, Enabled: true, TimeoutSeconds: 5}},
-	})
-	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	svc := invocation.NewService(
-		store.NewInvocationRepo(db), store.NewEventRepo(db), resolver, mcp.NewHTTPClient(),
-		policy.AlwaysApproveProvider{}, 5*time.Second, nil, nil, nil, nil,
-	)
-
-	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
-	agentServer := httptest.NewServer(h.Routes())
-	defer agentServer.Close()
+	agentServer, _ := newTestAgentServer(t, "demo", upstream.URL, 5, false)
 
 	reqBody := `{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"demo_tool","arguments":{},"_meta":{"progressToken":"tok-live"}}}`
 	req, err := http.NewRequest(http.MethodPost, agentServer.URL+"/mcp/demo", strings.NewReader(reqBody))
