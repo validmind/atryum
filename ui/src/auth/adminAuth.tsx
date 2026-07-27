@@ -66,7 +66,7 @@ let authCallbackPromise: Promise<void> | null = null;
 const SELECTED_PROVIDER_KEY = 'atryum.adminAuth.provider';
 
 const fetchConfig = async (): Promise<AdminAuthConfig> => {
-  const res = await fetch('/api/v1/admin-auth/config', {
+  const res = await fetch('/api/v1/auth/config', {
     headers: { Accept: 'application/json' },
   });
   if (!res.ok) throw new Error(`admin auth config failed (${res.status})`);

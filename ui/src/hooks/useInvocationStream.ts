@@ -24,7 +24,7 @@ const buildStreamUrl = (filters: InvocationFilters): string => {
   if (filters.status) params.set('status', filters.status);
   if (filters.client_name) params.set('client_name', filters.client_name);
   params.set('limit', String(filters.limit ?? 50));
-  return `/api/v1/admin/invocations/stream?${params.toString()}`;
+  return `/api/v1/review/invocations/stream?${params.toString()}`;
 };
 
 const detailKey = (id: string): QueryKey => [INVOCATION_DETAIL_KEY, id];

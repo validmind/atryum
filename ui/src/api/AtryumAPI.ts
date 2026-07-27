@@ -132,21 +132,21 @@ export const invocationsApi = {
     if (filters.offset != null) params.set('offset', String(filters.offset));
     params.set('limit', String(filters.limit ?? 50));
     const { data } = await atryumApi.get(
-      `/api/v1/admin/invocations?${params.toString()}`,
+      `/api/v1/review/invocations?${params.toString()}`,
     );
     return data;
   },
 
   detail: async (id: string): Promise<InvocationDetail> => {
     const { data } = await atryumApi.get(
-      `/api/v1/admin/invocations/${encodeURIComponent(id)}`,
+      `/api/v1/review/invocations/${encodeURIComponent(id)}`,
     );
     return data;
   },
 
   events: async (id: string): Promise<{ items: InvocationEvent[] }> => {
     const { data } = await atryumApi.get(
-      `/api/v1/admin/invocations/${encodeURIComponent(id)}/events?limit=200`,
+      `/api/v1/review/invocations/${encodeURIComponent(id)}/events?limit=200`,
     );
     return data;
   },
@@ -156,7 +156,7 @@ export const invocationsApi = {
     body?: { create_rule?: RuleInput },
   ): Promise<void> => {
     await atryumApi.post(
-      `/api/v1/admin/invocations/${encodeURIComponent(id)}/approve`,
+      `/api/v1/review/invocations/${encodeURIComponent(id)}/approve`,
       body ?? {},
     );
   },
@@ -170,7 +170,7 @@ export const invocationsApi = {
     if (message) body.message = message;
     if (createRule) body.create_rule = createRule;
     await atryumApi.post(
-      `/api/v1/admin/invocations/${encodeURIComponent(id)}/deny`,
+      `/api/v1/review/invocations/${encodeURIComponent(id)}/deny`,
       body,
     );
   },
@@ -181,7 +181,7 @@ export const invocationsApi = {
   ): Promise<{ summary: string }> => {
     const body = modelConfigCuid ? { model_config_cuid: modelConfigCuid } : {};
     const { data } = await atryumApi.post(
-      `/api/v1/admin/invocations/${encodeURIComponent(id)}/summarize`,
+      `/api/v1/review/invocations/${encodeURIComponent(id)}/summarize`,
       body,
     );
     return data;
@@ -274,26 +274,26 @@ export const serversApi = {
     const params = new URLSearchParams({ limit: '100' });
     if (!showDisabled) params.set('enabled', 'true');
     const { data } = await atryumApi.get(
-      `/api/v1/admin/servers?${params.toString()}`,
+      `/api/v1/servers?${params.toString()}`,
     );
     return data;
   },
 
   detail: async (name: string): Promise<Server> => {
     const { data } = await atryumApi.get(
-      `/api/v1/admin/servers/${encodeURIComponent(name)}`,
+      `/api/v1/servers/${encodeURIComponent(name)}`,
     );
     return data;
   },
 
   create: async (input: ServerInput): Promise<Server> => {
-    const { data } = await atryumApi.post('/api/v1/admin/servers', input);
+    const { data } = await atryumApi.post('/api/v1/servers', input);
     return data;
   },
 
   update: async (name: string, input: ServerInput): Promise<Server> => {
     const { data } = await atryumApi.put(
-      `/api/v1/admin/servers/${encodeURIComponent(name)}`,
+      `/api/v1/servers/${encodeURIComponent(name)}`,
       input,
     );
     return data;
@@ -301,35 +301,35 @@ export const serversApi = {
 
   remove: async (name: string, disable = false): Promise<void> => {
     const url = disable
-      ? `/api/v1/admin/servers/${encodeURIComponent(name)}?disable=true`
-      : `/api/v1/admin/servers/${encodeURIComponent(name)}`;
+      ? `/api/v1/servers/${encodeURIComponent(name)}?disable=true`
+      : `/api/v1/servers/${encodeURIComponent(name)}`;
     await atryumApi.delete(url);
   },
 
   test: async (name: string): Promise<{ ok: boolean; message: string }> => {
     const { data } = await atryumApi.post(
-      `/api/v1/admin/servers/${encodeURIComponent(name)}/test`,
+      `/api/v1/servers/${encodeURIComponent(name)}/test`,
     );
     return data;
   },
 
   connect: async (name: string): Promise<OAuthConnectStartResponse> => {
     const { data } = await atryumApi.post(
-      `/api/v1/admin/servers/${encodeURIComponent(name)}/connect`,
+      `/api/v1/servers/${encodeURIComponent(name)}/connect`,
     );
     return data;
   },
 
   connectStatus: async (name: string): Promise<OAuthConnectStatusResponse> => {
     const { data } = await atryumApi.get(
-      `/api/v1/admin/servers/${encodeURIComponent(name)}/connect/status`,
+      `/api/v1/servers/${encodeURIComponent(name)}/connect/status`,
     );
     return data;
   },
 
   tools: async (name: string): Promise<{ items: ServerTool[] }> => {
     const { data } = await atryumApi.get(
-      `/api/v1/admin/servers/${encodeURIComponent(name)}/tools`,
+      `/api/v1/servers/${encodeURIComponent(name)}/tools`,
     );
     return data;
   },
@@ -375,25 +375,25 @@ export interface RuleInput {
 
 export const rulesApi = {
   list: async (): Promise<{ items: Rule[] }> => {
-    const { data } = await atryumApi.get('/api/v1/admin/rules');
+    const { data } = await atryumApi.get('/api/v1/rules');
     return data;
   },
 
   create: async (input: RuleInput): Promise<Rule> => {
-    const { data } = await atryumApi.post('/api/v1/admin/rules', input);
+    const { data } = await atryumApi.post('/api/v1/rules', input);
     return data;
   },
 
   update: async (id: string, input: RuleInput): Promise<Rule> => {
     const { data } = await atryumApi.put(
-      `/api/v1/admin/rules/${encodeURIComponent(id)}`,
+      `/api/v1/rules/${encodeURIComponent(id)}`,
       input,
     );
     return data;
   },
 
   remove: async (id: string): Promise<void> => {
-    await atryumApi.delete(`/api/v1/admin/rules/${encodeURIComponent(id)}`);
+    await atryumApi.delete(`/api/v1/rules/${encodeURIComponent(id)}`);
   },
 
   move: async (
@@ -401,7 +401,7 @@ export const rulesApi = {
     direction: 'up' | 'down',
   ): Promise<{ items: Rule[] }> => {
     const { data } = await atryumApi.put(
-      `/api/v1/admin/rules/${encodeURIComponent(id)}/move`,
+      `/api/v1/rules/${encodeURIComponent(id)}/move`,
       { direction },
     );
     return data;
@@ -470,20 +470,20 @@ export const plansApi = {
     if (filters.agent_id) params.set('agent_id', filters.agent_id);
     if (filters.offset != null) params.set('offset', String(filters.offset));
     params.set('limit', String(filters.limit ?? 50));
-    const { data } = await atryumApi.get(`/api/v1/admin/plans?${params.toString()}`);
+    const { data } = await atryumApi.get(`/api/v1/plans?${params.toString()}`);
     return data;
   },
 
   detail: async (id: string): Promise<PlanDetail> => {
     const { data } = await atryumApi.get(
-      `/api/v1/admin/plans/${encodeURIComponent(id)}`,
+      `/api/v1/plans/${encodeURIComponent(id)}`,
     );
     return data;
   },
 
   events: async (id: string): Promise<{ items: InvocationEvent[] }> => {
     const { data } = await atryumApi.get(
-      `/api/v1/admin/plans/${encodeURIComponent(id)}/events?limit=200`,
+      `/api/v1/plans/${encodeURIComponent(id)}/events?limit=200`,
     );
     return data;
   },
@@ -491,7 +491,7 @@ export const plansApi = {
   approve: async (id: string, ttlSeconds?: number): Promise<Plan> => {
     const body = ttlSeconds ? { ttl_seconds: ttlSeconds } : {};
     const { data } = await atryumApi.post(
-      `/api/v1/admin/plans/${encodeURIComponent(id)}/approve`,
+      `/api/v1/plans/${encodeURIComponent(id)}/approve`,
       body,
     );
     return data;
@@ -500,7 +500,7 @@ export const plansApi = {
   deny: async (id: string, message?: string): Promise<Plan> => {
     const body = message ? { message } : {};
     const { data } = await atryumApi.post(
-      `/api/v1/admin/plans/${encodeURIComponent(id)}/deny`,
+      `/api/v1/plans/${encodeURIComponent(id)}/deny`,
       body,
     );
     return data;
@@ -508,7 +508,7 @@ export const plansApi = {
 
   revise: async (id: string, feedback: string): Promise<Plan> => {
     const { data } = await atryumApi.post(
-      `/api/v1/admin/plans/${encodeURIComponent(id)}/revise`,
+      `/api/v1/plans/${encodeURIComponent(id)}/revise`,
       { feedback },
     );
     return data;
@@ -516,7 +516,7 @@ export const plansApi = {
 
   expire: async (id: string): Promise<Plan> => {
     const { data } = await atryumApi.post(
-      `/api/v1/admin/plans/${encodeURIComponent(id)}/expire`,
+      `/api/v1/plans/${encodeURIComponent(id)}/expire`,
     );
     return data;
   },
@@ -607,18 +607,18 @@ export interface ManagedAgentSession {
 
 export const agentsApi = {
   list: async (): Promise<{ items: Agent[] }> => {
-    const { data } = await atryumApi.get('/api/v1/admin/agents');
+    const { data } = await atryumApi.get('/api/v1/agents');
     return data;
   },
 
   create: async (input: AgentCreateInput): Promise<Agent> => {
-    const { data } = await atryumApi.post('/api/v1/admin/agents', input);
+    const { data } = await atryumApi.post('/api/v1/agents', input);
     return data;
   },
 
   update: async (cuid: string, input: AgentUpdateInput): Promise<Agent> => {
     const { data } = await atryumApi.patch(
-      `/api/v1/admin/agents/${encodeURIComponent(cuid)}`,
+      `/api/v1/agents/${encodeURIComponent(cuid)}`,
       input,
     );
     return data;
@@ -626,39 +626,39 @@ export const agentsApi = {
 
   remove: async (cuid: string): Promise<void> => {
     await atryumApi.delete(
-      `/api/v1/admin/agents/${encodeURIComponent(cuid)}`,
+      `/api/v1/agents/${encodeURIComponent(cuid)}`,
     );
   },
 
   sync: async (): Promise<void> => {
-    await atryumApi.post('/api/v1/admin/agents/sync');
+    await atryumApi.post('/api/v1/agents/sync');
   },
 
   getAgentCharterPreview: async (id: string): Promise<CharterPreview> => {
     const { data } = await atryumApi.get(
-      `/api/v1/admin/agents/${encodeURIComponent(id)}/charter-preview`,
+      `/api/v1/agents/${encodeURIComponent(id)}/charter-preview`,
     );
     return data;
   },
 
   managedAgentAccounts: async (): Promise<{ items: ClaudeManagedAgentAccount[] }> => {
-    const { data } = await atryumApi.get('/api/v1/admin/managed-agents/accounts');
+    const { data } = await atryumApi.get('/api/v1/managed-agents/accounts');
     return data;
   },
 
   managedAgentSessions: async (): Promise<{ items: ManagedAgentSession[] }> => {
-    const { data } = await atryumApi.get('/api/v1/admin/managed-agents/sessions');
+    const { data } = await atryumApi.get('/api/v1/managed-agents/sessions');
     return data;
   },
 
   deleteManagedAgentSession: async (sessionID: string): Promise<void> => {
     await atryumApi.delete(
-      `/api/v1/admin/managed-agents/sessions/${encodeURIComponent(sessionID)}`,
+      `/api/v1/managed-agents/sessions/${encodeURIComponent(sessionID)}`,
     );
   },
 
   clearManagedAgentSessions: async (): Promise<{ deleted: number }> => {
-    const { data } = await atryumApi.delete('/api/v1/admin/managed-agents/sessions');
+    const { data } = await atryumApi.delete('/api/v1/managed-agents/sessions');
     return data;
   },
 
@@ -670,7 +670,7 @@ export const agentsApi = {
     if (account) params.set('account', account);
     if (q) params.set('q', q);
     const suffix = params.toString() ? `?${params.toString()}` : '';
-    const { data } = await atryumApi.get(`/api/v1/admin/managed-agents/agents${suffix}`);
+    const { data } = await atryumApi.get(`/api/v1/managed-agents/agents${suffix}`);
     return data;
   },
 };
@@ -690,14 +690,14 @@ export interface AgentSyncSettings {
 
 export const settingsApi = {
   get: async (): Promise<AgentSyncSettings> => {
-    const { data } = await atryumApi.get('/api/v1/admin/settings');
+    const { data } = await atryumApi.get('/api/v1/settings');
     return data;
   },
 
   update: async (
     input: Omit<AgentSyncSettings, 'updated_at' | 'sync_error'>,
   ): Promise<AgentSyncSettings> => {
-    const { data } = await atryumApi.put('/api/v1/admin/settings', input);
+    const { data } = await atryumApi.put('/api/v1/settings', input);
     return data;
   },
 };
@@ -711,7 +711,7 @@ export interface ModelConfig {
 
 export const modelConfigsApi = {
   list: async (): Promise<{ items: ModelConfig[]; total: number }> => {
-    const { data } = await atryumApi.get('/api/v1/admin/model-configs');
+    const { data } = await atryumApi.get('/api/v1/model-configs');
     return data;
   },
 };
@@ -769,25 +769,25 @@ export interface LLMConfigInput {
 
 export const llmConfigsApi = {
   list: async (): Promise<{ items: LLMConfig[] }> => {
-    const { data } = await atryumApi.get('/api/v1/admin/llm-configs');
+    const { data } = await atryumApi.get('/api/v1/llm-configs');
     return data;
   },
 
   create: async (input: LLMConfigInput): Promise<LLMConfig> => {
-    const { data } = await atryumApi.post('/api/v1/admin/llm-configs', input);
+    const { data } = await atryumApi.post('/api/v1/llm-configs', input);
     return data;
   },
 
   update: async (id: string, input: Partial<LLMConfigInput>): Promise<LLMConfig> => {
     const { data } = await atryumApi.patch(
-      `/api/v1/admin/llm-configs/${encodeURIComponent(id)}`,
+      `/api/v1/llm-configs/${encodeURIComponent(id)}`,
       input,
     );
     return data;
   },
 
   remove: async (id: string): Promise<void> => {
-    await atryumApi.delete(`/api/v1/admin/llm-configs/${encodeURIComponent(id)}`);
+    await atryumApi.delete(`/api/v1/llm-configs/${encodeURIComponent(id)}`);
   },
 };
 
@@ -795,7 +795,7 @@ export const llmConfigsApi = {
 
 export const vmDiscoveryApi = {
   listOrganizations: async (): Promise<VmOrgListResponse> => {
-    const { data } = await atryumApi.get('/api/v1/admin/vm/organizations');
+    const { data } = await atryumApi.get('/api/v1/vm/organizations');
     return data;
   },
 
@@ -803,7 +803,7 @@ export const vmDiscoveryApi = {
     orgCUID: string,
   ): Promise<{ items: VmRecordType[]; total: number }> => {
     const { data } = await atryumApi.get(
-      `/api/v1/admin/vm/record-types?org_cuid=${encodeURIComponent(orgCUID)}`,
+      `/api/v1/vm/record-types?org_cuid=${encodeURIComponent(orgCUID)}`,
     );
     return data;
   },
@@ -813,7 +813,7 @@ export const vmDiscoveryApi = {
     recordTypeSlug: string,
   ): Promise<{ items: VmCustomField[]; total: number }> => {
     const { data } = await atryumApi.get(
-      `/api/v1/admin/vm/custom-fields?org_cuid=${encodeURIComponent(orgCUID)}&record_type_slug=${encodeURIComponent(recordTypeSlug)}`,
+      `/api/v1/vm/custom-fields?org_cuid=${encodeURIComponent(orgCUID)}&record_type_slug=${encodeURIComponent(recordTypeSlug)}`,
     );
     return data;
   },

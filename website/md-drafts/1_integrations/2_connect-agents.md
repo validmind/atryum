@@ -384,9 +384,9 @@ For deployments outside local development, use your organization's identity prov
 When auth mode is enabled, configure your agent to send a bearer token rather than a query-parameter agent ID. Amp, Pi, and the shared hook script read `ATRYUM_ACCESS_TOKEN`, or mint tokens with `ATRYUM_TOKEN_COMMAND`, and send the token to Atryum's agent runtime APIs.
 :::
 
-### Admin UI authentication
+### UI and privileged API authentication
 
-Admin UI/API authentication is opt-in. If no configured `[[auth]]` block has `admin_enabled = true`, `/ui/` and the admin API remain open for local development. As soon as one or more blocks are admin-enabled, Atryum requires a valid browser OIDC access token for admin API calls. The upstream MCP OAuth callback at `/api/v1/mcp/oauth/callback` remains public so external identity providers can complete browser redirects.
+Authentication for the UI and the review/operator APIs is opt-in. If no configured `[[auth]]` block has `admin_enabled = true`, `/ui/` and those privileged APIs remain open for local development. As soon as one or more blocks are admin-enabled, Atryum requires a valid browser OIDC access token for review/operator API calls. The upstream MCP OAuth callback at `/api/v1/mcp/oauth/callback` remains public so external identity providers can complete browser redirects.
 
 Admin auth reuses the same issuer, audience, expiry, signature, and JWKS validation as agent auth. After token verification, Atryum checks the admin claim from the matched `[[auth]]` block:
 
@@ -406,7 +406,7 @@ admin_claim = "atryum_admin"
 admin_claim_value = true
 ```
 
-Multiple admin-enabled IdPs can be configured at the same time. The frontend discovers them from `/api/v1/admin-auth/config`; with one provider it shows a sign-in screen without a provider selector, and with several it shows an identity-provider selector.
+Multiple admin-enabled IdPs can be configured at the same time. The frontend discovers them from `/api/v1/auth/config`; with one provider it shows a sign-in screen without a provider selector, and with several it shows an identity-provider selector.
 
 For local Keycloak, run the setup script after Keycloak is available:
 

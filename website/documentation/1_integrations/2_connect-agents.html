@@ -40,7 +40,7 @@
           <li><a href="#agent-identity-and-authentication">Agent identity and authentication</a></li>
           <li class="docs-toc-h3"><a href="#no-auth-mode">No-auth mode</a></li>
           <li class="docs-toc-h3"><a href="#auth-mode">Auth mode</a></li>
-          <li class="docs-toc-h3"><a href="#admin-ui-authentication">Admin UI authentication</a></li>
+          <li class="docs-toc-h3"><a href="#ui-and-privileged-api-authentication">UI and privileged API authentication</a></li>
           </ul>
           </nav>
         </div>
@@ -270,9 +270,9 @@ agent_id_claim = &quot;client_id&quot;</code></pre><button class="copy-btn code-
 
         <aside class="docs-callout"><p>When auth mode is enabled, configure your agent to send a bearer token rather than a query-parameter agent ID. Amp, Pi, and the shared hook script read <code>ATRYUM_ACCESS_TOKEN</code>, or mint tokens with <code>ATRYUM_TOKEN_COMMAND</code>, and send the token to Atryum's agent runtime APIs.</p></aside>
 
-        <h3 id="admin-ui-authentication">Admin UI authentication</h3>
+        <h3 id="ui-and-privileged-api-authentication">UI and privileged API authentication</h3>
 
-        <p>Admin UI/API authentication is opt-in. If no configured <code>[[auth]]</code> block has <code>admin_enabled = true</code>, <code>/ui/</code> and the admin API remain open for local development. As soon as one or more blocks are admin-enabled, Atryum requires a valid browser OIDC access token for admin API calls. The upstream MCP OAuth callback at <code>/api/v1/mcp/oauth/callback</code> remains public so external identity providers can complete browser redirects.</p>
+        <p>Authentication for the UI and the review/operator APIs is opt-in. If no configured <code>[[auth]]</code> block has <code>admin_enabled = true</code>, <code>/ui/</code> and those privileged APIs remain open for local development. As soon as one or more blocks are admin-enabled, Atryum requires a valid browser OIDC access token for review/operator API calls. The upstream MCP OAuth callback at <code>/api/v1/mcp/oauth/callback</code> remains public so external identity providers can complete browser redirects.</p>
 
         <p>Admin auth reuses the same issuer, audience, expiry, signature, and JWKS validation as agent auth. After token verification, Atryum checks the admin claim from the matched <code>[[auth]]</code> block:</p>
 
@@ -290,16 +290,18 @@ admin_scopes = &quot;openid profile email atryum:mcp&quot;
 admin_claim = &quot;atryum_admin&quot;
 admin_claim_value = true</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="[[auth]]&#10;enabled = true&#10;issuer = &quot;http://localhost:8089/realms/atryum&quot;&#10;audience = &quot;atryum&quot;&#10;required_scope = &quot;atryum:mcp&quot;&#10;agent_id_claim = &quot;client_id&quot;&#10;&#10;admin_enabled = true&#10;admin_provider = &quot;keycloak&quot;&#10;admin_client_id = &quot;atryum-admin&quot;&#10;admin_scopes = &quot;openid profile email atryum:mcp&quot;&#10;admin_claim = &quot;atryum_admin&quot;&#10;admin_claim_value = true" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
 
-        <p>Multiple admin-enabled IdPs can be configured at the same time. The frontend discovers them from <code>/api/v1/admin-auth/config</code>; with one provider it shows a sign-in screen without a provider selector, and with several it shows an identity-provider selector.</p>
+        <p>Multiple admin-enabled IdPs can be configured at the same time. The frontend discovers them from <code>/api/v1/auth/config</code>; with one provider it shows a sign-in screen without a provider selector, and with several it shows an identity-provider selector.</p>
 
         <p>For local Keycloak, run the setup script after Keycloak is available:</p>
 
         <div class="code-block"><pre><code class="language-bash">docker compose --profile dev up -d keycloak
 KC_URL=http://localhost:8089 ./keycloak/setup-realm.sh</code></pre><button class="copy-btn code-block-copy-btn" type="button" data-command="docker compose --profile dev up -d keycloak&#10;KC_URL=http://localhost:8089 ./keycloak/setup-realm.sh" aria-label="Copy code block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span>Copy</span></button></div>
 
-        <p>The script provisions a public <code>atryum-admin</code> client for authorization code + PKCE, allows both local callback URLs (<code>http://localhost:5174/ui/auth/callback</code> for Vite and <code>http://localhost:8080/ui/auth/callback</code> for the embedded UI), and adds an <code>atryum_admin=true</code> access-token claim.</p>
+        <p>The script provisions a public <code>atryum-admin</code> client for authorization code + PKCE, allows both local callback URLs (<code>http://localhost:5174/ui/auth/callback</code> for Vite and <code>http://localhost:8080/ui/auth/callback</code> for the embedded UI), allows the corresponding post-logout URLs (<code>http://localhost:5174/ui/</code> and <code>http://localhost:8080/ui/</code>), and adds an <code>atryum_admin=true</code> access-token claim.</p>
 
-        <p>For Auth0, use a dedicated <strong>Single Page Application</strong> client rather than a confidential backend app. Enable authorization code with PKCE, enable refresh tokens if requesting <code>offline_access</code>, add the local callback URLs above to Allowed Callback URLs, and add <code>http://localhost:5174</code> plus <code>http://localhost:8080</code> to Allowed Web Origins. Add the configured admin claim with a Post Login Action or your existing authorization pipeline.</p>
+        <p>For Auth0, use a dedicated <strong>Single Page Application</strong> client rather than a confidential backend app. Enable authorization code with PKCE, enable refresh tokens if requesting <code>offline_access</code>, add the local callback URLs above to Allowed Callback URLs, add <code>http://localhost:5174</code> plus <code>http://localhost:8080</code> to Allowed Web Origins, and add the post-logout URLs above to Allowed Logout URLs. Add the configured admin claim with a Post Login Action or your existing authorization pipeline.</p>
+
+        <p>When an administrator signs out, Atryum uses the selected provider's autodiscovered OIDC <code>end_session_endpoint</code>, supplies the current ID token as a logout hint, and asks the provider to return to <code>/ui/</code>. Register <code>&lt;your-atryum-origin&gt;/ui/</code> as an allowed post-logout URL for every admin OIDC client. If a provider does not advertise a usable end-session endpoint, Atryum still clears its local session and returns to the sign-in screen.</p>
 
         <p>Admin auth responses use these status codes:</p>
 
