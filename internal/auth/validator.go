@@ -31,6 +31,7 @@ type Identity struct {
 	AgentID string
 	Issuer  string
 	Subject string
+	Email   string
 	Scope   string
 }
 
@@ -128,12 +129,29 @@ func (v *Validator) Validate(ctx context.Context, bearer string) (Identity, erro
 		AgentID: extractAgentID(verifiedClaims, cfg.AgentIDClaim),
 		Issuer:  cfg.Issuer,
 		Subject: stringClaim(verifiedClaims, "sub"),
+		Email:   stringClaim(verifiedClaims, "email"),
 		Scope:   scope,
 	}
 	if identity.AgentID == "" {
 		return Identity{}, &ValidationError{Result: ResultInvalid, Description: "no usable agent identity claim"}
 	}
 	return identity, nil
+}
+
+// ValidateOperator verifies a bearer token for the operator API without
+// imposing Atryum's legacy admin-claim policy. Embedders using an access
+// resolver make the authorization decision from the verified email instead.
+func (v *Validator) ValidateOperator(ctx context.Context, bearer string) (AdminIdentity, error) {
+	verifiedClaims, cfg, err := v.verify(ctx, bearer)
+	if err != nil {
+		return AdminIdentity{}, err
+	}
+	return AdminIdentity{
+		Issuer:  cfg.Issuer,
+		Subject: stringClaim(verifiedClaims, "sub"),
+		Email:   stringClaim(verifiedClaims, "email"),
+		Name:    stringClaim(verifiedClaims, "name"),
+	}, nil
 }
 
 type AdminIdentity struct {

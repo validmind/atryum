@@ -24,6 +24,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/validmind/atryum/internal/access"
 	"github.com/validmind/atryum/internal/auth"
 	backendclient "github.com/validmind/atryum/internal/backend"
 	"github.com/validmind/atryum/internal/invocation"
@@ -162,6 +163,7 @@ type Handler struct {
 	authDebugSkip         bool
 	authValidator         *auth.Validator
 	apiKeyAuth            auth.APIKeyConfig
+	accessResolver        access.Resolver
 
 	// clientInfoCache remembers the most recent `initialize.clientInfo`
 	// per MCP session key so that subsequent tools/call requests on the
@@ -835,6 +837,10 @@ func (h *Handler) SetAuthValidator(v *auth.Validator) {
 	h.authValidator = v
 }
 
+func (h *Handler) SetAccessResolver(resolver access.Resolver) {
+	h.accessResolver = resolver
+}
+
 func (h *Handler) SetAuthDebugSkipVerify(enabled bool) {
 	h.authDebugSkip = enabled
 }
@@ -910,6 +916,15 @@ func (h *Handler) Routes() http.Handler {
 	}
 	mcpHandler := h.agentRuntimeHandler(http.HandlerFunc(h.invokeUpstream))
 	operatorAuthMW := auth.OperatorMiddleware(h.authValidator, h.apiKeyAuth, auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})
+	if h.accessResolver != nil {
+		operatorAuthMW = auth.AccessOperatorMiddleware(
+			h.authValidator,
+			h.apiKeyAuth,
+			h.accessResolver,
+			h.authorizeOperatorRequest,
+			auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug},
+		)
+	}
 	operator := func(fn http.HandlerFunc) http.Handler {
 		return operatorAuthMW(fn)
 	}
@@ -963,12 +978,82 @@ func (h *Handler) Routes() http.Handler {
 }
 
 func (h *Handler) agentRuntimeHandler(next http.Handler) http.Handler {
+	if h.accessResolver != nil {
+		next = h.runtimeAccess(next)
+	}
 	handler := auth.MiddlewareWithOptions(
 		h.authValidator,
 		"/.well-known/oauth-protected-resource",
 		auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug},
 	)(next)
 	return h.noAuthAgentIDHint(handler)
+}
+
+func (h *Handler) runtimeAccess(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		identity, ok := auth.IdentityFromContext(r.Context())
+		if !ok || strings.TrimSpace(identity.AgentID) == "" {
+			writeError(w, http.StatusUnauthorized, "token agent identity is required")
+			return
+		}
+		record, err := h.agentsRepo.GetByAgentID(r.Context(), identity.AgentID)
+		if err != nil || strings.TrimSpace(record.VMCUID) == "" {
+			writeError(w, http.StatusForbidden, "agent identity is not assigned")
+			return
+		}
+		// Client-credentials agent tokens commonly have no human email. Their
+		// verified agent identity is the authority boundary: bind it to the
+		// exact stored agent CUID and continue with a resource-scoped principal.
+		if strings.TrimSpace(identity.Email) == "" {
+			principal := access.Principal{AgentCUIDs: []string{record.VMCUID}}
+			next.ServeHTTP(w, r.WithContext(access.WithPrincipal(r.Context(), principal)))
+			return
+		}
+		// Delegated/user-bearing runtime tokens additionally require a current
+		// authority assignment for the resolved agent.
+		principal, err := h.accessResolver.ResolveAccess(r.Context(), identity.Email)
+		if errors.Is(err, access.ErrUnknownIdentity) {
+			writeError(w, http.StatusForbidden, "identity is not provisioned")
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "access resolution failed")
+			return
+		}
+		if !principal.Assigned(record.VMCUID) {
+			writeError(w, http.StatusForbidden, "agent identity is not assigned")
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(access.WithPrincipal(r.Context(), principal)))
+	})
+}
+
+func (h *Handler) authorizeOperatorRequest(r *http.Request, principal access.Principal) bool {
+	if principal.Unrestricted {
+		return true
+	}
+	path := r.URL.Path
+	if r.Method == http.MethodGet {
+		switch {
+		case pathAtOrBelow(path, "/api/v1/review/invocations"),
+			pathAtOrBelow(path, "/api/v1/plans"),
+			pathAtOrBelow(path, "/api/v1/rules"),
+			pathAtOrBelow(path, "/api/v1/agents"):
+			return principal.Has(access.CapabilityReadResources)
+		}
+	}
+	if r.Method == http.MethodPatch && path != "/api/v1/agents" && pathAtOrBelow(path, "/api/v1/agents") {
+		return principal.Has(access.CapabilityUpdateAgents)
+	}
+	if r.Method == http.MethodPost && path != "/api/v1/plans" && pathAtOrBelow(path, "/api/v1/plans") &&
+		(strings.HasSuffix(path, "/approve") || strings.HasSuffix(path, "/deny") || strings.HasSuffix(path, "/revise")) {
+		return principal.Has(access.CapabilityDecidePlans)
+	}
+	return principal.Has(access.CapabilityAdmin)
+}
+
+func pathAtOrBelow(path, base string) bool {
+	return path == base || strings.HasPrefix(path, base+"/")
 }
 
 func (h *Handler) noAuthAgentIDHint(next http.Handler) http.Handler {
@@ -1962,6 +2047,18 @@ func (h *Handler) reviewInvocations(w http.ResponseWriter, r *http.Request) {
 		Status:     strings.TrimSpace(r.URL.Query().Get("status")),
 		ClientName: strings.TrimSpace(r.URL.Query().Get("client_name")),
 	}
+	if principal, ok := access.PrincipalFromContext(r.Context()); ok && !principal.Unrestricted {
+		if len(principal.AgentCUIDs) == 0 {
+			writeJSON(w, http.StatusOK, invocation.InvocationListResponse{
+				Items:  []invocation.InvocationResponse{},
+				Total:  0,
+				Offset: filter.Offset,
+				Limit:  filter.Limit,
+			})
+			return
+		}
+		filter.AgentCUIDs = principal.AgentCUIDs
+	}
 	resp, err := h.svc.List(r.Context(), filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -1986,6 +2083,16 @@ func (h *Handler) reviewInvocationStream(w http.ResponseWriter, r *http.Request)
 		Tool:       strings.TrimSpace(r.URL.Query().Get("tool")),
 		Status:     strings.TrimSpace(r.URL.Query().Get("status")),
 		ClientName: strings.TrimSpace(r.URL.Query().Get("client_name")),
+	}
+	if principal, ok := access.PrincipalFromContext(r.Context()); ok && !principal.Unrestricted {
+		if len(principal.AgentCUIDs) == 0 {
+			fmt.Fprintf(w, "event: invocations\ndata: %s\n\n", mustJSONString(invocationStreamEnvelope{
+				Items: []invocation.InvocationResponse{},
+			}))
+			flusher.Flush()
+			return
+		}
+		filter.AgentCUIDs = principal.AgentCUIDs
 	}
 	ctx := r.Context()
 	lastSignature := ""
@@ -2017,6 +2124,13 @@ func (h *Handler) reviewInvocationDetail(w http.ResponseWriter, r *http.Request)
 	if trimmed == "" {
 		writeError(w, http.StatusNotFound, "not found")
 		return
+	}
+	if principal, ok := access.PrincipalFromContext(r.Context()); ok && !principal.Unrestricted {
+		resource, err := h.svc.Get(r.Context(), strings.Split(trimmed, "/")[0])
+		if err != nil || resource.AgentCUID == nil || !principal.Assigned(*resource.AgentCUID) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
 	}
 	if strings.HasSuffix(trimmed, "/events") {
 		if r.Method != http.MethodGet {
@@ -2076,7 +2190,11 @@ func (h *Handler) reviewInvocationDetail(w http.ResponseWriter, r *http.Request)
 				return
 			}
 		}
-		if err := h.svc.Approve(r.Context(), id, req.ActorID); err != nil {
+		actorID := req.ActorID
+		if principal, ok := access.PrincipalFromContext(r.Context()); ok {
+			actorID = principal.ActorID
+		}
+		if err := h.svc.Approve(r.Context(), id, actorID); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -2135,7 +2253,11 @@ func (h *Handler) reviewInvocationDetail(w http.ResponseWriter, r *http.Request)
 				return
 			}
 		}
-		if err := h.svc.Deny(r.Context(), id, req.Message, req.ActorID); err != nil {
+		actorID := req.ActorID
+		if principal, ok := access.PrincipalFromContext(r.Context()); ok {
+			actorID = principal.ActorID
+		}
+		if err := h.svc.Deny(r.Context(), id, req.Message, actorID); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -2520,8 +2642,22 @@ func (h *Handler) operatorRules(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		items := make([]OperatorRule, 0, len(rules))
+		principal, scoped := access.PrincipalFromContext(r.Context())
 		for _, rule := range rules {
-			items = append(items, toOperatorRule(rule))
+			view := toOperatorRule(rule)
+			if scoped && !principal.Unrestricted && len(rule.AgentCUIDs) > 0 {
+				visible := make([]string, 0, len(rule.AgentCUIDs))
+				for _, cuid := range rule.AgentCUIDs {
+					if principal.Assigned(cuid) {
+						visible = append(visible, cuid)
+					}
+				}
+				if len(visible) == 0 {
+					continue
+				}
+				view.AgentCUIDs = visible
+			}
+			items = append(items, view)
 		}
 		writeJSON(w, http.StatusOK, RuleListResponse{Items: items})
 	case http.MethodPost:
@@ -2629,7 +2765,21 @@ func (h *Handler) operatorRuleDetail(w http.ResponseWriter, r *http.Request) {
 			writeError(w, status, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, toOperatorRule(rule))
+		view := toOperatorRule(rule)
+		if principal, scoped := access.PrincipalFromContext(r.Context()); scoped && !principal.Unrestricted && len(rule.AgentCUIDs) > 0 {
+			visible := make([]string, 0, len(rule.AgentCUIDs))
+			for _, cuid := range rule.AgentCUIDs {
+				if principal.Assigned(cuid) {
+					visible = append(visible, cuid)
+				}
+			}
+			if len(visible) == 0 {
+				writeError(w, http.StatusNotFound, "not found")
+				return
+			}
+			view.AgentCUIDs = visible
+		}
+		writeJSON(w, http.StatusOK, view)
 	case http.MethodPut:
 		var req OperatorRuleInput
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -3174,7 +3324,11 @@ func (h *Handler) operatorAgents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		items := make([]OperatorAgent, 0, len(records))
+		principal, scoped := access.PrincipalFromContext(r.Context())
 		for _, a := range records {
+			if scoped && !principal.Assigned(a.VMCUID) {
+				continue
+			}
 			items = append(items, h.toOperatorAgent(r.Context(), a))
 		}
 		writeJSON(w, http.StatusOK, AgentListResponse{Items: items})
@@ -3259,6 +3413,14 @@ func (h *Handler) operatorAgentDetail(w http.ResponseWriter, r *http.Request) {
 	if trimmed == "" {
 		writeError(w, http.StatusNotFound, "not found")
 		return
+	}
+	if principal, scoped := access.PrincipalFromContext(r.Context()); scoped && !principal.Unrestricted && trimmed != "sync" {
+		id := strings.Trim(strings.TrimSuffix(trimmed, "/charter-preview"), "/")
+		record, err := h.agentsRepo.Get(r.Context(), id)
+		if err != nil || !principal.Assigned(record.VMCUID) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
 	}
 
 	// POST /api/v1/agents/sync — trigger a backend sync
@@ -4040,6 +4202,9 @@ func (h *Handler) externalPlans(w http.ResponseWriter, r *http.Request) {
 // callers (auth disabled, no hint) are not scoped — there is no identity to
 // enforce, matching the external invocation endpoints' trust model.
 func planOwnedByCaller(r *http.Request, plan invocation.Plan) bool {
+	if principal, ok := access.PrincipalFromContext(r.Context()); ok {
+		return plan.AgentCUID != "" && principal.Assigned(plan.AgentCUID)
+	}
 	callerID := auth.AgentIDFromContext(r.Context())
 	return callerID == "" || callerID == plan.AgentID
 }
@@ -4117,6 +4282,18 @@ func (h *Handler) reviewPlans(w http.ResponseWriter, r *http.Request) {
 		Status:  strings.TrimSpace(r.URL.Query().Get("status")),
 		AgentID: strings.TrimSpace(r.URL.Query().Get("agent_id")),
 	}
+	if principal, ok := access.PrincipalFromContext(r.Context()); ok && !principal.Unrestricted {
+		if len(principal.AgentCUIDs) == 0 {
+			writeJSON(w, http.StatusOK, invocation.PlanListResponse{
+				Items:  []invocation.Plan{},
+				Total:  0,
+				Offset: filter.Offset,
+				Limit:  filter.Limit,
+			})
+			return
+		}
+		filter.AgentCUIDs = principal.AgentCUIDs
+	}
 	resp, err := h.svc.ListPlans(r.Context(), filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -4143,6 +4320,20 @@ func (h *Handler) reviewPlanStream(w http.ResponseWriter, r *http.Request) {
 		Limit:   readUintQuery(r, "limit", 50),
 		Status:  strings.TrimSpace(r.URL.Query().Get("status")),
 		AgentID: strings.TrimSpace(r.URL.Query().Get("agent_id")),
+	}
+	if principal, ok := access.PrincipalFromContext(r.Context()); ok && !principal.Unrestricted {
+		if len(principal.AgentCUIDs) == 0 {
+			empty := invocation.PlanListResponse{
+				Items:  []invocation.Plan{},
+				Total:  0,
+				Offset: filter.Offset,
+				Limit:  filter.Limit,
+			}
+			fmt.Fprintf(w, "event: plans\ndata: %s\n\n", mustJSONString(empty))
+			flusher.Flush()
+			return
+		}
+		filter.AgentCUIDs = principal.AgentCUIDs
 	}
 	ctx := r.Context()
 	lastPayload := ""
@@ -4174,6 +4365,13 @@ func (h *Handler) reviewPlanDetail(w http.ResponseWriter, r *http.Request) {
 	if trimmed == "" {
 		writeError(w, http.StatusNotFound, "not found")
 		return
+	}
+	if principal, ok := access.PrincipalFromContext(r.Context()); ok && !principal.Unrestricted {
+		resource, err := h.svc.GetPlan(r.Context(), strings.Split(trimmed, "/")[0])
+		if err != nil || resource.AgentCUID == "" || !principal.Assigned(resource.AgentCUID) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
 	}
 	if strings.HasSuffix(trimmed, "/events") {
 		if r.Method != http.MethodGet {

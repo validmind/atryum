@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"net/http"
 
+	"github.com/validmind/atryum/internal/access"
 	"github.com/validmind/atryum/pkg/migrations"
 )
 
@@ -14,6 +15,16 @@ type options struct {
 	extensionMigrations []extensionMigrations
 	databaseHooks       []func(db *sql.DB, usePostgres bool)
 	thirdPartyNotices   string
+	accessResolver      access.Resolver
+}
+
+// WithAccessResolver enables capability- and agent-scoped access decisions
+// supplied by an embedding application. Without it Atryum's stock
+// authentication and authorization behavior is unchanged.
+func WithAccessResolver(resolver AccessResolver) Option {
+	return func(o *options) {
+		o.accessResolver = resolver
+	}
 }
 
 type extensionMigrations struct {

@@ -40,8 +40,8 @@ func (r *ExternalSessionRepo) CreateSession(ctx context.Context, s invocation.Ex
 	// fallback TTL here so the lifetime can't silently diverge between the two
 	// sites. A zero ExpiresAt persists as non-expiring (see lookupSessionForAgent).
 	query, args, err := r.sb.Insert("external_sessions").
-		Columns("id", "agent_id", "harness", "client_session_id", "created_at", "last_seen_at", "expires_at").
-		Values(s.ID, s.AgentID, s.Harness, s.ClientSessionID, s.CreatedAt, s.LastSeenAt, s.ExpiresAt).
+		Columns("id", "agent_id", "agent_cuid", "harness", "client_session_id", "created_at", "last_seen_at", "expires_at").
+		Values(s.ID, s.AgentID, emptyToNil(s.AgentCUID), s.Harness, s.ClientSessionID, s.CreatedAt, s.LastSeenAt, s.ExpiresAt).
 		ToSql()
 	if err != nil {
 		return err
@@ -53,7 +53,7 @@ func (r *ExternalSessionRepo) CreateSession(ctx context.Context, s invocation.Ex
 // GetSession returns the session by ID, or sql.ErrNoRows if it does not exist.
 func (r *ExternalSessionRepo) GetSession(ctx context.Context, id string) (invocation.ExternalSession, error) {
 	query, args, err := r.sb.
-		Select("id", "agent_id", "harness", "client_session_id", "created_at", "last_seen_at", "expires_at").
+		Select("id", "agent_id", "agent_cuid", "harness", "client_session_id", "created_at", "last_seen_at", "expires_at").
 		From("external_sessions").
 		Where(sq.Eq{"id": id}).
 		ToSql()
@@ -61,12 +61,14 @@ func (r *ExternalSessionRepo) GetSession(ctx context.Context, id string) (invoca
 		return invocation.ExternalSession{}, err
 	}
 	var s invocation.ExternalSession
+	var agentCUID sql.NullString
 	err = r.db.QueryRowContext(ctx, query, args...).Scan(
-		&s.ID, &s.AgentID, &s.Harness, &s.ClientSessionID, &s.CreatedAt, &s.LastSeenAt, &s.ExpiresAt,
+		&s.ID, &s.AgentID, &agentCUID, &s.Harness, &s.ClientSessionID, &s.CreatedAt, &s.LastSeenAt, &s.ExpiresAt,
 	)
 	if err != nil {
 		return invocation.ExternalSession{}, err
 	}
+	s.AgentCUID = agentCUID.String
 	return s, nil
 }
 
@@ -78,7 +80,7 @@ func (r *ExternalSessionRepo) GetSession(ctx context.Context, id string) (invoca
 // audit records; see Service.getOrCreateSession.
 func (r *ExternalSessionRepo) GetSessionByAgentAndClientSessionID(ctx context.Context, agentID, clientSessionID string) (invocation.ExternalSession, error) {
 	query, args, err := r.sb.
-		Select("id", "agent_id", "harness", "client_session_id", "created_at", "last_seen_at", "expires_at").
+		Select("id", "agent_id", "agent_cuid", "harness", "client_session_id", "created_at", "last_seen_at", "expires_at").
 		From("external_sessions").
 		Where(sq.Eq{"agent_id": agentID, "client_session_id": clientSessionID}).
 		OrderBy("created_at DESC").
@@ -88,12 +90,14 @@ func (r *ExternalSessionRepo) GetSessionByAgentAndClientSessionID(ctx context.Co
 		return invocation.ExternalSession{}, err
 	}
 	var s invocation.ExternalSession
+	var agentCUID sql.NullString
 	err = r.db.QueryRowContext(ctx, query, args...).Scan(
-		&s.ID, &s.AgentID, &s.Harness, &s.ClientSessionID, &s.CreatedAt, &s.LastSeenAt, &s.ExpiresAt,
+		&s.ID, &s.AgentID, &agentCUID, &s.Harness, &s.ClientSessionID, &s.CreatedAt, &s.LastSeenAt, &s.ExpiresAt,
 	)
 	if err != nil {
 		return invocation.ExternalSession{}, err
 	}
+	s.AgentCUID = agentCUID.String
 	return s, nil
 }
 

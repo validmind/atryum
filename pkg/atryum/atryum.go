@@ -282,6 +282,9 @@ func runServer(args []string, o options) error {
 	}
 	handler := api.NewHandler(service, serverOperator, policyRegistry, rulesRepo, agentsRepo, agentSyncSettingsRepo, llmConfigsRepo, syncAgentsFn, backendClient, localEvaluator)
 	handler.SetManagedAgentBindings(managedAgentBindingRepo)
+	if o.accessResolver != nil {
+		handler.SetAccessResolver(o.accessResolver)
+	}
 	for _, register := range o.extraRoutes {
 		handler.AddExtraRoutes(register)
 	}
@@ -294,6 +297,9 @@ func runServer(args []string, o options) error {
 		handler.SetAuthValidator(authValidator)
 		log.Printf("inbound auth enabled (%d issuer(s))", len(authValidator.Configs()))
 	} else {
+		if o.accessResolver != nil {
+			return fmt.Errorf("access resolver requires at least one enabled OAuth configuration")
+		}
 		log.Printf("inbound auth disabled (no [[auth]] section configured)")
 	}
 	handler.SetAPIKeyAuth(cfg.APIKey)
@@ -303,6 +309,9 @@ func runServer(args []string, o options) error {
 		log.Printf("api key auth NOT configured: /invocations/{agent_id} and /agent_ids will refuse all requests")
 	}
 	authDebugSkipVerify := cfg.AuthDebug.SkipVerify || truthyEnv("ATRYUM_AUTH_DEBUG_SKIP_VERIFY")
+	if o.accessResolver != nil && authDebugSkipVerify {
+		return fmt.Errorf("access resolver cannot be used with auth verification bypass")
+	}
 	if authDebugSkipVerify {
 		handler.SetAuthDebugSkipVerify(true)
 		log.Printf("WARNING: inbound auth debug skip_verify enabled; /mcp/ Authorization header is ignored entirely")

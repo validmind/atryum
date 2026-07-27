@@ -3,10 +3,13 @@ package auth
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"strings"
+
+	"github.com/validmind/atryum/internal/access"
 )
 
 // Middleware returns an http.Handler that requires a valid OAuth bearer token
@@ -17,6 +20,63 @@ import (
 // disabled).
 func Middleware(v *Validator, resourceMetadataPath string) func(http.Handler) http.Handler {
 	return MiddlewareWithOptions(v, resourceMetadataPath, MiddlewareOptions{})
+}
+
+// AccessOperatorMiddleware authenticates operator callers and delegates
+// authorization to the embedding resolver. Static machine credentials are
+// represented as unrestricted principals.
+func AccessOperatorMiddleware(v *Validator, apiKeyCfg APIKeyConfig, resolver access.Resolver, authorize func(*http.Request, access.Principal) bool, opts MiddlewareOptions) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if apiKeyCfg.Enabled() {
+				gotKey := strings.TrimSpace(r.Header.Get(apiKeyHeader))
+				gotSecret := strings.TrimSpace(r.Header.Get(apiSecretHeader))
+				if gotKey != "" || gotSecret != "" {
+					keyOK := subtle.ConstantTimeCompare([]byte(gotKey), []byte(apiKeyCfg.Key)) == 1
+					secretOK := subtle.ConstantTimeCompare([]byte(gotSecret), []byte(apiKeyCfg.Secret)) == 1
+					if !keyOK || !secretOK {
+						writeAPIKeyError(w, http.StatusUnauthorized, "invalid api key credentials")
+						return
+					}
+					principal := access.Principal{ActorID: "machine", Unrestricted: true}
+					next.ServeHTTP(w, r.WithContext(access.WithPrincipal(r.Context(), principal)))
+					return
+				}
+			}
+			if v == nil || opts.SkipVerify {
+				writeChallenge(w, http.StatusUnauthorized, "OAuth authentication is required", "invalid_token", "", "")
+				return
+			}
+			header := strings.TrimSpace(r.Header.Get("Authorization"))
+			if !strings.HasPrefix(strings.ToLower(header), "bearer ") {
+				writeChallenge(w, http.StatusUnauthorized, "missing bearer token", "invalid_token", "", "")
+				return
+			}
+			identity, err := v.ValidateOperator(r.Context(), strings.TrimSpace(header[len("Bearer "):]))
+			if err != nil {
+				writeChallenge(w, http.StatusUnauthorized, "invalid token", "invalid_token", "", "")
+				return
+			}
+			if strings.TrimSpace(identity.Email) == "" {
+				writeChallenge(w, http.StatusUnauthorized, "token email claim is required", "invalid_token", "", "")
+				return
+			}
+			principal, err := resolver.ResolveAccess(r.Context(), identity.Email)
+			if errors.Is(err, access.ErrUnknownIdentity) {
+				writeChallenge(w, http.StatusForbidden, "identity is not provisioned", "insufficient_scope", "", "")
+				return
+			}
+			if err != nil {
+				writeAPIKeyError(w, http.StatusInternalServerError, "access resolution failed")
+				return
+			}
+			if authorize != nil && !authorize(r, principal) {
+				writeChallenge(w, http.StatusForbidden, "operation is not permitted", "insufficient_scope", "", "")
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(access.WithPrincipal(r.Context(), principal)))
+		})
+	}
 }
 
 type MiddlewareOptions struct {

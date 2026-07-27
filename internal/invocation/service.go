@@ -160,6 +160,17 @@ type invocationRepo interface {
 	ListAgentIDs(ctx context.Context) ([]string, error)
 }
 
+type scopedIdempotencyRepo interface {
+	GetByAgentCUIDAndIdempotencyKey(ctx context.Context, agentCUID, key string) (Invocation, error)
+}
+
+func (s *Service) getByIdempotencyKey(ctx context.Context, agentCUID, key string) (Invocation, error) {
+	if scoped, ok := s.invocations.(scopedIdempotencyRepo); ok {
+		return scoped.GetByAgentCUIDAndIdempotencyKey(ctx, agentCUID, key)
+	}
+	return s.invocations.GetByIdempotencyKey(ctx, key)
+}
+
 type eventRepo interface {
 	Create(ctx context.Context, evt Event) error
 	ListByInvocation(ctx context.Context, invocationID string, filter EventListFilter) ([]Event, int, error)
@@ -294,6 +305,11 @@ func (s *Service) CreateSession(ctx context.Context, req CreateSessionRequest, a
 		LastSeenAt:      now,
 		ExpiresAt:       now.Add(externalSessionTTL),
 	}
+	if s.agents != nil {
+		if rec, err := s.agents.GetByAgentID(ctx, agentID); err == nil {
+			sess.AgentCUID = rec.VMCUID
+		}
+	}
 	if err := s.sessions.CreateSession(ctx, sess); err != nil {
 		return SessionResponse{}, err
 	}
@@ -313,8 +329,10 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	if req.Tool == "" {
 		return InvocationResponse{}, fmt.Errorf("tool is required")
 	}
+	agentID := auth.AgentIDFromContext(ctx)
+	agentRec := s.resolveAgentRecord(ctx, agentID)
 	if req.IdempotencyKey != nil && *req.IdempotencyKey != "" {
-		existing, err := s.invocations.GetByIdempotencyKey(ctx, *req.IdempotencyKey)
+		existing, err := s.getByIdempotencyKey(ctx, agentRec.VMCUID, *req.IdempotencyKey)
 		if err == nil {
 			return s.toResponse(existing), nil
 		}
@@ -334,9 +352,6 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	// agentID is the authenticated agent identity from middleware. When auth
 	// is disabled the field is empty and we fall back to request_id for rule
 	// matching to preserve pre-auth behavior.
-	agentID := auth.AgentIDFromContext(ctx)
-	agentRec := s.resolveAgentRecord(ctx, agentID)
-
 	now := time.Now().UTC()
 	inv := Invocation{
 		InvocationID:   "inv_" + uuid.NewString(),
@@ -350,6 +365,10 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	}
 	if agentID != "" {
 		inv.AgentID = &agentID
+	}
+	if agentRec.VMCUID != "" {
+		cuid := agentRec.VMCUID
+		inv.AgentCUID = &cuid
 	}
 	if req.ClientName != "" {
 		v := req.ClientName
@@ -1365,15 +1384,6 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	if source == "" {
 		source = "external"
 	}
-	if req.IdempotencyKey != nil && *req.IdempotencyKey != "" {
-		existing, err := s.invocations.GetByIdempotencyKey(ctx, *req.IdempotencyKey)
-		if err == nil {
-			return s.toResponse(existing), nil
-		}
-		if err != nil && err != sql.ErrNoRows {
-			return InvocationResponse{}, err
-		}
-	}
 	inputJSON, err := json.Marshal(req.Input)
 	if err != nil {
 		return InvocationResponse{}, err
@@ -1392,6 +1402,15 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		return InvocationResponse{}, fmt.Errorf("agent_id is too long")
 	}
 	agentRec := s.resolveAgentRecord(ctx, agentID)
+	if req.IdempotencyKey != nil && *req.IdempotencyKey != "" {
+		existing, err := s.getByIdempotencyKey(ctx, agentRec.VMCUID, *req.IdempotencyKey)
+		if err == nil {
+			return s.toResponse(existing), nil
+		}
+		if err != nil && err != sql.ErrNoRows {
+			return InvocationResponse{}, err
+		}
+	}
 
 	// Invocations API session: resolve the internal session and rebuild the
 	// judge's context from the prior invocations Atryum recorded for it. Built
@@ -1457,6 +1476,10 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	}
 	if agentID != "" {
 		inv.AgentID = &agentID
+	}
+	if agentRec.VMCUID != "" {
+		cuid := agentRec.VMCUID
+		inv.AgentCUID = &cuid
 	}
 	if sessionID != "" {
 		inv.SessionID = &sessionID
@@ -1942,7 +1965,7 @@ func (s *Service) SetSummary(ctx context.Context, invocationID string, summary s
 }
 
 func (s *Service) toResponse(inv Invocation) InvocationResponse {
-	resp := InvocationResponse{InvocationID: inv.InvocationID, ServerName: inv.Upstream, ToolName: inv.Tool, Status: inv.Status, Approval: inv.Approval, MatchedRuleID: inv.MatchedRuleID, PlanID: inv.PlanID, AgentID: inv.AgentID, RequestID: inv.RequestID, SubmittedAt: inv.SubmittedAt, CompletedAt: inv.CompletedAt}
+	resp := InvocationResponse{InvocationID: inv.InvocationID, ServerName: inv.Upstream, ToolName: inv.Tool, Status: inv.Status, Approval: inv.Approval, MatchedRuleID: inv.MatchedRuleID, PlanID: inv.PlanID, AgentID: inv.AgentID, AgentCUID: inv.AgentCUID, RequestID: inv.RequestID, SubmittedAt: inv.SubmittedAt, CompletedAt: inv.CompletedAt}
 	if inv.Summary != nil {
 		resp.Summary = *inv.Summary
 	}
