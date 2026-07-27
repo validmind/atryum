@@ -1,0 +1,257 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: atryum-config
+type: Opaque
+stringData:
+  atryum.toml: |
+    [server]
+    listen_addr = ":8080"
+    public_base_url = "https://atryum.example.com"
+    database_url = "postgresql://atryum:replace-me@atryum-postgres:5432/atryum?sslmode=disable"
+    log_level = "info"
+
+    [backend]
+    base_url = ""
+
+    [defaults]
+    request_timeout_seconds = 30
+
+    [api_key]
+    key = ""
+    secret = ""
+
+    [auth_debug]
+    skip_verify = false
+
+    # Add one or more real [[auth]] blocks before exposing the admin UI publicly.
+    # Without admin auth enabled, /ui/ and /api/v1/admin/* are not protected.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: atryum-postgres-auth
+type: Opaque
+stringData:
+  database-user: atryum
+  database-password: replace-me
+  database-name: atryum
+  database-admin-password: replace-me-admin
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: atryum-postgres-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: atryum-postgres
+  labels:
+    app.kubernetes.io/name: atryum-postgres
+    app.kubernetes.io/part-of: atryum
+spec:
+  selector:
+    app.kubernetes.io/name: atryum-postgres
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: atryum-postgres
+  labels:
+    app.kubernetes.io/name: atryum-postgres
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: atryum
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: atryum-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: atryum-postgres
+        app.kubernetes.io/component: database
+        app.kubernetes.io/part-of: atryum
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgresql
+          image: quay.io/sclorg/postgresql-16-c9s:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+              name: postgresql
+          env:
+            - name: POSTGRESQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: atryum-postgres-auth
+                  key: database-user
+            - name: POSTGRESQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: atryum-postgres-auth
+                  key: database-password
+            - name: POSTGRESQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: atryum-postgres-auth
+                  key: database-name
+            - name: POSTGRESQL_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: atryum-postgres-auth
+                  key: database-admin-password
+          readinessProbe:
+            exec:
+              command:
+                - /usr/libexec/check-container
+            initialDelaySeconds: 5
+            timeoutSeconds: 1
+          livenessProbe:
+            exec:
+              command:
+                - /usr/libexec/check-container
+                - --live
+            initialDelaySeconds: 120
+            timeoutSeconds: 10
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/pgsql/data
+      volumes:
+        - name: postgres-data
+          persistentVolumeClaim:
+            claimName: atryum-postgres-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: atryum
+  labels:
+    app.kubernetes.io/name: atryum
+    app.kubernetes.io/part-of: atryum
+spec:
+  selector:
+    app.kubernetes.io/name: atryum
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: atryum
+  labels:
+    app.kubernetes.io/name: atryum
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: atryum
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: atryum
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: atryum
+        app.kubernetes.io/component: api
+        app.kubernetes.io/part-of: atryum
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: atryum
+          image: validmind/atryum:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 2
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: atryum-config
+              mountPath: /app/atryum.toml
+              subPath: atryum.toml
+              readOnly: true
+      volumes:
+        - name: atryum-config
+          secret:
+            secretName: atryum-config
+            defaultMode: 0400
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: atryum
+  labels:
+    app.kubernetes.io/name: atryum
+    app.kubernetes.io/part-of: atryum
+spec:
+  rules:
+    - host: atryum.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: atryum
+                port:
+                  number: 8080
+  # tls:
+  #   - hosts:
+  #       - atryum.example.com
+  #     secretName: atryum-tls
