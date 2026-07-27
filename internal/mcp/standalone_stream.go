@@ -29,8 +29,8 @@ const standaloneWaiterEventBuffer = 32
 // messages. It is needed for SDKs that send progress without a related
 // request ID, placing it on this connection instead of the tools/call POST.
 // terminalSettleWindow briefly drains progress that races the terminal across
-// the independent POST and standalone connections. Each arrival resets it so
-// a trailing burst is drained completely.
+// the independent POST and standalone connections. It is an absolute bound:
+// progress arriving after the terminal response cannot extend the call.
 const terminalSettleWindow = 25 * time.Millisecond
 
 type standaloneStream struct {

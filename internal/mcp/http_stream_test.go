@@ -155,6 +155,41 @@ func TestInvokeStreamResumesAfterUpstreamClosesSSEBeforeTerminalResponse(t *test
 	}
 }
 
+type closeTrackingBody struct {
+	io.Reader
+	closeCount atomic.Int32
+}
+
+func (b *closeTrackingBody) Close() error {
+	b.closeCount.Add(1)
+	return nil
+}
+
+func TestPostStreamPumpClosesSupersededResponseBody(t *testing.T) {
+	previous := &closeTrackingBody{Reader: strings.NewReader("")}
+	current := &closeTrackingBody{Reader: strings.NewReader("")}
+	pump := &postStreamPump{
+		current: &http.Response{Body: previous},
+		done:    make(chan struct{}),
+	}
+	t.Cleanup(pump.stop)
+
+	if !pump.setCurrent(&http.Response{Body: current}) {
+		t.Fatal("setCurrent unexpectedly rejected the resumed response")
+	}
+	if got := previous.closeCount.Load(); got != 1 {
+		t.Fatalf("superseded response body close count = %d, want 1", got)
+	}
+	if got := current.closeCount.Load(); got != 0 {
+		t.Fatalf("current response body was closed before the pump stopped: count=%d", got)
+	}
+
+	pump.stop()
+	if got := current.closeCount.Load(); got != 1 {
+		t.Fatalf("current response body close count after stop = %d, want 1", got)
+	}
+}
+
 func TestSSEReconnectDelayUsesBoundedExponentialBackoff(t *testing.T) {
 	first := sseReconnectDelay(0, 0)
 	second := sseReconnectDelay(0, 1)
@@ -654,7 +689,7 @@ func TestDrainTrailingProgressDrainsBufferedBurstThenStopsAtClose(t *testing.T) 
 	// An hour-long window cannot elapse during the test: returning at all
 	// proves the closed channel — not the timer — ended the drain, after the
 	// full buffered burst was delivered.
-	if err := drainTrailingProgress(progressCh, deliver, time.Hour); err != nil {
+	if err := drainTrailingProgress(context.Background(), progressCh, deliver, time.Hour); err != nil {
 		t.Fatalf("drainTrailingProgress returned error: %v", err)
 	}
 	if len(delivered) != 3 {
@@ -676,7 +711,7 @@ func TestDrainTrailingProgressStopsAtDeliverError(t *testing.T) {
 		deliverCalls++
 		return sinkErr
 	}
-	if err := drainTrailingProgress(progressCh, deliver, time.Hour); !errors.Is(err, sinkErr) {
+	if err := drainTrailingProgress(context.Background(), progressCh, deliver, time.Hour); !errors.Is(err, sinkErr) {
 		t.Fatalf("drainTrailingProgress error = %v, want the deliver error", err)
 	}
 	if deliverCalls != 1 {
@@ -691,7 +726,7 @@ func TestDrainTrailingProgressReturnsOnceWindowElapsesWithNoArrival(t *testing.T
 		return nil
 	}
 	start := time.Now()
-	if err := drainTrailingProgress(progressCh, deliver, 20*time.Millisecond); err != nil {
+	if err := drainTrailingProgress(context.Background(), progressCh, deliver, 20*time.Millisecond); err != nil {
 		t.Fatalf("drainTrailingProgress returned error: %v", err)
 	}
 	// Generous bound: only pins that the timer path returns at all rather
@@ -701,40 +736,70 @@ func TestDrainTrailingProgressReturnsOnceWindowElapsesWithNoArrival(t *testing.T
 	}
 }
 
-func TestDrainTrailingProgressResetsWindowPerArrival(t *testing.T) {
-	// Three events spaced 300ms apart against a 500ms window. Each gap is
-	// under the window (200ms margin), but the cumulative spacing is not:
-	// without the per-arrival reset the single 500ms timer fires between the
-	// second and third event and the drain returns having delivered only 2.
-	const window = 500 * time.Millisecond
-	const gap = 300 * time.Millisecond
+func TestDrainTrailingProgressUsesAbsoluteWindowDuringContinuousArrivals(t *testing.T) {
+	const (
+		window = 30 * time.Millisecond
+		gap    = 2 * time.Millisecond
+	)
 
 	progressCh := make(chan StreamEvent, 1)
 	senderStop := make(chan struct{})
-	t.Cleanup(func() { close(senderStop) })
+	senderDone := make(chan struct{})
 	go func() {
-		for range 3 {
+		defer close(senderDone)
+		ticker := time.NewTicker(gap)
+		defer ticker.Stop()
+		for {
 			select {
-			case progressCh <- StreamEvent{Data: []byte(`{"progress":1}`)}:
+			case <-ticker.C:
+				select {
+				case progressCh <- StreamEvent{Data: []byte(`{"progress":1}`)}:
+				case <-senderStop:
+					return
+				}
 			case <-senderStop:
-				// The drain exited early (a failure mode under test); don't
-				// leave this sender blocked on a channel nobody reads.
 				return
 			}
-			time.Sleep(gap)
 		}
 	}()
 
-	delivered := 0
-	deliver := func(StreamEvent) error {
-		delivered++
-		return nil
+	result := make(chan error, 1)
+	go func() {
+		result <- drainTrailingProgress(context.Background(), progressCh, func(StreamEvent) error { return nil }, window)
+	}()
+
+	var err error
+	select {
+	case err = <-result:
+	case <-time.After(5 * window):
+		close(senderStop)
+		<-senderDone
+		close(progressCh)
+		<-result
+		t.Fatal("continuous progress extended the terminal drain past its absolute window")
 	}
-	if err := drainTrailingProgress(progressCh, deliver, window); err != nil {
+	close(senderStop)
+	<-senderDone
+	if err != nil {
 		t.Fatalf("drainTrailingProgress returned error: %v", err)
 	}
-	if delivered != 3 {
-		t.Fatalf("delivered %d events, want all 3 (window must reset on each arrival)", delivered)
+}
+
+func TestDrainTrailingProgressStopsWhenCallIsCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := drainTrailingProgress(
+		ctx,
+		make(chan StreamEvent),
+		func(StreamEvent) error {
+			t.Fatal("deliver must not run after cancellation")
+			return nil
+		},
+		time.Hour,
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("drainTrailingProgress error = %v, want context.Canceled", err)
 	}
 }
 

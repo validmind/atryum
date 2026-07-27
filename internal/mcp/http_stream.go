@@ -177,17 +177,25 @@ func (p *postStreamPump) stop() {
 	})
 }
 
-// setCurrent installs resp as the response the pump is currently reading
-// from (after a resume). Returns false — and leaves resp to the caller to
-// close — if stop was already called, so a resume racing a stop can't
-// resurrect a pump that's supposed to be shutting down.
+// setCurrent installs resp as the response the pump is currently reading from
+// after a resume and closes the response it supersedes. Returns false — and
+// leaves resp to the caller to close — if stop was already called, so a resume
+// racing a stop can't resurrect a pump that's supposed to be shutting down.
 func (p *postStreamPump) setCurrent(resp *http.Response) bool {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if p.stopped {
+		p.mu.Unlock()
 		return false
 	}
+	previous := p.current
 	p.current = resp
+	p.mu.Unlock()
+
+	// Close outside p.mu: a custom response body may perform blocking cleanup,
+	// and stop must remain able to acquire the lock and close the active body.
+	if previous != nil && previous != resp {
+		_ = previous.Body.Close()
+	}
 	return true
 }
 
@@ -372,8 +380,8 @@ func (c *Client) relaySSEToolCall(resp *http.Response, sink StreamSink, progress
 				}
 				invoke, missingSession := toolCallResultFromRPCResponse(rpcResp, statusCode)
 				if progressCh != nil {
-					if err := drainTrailingProgress(progressCh, deliver, terminalSettleWindow); err != nil {
-						return fail(err)
+					if err := drainTrailingProgress(guard.ctx, progressCh, deliver, terminalSettleWindow); err != nil {
+						return fail(guard.timeoutErr(upstream.Name, "while draining trailing progress", err))
 					}
 				}
 				if !(missingSession && relayed == 0) {
@@ -396,28 +404,31 @@ func (c *Client) relaySSEToolCall(resp *http.Response, sink StreamSink, progress
 	}
 }
 
-// drainTrailingProgress gives a standalone-stream notification already in
-// flight a brief, bounded chance to arrive before the terminal response is
-// finalized (the caller passes terminalSettleWindow as window). Each arrival
-// resets the window so a trailing burst is drained completely. It returns
-// once the window elapses with no new arrival, progressCh closes, or deliver
-// fails.
-func drainTrailingProgress(progressCh <-chan StreamEvent, deliver func(StreamEvent) error, window time.Duration) error {
+// drainTrailingProgress gives standalone-stream notifications already in
+// flight a brief, absolutely bounded chance to arrive before the terminal
+// response is finalized. Arrivals do not extend the window, and cancellation
+// ends the drain immediately: an upstream that keeps sending after its terminal
+// response must not keep the invocation open indefinitely.
+func drainTrailingProgress(ctx context.Context, progressCh <-chan StreamEvent, deliver func(StreamEvent) error, window time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	settle := time.NewTimer(window)
 	defer settle.Stop()
 	for {
 		select {
+		case <-ctx.Done():
+			return ctx.Err()
 		case evt, ok := <-progressCh:
 			if !ok {
 				return nil
 			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if err := deliver(evt); err != nil {
 				return err
 			}
-			if !settle.Stop() {
-				<-settle.C
-			}
-			settle.Reset(window)
 		case <-settle.C:
 			return nil
 		}
