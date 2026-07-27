@@ -2,6 +2,7 @@ set shell := ["bash", "-cu"]
 
 config := "./atryum.toml"
 release_dir := "releases"
+docker_image := "validmind/atryum"
 integration_image := "atryum-integrations"
 license_dir := "license-reports"
 go_licenses := "github.com/google/go-licenses/v2@v2.0.1"
@@ -87,6 +88,10 @@ clean:
 # Build local production-like atryum binary with the local UI embedded
 build-prod: third-party-notices build-ui
 	CGO_ENABLED=0 go build -tags release_notices -o ./atryum ./cmd/atryum
+
+# Build the production Docker image used by the GitHub publish workflow
+docker-build tag="local":
+	docker build -f Dockerfile.prod -t {{docker_image}}:{{tag}} .
 
 # Build the FOSS React UI and embed it in internal/api/web/
 build-ui:
