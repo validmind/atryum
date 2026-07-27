@@ -546,6 +546,31 @@ func TestInvokeStreamRestoresCallerProgressTokenOnPOSTResponseStreamToo(t *testi
 // don't cross-deliver: Atryum multiplexes every caller of an upstream onto
 // one shared session, so the standalone stream is shared too, and the only
 // thing preventing a collision is the per-call wire-token rewrite.
+//
+// Both callers ask for progressToken=1. Three gates force the same
+// interleaving every run, regardless of goroutine scheduling:
+//
+//	tool-a POST  ---\
+//	                 +--> both block on <-getConnected
+//	tool-b POST  ---/            |
+//	                              v
+//	standalone GET  -----> closes getConnected, then blocks on <-gotBothTokens
+//	                              |
+//	tool-a records its wireTokenA |
+//	tool-b records its wireTokenB |
+//	   (postCount==2) ------------+---> closes gotBothTokens
+//	                              |
+//	standalone GET  <-------------+   unblocks, then:
+//	                                     sends progress=1 on wireTokenA
+//	                                     sends progress=2 on wireTokenB
+//	                                     closes notifsDone
+//	                              |
+//	tool-a, tool-b  <-------------+   both unblock, each sends its own
+//	                                  terminal response
+//
+// Both callers asked for progressToken=1, but each only ever sees its own
+// wire token restored back to 1, with its own progress value (A=1, B=2) —
+// never the other call's notification.
 func TestInvokeStreamStandaloneStreamAvoidsProgressTokenCollisionAcrossCalls(t *testing.T) {
 	var mu sync.Mutex
 	tokenFor := map[string]string{}

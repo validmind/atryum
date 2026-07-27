@@ -1208,6 +1208,35 @@ func (s *Service) executeNow(ctx context.Context, inv Invocation, upstream mcp.U
 }
 
 // waitForHumanApproval blocks until an operator approves or denies, or the context is cancelled.
+//
+// pendingApprovals is an in-memory map local to this *Service* (one per OS
+// process). With multiple replicas, Approve/Deny landing on a different
+// process than the one blocked here cannot reach this goroutine's channel —
+// it can only update the durable row directly (see recordExternalDecision).
+// That produces a race whenever the original caller later disconnects:
+//
+//	process A (this one)                 process B                durable row
+//	---------------------                 ---------                -----------
+//	blocks here, waiting on
+//	  ch := pendingApprovals[id]  -------------------------------> pending_approval
+//	                                      Approve(id) called
+//	                                      looks up its own
+//	                                      pendingApprovals[id]
+//	                                      -> not found locally
+//	                                      falls through to
+//	                                      recordExternalDecision -> approved
+//	  (still blocked; ch was
+//	   never written)
+//	ctx.Done() fires
+//	  (client disconnected)
+//	  overwrites unconditionally  -------------------------------> failed
+//
+// The tool is never executed even though the row briefly read "approved".
+// Durable, crash-resumable coordination (a work queue, an outbox table)
+// would close this gap; today a single active process is required for
+// Invoke-path human approval. TestMultiReplicaApprovalRaceOverwritesApprovedRowAsFailed
+// pins this exact sequence; docs/architecture.md "Atryum-executed calls" has
+// the full walkthrough.
 func (s *Service) waitForHumanApproval(ctx context.Context, inv Invocation, upstream mcp.Upstream, req CreateInvocationRequest, sink mcp.StreamSink) (InvocationResponse, error) {
 	ch := make(chan approvalDecision, 1)
 	s.mu.Lock()
