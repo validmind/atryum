@@ -394,6 +394,7 @@ async function submit(
     input: jsonSafe(input),
     request_id: callID,
     thread_id: sessionID || undefined,
+    client_session_id: sessionID || undefined,
     agent_id: AGENT_ID || undefined,
     client_name: CLIENT_NAME,
     client_version: CLIENT_VERSION || undefined,
