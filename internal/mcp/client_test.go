@@ -467,7 +467,7 @@ func TestInvokeSkipsSSENotificationBeforeResponse(t *testing.T) {
 
 	client := NewHTTPClient()
 	client.httpClient = server.Client()
-	result, err := client.Invoke(context.Background(), Upstream{Name: "shortcut", Mode: UpstreamModeHTTP, BaseURL: server.URL}, "stories.get", map[string]any{}, nil)
+	result, err := client.Invoke(context.Background(), Upstream{Name: "shortcut", Mode: UpstreamModeHTTP, BaseURL: server.URL}, "stories.get", map[string]any{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Invoke returned error: %v", err)
 	}
@@ -476,7 +476,12 @@ func TestInvokeSkipsSSENotificationBeforeResponse(t *testing.T) {
 	}
 }
 
-func TestListToolsDecodesMultilineSSEData(t *testing.T) {
+func TestInvokeForwardsCallerMetaAndAtryumRequestID(t *testing.T) {
+	var capturedParams struct {
+		Name      string         `json:"name"`
+		Arguments map[string]any `json:"arguments"`
+		Meta      map[string]any `json:"_meta"`
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req Envelope
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -484,16 +489,15 @@ func TestListToolsDecodesMultilineSSEData(t *testing.T) {
 		}
 		switch req.Method {
 		case "initialize":
-			w.Header().Set("Mcp-Session-Id", "sid-multiline")
+			w.Header().Set("Mcp-Session-Id", "sid-meta")
 			writeTestRPC(w, req.ID, map[string]any{"protocolVersion": r.Header.Get("MCP-Protocol-Version"), "capabilities": map[string]any{}}, nil)
 		case "notifications/initialized":
 			w.WriteHeader(http.StatusAccepted)
-		case "tools/list":
-			writeTestSSEEvents(w, []string{
-				`{"jsonrpc":"2.0",`,
-				`"id":1,`,
-				`"result":{"tools":[{"name":"stories.multiline"}]}}`,
-			})
+		case "tools/call":
+			if err := json.Unmarshal(req.Params, &capturedParams); err != nil {
+				t.Fatalf("decode tools/call params: %v", err)
+			}
+			writeTestRPC(w, req.ID, map[string]any{"content": []any{map[string]any{"type": "text", "text": "ok"}}}, nil)
 		default:
 			t.Fatalf("unexpected method %q", req.Method)
 		}
@@ -502,12 +506,104 @@ func TestListToolsDecodesMultilineSSEData(t *testing.T) {
 
 	client := NewHTTPClient()
 	client.httpClient = server.Client()
-	tools, err := client.ListTools(context.Background(), Upstream{Name: "shortcut", Mode: UpstreamModeHTTP, BaseURL: server.URL})
-	if err != nil {
-		t.Fatalf("ListTools returned error: %v", err)
+	requestID := "req-42"
+	meta := map[string]any{"progressToken": "tok-7"}
+	if _, err := client.Invoke(context.Background(), Upstream{Name: "shortcut", Mode: UpstreamModeHTTP, BaseURL: server.URL}, "stories.get", map[string]any{}, &requestID, meta); err != nil {
+		t.Fatalf("Invoke returned error: %v", err)
 	}
-	if len(tools) != 1 || tools[0].Name != "stories.multiline" {
-		t.Fatalf("unexpected tools: %#v", tools)
+
+	if got := capturedParams.Meta["progressToken"]; got != "tok-7" {
+		t.Fatalf("expected caller progressToken preserved in upstream _meta, got %#v", capturedParams.Meta)
+	}
+	if got := capturedParams.Meta["atryumRequestId"]; got != "req-42" {
+		t.Fatalf("expected atryumRequestId injected into upstream _meta, got %#v", capturedParams.Meta)
+	}
+}
+
+func TestInvokeOmitsMetaWhenCallerMetaAndRequestIDAreEmpty(t *testing.T) {
+	var sawMeta bool
+	var rawParams json.RawMessage
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req Envelope
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		switch req.Method {
+		case "initialize":
+			w.Header().Set("Mcp-Session-Id", "sid-nometa")
+			writeTestRPC(w, req.ID, map[string]any{"protocolVersion": r.Header.Get("MCP-Protocol-Version"), "capabilities": map[string]any{}}, nil)
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/call":
+			rawParams = req.Params
+			var decoded map[string]any
+			if err := json.Unmarshal(req.Params, &decoded); err != nil {
+				t.Fatalf("decode tools/call params: %v", err)
+			}
+			_, sawMeta = decoded["_meta"]
+			writeTestRPC(w, req.ID, map[string]any{"content": []any{map[string]any{"type": "text", "text": "ok"}}}, nil)
+		default:
+			t.Fatalf("unexpected method %q", req.Method)
+		}
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient()
+	client.httpClient = server.Client()
+	if _, err := client.Invoke(context.Background(), Upstream{Name: "shortcut", Mode: UpstreamModeHTTP, BaseURL: server.URL}, "stories.get", map[string]any{}, nil, nil); err != nil {
+		t.Fatalf("Invoke returned error: %v", err)
+	}
+
+	if sawMeta {
+		t.Fatalf("expected no _meta field when caller meta and requestID are both empty, got params %s", rawParams)
+	}
+}
+
+func TestBoundedBufferCapsRetainedBytesWithoutErroringWrites(t *testing.T) {
+	b := newBoundedBuffer(8)
+	n, err := b.Write([]byte("1234"))
+	if err != nil || n != 4 {
+		t.Fatalf("Write(1234) = %d, %v, want 4, nil", n, err)
+	}
+	n, err = b.Write([]byte("567890")) // 4 + 6 = 10, exceeds the 8-byte cap
+	if err != nil || n != 6 {
+		t.Fatalf("Write(567890) = %d, %v, want 6, nil (full length reported even though truncated)", n, err)
+	}
+	if got := b.String(); got != "12345678" {
+		t.Fatalf("String() = %q, want the first 8 bytes \"12345678\"", got)
+	}
+	if b.Len() != 8 {
+		t.Fatalf("Len() = %d, want 8", b.Len())
+	}
+	// Further writes past the cap must still report full success (the
+	// subprocess's stderr pipe must never see a short write or an error).
+	n, err = b.Write([]byte("more data"))
+	if err != nil || n != len("more data") {
+		t.Fatalf("Write past cap = %d, %v, want %d, nil", n, err, len("more data"))
+	}
+	if b.Len() != 8 {
+		t.Fatalf("Len() after writing past cap = %d, want 8 (unchanged)", b.Len())
+	}
+}
+
+func TestMergeRequestMeta(t *testing.T) {
+	reqID := "req-1"
+
+	if got := mergeRequestMeta(nil, nil); got != nil {
+		t.Fatalf("expected nil for empty meta and nil requestID, got %#v", got)
+	}
+	empty := ""
+	if got := mergeRequestMeta(nil, &empty); got != nil {
+		t.Fatalf("expected nil for empty meta and empty requestID, got %#v", got)
+	}
+	if got := mergeRequestMeta(map[string]any{"progressToken": "tok"}, nil); got["progressToken"] != "tok" || got["atryumRequestId"] != nil {
+		t.Fatalf("expected caller meta preserved without atryumRequestId, got %#v", got)
+	}
+	if got := mergeRequestMeta(nil, &reqID); got["atryumRequestId"] != "req-1" {
+		t.Fatalf("expected atryumRequestId-only meta, got %#v", got)
+	}
+	if got := mergeRequestMeta(map[string]any{"progressToken": "tok", "atryumRequestId": "spoofed"}, &reqID); got["progressToken"] != "tok" || got["atryumRequestId"] != "req-1" {
+		t.Fatalf("expected atryumRequestId to win over a caller-supplied value, got %#v", got)
 	}
 }
 
@@ -820,4 +916,35 @@ func writeTestSSEEvents(w http.ResponseWriter, events ...[]string) {
 		}
 		_, _ = w.Write([]byte("\n"))
 	}
+}
+
+// writeTestSSEEventFlush writes and flushes one SSE event immediately, so a
+// test server can hold a stream open between events (unlike writeTestSSEEvents,
+// which writes every event in one shot with no flush in between).
+func writeTestSSEEventFlush(w http.ResponseWriter, flusher http.Flusher, data string) {
+	_, _ = w.Write([]byte("event: message\ndata: " + data + "\n\n"))
+	flusher.Flush()
+}
+
+// fakeStreamSink is a test StreamSink that records what it received. onEvent,
+// when set, lets a test hook into delivery (e.g. to unblock a fake upstream
+// only after confirming an event was actually delivered incrementally).
+type fakeStreamSink struct {
+	started      bool
+	startedCount int
+	events       []StreamEvent
+	onEvent      func(StreamEvent) error
+}
+
+func (s *fakeStreamSink) StreamStarted() {
+	s.started = true
+	s.startedCount++
+}
+
+func (s *fakeStreamSink) Event(evt StreamEvent) error {
+	s.events = append(s.events, evt)
+	if s.onEvent != nil {
+		return s.onEvent(evt)
+	}
+	return nil
 }

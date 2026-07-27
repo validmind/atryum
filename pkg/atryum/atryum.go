@@ -268,6 +268,18 @@ func runServer(args []string, o options) error {
 		service.SetInvocationSummarizer(&summaryAdapter{client: backendClient})
 	}
 	service.SetSessionStore(store.NewExternalSessionRepoWithDialect(db, dialect))
+	service.SetStreamOptions(
+		mcp.StreamOptions{
+			HeaderTimeout:   time.Duration(cfg.Defaults.EffectiveStreamHeaderTimeoutSeconds()) * time.Second,
+			IdleTimeout:     time.Duration(cfg.Defaults.StreamIdleTimeoutSeconds) * time.Second,
+			MaxDuration:     time.Duration(cfg.Defaults.StreamMaxDurationSeconds) * time.Second,
+			MaxMessageBytes: cfg.Defaults.StreamMaxMessageBytes,
+		},
+		invocation.StreamAuditLimits{
+			MaxEvents:     cfg.Defaults.StreamAuditMaxEvents,
+			MaxEventBytes: cfg.Defaults.StreamAuditMaxEventBytes,
+		},
+	)
 	serverAdmin := api.NewServerAdminService(serverRepo, oauthRepo, client, 5*time.Second, cfg.Server.PublicBaseURL)
 	if *initServers {
 		if err := initEnabledServerStatuses(context.Background(), serverRepo, serverAdmin); err != nil {
@@ -282,6 +294,7 @@ func runServer(args []string, o options) error {
 	}
 	handler := api.NewHandler(service, serverAdmin, policyRegistry, rulesRepo, agentsRepo, agentSyncSettingsRepo, llmConfigsRepo, syncAgentsFn, backendClient, localEvaluator)
 	handler.SetManagedAgentBindings(managedAgentBindingRepo)
+	handler.SetStreamRelayEnabled(cfg.Defaults.StreamRelayEnabled)
 	for _, register := range o.extraRoutes {
 		handler.AddExtraRoutes(register)
 	}

@@ -37,6 +37,14 @@ Examples
   python fake_agent.py mcp --list-tools
   python fake_agent.py mcp --tool add --arguments '{"a":2,"b":3}'
 
+  # Prove Atryum relays live progress instead of buffering the whole
+  # response: sends Accept: text/event-stream and fails unless progress
+  # notifications actually arrive measurably before the terminal result.
+  python fake_agent.py mcp everything-streaming \\
+      --tool trigger-long-running-operation \\
+      --arguments '{"duration":3,"steps":3}' \\
+      --stream --min-progress-events 3
+
   # Pretend to be a specific harness:
   python fake_agent.py mcp --client-name cursor --client-version 0.45.7 --list-tools
 
@@ -602,6 +610,106 @@ def mcp_call(
     return payload
 
 
+def mcp_call_stream(
+    base: str,
+    server: str | None,
+    tool: str,
+    arguments: dict[str, Any],
+    req_id: int,
+    protocol_version: str = "2025-06-18",
+    extra_headers: dict[str, str] | None = None,
+    timeout: float = 60.0,
+    progress_token: str = "fake-agent-stream",
+) -> dict[str, Any]:
+    """Like mcp_call, but for a tools/call that requests an SSE response and
+    reads it incrementally instead of buffering with resp.read() — this is
+    what lets the caller record each frame's real arrival time. That's the
+    only way to prove Atryum relayed progress live rather than replaying
+    everything at once when the tool finally finished: the same technique
+    internal/api/mcp_everything_test.go uses in-process, exercised here over
+    a real HTTP connection to a real running atryum binary.
+
+    Deliberately simpler than _request_once: no 401-retry-with-forced-refresh,
+    since that would mean replaying a request whose response we've already
+    started reading. Proactive token refresh (_authorization_headers) still
+    applies, so this works for the same auth protocols as long as the token
+    isn't already expired when the call starts.
+    """
+    path = "/mcp/" + (server or "")
+    body = {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "method": "tools/call",
+        "params": {
+            "name": tool,
+            "arguments": arguments,
+            # Progress notifications are tied to a caller-supplied token —
+            # an upstream has nothing to report progress against without
+            # one, and would just answer with a plain buffered result.
+            "_meta": {"progressToken": progress_token},
+        },
+    }
+    headers = {
+        "MCP-Protocol-Version": protocol_version,
+        "Accept": "application/json, text/event-stream",
+    }
+    if extra_headers:
+        headers.update(extra_headers)
+    if "Authorization" not in headers:
+        headers.update(_authorization_headers())
+    headers.setdefault("Content-Type", "application/json")
+
+    req = urlrequest.Request(
+        base + path,
+        data=json.dumps(body).encode("utf-8"),
+        method="POST",
+        headers=headers,
+    )
+    events: list[dict[str, Any]] = []
+    started = time.monotonic()
+    with urlrequest.urlopen(req, timeout=timeout) as resp:
+        content_type = resp.headers.get("Content-Type", "")
+        if "text/event-stream" not in content_type:
+            raw = resp.read().decode("utf-8")
+            return {
+                "streamed": False,
+                "content_type": content_type,
+                "events": [],
+                "result": json.loads(raw) if raw else {},
+            }
+
+        # SSE framing: one or more "data:" lines per event, terminated by a
+        # blank line. Reading resp line-by-line (rather than resp.read()) is
+        # what makes each event's arrival timestamp real instead of "whenever
+        # the whole response finally finished".
+        data_lines: list[str] = []
+
+        def flush() -> None:
+            if not data_lines:
+                return
+            payload = "\n".join(data_lines)
+            try:
+                parsed = json.loads(payload)
+            except json.JSONDecodeError:
+                parsed = None
+            events.append({"t": time.monotonic() - started, "data": payload, "parsed": parsed})
+            data_lines.clear()
+
+        for raw_line in resp:
+            line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+            if line == "":
+                flush()
+                continue
+            if line.startswith("data:"):
+                data_lines.append(line[len("data:"):].lstrip(" "))
+            # Other SSE fields (event:, id:, retry:, ":" comments) don't
+            # matter here — Atryum's relay only ever sends data lines (see
+            # internal/api/sse_relay.go's writeSSEEvent).
+        flush()
+
+    return {"streamed": True, "content_type": content_type, "events": events}
+
+
 def run_mcp(
     base: str,
     server: str | None,
@@ -611,6 +719,9 @@ def run_mcp(
     bearer: str | None,
     client_name: str,
     client_version: str,
+    stream: bool = False,
+    min_progress_events: int = 1,
+    min_live_gap_seconds: float = 1.0,
 ) -> None:
     headers: dict[str, str] = {}
     if bearer:
@@ -651,15 +762,50 @@ def run_mcp(
             return
 
     # 4. tools/call
-    call = mcp_call(
-        base,
-        server,
-        "tools/call",
-        {"name": tool, "arguments": arguments or {}},
-        req_id=4,
-        extra_headers=headers,
+    if not stream:
+        call = mcp_call(
+            base,
+            server,
+            "tools/call",
+            {"name": tool, "arguments": arguments or {}},
+            req_id=4,
+            extra_headers=headers,
+        )
+        _print_json("tools/call", call)
+        return
+
+    outcome = mcp_call_stream(base, server, tool, arguments or {}, req_id=4, extra_headers=headers)
+    if not outcome["streamed"]:
+        raise SystemExit(
+            "expected a streamed (text/event-stream) tools/call response, got "
+            f"content-type {outcome['content_type']!r} instead — the upstream "
+            "may not have opened a stream, or stream_relay_enabled may be off"
+        )
+
+    events = outcome["events"]
+    progress = [e for e in events if (e["parsed"] or {}).get("method") == "notifications/progress"]
+    terminal = events[-1] if events else None
+    if terminal is None or not isinstance(terminal["parsed"], dict) or (
+        "result" not in terminal["parsed"] and "error" not in terminal["parsed"]
+    ):
+        raise SystemExit(f"stream ended without a recognizable terminal JSON-RPC response: {events!r}")
+    if len(progress) < min_progress_events:
+        raise SystemExit(
+            f"expected at least {min_progress_events} live progress notification(s), "
+            f"got {len(progress)} — the relay may be buffering instead of streaming live"
+        )
+    gap = terminal["t"] - progress[0]["t"]
+    if gap < min_live_gap_seconds:
+        raise SystemExit(
+            f"progress and the terminal result arrived {gap:.3f}s apart — too "
+            f"close together to prove live delivery rather than a buffered "
+            f"replay (want >= {min_live_gap_seconds}s)"
+        )
+    print(
+        f"tools/call streamed: {len(progress)} progress notification(s) over "
+        f"{gap:.2f}s before the terminal result"
     )
-    _print_json("tools/call", call)
+    _print_json("tools/call (terminal)", terminal["parsed"])
 
 
 # ─── argparse ───────────────────────────────────────────────────────────────
@@ -746,6 +892,31 @@ def main(argv: list[str] | None = None) -> int:
         default=default_version,
         help=f"clientInfo.version sent in initialize (default this run: {default_version})",
     )
+    pm.add_argument(
+        "--stream",
+        action="store_true",
+        help=(
+            "send Accept: text/event-stream on tools/call and verify progress "
+            "actually arrives live before the terminal result, instead of just "
+            "checking the final answer"
+        ),
+    )
+    pm.add_argument(
+        "--min-progress-events",
+        type=int,
+        default=1,
+        help="with --stream, minimum live progress notifications required (default 1)",
+    )
+    pm.add_argument(
+        "--min-live-gap-seconds",
+        type=float,
+        default=1.0,
+        help=(
+            "with --stream, minimum seconds required between the first progress "
+            "notification and the terminal result, proving live delivery rather "
+            "than a buffered replay (default 1.0)"
+        ),
+    )
 
     args = p.parse_args(argv)
     _set_token_cache_key(args.base)
@@ -780,6 +951,9 @@ def main(argv: list[str] | None = None) -> int:
             bearer=args.bearer,
             client_name=args.client_name,
             client_version=args.client_version,
+            stream=args.stream,
+            min_progress_events=args.min_progress_events,
+            min_live_gap_seconds=args.min_live_gap_seconds,
         )
     else:
         p.error(f"unknown mode {args.mode!r}")

@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -252,6 +253,12 @@ type Client struct {
 	sessionInitLocks map[string]*sync.Mutex
 	sessions         map[string]string
 	sessionProtocols map[string]string
+
+	// standaloneStreams holds one shared standalone SSE GET per upstream
+	// session. Including the session ID in the key prevents a renewed session
+	// from reusing the dead connection associated with its predecessor.
+	standaloneMu      sync.Mutex
+	standaloneStreams map[standaloneStreamKey]*standaloneStream
 }
 
 type InvokeResult struct {
@@ -259,6 +266,20 @@ type InvokeResult struct {
 	Body       []byte
 	Failed     bool
 }
+
+// ErrStreamTimeout marks an error returned by InvokeStream as caused by the
+// header/idle/max-duration bound in StreamOptions firing, as opposed to a
+// transport failure or the sink itself returning an error. Callers can
+// distinguish it with errors.Is(err, ErrStreamTimeout).
+var ErrStreamTimeout = errors.New("stream timeout")
+
+// ErrStreamSessionRetryRefused marks an error returned by InvokeStream as
+// caused by an upstream reporting a missing/expired session after events
+// had already been relayed for this call. The normal missing-session
+// recovery (reinitialize and retry) is only safe when nothing has reached
+// the sink yet, since a retry after that point would relay a second copy
+// of everything already delivered — so InvokeStream fails instead.
+var ErrStreamSessionRetryRefused = errors.New("stream session retry refused: events already relayed")
 
 type ForwardResult struct {
 	StatusCode      int
@@ -310,7 +331,7 @@ func (r *Resolver) WithCredentials(credentials CredentialStore) *Resolver {
 
 func NewHTTPClient() *Client {
 	debug := strings.EqualFold(os.Getenv("ATRYUM_MCP_DEBUG"), "1") || strings.EqualFold(os.Getenv("ATRYUM_MCP_DEBUG"), "true")
-	return &Client{httpClient: &http.Client{}, debug: debug, sessionInitLocks: make(map[string]*sync.Mutex), sessions: make(map[string]string), sessionProtocols: make(map[string]string)}
+	return &Client{httpClient: &http.Client{}, debug: debug, sessionInitLocks: make(map[string]*sync.Mutex), sessions: make(map[string]string), sessionProtocols: make(map[string]string), standaloneStreams: make(map[standaloneStreamKey]*standaloneStream)}
 }
 
 func (r *Resolver) Resolve(name string) (Upstream, error) {
@@ -408,19 +429,43 @@ func (r *Resolver) BootstrapIfEmpty(ctx context.Context) error {
 	return nil
 }
 
-func (c *Client) Invoke(ctx context.Context, upstream Upstream, tool string, input map[string]any, requestID *string) (InvokeResult, error) {
+// Invoke calls tool on upstream. meta carries the agent's own MCP
+// params._meta (e.g. progressToken) so upstreams that support progress
+// notifications can correlate them back to the agent's original request.
+func (c *Client) Invoke(ctx context.Context, upstream Upstream, tool string, input map[string]any, requestID *string, meta map[string]any) (InvokeResult, error) {
 	started := time.Now()
 	defer func() {
 		c.debugf("upstream invoke transport=%s server=%s tool=%s duration_ms=%d", upstream.Mode, upstream.Name, tool, time.Since(started).Milliseconds())
 	}()
 	switch upstream.Mode {
 	case UpstreamModeStdio:
-		return c.invokeStdio(ctx, upstream, tool, input)
+		return c.invokeStdio(ctx, upstream, tool, input, requestID, meta)
 	case UpstreamModeHTTP, "":
-		return c.invokeHTTP(ctx, upstream, tool, input, requestID)
+		return c.invokeHTTP(ctx, upstream, tool, input, requestID, meta)
 	default:
 		return InvokeResult{}, fmt.Errorf("unsupported upstream mode %q", upstream.Mode)
 	}
+}
+
+// mergeRequestMeta merges the agent-supplied params._meta with the
+// atryumRequestId Atryum injects for its own audit correlation. Caller keys
+// (e.g. progressToken) are preserved; atryumRequestId always reflects the
+// current request, overriding any caller-supplied value under that key.
+// Returns nil when there is nothing to send, so callers can omit `_meta`
+// entirely rather than sending `{}`.
+func mergeRequestMeta(meta map[string]any, requestID *string) map[string]any {
+	hasRequestID := requestID != nil && *requestID != ""
+	if len(meta) == 0 && !hasRequestID {
+		return nil
+	}
+	merged := make(map[string]any, len(meta)+1)
+	for k, v := range meta {
+		merged[k] = v
+	}
+	if hasRequestID {
+		merged["atryumRequestId"] = *requestID
+	}
+	return merged
 }
 
 func (c *Client) ListTools(ctx context.Context, upstream Upstream) ([]Tool, error) {
@@ -588,15 +633,65 @@ func (c *Client) TestConnection(ctx context.Context, upstream Upstream) Connecti
 	return result
 }
 
-func (c *Client) invokeHTTP(ctx context.Context, upstream Upstream, tool string, input map[string]any, requestID *string) (InvokeResult, error) {
+// toolCallEnvelopeID is the fixed JSON-RPC id every Atryum-built tools/call
+// envelope carries. Everything that correlates a terminal response back to
+// the request — buffered decode and the streaming relays alike — must match
+// against this same value.
+var toolCallEnvelopeID = json.RawMessage("1")
+
+// marshalToolCallEnvelope builds the JSON-RPC tools/call request body Atryum
+// sends upstream. The envelope always uses toolCallEnvelopeID — Atryum's own
+// request id, if any, travels only in the caller-facing InvocationResponse,
+// not on the wire to the upstream.
+func marshalToolCallEnvelope(tool string, input map[string]any, requestID *string, meta map[string]any) ([]byte, error) {
+	return marshalToolCallEnvelopeWithMeta(tool, input, mergeRequestMeta(meta, requestID))
+}
+
+// marshalToolCallEnvelopeWithMeta builds the tools/call request body from an
+// already-fully-merged _meta map (see mergeRequestMeta), skipping that merge
+// step. Used by the streaming path, which may need to rewrite a caller's
+// progressToken after merging but before marshaling (see rewriteProgressToken).
+func marshalToolCallEnvelopeWithMeta(tool string, input map[string]any, meta map[string]any) ([]byte, error) {
+	params := map[string]any{"name": tool, "arguments": input}
+	if meta != nil {
+		params["_meta"] = meta
+	}
+	return json.Marshal(Envelope{JSONRPC: "2.0", ID: toolCallEnvelopeID, Method: "tools/call", Params: mustRawJSON(params)})
+}
+
+// toolCallResultFromRPCResponse maps an already-decoded tools/call JSON-RPC
+// response to the InvokeResult contract, applying the "ok" fallback body
+// when the upstream returns an empty/null result. The second return value
+// flags a missing-session RPC error so the caller can decide whether to
+// reinitialize and retry.
+func toolCallResultFromRPCResponse(rpcResp rpcResponse, statusCode int) (InvokeResult, bool) {
+	if len(rpcResp.Error) > 0 && string(rpcResp.Error) != "null" {
+		return InvokeResult{StatusCode: statusCode, Body: rpcResp.Error, Failed: true}, isMissingSessionRPCError(rpcResp.Error)
+	}
+	bodyBytes := rpcResp.Result
+	if len(bodyBytes) == 0 || string(bodyBytes) == "null" {
+		bodyBytes = []byte(`{"content":[{"type":"text","text":"ok"}]}`)
+	}
+	failed := statusCode >= http.StatusBadRequest || looksLikeToolError(bodyBytes)
+	return InvokeResult{StatusCode: statusCode, Body: bodyBytes, Failed: failed}, false
+}
+
+// toolCallResultFromForward decodes a raw tools/call ForwardResult (JSON or
+// SSE-wrapped) and maps it via toolCallResultFromRPCResponse.
+func toolCallResultFromForward(result ForwardResult) (InvokeResult, bool, error) {
+	rpcResp, err := decodeRPCResponse(result, toolCallEnvelopeID)
+	if err != nil {
+		return InvokeResult{}, false, err
+	}
+	invoke, missingSession := toolCallResultFromRPCResponse(rpcResp, result.StatusCode)
+	return invoke, missingSession, nil
+}
+
+func (c *Client) invokeHTTP(ctx context.Context, upstream Upstream, tool string, input map[string]any, requestID *string, meta map[string]any) (InvokeResult, error) {
 	if err := c.ensureHTTPSession(ctx, upstream); err != nil {
 		return InvokeResult{}, err
 	}
-	params := map[string]any{"name": tool, "arguments": input}
-	if requestID != nil && *requestID != "" {
-		params["_meta"] = map[string]any{"atryumRequestId": *requestID}
-	}
-	body, err := json.Marshal(Envelope{JSONRPC: "2.0", ID: json.RawMessage([]byte("1")), Method: "tools/call", Params: mustRawJSON(params)})
+	body, err := marshalToolCallEnvelope(tool, input, requestID, meta)
 	if err != nil {
 		return InvokeResult{}, err
 	}
@@ -604,40 +699,29 @@ func (c *Client) invokeHTTP(ctx context.Context, upstream Upstream, tool string,
 	if err != nil {
 		return InvokeResult{}, err
 	}
-	rpcResp, err := decodeRPCResponse(result, json.RawMessage([]byte("1")))
+	invoke, missingSession, err := toolCallResultFromForward(result)
 	if err != nil {
 		return InvokeResult{}, err
 	}
-	if len(rpcResp.Error) > 0 && string(rpcResp.Error) != "null" {
-		if isMissingSessionRPCError(rpcResp.Error) {
-			c.debugf("upstream http tools.call missing session server=%s session=%q status=%d error=%s", upstream.Name, result.SessionID, result.StatusCode, truncateForLog(rpcResp.Error, 600))
-			if retryErr := c.reinitializeRequiredHTTPSession(ctx, upstream, result.SessionID); retryErr != nil {
-				c.debugf("upstream http tools.call session retry init failed server=%s session=%q err=%v", upstream.Name, result.SessionID, retryErr)
-				return InvokeResult{}, retryErr
-			}
-			result, err = c.doHTTPEnvelopeWithSessionRetry(ctx, upstream, body, DefaultMCPProtocolVersion)
-			if err != nil {
-				c.debugf("upstream http tools.call session retry transport failed server=%s err=%v", upstream.Name, err)
-				return InvokeResult{}, err
-			}
-			rpcResp, err = decodeRPCResponse(result, json.RawMessage([]byte("1")))
-			if err != nil {
-				c.debugf("upstream http tools.call session retry decode failed server=%s status=%d err=%v", upstream.Name, result.StatusCode, err)
-				return InvokeResult{}, err
-			}
+	if missingSession {
+		c.debugf("upstream http tools.call missing session server=%s session=%q status=%d error=%s", upstream.Name, result.SessionID, result.StatusCode, truncateForLog(invoke.Body, 600))
+		if retryErr := c.reinitializeRequiredHTTPSession(ctx, upstream, result.SessionID); retryErr != nil {
+			c.debugf("upstream http tools.call session retry init failed server=%s session=%q err=%v", upstream.Name, result.SessionID, retryErr)
+			return InvokeResult{}, retryErr
+		}
+		result, err = c.doHTTPEnvelopeWithSessionRetry(ctx, upstream, body, DefaultMCPProtocolVersion)
+		if err != nil {
+			c.debugf("upstream http tools.call session retry transport failed server=%s err=%v", upstream.Name, err)
+			return InvokeResult{}, err
+		}
+		invoke, _, err = toolCallResultFromForward(result)
+		if err != nil {
+			c.debugf("upstream http tools.call session retry decode failed server=%s status=%d err=%v", upstream.Name, result.StatusCode, err)
+			return InvokeResult{}, err
 		}
 	}
-	if len(rpcResp.Error) > 0 && string(rpcResp.Error) != "null" {
-		c.debugf("upstream http tools.call rpc error server=%s status=%d error=%s", upstream.Name, result.StatusCode, truncateForLog(rpcResp.Error, 600))
-		return InvokeResult{StatusCode: result.StatusCode, Body: rpcResp.Error, Failed: true}, nil
-	}
-	bodyBytes := rpcResp.Result
-	if len(bodyBytes) == 0 || string(bodyBytes) == "null" {
-		bodyBytes = []byte(`{"content":[{"type":"text","text":"ok"}]}`)
-	}
-	failed := result.StatusCode >= http.StatusBadRequest || looksLikeToolError(bodyBytes)
-	c.debugf("upstream http tools.call server=%s status=%d failed=%t", upstream.Name, result.StatusCode, failed)
-	return InvokeResult{StatusCode: result.StatusCode, Body: bodyBytes, Failed: failed}, nil
+	c.debugf("upstream http tools.call server=%s status=%d failed=%t", upstream.Name, result.StatusCode, invoke.Failed)
+	return invoke, nil
 }
 
 func (c *Client) listToolsHTTP(ctx context.Context, upstream Upstream) ([]Tool, error) {
@@ -692,10 +776,16 @@ func (c *Client) forwardEnvelopeHTTP(ctx context.Context, upstream Upstream, env
 	return c.doHTTPEnvelopeWithSessionRetry(ctx, upstream, body, protocolVersion)
 }
 
-func (c *Client) doHTTPEnvelopeRaw(ctx context.Context, upstream Upstream, body []byte, protocolVersion, sessionID string) (*http.Response, error) {
+// doHTTPEnvelopeRaw sends one JSON-RPC envelope and returns the raw HTTP
+// response (headers received, body not yet consumed). streaming disables
+// the per-call upstream.Timeout wrapper: a streaming call's timing is
+// governed entirely by the header/idle/max-duration scheme in
+// invokeHTTPStream, not by a single fixed wall-clock budget that would
+// include however long the stream stays open.
+func (c *Client) doHTTPEnvelopeRaw(ctx context.Context, upstream Upstream, body []byte, protocolVersion, sessionID string, streaming bool) (*http.Response, error) {
 	endpoint := strings.TrimRight(upstream.BaseURL, "/")
 	client := c.httpClient
-	if upstream.Timeout > 0 {
+	if !streaming && upstream.Timeout > 0 {
 		client = &http.Client{Timeout: upstream.Timeout}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
@@ -714,7 +804,21 @@ func (c *Client) doHTTPEnvelopeRaw(ctx context.Context, upstream Upstream, body 
 	return client.Do(req)
 }
 
-func (c *Client) doHTTPEnvelope(ctx context.Context, upstream Upstream, body []byte, protocolVersion string) (ForwardResult, error) {
+// httpEnvelopeHeaders is an upstream HTTP response with session bookkeeping
+// already applied from its headers, but the body NOT yet consumed. Callers
+// own resp.Body: read (or discard) it and close it themselves. This split
+// exists so a streaming caller can inspect Content-Type and take over the
+// body incrementally instead of buffering it, while the ordinary buffered
+// path (doHTTPEnvelope) just reads it in one shot.
+type httpEnvelopeHeaders struct {
+	resp            *http.Response
+	sessionID       string
+	sessionExpired  bool
+	protocolVersion string
+	contentType     string
+}
+
+func (c *Client) doHTTPEnvelopeHeaders(ctx context.Context, upstream Upstream, body []byte, protocolVersion string, streaming bool) (httpEnvelopeHeaders, error) {
 	sessionID := c.getSession(upstream.Name)
 	effectiveProtocol := protocolVersion
 	if sessionID != "" {
@@ -722,11 +826,10 @@ func (c *Client) doHTTPEnvelope(ctx context.Context, upstream Upstream, body []b
 			effectiveProtocol = sessionProtocol
 		}
 	}
-	resp, err := c.doHTTPEnvelopeRaw(ctx, upstream, body, effectiveProtocol, sessionID)
+	resp, err := c.doHTTPEnvelopeRaw(ctx, upstream, body, effectiveProtocol, sessionID, streaming)
 	if err != nil {
-		return ForwardResult{}, err
+		return httpEnvelopeHeaders{}, err
 	}
-	defer resp.Body.Close()
 	sessionExpired := false
 	// Capture/clear session id based on response. 404 with an existing
 	// session means the server forgot us; drop it so the next call inits.
@@ -736,17 +839,30 @@ func (c *Client) doHTTPEnvelope(ctx context.Context, upstream Upstream, body []b
 		c.clearSessionIfCurrent(upstream.Name, sessionID)
 		sessionExpired = true
 	}
-	contentType := resp.Header.Get("Content-Type")
-	if sessionExpired {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return ForwardResult{StatusCode: resp.StatusCode, Body: bodyBytes, ContentType: contentType, ProtocolVersion: resp.Header.Get("MCP-Protocol-Version"), SessionExpired: true, SessionID: sessionID}, nil
-	}
-	respBody := new(bytes.Buffer)
-	_, err = respBody.ReadFrom(resp.Body)
+	return httpEnvelopeHeaders{
+		resp:            resp,
+		sessionID:       sessionID,
+		sessionExpired:  sessionExpired,
+		protocolVersion: resp.Header.Get("MCP-Protocol-Version"),
+		contentType:     resp.Header.Get("Content-Type"),
+	}, nil
+}
+
+func (c *Client) doHTTPEnvelope(ctx context.Context, upstream Upstream, body []byte, protocolVersion string) (ForwardResult, error) {
+	h, err := c.doHTTPEnvelopeHeaders(ctx, upstream, body, protocolVersion, false)
 	if err != nil {
 		return ForwardResult{}, err
 	}
-	return ForwardResult{StatusCode: resp.StatusCode, Body: respBody.Bytes(), ContentType: contentType, ProtocolVersion: resp.Header.Get("MCP-Protocol-Version"), SessionID: sessionID}, nil
+	defer h.resp.Body.Close()
+	if h.sessionExpired {
+		bodyBytes, _ := io.ReadAll(h.resp.Body)
+		return ForwardResult{StatusCode: h.resp.StatusCode, Body: bodyBytes, ContentType: h.contentType, ProtocolVersion: h.protocolVersion, SessionExpired: true, SessionID: h.sessionID}, nil
+	}
+	respBody := new(bytes.Buffer)
+	if _, err := respBody.ReadFrom(h.resp.Body); err != nil {
+		return ForwardResult{}, err
+	}
+	return ForwardResult{StatusCode: h.resp.StatusCode, Body: respBody.Bytes(), ContentType: h.contentType, ProtocolVersion: h.protocolVersion, SessionID: h.sessionID}, nil
 }
 
 func (c *Client) doHTTPEnvelopeWithSessionRetry(ctx context.Context, upstream Upstream, body []byte, protocolVersion string) (ForwardResult, error) {
@@ -972,7 +1088,65 @@ func extractForwardResultErrorDetail(result ForwardResult, expectedID json.RawMe
 	return extractErrorDetail(result.Body)
 }
 
-func (c *Client) invokeStdio(ctx context.Context, upstream Upstream, tool string, input map[string]any) (InvokeResult, error) {
+// stdioStderrCap bounds how much of a stdio subprocess's stderr is
+// retained in memory for error diagnostics. Streaming calls can run far
+// longer than the old fixed request_timeout_seconds bound (up to
+// stream_max_duration_seconds, or unlimited if unset), so a verbose or
+// misbehaving upstream writing continuously to stderr for the life of a
+// long relay could otherwise grow this buffer without limit.
+const stdioStderrCap = 64 * 1024
+
+// boundedBuffer caps how many bytes Write retains, keeping the first
+// stdioStderrCap bytes and silently discarding the rest — matching this
+// file's existing truncateForLog convention (keep the head, not the tail)
+// for bounding diagnostic text. Write always reports success for the full
+// input, including the discarded portion: the subprocess's stderr pipe
+// must never see a short write or an error from this side.
+//
+// The mutex is required, not defensive: os/exec copies the stderr pipe into
+// this buffer on its own goroutine, which only stops once cmd.Wait reaps it —
+// and the error paths call Len/String before their deferred Wait runs, so a
+// subprocess still writing stderr as it dies races those reads.
+type boundedBuffer struct {
+	mu    sync.Mutex
+	buf   bytes.Buffer
+	limit int
+}
+
+func newBoundedBuffer(limit int) *boundedBuffer {
+	return &boundedBuffer{limit: limit}
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	remaining := b.limit - b.buf.Len()
+	if remaining <= 0 {
+		return len(p), nil
+	}
+	keep := p
+	if len(keep) > remaining {
+		keep = keep[:remaining]
+	}
+	if _, err := b.buf.Write(keep); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+func (b *boundedBuffer) Len() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Len()
+}
+
+func (b *boundedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func (c *Client) invokeStdio(ctx context.Context, upstream Upstream, tool string, input map[string]any, requestID *string, meta map[string]any) (InvokeResult, error) {
 	if upstream.Command == "" {
 		return InvokeResult{}, fmt.Errorf("stdio upstream %q missing command", upstream.Name)
 	}
@@ -981,6 +1155,7 @@ func (c *Client) invokeStdio(ctx context.Context, upstream Upstream, tool string
 	for k, v := range upstream.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
+	configureStdioProcessGroup(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return InvokeResult{}, err
@@ -989,7 +1164,7 @@ func (c *Client) invokeStdio(ctx context.Context, upstream Upstream, tool string
 	if err != nil {
 		return InvokeResult{}, err
 	}
-	stderr := new(bytes.Buffer)
+	stderr := newBoundedBuffer(stdioStderrCap)
 	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
 		return InvokeResult{}, err
@@ -1000,24 +1175,27 @@ func (c *Client) invokeStdio(ctx context.Context, upstream Upstream, tool string
 	}()
 
 	reader := bufio.NewReader(stdout)
-	if err := writeRPC(stdin, c.nextRPCID(), "initialize", map[string]any{
+	initID := c.nextRPCID()
+	if err := writeRPC(stdin, initID, "initialize", map[string]any{
 		"protocolVersion": DefaultMCPProtocolVersion,
 		"clientInfo":      map[string]any{"name": "atryum", "version": version.Version},
 		"capabilities":    map[string]any{},
 	}); err != nil {
 		return InvokeResult{}, err
 	}
-	if _, err := readRPC(reader); err != nil {
+	if _, err := readRPC(reader, rpcIDMessage(initID)); err != nil {
 		return InvokeResult{}, err
 	}
 	_ = writeRPC(stdin, c.nextRPCID(), "notifications/initialized", map[string]any{})
-	if err := writeRPC(stdin, c.nextRPCID(), "tools/call", map[string]any{
-		"name":      tool,
-		"arguments": input,
-	}); err != nil {
+	callParams := map[string]any{"name": tool, "arguments": input}
+	if merged := mergeRequestMeta(meta, requestID); merged != nil {
+		callParams["_meta"] = merged
+	}
+	callID := c.nextRPCID()
+	if err := writeRPC(stdin, callID, "tools/call", callParams); err != nil {
 		return InvokeResult{}, err
 	}
-	resp, err := readRPC(reader)
+	resp, err := readRPC(reader, rpcIDMessage(callID))
 	if err != nil {
 		if stderr.Len() > 0 {
 			return InvokeResult{}, fmt.Errorf("stdio upstream error: %s", strings.TrimSpace(stderr.String()))
@@ -1043,6 +1221,7 @@ func (c *Client) listToolsStdio(ctx context.Context, upstream Upstream) ([]Tool,
 	for k, v := range upstream.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
+	configureStdioProcessGroup(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -1051,7 +1230,7 @@ func (c *Client) listToolsStdio(ctx context.Context, upstream Upstream) ([]Tool,
 	if err != nil {
 		return nil, err
 	}
-	stderr := new(bytes.Buffer)
+	stderr := newBoundedBuffer(stdioStderrCap)
 	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
 		return nil, err
@@ -1061,21 +1240,23 @@ func (c *Client) listToolsStdio(ctx context.Context, upstream Upstream) ([]Tool,
 		_ = cmd.Wait()
 	}()
 	reader := bufio.NewReader(stdout)
-	if err := writeRPC(stdin, c.nextRPCID(), "initialize", map[string]any{
+	initID := c.nextRPCID()
+	if err := writeRPC(stdin, initID, "initialize", map[string]any{
 		"protocolVersion": DefaultMCPProtocolVersion,
 		"clientInfo":      map[string]any{"name": "atryum", "version": version.Version},
 		"capabilities":    map[string]any{},
 	}); err != nil {
 		return nil, err
 	}
-	if _, err := readRPC(reader); err != nil {
+	if _, err := readRPC(reader, rpcIDMessage(initID)); err != nil {
 		return nil, err
 	}
 	_ = writeRPC(stdin, c.nextRPCID(), "notifications/initialized", map[string]any{})
-	if err := writeRPC(stdin, c.nextRPCID(), "tools/list", map[string]any{}); err != nil {
+	listID := c.nextRPCID()
+	if err := writeRPC(stdin, listID, "tools/list", map[string]any{}); err != nil {
 		return nil, err
 	}
-	resp, err := readRPC(reader)
+	resp, err := readRPC(reader, rpcIDMessage(listID))
 	if err != nil {
 		if stderr.Len() > 0 {
 			return nil, fmt.Errorf("stdio upstream error: %s", strings.TrimSpace(stderr.String()))
@@ -1250,6 +1431,7 @@ func (c *Client) testStdio(ctx context.Context, upstream Upstream) ConnectionTes
 	for k, v := range upstream.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
+	configureStdioProcessGroup(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		message := err.Error()
@@ -1260,7 +1442,7 @@ func (c *Client) testStdio(ctx context.Context, upstream Upstream) ConnectionTes
 		message := err.Error()
 		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusUnreachable, AuthStatus: AuthStatusUnknown, LastCheckOK: false, LastErrorSummary: &message}
 	}
-	stderr := new(bytes.Buffer)
+	stderr := newBoundedBuffer(stdioStderrCap)
 	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
 		message := err.Error()
@@ -1271,7 +1453,8 @@ func (c *Client) testStdio(ctx context.Context, upstream Upstream) ConnectionTes
 		_ = cmd.Wait()
 	}()
 	reader := bufio.NewReader(stdout)
-	if err := writeRPC(stdin, c.nextRPCID(), "initialize", map[string]any{
+	initID := c.nextRPCID()
+	if err := writeRPC(stdin, initID, "initialize", map[string]any{
 		"protocolVersion": DefaultMCPProtocolVersion,
 		"clientInfo":      map[string]any{"name": "atryum", "version": version.Version},
 		"capabilities":    map[string]any{},
@@ -1279,7 +1462,7 @@ func (c *Client) testStdio(ctx context.Context, upstream Upstream) ConnectionTes
 		message := err.Error()
 		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusUnreachable, AuthStatus: AuthStatusUnknown, LastCheckOK: false, LastErrorSummary: &message}
 	}
-	if _, err := readRPC(reader); err != nil {
+	if _, err := readRPC(reader, rpcIDMessage(initID)); err != nil {
 		message := err.Error()
 		if stderr.Len() > 0 {
 			message = strings.TrimSpace(stderr.String())
@@ -1289,53 +1472,6 @@ func (c *Client) testStdio(ctx context.Context, upstream Upstream) ConnectionTes
 		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusNeedsAttention, AuthStatus: authStatus, ReauthNeeded: reauth, LastCheckOK: false, LastErrorSummary: &message, ActionRequired: action}
 	}
 	return ConnectionTestResult{Ok: true, Message: "stdio initialize ok", ConnectionStatus: ConnectionStatusReady, AuthStatus: AuthStatusReady, ReauthNeeded: false, LastCheckOK: true}
-}
-
-func extractSSEJSONRPCResponse(r io.Reader, expectedID json.RawMessage) ([]byte, error) {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 1024*1024), 4*1024*1024)
-	var dataLines []string
-	flush := func() ([]byte, bool) {
-		if len(dataLines) == 0 {
-			return nil, false
-		}
-		payload := []byte(strings.Join(dataLines, "\n"))
-		dataLines = nil
-		match := classifyJSONRPCResponsePayload(payload, expectedID)
-		if match == jsonRPCResponseIDMatch || match == jsonRPCResponseNullIDError {
-			return payload, true
-		}
-		return nil, false
-	}
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
-			if payload, ok := flush(); ok {
-				return payload, nil
-			}
-			continue
-		}
-		if strings.HasPrefix(line, ":") {
-			continue
-		}
-		field, value, ok := strings.Cut(line, ":")
-		if !ok {
-			field = line
-			value = ""
-		} else if strings.HasPrefix(value, " ") {
-			value = strings.TrimPrefix(value, " ")
-		}
-		if field == "data" {
-			dataLines = append(dataLines, value)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	if payload, ok := flush(); ok {
-		return payload, nil
-	}
-	return nil, fmt.Errorf("no JSON-RPC response in SSE stream")
 }
 
 type jsonRPCResponseMatch int
@@ -1544,9 +1680,20 @@ func writeRPC(w interface{ Write([]byte) (int, error) }, id int64, method string
 	return err
 }
 
-func readRPC(reader *bufio.Reader) (rpcResponse, error) {
+// readRPC reads newline-delimited JSON-RPC messages from reader until it
+// finds the response whose id matches expectedID, skipping everything else
+// (notifications, stray server-to-client requests, responses to some other
+// id). This replaces a historical "first message with any id/result/error
+// wins" read: without correlation, a genuine incoming server-to-client
+// request (which also carries an id) could be misread as the answer to our
+// own call, since it was indistinguishable from a response by that check.
+func readRPC(reader *bufio.Reader, expectedID json.RawMessage) (rpcResponse, error) {
+	return readRPCWithLimit(reader, expectedID, defaultStreamMaxMessageBytes)
+}
+
+func readRPCWithLimit(reader *bufio.Reader, expectedID json.RawMessage, maxMessageBytes int) (rpcResponse, error) {
 	for {
-		line, err := reader.ReadBytes('\n')
+		line, err := readLineLimited(reader, maxMessageBytes)
 		if err != nil {
 			return rpcResponse{}, err
 		}
@@ -1554,14 +1701,34 @@ func readRPC(reader *bufio.Reader) (rpcResponse, error) {
 		if len(line) == 0 {
 			continue
 		}
+		if classifyRPCMessage(line, expectedID) != rpcMessageTerminalResponse {
+			continue
+		}
 		var resp rpcResponse
 		if err := json.Unmarshal(line, &resp); err != nil {
 			continue
 		}
-		if len(resp.ID) == 0 && len(resp.Result) == 0 && len(resp.Error) == 0 {
-			continue
-		}
 		return resp, nil
+	}
+}
+
+func readLineLimited(reader *bufio.Reader, maxBytes int) ([]byte, error) {
+	if maxBytes <= 0 {
+		maxBytes = defaultStreamMaxMessageBytes
+	}
+	line := make([]byte, 0, min(maxBytes, 64*1024))
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(fragment) > maxBytes-len(line) {
+			return nil, ErrStreamMessageTooLarge
+		}
+		line = append(line, fragment...)
+		if err == nil {
+			return line, nil
+		}
+		if err != bufio.ErrBufferFull {
+			return nil, err
+		}
 	}
 }
 
@@ -1606,6 +1773,12 @@ func decodeToolsListResult(result json.RawMessage) ([]Tool, error) {
 
 func (c *Client) nextRPCID() int64 {
 	return c.nextID.Add(1)
+}
+
+// rpcIDMessage renders a stdio request id (an int64 from nextRPCID) as the
+// json.RawMessage form readRPC/classifyRPCMessage compare ids against.
+func rpcIDMessage(id int64) json.RawMessage {
+	return json.RawMessage(strconv.FormatInt(id, 10))
 }
 
 func cloneMap(in map[string]string) map[string]string {

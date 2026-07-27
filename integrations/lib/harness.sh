@@ -227,7 +227,7 @@ configure_harness_mcp() {
         amp_env+=(--env "MCP_REMOTE_HEADERS=${MCP_REMOTE_HEADERS}")
       fi
       if ! AMP_SETTINGS_FILE="$AMP_SETTINGS_FILE" amp mcp add "$mcp_alias" \
-        "${amp_env[@]}" \
+        "${amp_env[@]+"${amp_env[@]}"}" \
         -- npx -y mcp-remote "$mcp_url"; then
         warn "amp mcp add failed for $AMP_SETTINGS_FILE"
         return 1
@@ -256,7 +256,7 @@ configure_harness_mcp() {
         grok_env+=(--env "MCP_REMOTE_HEADERS=${MCP_REMOTE_HEADERS}")
       fi
       HOME="$GROK_TEST_HOME" grok mcp add "$mcp_alias" \
-        "${grok_env[@]}" \
+        "${grok_env[@]+"${grok_env[@]}"}" \
         --command npx \
         --args -y mcp-remote "$mcp_url" >/dev/null 2>&1 || {
         warn "grok mcp add failed; writing config.toml fallback"
@@ -376,7 +376,7 @@ PY
       python3 "$REPO_ROOT/scripts/fake_agent.py" mcp "$server_name" \
         --tool "$tool_name" \
         --arguments "$args_json" \
-        "${bearer_args[@]}" 2>&1
+        "${bearer_args[@]+"${bearer_args[@]}"}" 2>&1
     )"
     rc=$?
   else

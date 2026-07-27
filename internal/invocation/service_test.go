@@ -70,12 +70,21 @@ while IFS= read -r line; do
   if [[ -z "$line" ]]; then
     continue
   fi
+  # Echo back whatever id the request actually carried — Atryum's stdio
+  # client assigns ids from a shared per-client counter (notifications
+  # consume one too, even though it's stripped before sending), so a
+  # hardcoded id here would drift from what's actually sent. Only computed
+  # inside the branches that have one: the notification line below carries
+  # no "id" field at all, and grep finding nothing there would (under
+  # pipefail) abort the script if this ran unconditionally.
   if [[ "$line" == *'"method":"initialize"'* ]]; then
-    printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"fake-shortcut","version":"0.1.0"},"capabilities":{}}}'
+    id=$(echo "$line" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+    printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":${id},\"result\":{\"serverInfo\":{\"name\":\"fake-shortcut\",\"version\":\"0.1.0\"},\"capabilities\":{}}}"
   elif [[ "$line" == *'"method":"notifications/initialized"'* ]]; then
     continue
   elif [[ "$line" == *'"method":"tools/call"'* ]]; then
-    printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"ok"}]}}'
+    id=$(echo "$line" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+    printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":${id},\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}"
     exit 0
   fi
 done
@@ -185,6 +194,153 @@ func TestInvokeFailsClosedWhenRuleLoadFails(t *testing.T) {
 	}
 	if resp.Status != invocation.StatusDenied {
 		t.Fatalf("status = %q, want denied (a rule-load failure must fail closed to human review, not fall through to the global policy)", resp.Status)
+	}
+}
+
+// TestMultiReplicaApprovalRaceOverwritesApprovedRowAsFailed pins the
+// documented multi-replica race for Atryum-executed (Invoke) human approval
+// (see docs/architecture.md "Atryum-executed calls"): pendingApprovals is an
+// in-memory map local to one *Service*, so an Approve call landing on a
+// different Service instance — standing in for a second replica — cannot
+// wake the goroutine blocked in waitForHumanApproval on the first instance.
+// It can only update the durable row directly. When the original caller's
+// context is later cancelled, that goroutine wakes on ctx.Done() and
+// unconditionally overwrites the row to failed, clobbering the approval a
+// different process just persisted. The tool must never execute.
+//
+// The production comment on waitForHumanApproval shows the race in terms of
+// process A / process B / the durable row; this test drives that exact
+// sequence with its own goroutine, polling loop, and assertions:
+//
+//	background goroutine (processA)         main goroutine (test)
+//	--------------------------------         ----------------------
+//	processA.Invoke(ctx, ...)
+//	  blocks in waitForHumanApproval
+//	                                          pollUntil polls processB.List
+//	                                            until StatusPendingApproval,
+//	                                            captures invocationID
+//	                                          processB.Approve(invocationID,
+//	                                            "operator")
+//	                                          processA.Get(invocationID)
+//	                                            -> Approved
+//	                                          select done: default
+//	                                            (still blocked — the approval
+//	                                            never woke processA.Invoke)
+//	                                          cancel()
+//	  ctx.Done() fires, overwrites the row
+//	    unconditionally -> Failed
+//	  done <- {Status: Failed, "...cancelled..."}
+//	                                          <-done (within 2s)
+//	                                          assert Status == Failed
+//	                                          processA.Get(invocationID)
+//	                                            -> Failed (processB's
+//	                                            approved write is gone)
+func TestMultiReplicaApprovalRaceOverwritesApprovedRowAsFailed(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		switch body["method"] {
+		case "initialize":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0", "id": body["id"],
+				"result": map[string]any{"serverInfo": map[string]any{"name": "fake", "version": "0.1.0"}, "capabilities": map[string]any{}},
+			})
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+		case "tools/call":
+			// Should never be reached: the row is overwritten to failed before
+			// anything is ever approved from process A's own perspective.
+			t.Error("tool executed even though the invocation was ultimately marked failed")
+		default:
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer upstream.Close()
+
+	db := newSQLiteTestDB(t)
+	serverRepo := store.NewServerRepo(db)
+	resolver := mcp.NewResolver(serverRepo, config.Config{
+		Upstreams: []config.UpstreamConfig{{Name: "shortcut", Mode: "http", BaseURL: upstream.URL, Enabled: true, TimeoutSeconds: 5}},
+	})
+	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	newProcess := func() *invocation.Service {
+		return invocation.NewService(store.NewInvocationRepo(db), store.NewEventRepo(db), resolver, mcp.NewHTTPClient(), policy.ManualApprovalProvider{}, 5*time.Second, nil, nil, nil, nil)
+	}
+	processA := newProcess() // blocks the call below in its own in-memory waiter
+	processB := newProcess() // simulates a second replica handling the admin decision; shares the same db, not the same pendingApprovals map
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	type invokeResult struct {
+		resp invocation.InvocationResponse
+		err  error
+	}
+	done := make(chan invokeResult, 1)
+	go func() {
+		resp, err := processA.Invoke(ctx, invocation.CreateInvocationRequest{Server: "shortcut", Tool: "dangerous-tool", Input: map[string]any{}})
+		done <- invokeResult{resp, err}
+	}()
+
+	var invocationID string
+	pollUntil(t, 2*time.Second, 10*time.Millisecond, func() bool {
+		list, err := processB.List(context.Background(), invocation.InvocationListFilter{Limit: 10})
+		if err == nil && len(list.Items) == 1 && list.Items[0].Status == invocation.StatusPendingApproval {
+			invocationID = list.Items[0].InvocationID
+			return true
+		}
+		return false
+	})
+	if invocationID == "" {
+		t.Fatal("invocation never reached pending_approval")
+	}
+
+	if err := processB.Approve(context.Background(), invocationID, "operator"); err != nil {
+		t.Fatalf("approve from process B: %v", err)
+	}
+
+	approvedRead, err := processA.Get(context.Background(), invocationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approvedRead.Status != invocation.StatusApproved {
+		t.Fatalf("expected process B's approval to be visible as %q, got %q", invocation.StatusApproved, approvedRead.Status)
+	}
+
+	select {
+	case <-done:
+		t.Fatal("process A's Invoke returned before its context was cancelled; the approval should not have woken it")
+	default:
+	}
+
+	// The caller now disconnects (or its request times out): cancel the
+	// context processA.Invoke is still blocked on.
+	cancel()
+
+	var result invokeResult
+	select {
+	case result = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("processA.Invoke did not return after its context was cancelled")
+	}
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if result.resp.Status != invocation.StatusFailed {
+		t.Fatalf("status = %q, want failed (context cancellation must overwrite even an already-approved row)", result.resp.Status)
+	}
+	if !strings.Contains(string(result.resp.Error), "cancelled") {
+		t.Fatalf("expected the stored error text to mention cancellation, got %s", result.resp.Error)
+	}
+
+	finalRead, err := processA.Get(context.Background(), invocationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finalRead.Status != invocation.StatusFailed {
+		t.Fatalf("final row status = %q, want failed — process B's approved write must be overwritten, not preserved", finalRead.Status)
 	}
 }
 
@@ -367,17 +523,13 @@ func TestSubmitPendingApprovalAutomaticallySummarizesInvocation(t *testing.T) {
 	}
 
 	var got invocation.InvocationResponse
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	pollUntil(t, 2*time.Second, 10*time.Millisecond, func() bool {
 		got, err = service.Get(context.Background(), resp.InvocationID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Summary == "Run shell command ls." {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return got.Summary == "Run shell command ls."
+	})
 	if got.Summary != "Run shell command ls." {
 		t.Fatalf("expected automatic summary, got %q", got.Summary)
 	}
@@ -1390,6 +1542,22 @@ func TestInvokeAIEvaluationToleratesMissingToolDescription(t *testing.T) {
 	if evaluator.request().Context != "" {
 		t.Fatalf("expected empty Context when tools/list fails, got %q", evaluator.request().Context)
 	}
+}
+
+// pollUntil calls cond repeatedly, sleeping interval between tries, until it
+// returns true or timeout elapses. Shared by tests waiting on asynchronous
+// state (a row reaching a given status, a field getting populated) instead
+// of sleeping a fixed guess that's either too slow or too flaky.
+func pollUntil(t *testing.T, timeout, interval time.Duration, cond func() bool) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(interval)
+	}
+	return cond()
 }
 
 func newTestService(t *testing.T, cfg config.Config) *invocation.Service {

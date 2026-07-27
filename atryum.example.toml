@@ -49,6 +49,32 @@ connection_timeout_seconds = 5
 [defaults]
 request_timeout_seconds = 30
 
+# Live relay for tools/call. When the agent accepts SSE, Atryum can forward
+# intermediate HTTP SSE or stdio JSON-RPC messages as they arrive, followed
+# by one terminal SSE response. A plain upstream JSON response remains plain
+# downstream. stream_relay_enabled disables the relay without a rollback.
+stream_relay_enabled = true
+# Bounds HTTP session initialization and tools/call response headers, or the
+# stdio initialize handshake. 0 falls back to request_timeout_seconds above.
+stream_header_timeout_seconds = 0
+# Bounds the gap in upstream activity while reading the response. Resets on
+# every message, and on SSE keepalive/comment lines, so a quiet-but-alive
+# upstream is not cut off. Does not bound the call's total duration.
+stream_idle_timeout_seconds = 60
+# Bounds the complete upstream response-reading phase. 0 = unlimited.
+stream_max_duration_seconds = 600
+# Rejects one upstream SSE event, stdio JSON-RPC line, or plain JSON response
+# body larger than this many bytes. This bounds memory used by one message.
+stream_max_message_bytes = 4194304
+# Caps how many invocation.stream_event audit rows are persisted per call.
+# Beyond the cap, events are still relayed live to the agent but only
+# counted, not stored individually. 0 disables this count cap. The bounded
+# shared audit queue reports storage backpressure drops in stream_completed.
+stream_audit_max_events = 100
+# Truncates each persisted stream_event row's data field beyond this many
+# bytes. 0 = no truncation.
+stream_audit_max_event_bytes = 4096
+
 # Optional Claude Managed Agents events bridge. Declare one [[managed_agents]]
 # table per Anthropic account/workspace you want to watch. When an entry's
 # api_key is set, Atryum connects outbound to Anthropic's Managed Agents
