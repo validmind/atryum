@@ -145,7 +145,33 @@ rule matches; it is not evaluated after a matching rule defers.
 An `ai_evaluation` rule selects one configured evaluator. Standalone deployments use
 a local LLM configuration stored in `llm_configs`. Evaluation errors escalate to human
 review; missing charter context denies; and an unknown verdict is treated as
-`next_rule`, eventually reaching human review if no later rule decides.
+`next_rule`, eventually reaching human review if no later rule decides. Drawn out,
+that rule's own outcomes are:
+
+```mermaid
+flowchart TD
+    Eval[ai_evaluation rule runs its configured evaluator]
+    Verdict{Evaluator outcome}
+    Approved[approved]
+    Denied[denied]
+    NextRule[next_rule]
+    EvalError[Evaluation call itself failed]
+    NoCharter[No charter context available for this agent or tool]
+    Unparseable[Verdict does not parse as approve, deny, or defer]
+
+    Eval --> Verdict
+    Verdict -->|approve| Approved
+    Verdict -->|deny| Denied
+    Verdict -->|defer| NextRule
+    Verdict -->|error| EvalError --> Human2[Escalate straight to human approval]
+    Verdict -->|missing charter| NoCharter --> Denied
+    Verdict -->|unknown verdict| Unparseable --> NextRule
+```
+
+Only the `defer` and `unknown verdict` branches feed back into "another matching
+rule?" in the pipeline diagram above; `error` skips that loop and goes straight to
+human review because a broken evaluator is not expected to fix itself on the next
+matching rule.
 
 ## Atryum-executed calls
 
@@ -169,6 +195,31 @@ process. Concretely:
 - An abrupt process exit drops the waiter and caller while the durable invocation can
   remain `pending_approval`. Nothing resumes pending invocations at startup, so a
   later approval updates that row but does not execute the tool.
+
+The first bullet end to end, across two replicas:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client
+    participant ProcA as Atryum process A - handling this request
+    participant Store as PostgreSQL
+    participant Admin
+    participant ProcB as Atryum process B - handling the admin decision
+
+    Client->>ProcA: Invoke tool
+    ProcA->>Store: Persist pending_approval
+    ProcA->>ProcA: Block the request goroutine on an in-memory channel
+    Admin->>ProcB: Approve invocation
+    ProcB->>ProcB: Look up the in-memory channel for this invocation - not found here
+    Note over ProcB: The waiting channel exists only in process A's memory
+    ProcB->>Store: Persist approved directly, since no local waiter exists
+    Note over ProcA: Process A's request is still blocked; nothing woke it
+    Client-->>ProcA: Client disconnects, or the request context is cancelled
+    ProcA->>ProcA: Context done fires while still waiting
+    ProcA->>Store: Persist failed, error text "cancelled"
+    Note over Store: Row now reads failed, overwriting the approved status<br/>process B just wrote. The tool was never executed.
+```
 
 Multi-replica or crash-resumable execution requires durable coordination — for
 example a work queue, or an outbox table that a worker drains — which is not
@@ -336,6 +387,55 @@ decision, the downstream request remains open but Atryum has not started an SSE
 response. A denial stays a normal JSON response. After approval, execution follows the
 flow above.
 
+#### Error and timeout paths
+
+The flow above shows the two happy branches: a plain response, and a stream that runs
+to completion. The same call has four more ways to end, driven by the timers described
+in [Resource limits](#resource-limits) below and by the downstream connection itself:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client as Downstream MCP client
+    participant Atryum
+    participant Upstream as Upstream MCP server
+
+    Client->>Atryum: tools/call, accepts SSE
+    Atryum->>Atryum: Evaluate rules and approval policy
+    Atryum->>Upstream: Execute the tool
+    Atryum->>Atryum: Arm the setup timer (stream_header_timeout_seconds)
+
+    alt Setup timer fires before headers or a stream start arrive
+        Atryum->>Atryum: Trip: stream setup timeout exceeded
+        Atryum-->>Client: Terminal SSE error, reason stream_timeout
+    else Upstream opens a stream in time
+        Atryum->>Atryum: Disarm the setup timer; arm the idle and max-duration timers
+        loop while the upstream keeps sending progress
+            Upstream-->>Atryum: Progress notification
+            Atryum->>Atryum: Reset the idle timer
+            Atryum-->>Client: Progress notification as SSE
+        end
+        alt Idle timer fires and the gap genuinely exceeds stream_idle_timeout_seconds
+            Atryum->>Atryum: Trip: idle timeout waiting for the next stream event
+            Atryum-->>Client: Terminal SSE error, reason stream_timeout
+        else Max-duration timer fires regardless of activity
+            Atryum->>Atryum: Trip: max stream duration exceeded
+            Atryum-->>Client: Terminal SSE error, reason stream_timeout
+        else Client disconnects or stops reading mid-stream
+            Atryum->>Atryum: The next write to the client misses its per-write deadline
+            Note over Atryum: Recorded as stream_aborted_downstream;<br/>no further write is attempted
+        else Upstream sends the terminal response normally
+            Upstream-->>Atryum: Terminal response
+            Atryum->>Atryum: Save final invocation state
+            Atryum-->>Client: Terminal response as SSE, then close
+        end
+    end
+```
+
+The idle and max-duration branches both end in the same reported reason,
+`stream_timeout`, because both are the guard's own bound firing rather than a
+transport failure; see the classification flowchart below for the full priority order.
+
 #### Matching shared progress to the correct call
 
 The standalone stream is shared, so receiving an event does not by itself identify the
@@ -458,6 +558,38 @@ finishExecutionStreaming(invocation, sink):
     return response
 ```
 
+`classify(err)` is checked in a fixed priority order, because more than one condition
+can be true at once (for example, the context can be canceled *and* the guard can have
+tripped) and only the first match is recorded:
+
+```mermaid
+flowchart TD
+    Err[InvokeStream returned an error]
+    Q1{Did the audited sink's own<br/>write to the agent fail first?}
+    Q2{Is the error, or the call's context,<br/>context.Canceled?}
+    Q3{Is the error mcp.ErrStreamTimeout?}
+    Q4{Is the error mcp.ErrStreamSessionRetryRefused?}
+    Q5{Is the error mcp.ErrStreamMessageTooLarge?}
+    R1["stream_aborted_downstream:<br/>the agent connection died"]
+    R2["stream_canceled:<br/>no proof of who went away -<br/>quiet disconnect and server shutdown look the same"]
+    R3["stream_timeout:<br/>the guard's own setup, idle, or max-duration bound fired"]
+    R4["stream_session_retry_refused:<br/>a relayed event already reached the agent,<br/>so retrying would duplicate it"]
+    R5["stream_message_too_large:<br/>an event exceeded stream_max_message_bytes"]
+    R6["transport_error:<br/>the upstream connection failed on its own"]
+
+    Err --> Q1
+    Q1 -->|yes| R1
+    Q1 -->|no| Q2
+    Q2 -->|yes| R2
+    Q2 -->|no| Q3
+    Q3 -->|yes| R3
+    Q3 -->|no| Q4
+    Q4 -->|yes| R4
+    Q4 -->|no| Q5
+    Q5 -->|yes| R5
+    Q5 -->|no| R6
+```
+
 Classifying the error exists so an operator reading the audit trail can tell "the agent
 hung up" apart from "our own bound fired" apart from "the upstream broke" — otherwise
 every one of those looks like the same generic transport error.
@@ -549,6 +681,35 @@ Path A reader (its own goroutine, one per call):
                 keep reading from the resumed connection
         else:
             forward the event into the merge loop above
+```
+
+As a sequence, the resumable case looks like this:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Reader as Path A reader - one goroutine per call
+    participant Upstream
+    participant Merge as merge loop in invokeHTTPStream
+
+    Reader->>Upstream: Open this call's own POST response
+    loop while connected
+        Upstream-->>Reader: SSE event, some carrying an id
+        Reader->>Merge: Forward the event
+    end
+    Upstream-->>Reader: Connection drops
+    alt No event with an id was ever seen
+        Reader->>Merge: Report transport failure - nothing to resume from
+    else At least one id was seen
+        Reader->>Reader: Wait a bounded, jittered backoff
+        Reader->>Upstream: Reconnect with header Last-Event-ID: last id seen
+        alt Upstream inclusively replays that same id
+            Upstream-->>Reader: Event id N, a duplicate
+            Reader->>Reader: Skip the duplicate
+        end
+        Upstream-->>Reader: Subsequent events resume normally
+        Reader->>Merge: Forward events as before
+    end
 ```
 
 Path B — the standalone stream, shared by every concurrent call on the session:
