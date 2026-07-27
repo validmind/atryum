@@ -406,6 +406,13 @@ func (c *Client) EvaluateToolCall(ctx context.Context, req EvaluateRequest) (Eva
 
 // CharterPreviewRequest is sent to the VM backend to assemble the charter
 // hierarchy for a single synced agent.
+//
+// Deliberately has no tags field: this hits the backend's hierarchy-only
+// /charter-preview endpoint (used by Atryum's own FOSS UI), which never
+// matches organization-wide Global Charters — that's a commercial-only
+// feature with no presence here. The ValidMind frontend's own preview call
+// (a different backend route, /agent-authority/agents/{cuid}/charter-preview)
+// is what sends tags and layers in matching global charters.
 type CharterPreviewRequest struct {
 	AgentVMCUID     string `json:"agent_vm_cuid"`
 	CharterFieldKey string `json:"charter_field_key"`
