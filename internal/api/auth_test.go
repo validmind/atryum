@@ -462,6 +462,7 @@ func TestRenamedPrivilegedRoutesAreRegisteredAndProtected(t *testing.T) {
 	h := newAuthedHandler(t, &stubService{}, rig)
 	for _, path := range []string{
 		"/api/v1/review/invocations",
+		"/api/v1/invocation-summary/config",
 		"/api/v1/plans",
 		"/api/v1/servers",
 		"/api/v1/rules",

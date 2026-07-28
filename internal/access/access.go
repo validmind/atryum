@@ -12,11 +12,12 @@ const principalKey contextKey = iota
 type Capability string
 
 const (
-	CapabilityReadResources     Capability = "read_resources"
-	CapabilityUpdateAgents      Capability = "update_agents"
-	CapabilityDecideInvocations Capability = "decide_invocations"
-	CapabilityDecidePlans       Capability = "decide_plans"
-	CapabilityAdmin             Capability = "administrative_operations"
+	CapabilityReadResources        Capability = "read_resources"
+	CapabilityUpdateAgents         Capability = "update_agents"
+	CapabilityDecideInvocations    Capability = "decide_invocations"
+	CapabilitySummarizeInvocations Capability = "summarize_invocations"
+	CapabilityDecidePlans          Capability = "decide_plans"
+	CapabilityAdmin                Capability = "administrative_operations"
 )
 
 type Principal struct {

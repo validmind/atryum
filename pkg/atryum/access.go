@@ -11,11 +11,12 @@ import (
 type Capability = access.Capability
 
 const (
-	CapabilityReadResources     = access.CapabilityReadResources
-	CapabilityUpdateAgents      = access.CapabilityUpdateAgents
-	CapabilityDecideInvocations = access.CapabilityDecideInvocations
-	CapabilityDecidePlans       = access.CapabilityDecidePlans
-	CapabilityAdmin             = access.CapabilityAdmin
+	CapabilityReadResources        = access.CapabilityReadResources
+	CapabilityUpdateAgents         = access.CapabilityUpdateAgents
+	CapabilityDecideInvocations    = access.CapabilityDecideInvocations
+	CapabilitySummarizeInvocations = access.CapabilitySummarizeInvocations
+	CapabilityDecidePlans          = access.CapabilityDecidePlans
+	CapabilityAdmin                = access.CapabilityAdmin
 )
 
 // Principal is the access decision returned for one verified token email.

@@ -265,6 +265,7 @@ func TestAuthorizeOperatorRequestRequiresRouteSegmentBoundary(t *testing.T) {
 			access.CapabilityReadResources,
 			access.CapabilityUpdateAgents,
 			access.CapabilityDecideInvocations,
+			access.CapabilitySummarizeInvocations,
 			access.CapabilityDecidePlans,
 		},
 	}
@@ -279,11 +280,13 @@ func TestAuthorizeOperatorRequestRequiresRouteSegmentBoundary(t *testing.T) {
 		{http.MethodGet, "/api/v1/rules-export", false},
 		{http.MethodGet, "/api/v1/plans-export", false},
 		{http.MethodGet, "/api/v1/review/invocations-export", false},
+		{http.MethodGet, "/api/v1/invocation-summary/config", true},
+		{http.MethodGet, "/api/v1/invocation-summary/config-export", false},
 		{http.MethodPatch, "/api/v1/agents/agent-1", true},
 		{http.MethodPatch, "/api/v1/agents-export/agent-1", false},
 		{http.MethodPost, "/api/v1/review/invocations/inv-1/approve", true},
 		{http.MethodPost, "/api/v1/review/invocations/inv-1/deny", true},
-		{http.MethodPost, "/api/v1/review/invocations/inv-1/summarize", false},
+		{http.MethodPost, "/api/v1/review/invocations/inv-1/summarize", true},
 		{http.MethodPost, "/api/v1/review/invocations-export/inv-1/approve", false},
 		{http.MethodPost, "/api/v1/plans/plan-1/approve", true},
 		{http.MethodPost, "/api/v1/plans-export/plan-1/approve", false},
@@ -302,6 +305,10 @@ func TestAuthorizeOperatorRequestRequiresRouteSegmentBoundary(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/review/invocations/inv-1/approve", nil)
 	if h.authorizeOperatorRequest(req, withoutInvocationDecision) {
 		t.Fatal("invocation approval allowed without decide-invocations capability")
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/review/invocations/inv-1/summarize", nil)
+	if h.authorizeOperatorRequest(req, withoutInvocationDecision) {
+		t.Fatal("invocation summary allowed without summarize-invocations capability")
 	}
 }
 
@@ -1226,6 +1233,122 @@ func TestSummarizeInvocationPersistsBackendSummary(t *testing.T) {
 	if resp.InvocationID != "inv_123" || resp.Summary != "Read /tmp/a and returned hello." {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
+}
+
+func TestInvocationSummaryConfigExposesOnlyAvailability(t *testing.T) {
+	settings := &stubAgentSyncSettingsRepo{settings: store.AgentSyncSettings{
+		OrgCUID:                "secret-org",
+		SummaryModelConfigCUID: "secret-model",
+	}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, settings, nil, nil, nil, nil)
+	h.summarizeClient = &stubSummarizer{}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/invocation-summary/config", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", w.Code, w.Body.String())
+	}
+	var resp InvocationSummaryConfigResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Enabled {
+		t.Fatal("configured summary model reported unavailable")
+	}
+	if strings.Contains(w.Body.String(), "secret-model") || strings.Contains(w.Body.String(), "secret-org") {
+		t.Fatalf("summary config leaked administrative settings: %s", w.Body.String())
+	}
+}
+
+func TestScopedInvocationSummarizationRequiresAssignment(t *testing.T) {
+	agentCUID := "agent-a"
+	settings := &stubAgentSyncSettingsRepo{settings: store.AgentSyncSettings{
+		SummaryModelConfigCUID: "model-from-settings",
+	}}
+
+	t.Run("assigned invocation", func(t *testing.T) {
+		svc := &stubService{invoke: invocation.InvocationResponse{
+			InvocationID: "inv-1",
+			AgentCUID:    &agentCUID,
+		}}
+		summarizer := &stubSummarizer{resp: backendclient.SummarizeInvocationResponse{Summary: "Safe summary."}}
+		h := NewHandler(svc, stubServerService{}, nil, nil, nil, settings, nil, nil, nil, nil)
+		h.summarizeClient = summarizer
+		principal := access.Principal{
+			AgentCUIDs:   []string{agentCUID},
+			Capabilities: []access.Capability{access.CapabilitySummarizeInvocations},
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/review/invocations/inv-1/summarize", nil)
+		req = req.WithContext(access.WithPrincipal(req.Context(), principal))
+		w := httptest.NewRecorder()
+
+		h.reviewInvocationDetail(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", w.Code, w.Body.String())
+		}
+		if svc.setID != "inv-1" || svc.setText != "Safe summary." {
+			t.Fatalf("summary persistence = id %q text %q", svc.setID, svc.setText)
+		}
+	})
+
+	t.Run("unassigned invocation", func(t *testing.T) {
+		svc := &stubService{invoke: invocation.InvocationResponse{
+			InvocationID: "inv-1",
+			AgentCUID:    &agentCUID,
+		}}
+		summarizer := &stubSummarizer{resp: backendclient.SummarizeInvocationResponse{Summary: "Must not run."}}
+		h := NewHandler(svc, stubServerService{}, nil, nil, nil, settings, nil, nil, nil, nil)
+		h.summarizeClient = summarizer
+		principal := access.Principal{
+			AgentCUIDs:   []string{"agent-b"},
+			Capabilities: []access.Capability{access.CapabilitySummarizeInvocations},
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/review/invocations/inv-1/summarize", nil)
+		req = req.WithContext(access.WithPrincipal(req.Context(), principal))
+		w := httptest.NewRecorder()
+
+		h.reviewInvocationDetail(w, req)
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404; body = %s", w.Code, w.Body.String())
+		}
+		if svc.setID != "" || summarizer.req.ModelConfigCUID != "" {
+			t.Fatalf("unassigned invocation was summarized: setID=%q request=%+v", svc.setID, summarizer.req)
+		}
+	})
+
+	t.Run("model override is admin-only", func(t *testing.T) {
+		svc := &stubService{invoke: invocation.InvocationResponse{
+			InvocationID: "inv-1",
+			AgentCUID:    &agentCUID,
+		}}
+		summarizer := &stubSummarizer{resp: backendclient.SummarizeInvocationResponse{Summary: "Must not run."}}
+		h := NewHandler(svc, stubServerService{}, nil, nil, nil, settings, nil, nil, nil, nil)
+		h.summarizeClient = summarizer
+		principal := access.Principal{
+			AgentCUIDs:   []string{agentCUID},
+			Capabilities: []access.Capability{access.CapabilitySummarizeInvocations},
+		}
+		req := httptest.NewRequest(
+			http.MethodPost,
+			"/api/v1/review/invocations/inv-1/summarize",
+			strings.NewReader(`{"model_config_cuid":"different-model"}`),
+		)
+		req = req.WithContext(access.WithPrincipal(req.Context(), principal))
+		w := httptest.NewRecorder()
+
+		h.reviewInvocationDetail(w, req)
+
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403; body = %s", w.Code, w.Body.String())
+		}
+		if svc.setID != "" || summarizer.req.ModelConfigCUID != "" {
+			t.Fatalf("non-admin model override ran: setID=%q request=%+v", svc.setID, summarizer.req)
+		}
+	})
 }
 
 func TestSummarizeInvocationUsesSettingsModelConfigWhenRequestBodyEmpty(t *testing.T) {

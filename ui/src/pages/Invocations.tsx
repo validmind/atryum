@@ -60,11 +60,11 @@ import {
   useInvocations,
   useInvocationDetail,
   useInvocationEvents,
+  useInvocationSummaryConfig,
   useApproveInvocation,
   useDenyInvocation,
   useSummarizeInvocation,
 } from "../hooks/useInvocations";
-import { useSettings } from "../hooks/useSettings";
 import { useRules } from "../hooks/useRules";
 import { useAgents } from "../hooks/useAgents";
 import { useInvocationStream } from "../hooks/useInvocationStream";
@@ -406,8 +406,8 @@ const Invocations: React.FC = () => {
   const approve = useApproveInvocation();
   const deny = useDenyInvocation();
   const summarize = useSummarizeInvocation();
+  const { data: summaryConfig } = useInvocationSummaryConfig();
   const { data: rulesData } = useRules();
-  const { data: settings } = useSettings();
 
   const auditEntries = useMemo(
     () =>
@@ -420,10 +420,7 @@ const Invocations: React.FC = () => {
         : [],
     [detail, rulesData?.items, eventsData?.items],
   );
-  const summaryModelConfigCuid = settings?.summary_model_config_cuid ?? "";
-  const hasSummaryModel = Boolean(
-    summaryModelConfigCuid || (settings?.summary_atryum_llm_config_id ?? ""),
-  );
+  const hasSummaryModel = summaryConfig?.enabled ?? false;
 
   const [summarizingInvocationId, setSummarizingInvocationId] = useState<
     string | null
@@ -444,12 +441,11 @@ const Invocations: React.FC = () => {
     try {
       await summarize.mutateAsync({
         id: resolvedSelectedId,
-        modelConfigCuid: summaryModelConfigCuid || undefined,
       });
     } catch {
       setSummaryErrorInvocationId(resolvedSelectedId);
     }
-  }, [resolvedSelectedId, summarize, summaryModelConfigCuid]);
+  }, [resolvedSelectedId, summarize]);
 
 
   const handleApply = () => {
@@ -1154,7 +1150,7 @@ const Invocations: React.FC = () => {
                           }
                           title={
                             !hasSummaryModel
-                              ? "Set an Invocation Summary Model in Settings to enable"
+                              ? "An administrator must configure an Invocation Summary Model"
                               : undefined
                           }
                           onClick={handleSummarize}>
@@ -1169,7 +1165,7 @@ const Invocations: React.FC = () => {
                         <Text fontSize="xs" color="text.subtle">
                           {hasSummaryModel
                             ? "No summary yet. Click Summarize to generate one."
-                            : "No summary model configured. Set one in Settings to enable summarization."}
+                            : "No summary model configured. Ask an administrator to configure one."}
                         </Text>
                       )}
                       {didCurrentInvocationSummaryFail && (

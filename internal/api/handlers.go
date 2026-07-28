@@ -935,6 +935,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("/api/v1/review/invocations", operator(h.reviewInvocations))
 	mux.Handle("/api/v1/review/invocations/stream", operator(h.reviewInvocationStream))
 	mux.Handle("/api/v1/review/invocations/", operator(h.reviewInvocationDetail))
+	mux.Handle("/api/v1/invocation-summary/config", operator(h.invocationSummaryConfig))
 	mux.Handle("/api/v1/servers", operator(h.operatorServers))
 	mux.Handle("/api/v1/servers/", operator(h.operatorServerDetail))
 	mux.Handle("/api/v1/rules", operator(h.operatorRules))
@@ -1040,6 +1041,8 @@ func (h *Handler) authorizeOperatorRequest(r *http.Request, principal access.Pri
 			pathAtOrBelow(path, "/api/v1/rules"),
 			pathAtOrBelow(path, "/api/v1/agents"):
 			return principal.Has(access.CapabilityReadResources)
+		case path == "/api/v1/invocation-summary/config":
+			return principal.Has(access.CapabilitySummarizeInvocations)
 		}
 	}
 	if r.Method == http.MethodPatch && path != "/api/v1/agents" && pathAtOrBelow(path, "/api/v1/agents") {
@@ -1048,6 +1051,10 @@ func (h *Handler) authorizeOperatorRequest(r *http.Request, principal access.Pri
 	if r.Method == http.MethodPost && pathAtOrBelow(path, "/api/v1/review/invocations") &&
 		(strings.HasSuffix(path, "/approve") || strings.HasSuffix(path, "/deny")) {
 		return principal.Has(access.CapabilityDecideInvocations)
+	}
+	if r.Method == http.MethodPost && pathAtOrBelow(path, "/api/v1/review/invocations") &&
+		strings.HasSuffix(path, "/summarize") {
+		return principal.Has(access.CapabilitySummarizeInvocations)
 	}
 	if r.Method == http.MethodPost && path != "/api/v1/plans" && pathAtOrBelow(path, "/api/v1/plans") &&
 		(strings.HasSuffix(path, "/approve") || strings.HasSuffix(path, "/deny") || strings.HasSuffix(path, "/revise")) {
@@ -2305,6 +2312,37 @@ type SummarizeInvocationResponse struct {
 	Summary      string `json:"summary"`
 }
 
+type InvocationSummaryConfigResponse struct {
+	Enabled bool `json:"enabled"`
+}
+
+// invocationSummaryConfig exposes only whether an administrator configured a
+// usable invocation-summary model. It intentionally does not return model
+// identifiers or any other administrative settings.
+func (h *Handler) invocationSummaryConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.agentSyncSettingsRepo == nil {
+		writeJSON(w, http.StatusOK, InvocationSummaryConfigResponse{})
+		return
+	}
+	settings, err := h.agentSyncSettingsRepo.Get(r.Context())
+	if errors.Is(err, sql.ErrNoRows) {
+		writeJSON(w, http.StatusOK, InvocationSummaryConfigResponse{})
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read summary configuration")
+		return
+	}
+	enabled := h.summarizeClient != nil &&
+		(strings.TrimSpace(settings.SummaryModelConfigCUID) != "" ||
+			(strings.TrimSpace(settings.SummaryAtryumLLMConfigID) != "" && h.localSummarizer != nil))
+	writeJSON(w, http.StatusOK, InvocationSummaryConfigResponse{Enabled: enabled})
+}
+
 // summarizeInvocation loads the invocation by id, forwards it to the VM
 // backend's /summarize-invocation endpoint, and returns the LLM-generated
 // summary.
@@ -2329,6 +2367,12 @@ func (h *Handler) summarizeInvocation(w http.ResponseWriter, r *http.Request, id
 		}
 	}
 	modelConfigCUID := strings.TrimSpace(req.ModelConfigCUID)
+	if modelConfigCUID != "" {
+		if principal, ok := access.PrincipalFromContext(r.Context()); ok && !principal.Has(access.CapabilityAdmin) {
+			writeError(w, http.StatusForbidden, "overriding the summary model requires administrative access")
+			return
+		}
+	}
 
 	inv, err := h.svc.Get(r.Context(), id)
 	if err != nil {
