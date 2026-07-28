@@ -127,7 +127,7 @@ args = [
 
 Replace `leanctx` with the Atryum MCP server name you configured in the Atryum
 server registry. When plans are enabled, `tools/list` also exposes
-`atryum.plan.submit` and `atryum.plan.get`; MCP agents can call those synthetic
+`atryum_plan_submit` and `atryum_plan_get`; MCP agents can call those synthetic
 tools to submit and poll a plan without using the raw HTTP endpoint directly.
 
 ## MCP coverage

@@ -198,7 +198,7 @@ func TestMCPPlanGetRejectsAnotherAuthenticatedAgentsPlan(t *testing.T) {
 	}}
 	h := newAuthedHandler(t, svc, rig)
 
-	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"atryum.plan.get","arguments":{"plan_id":"plan_other_agent"}}}`))
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"atryum_plan_get","arguments":{"plan_id":"plan_other_agent"}}}`))
 	req.Header.Set("Authorization", "Bearer "+rig.sign(t, defaultClaims())) // agent-007
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)

@@ -724,7 +724,7 @@ type approvedPlanMatch struct {
 // on the same agent record (agents.agent_ids). Without auth, a plan
 // submission and the invocation reporting its execution can arrive tagged
 // with different self-declared or hinted agent ids for what is really the
-// same agent (e.g. an MCP client's self-declared agent_id for atryum.plan.submit
+// same agent (e.g. an MCP client's self-declared agent_id for atryum_plan_submit
 // vs. a hook's separately-configured ATRYUM_AGENT_ID). Requiring byte-for-byte
 // equality between those two would leave every plan submitted this way
 // unmatchable; registering both ids on one agent record (or authenticating,

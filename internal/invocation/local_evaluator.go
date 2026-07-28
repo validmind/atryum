@@ -421,7 +421,7 @@ Charter:
 Verdicts:
 - "follows_plan"       — the tool call is a reasonable execution of the CANDIDATE planned action shown below and is permitted by the charter. Return this ONLY when the call executes the candidate action itself — several plan actions may share a tool, each is judged separately, and your verdict binds the call to this specific candidate.
 - "different_action"   — the tool call executes the approved plan, but a DIFFERENT action in it than the candidate shown below (that action is judged separately)
-- "status_poll"        — the tool call does nothing except read the approved plan's own status (for example an HTTP GET of its /api/v1/external/plans/{plan_id} endpoint, or an atryum.plan.get tool call carrying this plan's plan_id) and is permitted by the charter
+- "status_poll"        — the tool call does nothing except read the approved plan's own status (for example an HTTP GET of its /api/v1/external/plans/{plan_id} endpoint, or an atryum_plan_get tool call carrying this plan's plan_id) and is permitted by the charter
 - "outside_plan"       — the tool call is materially outside every action in the approved plan
 - "violates_charter"   — the tool call is prohibited by the charter, even if it follows the approved plan/action
 - "human_approval"     — the relationship is ambiguous, or the charter requires human review
