@@ -1223,6 +1223,43 @@ func TestMCPToolsList(t *testing.T) {
 	}
 }
 
+func TestMCPToolsListSyntheticToolNamesAvoidDots(t *testing.T) {
+	h := NewHandler(&stubService{tools: []mcp.Tool{{Name: "demo_tool"}}}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	var rpcResp struct {
+		Result struct {
+			Tools []struct {
+				Name string `json:"name"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &rpcResp); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{
+		atryumPlanSubmitTool: false,
+		atryumPlanGetTool:    false,
+		atryumRulesToolName:  false,
+	}
+	for _, tool := range rpcResp.Result.Tools {
+		if strings.Contains(tool.Name, ".") {
+			t.Fatalf("tools/list returned dotted tool name %q", tool.Name)
+		}
+		if _, ok := seen[tool.Name]; ok {
+			seen[tool.Name] = true
+		}
+	}
+	for name, ok := range seen {
+		if !ok {
+			t.Fatalf("expected synthetic tool %q in tools/list", name)
+		}
+	}
+}
+
 func TestMCPRulesToolSchemaIncludesRequestIDFallback(t *testing.T) {
 	h := NewHandler(&stubService{tools: []mcp.Tool{{Name: "demo_tool"}}}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
@@ -1319,6 +1356,7 @@ func TestMCPRulesToolReturnsAgentRulesWithoutInvocation(t *testing.T) {
 		t.Fatalf("expected read-auto match, got %#v", rulesResp.MatchedRuleID)
 	}
 }
+
 func TestMCPPlanSubmitToolSubmitsPlan(t *testing.T) {
 	now := time.Now().UTC()
 	svc := &stubService{plan: invocation.Plan{
@@ -1333,7 +1371,7 @@ func TestMCPPlanSubmitToolSubmitsPlan(t *testing.T) {
 		SubmittedAt: now,
 	}}
 	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
-	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"atryum.plan.submit","arguments":{"goal":"Read files before editing","actions":[{"tool":"Read"}],"ttl_seconds":600}}}`))
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"atryum_plan_submit","arguments":{"goal":"Read files before editing","actions":[{"tool":"Read"}],"ttl_seconds":600}}}`))
 	w := httptest.NewRecorder()
 
 	h.Routes().ServeHTTP(w, req)
@@ -1366,7 +1404,7 @@ func TestMCPPlanGetToolGetsPlan(t *testing.T) {
 		SubmittedAt: now,
 	}}
 	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
-	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"atryum.plan.get","arguments":{"plan_id":"plan_123"}}}`))
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"atryum_plan_get","arguments":{"plan_id":"plan_123"}}}`))
 	w := httptest.NewRecorder()
 
 	h.Routes().ServeHTTP(w, req)

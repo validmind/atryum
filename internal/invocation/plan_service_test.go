@@ -1280,7 +1280,7 @@ func TestApprovedPlanMatchesForAuthenticatedAgentWithNoRegisteredAliases(t *test
 // TestApprovedPlanMatchesRegisteredAgentAlias covers the no-auth case where a
 // plan submission and the invocation reporting its execution self-declare (or
 // get hinted) different runtime agent ids for what is really the same agent
-// — e.g. an MCP client's self-declared agent_id for atryum.plan.submit vs. a
+// — e.g. an MCP client's self-declared agent_id for atryum_plan_submit vs. a
 // separately-configured hook identity. Registering both ids on one agent
 // record (agents.agent_ids) is how an operator makes them match without
 // requiring auth; an unrelated id must still get no pass.
@@ -2412,7 +2412,7 @@ func TestStatusPollVerdictGrantsPassWithoutBindingPlanStep(t *testing.T) {
 	// action, complete the plan before its real actions run.
 	poll, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{
 		Tool: "mcp", AgentID: "agent-a",
-		Input: map[string]any{"tool": "atryum.plan.get", "args": `{"plan_id":"` + plan.PlanID + `"}`},
+		Input: map[string]any{"tool": "atryum_plan_get", "args": `{"plan_id":"` + plan.PlanID + `"}`},
 	})
 	if err != nil {
 		t.Fatal(err)

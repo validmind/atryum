@@ -669,11 +669,11 @@ const atryumInitializeInstructions = "This MCP server is gated by the Atryum har
 	"To see the static approval rules that currently apply to you, call the atryum_rules_get MCP tool or issue an HTTP GET to /api/v1/agent/rules " +
 	"(optionally with ?server={server}&tool={tool} to preview the disposition for a specific tool); " +
 	"the response is advisory only, as AI-evaluation and human-approval outcomes are decided during the actual gated call. " +
-	"When the atryum.plan.submit tool is listed and work is risky or could leave files, systems, or external state inconsistent if a later call is denied, submit a batch plan before running tools. " +
+	"When the " + atryumPlanSubmitTool + " tool is listed and work is risky or could leave files, systems, or external state inconsistent if a later call is denied, submit a batch plan before running tools. " +
 	"Plans are optional pre-approval, never a prerequisite: tool calls made without a plan are gated by the normal approval rules, so keep working without one when a plan is not warranted or after a plan completes. " +
 	"Use plans for dependent changes whose safe completion requires every step to run. " +
 	"Declare a plan's actions in the exact order they will execute: plans may skip forward but never move backwards, so once a later step has run, calls matching an earlier step are denied — submit a revised plan instead of re-running an earlier step. " +
-	"After submitting a plan, call atryum.plan.get until the plan is approved, denied, needs_revision, completed, expired, cancelled, or superseded; only proceed with planned tool calls after approval."
+	"After submitting a plan, call " + atryumPlanGetTool + " until the plan is approved, denied, needs_revision, completed, expired, cancelled, or superseded; only proceed with planned tool calls after approval."
 
 // Dotted tool names are valid MCP names, but common harnesses have rejected
 // them in practice. Keep this synthetic helper underscore-only for compatibility.
@@ -1810,8 +1810,10 @@ type atryumToolPolicy struct {
 }
 
 const (
-	atryumPlanSubmitTool = "atryum.plan.submit"
-	atryumPlanGetTool    = "atryum.plan.get"
+	// Keep synthetic MCP helper names Claude-compatible: Anthropic rejects
+	// dotted tool names even though they are otherwise valid MCP identifiers.
+	atryumPlanSubmitTool = "atryum_plan_submit"
+	atryumPlanGetTool    = "atryum_plan_get"
 )
 
 func atryumPlanSubmitMCPTool(server string) annotatedTool {
@@ -1821,7 +1823,7 @@ func atryumPlanSubmitMCPTool(server string) annotatedTool {
 	}
 	return annotatedTool{
 		Name:        atryumPlanSubmitTool,
-		Description: "Submit an Atryum plan before running a batch of tools, especially when dependent calls could leave files, systems, or external state inconsistent if a later call is denied. Plans are optional pre-approval, never a prerequisite — tool calls without a plan are gated by the normal approval rules. Arguments: goal string, rationale optional string, actions array of {tool, server?, description?, input_summary?}; an omitted action server defaults to " + submittingSource + ", which is only correct for actions that will be invoked through it — an action executed by your harness's own tools (reported via a hook) must set server to the source that harness reports, or the approved plan can never match the executing call. Declare actions in the exact order they will execute — once a later action has been approved or started, calls matching an earlier action are denied, so declare an expected re-run as its own later action. Give actions sharing a tool and server precise, distinct descriptions and input summaries. ttl_seconds optional number, thread_id optional string, chat_context optional string. After submission, call atryum.plan.get with the returned plan_id until the plan is approved, denied, or needs_revision. Approved plans can preapprove matching later tool calls until the final action succeeds or expires_at is reached.",
+		Description: "Submit an Atryum plan before running a batch of tools, especially when dependent calls could leave files, systems, or external state inconsistent if a later call is denied. Plans are optional pre-approval, never a prerequisite — tool calls without a plan are gated by the normal approval rules. Arguments: goal string, rationale optional string, actions array of {tool, server?, description?, input_summary?}; an omitted action server defaults to " + submittingSource + ", which is only correct for actions that will be invoked through it — an action executed by your harness's own tools (reported via a hook) must set server to the source that harness reports, or the approved plan can never match the executing call. Declare actions in the exact order they will execute — once a later action has been approved or started, calls matching an earlier action are denied, so declare an expected re-run as its own later action. Give actions sharing a tool and server precise, distinct descriptions and input summaries. ttl_seconds optional number, thread_id optional string, chat_context optional string. After submission, call " + atryumPlanGetTool + " with the returned plan_id until the plan is approved, denied, or needs_revision. Approved plans can preapprove matching later tool calls until the final action succeeds or expires_at is reached.",
 		InputSchema: json.RawMessage(`{"type":"object","required":["goal","actions"],"properties":{"goal":{"type":"string"},"rationale":{"type":"string"},"actions":{"type":"array","minItems":1,"items":{"type":"object","required":["tool"],"properties":{"tool":{"type":"string"},"server":{"type":"string"},"description":{"type":"string"},"input_summary":{"type":"string"}}}},"ttl_seconds":{"type":"integer","minimum":1},"thread_id":{"type":"string"},"chat_context":{"type":"string"},"revision_of":{"type":"string"}}}`),
 		Annotations: &atryumAnnotations{Atryum: atryumToolPolicy{
 			EffectiveAction: invocation.RuleActionHumanApproval,
@@ -1832,7 +1834,7 @@ func atryumPlanSubmitMCPTool(server string) annotatedTool {
 func atryumPlanGetMCPTool() annotatedTool {
 	return annotatedTool{
 		Name:        atryumPlanGetTool,
-		Description: "Get the current status of an Atryum plan by plan_id. Use this after atryum.plan.submit while waiting for approved, denied, needs_revision, completed, expired, cancelled, or superseded.",
+		Description: "Get the current status of an Atryum plan by plan_id. Use this after " + atryumPlanSubmitTool + " while waiting for approved, denied, needs_revision, completed, expired, cancelled, or superseded.",
 		InputSchema: json.RawMessage(`{"type":"object","required":["plan_id"],"properties":{"plan_id":{"type":"string"}}}`),
 		Annotations: &atryumAnnotations{Atryum: atryumToolPolicy{
 			EffectiveAction: invocation.RuleActionHumanApproval,
