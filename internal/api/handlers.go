@@ -1045,6 +1045,10 @@ func (h *Handler) authorizeOperatorRequest(r *http.Request, principal access.Pri
 	if r.Method == http.MethodPatch && path != "/api/v1/agents" && pathAtOrBelow(path, "/api/v1/agents") {
 		return principal.Has(access.CapabilityUpdateAgents)
 	}
+	if r.Method == http.MethodPost && pathAtOrBelow(path, "/api/v1/review/invocations") &&
+		(strings.HasSuffix(path, "/approve") || strings.HasSuffix(path, "/deny")) {
+		return principal.Has(access.CapabilityDecideInvocations)
+	}
 	if r.Method == http.MethodPost && path != "/api/v1/plans" && pathAtOrBelow(path, "/api/v1/plans") &&
 		(strings.HasSuffix(path, "/approve") || strings.HasSuffix(path, "/deny") || strings.HasSuffix(path, "/revise")) {
 		return principal.Has(access.CapabilityDecidePlans)
@@ -2158,6 +2162,10 @@ func (h *Handler) reviewInvocationDetail(w http.ResponseWriter, r *http.Request)
 		var req ApproveRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		if req.CreateRule != nil {
+			if principal, ok := access.PrincipalFromContext(r.Context()); ok && !principal.Has(access.CapabilityAdmin) {
+				writeError(w, http.StatusForbidden, "creating approval rules requires administrative access")
+				return
+			}
 			if err := validateRuleInput(*req.CreateRule); err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
@@ -2221,6 +2229,10 @@ func (h *Handler) reviewInvocationDetail(w http.ResponseWriter, r *http.Request)
 		var req DenyRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		if req.CreateRule != nil {
+			if principal, ok := access.PrincipalFromContext(r.Context()); ok && !principal.Has(access.CapabilityAdmin) {
+				writeError(w, http.StatusForbidden, "creating approval rules requires administrative access")
+				return
+			}
 			if err := validateRuleInput(*req.CreateRule); err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
 				return

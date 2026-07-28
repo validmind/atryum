@@ -62,6 +62,11 @@ type stubService struct {
 	planFeedback         string
 	planExpireID         string
 	planCancelID         string
+	approveID            string
+	approveActorID       string
+	denyID               string
+	denyMessage          string
+	denyActorID          string
 	listCalls            int
 	planListCalls        int
 }
@@ -88,8 +93,17 @@ func (s *stubService) ListAgentIDs(context.Context) ([]string, error) {
 func (s *stubService) Events(context.Context, string, invocation.EventListFilter) (invocation.EventListResponse, error) {
 	return invocation.EventListResponse{}, nil
 }
-func (s *stubService) Approve(context.Context, string, string) error      { return nil }
-func (s *stubService) Deny(context.Context, string, string, string) error { return nil }
+func (s *stubService) Approve(_ context.Context, id string, actorID string) error {
+	s.approveID = id
+	s.approveActorID = actorID
+	return nil
+}
+func (s *stubService) Deny(_ context.Context, id string, message string, actorID string) error {
+	s.denyID = id
+	s.denyMessage = message
+	s.denyActorID = actorID
+	return nil
+}
 func (s *stubService) Submit(ctx context.Context, req invocation.ExternalSubmitRequest) (invocation.InvocationResponse, error) {
 	s.submitReq = &req
 	s.submitCtx = ctx
@@ -250,6 +264,7 @@ func TestAuthorizeOperatorRequestRequiresRouteSegmentBoundary(t *testing.T) {
 		Capabilities: []access.Capability{
 			access.CapabilityReadResources,
 			access.CapabilityUpdateAgents,
+			access.CapabilityDecideInvocations,
 			access.CapabilityDecidePlans,
 		},
 	}
@@ -266,6 +281,10 @@ func TestAuthorizeOperatorRequestRequiresRouteSegmentBoundary(t *testing.T) {
 		{http.MethodGet, "/api/v1/review/invocations-export", false},
 		{http.MethodPatch, "/api/v1/agents/agent-1", true},
 		{http.MethodPatch, "/api/v1/agents-export/agent-1", false},
+		{http.MethodPost, "/api/v1/review/invocations/inv-1/approve", true},
+		{http.MethodPost, "/api/v1/review/invocations/inv-1/deny", true},
+		{http.MethodPost, "/api/v1/review/invocations/inv-1/summarize", false},
+		{http.MethodPost, "/api/v1/review/invocations-export/inv-1/approve", false},
 		{http.MethodPost, "/api/v1/plans/plan-1/approve", true},
 		{http.MethodPost, "/api/v1/plans-export/plan-1/approve", false},
 	}
@@ -274,6 +293,98 @@ func TestAuthorizeOperatorRequestRequiresRouteSegmentBoundary(t *testing.T) {
 			req := httptest.NewRequest(tt.method, tt.path, nil)
 			if got := h.authorizeOperatorRequest(req, principal); got != tt.want {
 				t.Fatalf("authorizeOperatorRequest() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+
+	withoutInvocationDecision := principal
+	withoutInvocationDecision.Capabilities = []access.Capability{access.CapabilityReadResources}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/review/invocations/inv-1/approve", nil)
+	if h.authorizeOperatorRequest(req, withoutInvocationDecision) {
+		t.Fatal("invocation approval allowed without decide-invocations capability")
+	}
+}
+
+func TestScopedInvocationDecisionsRequireAssignmentAndKeepRuleCreationAdminOnly(t *testing.T) {
+	agentCUID := "agent-a"
+
+	t.Run("assigned user can approve with resolver actor", func(t *testing.T) {
+		svc := &stubService{invoke: invocation.InvocationResponse{
+			InvocationID: "inv-1",
+			AgentCUID:    &agentCUID,
+		}}
+		h := NewHandler(svc, stubServerService{}, nil, &stubRulesRepo{}, nil, nil, nil, nil, nil, nil)
+		principal := access.Principal{
+			ActorID:      "authority-user-id",
+			AgentCUIDs:   []string{agentCUID},
+			Capabilities: []access.Capability{access.CapabilityDecideInvocations},
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/review/invocations/inv-1/approve", strings.NewReader(`{}`))
+		req = req.WithContext(access.WithPrincipal(req.Context(), principal))
+		w := httptest.NewRecorder()
+
+		h.reviewInvocationDetail(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", w.Code, w.Body.String())
+		}
+		if svc.approveID != "inv-1" || svc.approveActorID != "authority-user-id" {
+			t.Fatalf("approve call = id %q actor %q", svc.approveID, svc.approveActorID)
+		}
+	})
+
+	t.Run("unassigned invocation is hidden", func(t *testing.T) {
+		svc := &stubService{invoke: invocation.InvocationResponse{
+			InvocationID: "inv-1",
+			AgentCUID:    &agentCUID,
+		}}
+		h := NewHandler(svc, stubServerService{}, nil, &stubRulesRepo{}, nil, nil, nil, nil, nil, nil)
+		principal := access.Principal{
+			ActorID:      "authority-user-id",
+			AgentCUIDs:   []string{"agent-b"},
+			Capabilities: []access.Capability{access.CapabilityDecideInvocations},
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/review/invocations/inv-1/approve", strings.NewReader(`{}`))
+		req = req.WithContext(access.WithPrincipal(req.Context(), principal))
+		w := httptest.NewRecorder()
+
+		h.reviewInvocationDetail(w, req)
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404; body = %s", w.Code, w.Body.String())
+		}
+		if svc.approveID != "" {
+			t.Fatalf("unassigned invocation was approved: %q", svc.approveID)
+		}
+	})
+
+	for _, action := range []string{"approve", "deny"} {
+		t.Run(action+" with rule is admin-only", func(t *testing.T) {
+			svc := &stubService{invoke: invocation.InvocationResponse{
+				InvocationID: "inv-1",
+				AgentCUID:    &agentCUID,
+			}}
+			h := NewHandler(svc, stubServerService{}, nil, &stubRulesRepo{}, nil, nil, nil, nil, nil, nil)
+			principal := access.Principal{
+				ActorID:      "authority-user-id",
+				AgentCUIDs:   []string{agentCUID},
+				Capabilities: []access.Capability{access.CapabilityDecideInvocations},
+			}
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/api/v1/review/invocations/inv-1/"+action,
+				strings.NewReader(`{"create_rule":{}}`),
+			)
+			req = req.WithContext(access.WithPrincipal(req.Context(), principal))
+			w := httptest.NewRecorder()
+
+			h.reviewInvocationDetail(w, req)
+
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403; body = %s", w.Code, w.Body.String())
+			}
+			if svc.approveID != "" || svc.denyID != "" {
+				t.Fatalf("decision executed with rule request: approve=%q deny=%q", svc.approveID, svc.denyID)
 			}
 		})
 	}
