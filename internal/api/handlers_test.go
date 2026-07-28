@@ -473,6 +473,19 @@ func (s *stubSummarizer) SummarizeInvocation(_ context.Context, req backendclien
 	return s.resp, s.err
 }
 
+type stubLocalSummarizer struct {
+	llmConfigID    string
+	invocationData map[string]any
+	summary        string
+	err            error
+}
+
+func (s *stubLocalSummarizer) SummarizeInvocation(_ context.Context, llmConfigID string, invocationData map[string]any) (string, error) {
+	s.llmConfigID = llmConfigID
+	s.invocationData = invocationData
+	return s.summary, s.err
+}
+
 type stubManagedAgentsAdmin struct {
 	err      error
 	req      managedagents.RegisterSessionRequest
@@ -1262,6 +1275,30 @@ func TestInvocationSummaryConfigExposesOnlyAvailability(t *testing.T) {
 	}
 }
 
+func TestInvocationSummaryConfigEnabledForLocalOnlySummarizer(t *testing.T) {
+	settings := &stubAgentSyncSettingsRepo{settings: store.AgentSyncSettings{
+		SummaryAtryumLLMConfigID: " local-model ",
+	}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, settings, nil, nil, nil, nil)
+	h.summarizeClient = nil
+	h.localSummarizer = &stubLocalSummarizer{}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/invocation-summary/config", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", w.Code, w.Body.String())
+	}
+	var resp InvocationSummaryConfigResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Enabled {
+		t.Fatal("local-only summary model reported unavailable")
+	}
+}
+
 func TestScopedInvocationSummarizationRequiresAssignment(t *testing.T) {
 	agentCUID := "agent-a"
 	settings := &stubAgentSyncSettingsRepo{settings: store.AgentSyncSettings{
@@ -1385,6 +1422,44 @@ func TestSummarizeInvocationUsesSettingsModelConfigWhenRequestBodyEmpty(t *testi
 		t.Fatalf("org_cuid = %q", summarizer.req.OrgCUID)
 	}
 	if svc.setID != "inv_123" || svc.setText != "Read /tmp/a." {
+		t.Fatalf("SetSummary called with id=%q summary=%q", svc.setID, svc.setText)
+	}
+}
+
+func TestSummarizeInvocationUsesLocalSummarizerWithoutBackendClient(t *testing.T) {
+	now := time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
+	svc := &stubService{invoke: invocation.InvocationResponse{
+		InvocationID: "inv_local",
+		ServerName:   "demo",
+		ToolName:     "read_file",
+		Status:       invocation.StatusSucceeded,
+		Input:        json.RawMessage(`{"path":"/tmp/local"}`),
+		Result:       json.RawMessage(`{"content":"hello"}`),
+		SubmittedAt:  now,
+		CompletedAt:  &now,
+	}}
+	settings := &stubAgentSyncSettingsRepo{settings: store.AgentSyncSettings{
+		SummaryAtryumLLMConfigID: " local-model ",
+	}}
+	summarizer := &stubLocalSummarizer{summary: "Summarized locally."}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, settings, nil, nil, nil, nil)
+	h.summarizeClient = nil
+	h.localSummarizer = summarizer
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/review/invocations/inv_local/summarize", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if summarizer.llmConfigID != "local-model" {
+		t.Fatalf("llm config id = %q", summarizer.llmConfigID)
+	}
+	if summarizer.invocationData["invocation_id"] != "inv_local" {
+		t.Fatalf("local invocation payload = %#v", summarizer.invocationData)
+	}
+	if svc.setID != "inv_local" || svc.setText != "Summarized locally." {
 		t.Fatalf("SetSummary called with id=%q summary=%q", svc.setID, svc.setText)
 	}
 }

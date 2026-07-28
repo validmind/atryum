@@ -827,7 +827,11 @@ func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Reg
 	if f, ok := svc.(mcpEnvelopeForwarder); ok {
 		forwarder = f
 	}
-	return &Handler{svc: svc, serverSvc: serverSvc, policyRegistry: policyRegistry, rulesRepo: rules, agentsRepo: agents, agentSyncSettingsRepo: agentSyncSettings, llmConfigsRepo: llmConfigs, backendClient: bc, summarizeClient: bc, localSummarizer: localSummarizer, syncAgentsFn: syncAgents, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug, clientInfoCache: make(map[string]clientInfoSnapshot)}
+	h := &Handler{svc: svc, serverSvc: serverSvc, policyRegistry: policyRegistry, rulesRepo: rules, agentsRepo: agents, agentSyncSettingsRepo: agentSyncSettings, llmConfigsRepo: llmConfigs, backendClient: bc, localSummarizer: localSummarizer, syncAgentsFn: syncAgents, forwarder: forwarder, staticHTTP: http.FileServer(http.FS(staticSub)), debug: debug, clientInfoCache: make(map[string]clientInfoSnapshot)}
+	if bc != nil {
+		h.summarizeClient = bc
+	}
+	return h
 }
 
 // SetAuthValidator installs the inbound auth validator. When non-nil, the
@@ -2337,25 +2341,20 @@ func (h *Handler) invocationSummaryConfig(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "failed to read summary configuration")
 		return
 	}
-	enabled := h.summarizeClient != nil &&
-		(strings.TrimSpace(settings.SummaryModelConfigCUID) != "" ||
-			(strings.TrimSpace(settings.SummaryAtryumLLMConfigID) != "" && h.localSummarizer != nil))
+	backendAvailable := strings.TrimSpace(settings.SummaryModelConfigCUID) != "" && h.summarizeClient != nil
+	localAvailable := strings.TrimSpace(settings.SummaryAtryumLLMConfigID) != "" && h.localSummarizer != nil
+	enabled := backendAvailable || localAvailable
 	writeJSON(w, http.StatusOK, InvocationSummaryConfigResponse{Enabled: enabled})
 }
 
-// summarizeInvocation loads the invocation by id, forwards it to the VM
-// backend's /summarize-invocation endpoint, and returns the LLM-generated
-// summary.
+// summarizeInvocation loads the invocation by id, sends it to the configured
+// local or ValidMind summarizer, and returns the LLM-generated summary.
 func (h *Handler) summarizeInvocation(w http.ResponseWriter, r *http.Request, id string) {
 	if id == "" {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 	h.debugf("summarizing invocation %s", id)
-	if h.summarizeClient == nil {
-		writeError(w, http.StatusServiceUnavailable, "backend not configured")
-		return
-	}
 
 	// Body is optional; when present it may override the model config from
 	// settings. Empty body or empty model_config_cuid means "use settings".
