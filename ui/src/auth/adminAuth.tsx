@@ -6,6 +6,7 @@ import React, {
   useMemo,
   useState,
 } from 'react';
+import atryumLogo from '../assets/atryum-logo.svg';
 import {
   Box,
   Button,
@@ -166,7 +167,7 @@ const SignInScreen: React.FC<{
     <Box w="full" maxW="420px">
       <Stack gap={8}>
         <Stack gap={4} align="center">
-          <Image src="/ui/atryum-logo.svg" alt="Atryum" h="56px" objectFit="contain" />
+          <Image src={atryumLogo} alt="Atryum" h="56px" objectFit="contain" />
           <Heading size="md" color="text.heading">
             Atryum
           </Heading>

@@ -52,6 +52,18 @@ const AGENT_ICON_FILES: Record<AgentKind, string | null> = {
   unknown: null,
 };
 
+const agentIconModules = import.meta.glob<string>(
+  '../assets/atryum-agent-icons/*',
+  { eager: true, import: 'default', query: '?url' },
+);
+
+const AGENT_ICON_URLS = Object.fromEntries(
+  Object.entries(agentIconModules).map(([assetPath, url]) => [
+    assetPath.split('/').pop()!,
+    url,
+  ]),
+);
+
 export function detectAgentKind(name: string | null | undefined): AgentKind {
   if (!name) return 'unknown';
   const n = name.toLowerCase().trim();
@@ -93,7 +105,8 @@ const AgentIcon: React.FC<AgentIconProps> = ({ name, kind, size = 18 }) => {
   const iconFile = AGENT_ICON_FILES[resolved];
   const [imgFailed, setImgFailed] = useState(false);
   const handleImgError = useCallback(() => setImgFailed(true), []);
-  const showImage = iconFile !== null && !imgFailed;
+  const iconURL = iconFile === null ? undefined : AGENT_ICON_URLS[iconFile];
+  const showImage = iconURL !== undefined && !imgFailed;
 
   return (
     <Box
@@ -110,7 +123,7 @@ const AgentIcon: React.FC<AgentIconProps> = ({ name, kind, size = 18 }) => {
     >
       {showImage ? (
         <Image
-          src={`/ui/atryum-agent-icons/${iconFile}`}
+          src={iconURL}
           alt={label}
           boxSize={`${size}px`}
           objectFit="contain"

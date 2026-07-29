@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import type { Invocation, Plan } from '../api/AtryumAPI';
 import { getAdminAccessToken, refreshAdminAccessToken } from '../auth/adminAuth';
+import notificationIcon from '../assets/atryum-notification-icon.svg';
 
 interface InvocationStreamPayload {
   items?: Invocation[];
@@ -11,7 +12,7 @@ interface PlansPayload {
 }
 
 const NOTIFICATION_TITLE = 'Atryum approval needed';
-const NOTIFICATION_ICON = '/ui/atryum-notification-icon.svg';
+const NOTIFICATION_ICON = notificationIcon;
 const PENDING_PLANS_STREAM_URL =
   '/api/v1/plans/stream?status=pending_approval&limit=50';
 

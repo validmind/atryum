@@ -26,6 +26,7 @@ import {
 } from "@heroicons/react/24/outline";
 
 import { useAdminAuth } from "../auth/adminAuth";
+import atryumLogo from "../assets/atryum-logo.svg";
 
 type NavItem = {
   label: string;
@@ -118,7 +119,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
               to="/invocations"
               _hover={{ textDecoration: "none" }}>
               <Image
-                src="/ui/atryum-logo.svg"
+                src={atryumLogo}
                 alt="Atryum"
                 objectFit="contain"
                 h="45px"
