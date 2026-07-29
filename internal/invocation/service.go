@@ -1728,8 +1728,8 @@ func (s *Service) summarizePendingApproval(invocationID string) {
 // pending_approval, or after a human denied it.
 var ErrInvalidTransition = errors.New("invalid execution status transition")
 
-// ErrNotOwner is returned by RecordExecution when the verified agent identity
-// on the request does not match the agent the invocation belongs to.
+// ErrNotOwner is returned by Get and RecordExecution when the verified agent
+// identity on the request does not match the agent the invocation belongs to.
 var ErrNotOwner = errors.New("invocation belongs to a different agent")
 
 // requireStatus rejects an execution-status transition unless the invocation
@@ -1741,6 +1741,31 @@ func requireStatus(inv Invocation, target string, allowed ...Status) error {
 		}
 	}
 	return fmt.Errorf("invocation %s cannot move to %s from %s: %w", inv.InvocationID, target, inv.Status, ErrInvalidTransition)
+}
+
+// checkOwnership rejects access to inv when the request carries an
+// authenticated agent identity that does not match the invocation's owner.
+// Both the read (Get) and write (RecordExecution) paths on
+// /api/v1/external/invocations/{id} run under the agent-runtime OAuth
+// middleware, so in auth mode ctx carries the authenticated caller
+// (inv.AgentID is set from that same identity at Submit time, so a match
+// proves ownership). Invocations submitted anonymously (no agent_id) skip
+// the check, as does any caller with no identity in context — no-auth mode,
+// or the in-process managed-agents watcher and operator/review routes, which
+// authenticate by a different path and never carry an agent identity.
+func checkOwnership(ctx context.Context, inv Invocation) error {
+	callerID := strings.TrimSpace(auth.AgentIDFromContext(ctx))
+	if callerID == "" {
+		return nil
+	}
+	owner := ""
+	if inv.AgentID != nil {
+		owner = strings.TrimSpace(*inv.AgentID)
+	}
+	if owner != "" && owner != callerID {
+		return fmt.Errorf("invocation %s: %w", inv.InvocationID, ErrNotOwner)
+	}
+	return nil
 }
 
 // RecordExecution updates an externally-executed invocation with the outcome
@@ -1758,26 +1783,12 @@ func (s *Service) RecordExecution(ctx context.Context, invocationID string, upda
 	if err != nil {
 		return InvocationResponse{}, err
 	}
-	// Ownership: update.Result/Error are surfaced to the judge as trusted
-	// evidence, so a caller who knows another agent's invocation_id could
-	// poison that agent's session context. The PATCH
-	// /api/v1/external/invocations/{id} route runs under the agent-runtime
-	// OAuth middleware, so in auth mode ctx carries the authenticated caller.
-	// When an identity is present, reject any attempt to write an invocation
-	// this agent does not own (inv.AgentID is set from the authenticated
-	// identity at Submit time, so a match proves ownership). Invocations
-	// submitted anonymously (no agent_id) skip the ownership check. In no-auth
-	// mode there is no identity to check against — behavior is unchanged, and
-	// the in-process managed-agents watcher (which calls RecordExecution
-	// directly with no auth identity) is likewise unaffected.
-	if callerID := strings.TrimSpace(auth.AgentIDFromContext(ctx)); callerID != "" {
-		owner := ""
-		if inv.AgentID != nil {
-			owner = strings.TrimSpace(*inv.AgentID)
-		}
-		if owner != "" && owner != callerID {
-			return InvocationResponse{}, fmt.Errorf("invocation %s: %w", invocationID, ErrNotOwner)
-		}
+	// update.Result/Error are surfaced to the judge as trusted evidence, so a
+	// caller who knows another agent's invocation_id could poison that
+	// agent's session context — reject writes to invocations this caller
+	// doesn't own.
+	if err := checkOwnership(ctx, inv); err != nil {
+		return InvocationResponse{}, err
 	}
 	now := time.Now().UTC()
 	switch update.ExecutionStatus {
@@ -1884,6 +1895,12 @@ func (s *Service) ListTools(ctx context.Context, server string) ([]mcp.Tool, err
 func (s *Service) Get(ctx context.Context, id string) (InvocationResponse, error) {
 	inv, err := s.invocations.Get(ctx, id)
 	if err != nil {
+		return InvocationResponse{}, err
+	}
+	// A caller who knows another agent's invocation_id could otherwise read
+	// that agent's tool input/output/error — reject reads of invocations
+	// this caller doesn't own.
+	if err := checkOwnership(ctx, inv); err != nil {
 		return InvocationResponse{}, err
 	}
 	resp := s.toResponse(inv)

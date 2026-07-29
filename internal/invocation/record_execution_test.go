@@ -324,3 +324,57 @@ func TestRecordExecutionEnforcesAgentOwnership(t *testing.T) {
 		}
 	})
 }
+
+// TestGetEnforcesAgentOwnership guards against a caller who knows another
+// agent's invocation_id reading that agent's tool input/output/error via
+// GET /api/v1/external/invocations/{id} — the same ownership boundary
+// RecordExecution enforces on the write path (TestRecordExecutionEnforcesAgentOwnership).
+func TestGetEnforcesAgentOwnership(t *testing.T) {
+	t.Run("different agent is rejected", func(t *testing.T) {
+		svc := newRecordExecutionService(t)
+		id := submitExternal(t, svc, "agent-a")
+		ctx := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "agent-b"})
+		_, err := svc.Get(ctx, id)
+		if !errors.Is(err, invocation.ErrNotOwner) {
+			t.Fatalf("err = %v, want ErrNotOwner", err)
+		}
+	})
+
+	t.Run("owning agent is allowed", func(t *testing.T) {
+		svc := newRecordExecutionService(t)
+		id := submitExternal(t, svc, "agent-a")
+		ctx := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "agent-a"})
+		resp, err := svc.Get(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.InvocationID != id {
+			t.Fatalf("invocation_id = %q, want %q", resp.InvocationID, id)
+		}
+	})
+
+	t.Run("caller without identity is exempt", func(t *testing.T) {
+		svc := newRecordExecutionService(t)
+		id := submitExternal(t, svc, "agent-a")
+		resp, err := svc.Get(context.Background(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.InvocationID != id {
+			t.Fatalf("invocation_id = %q, want %q", resp.InvocationID, id)
+		}
+	})
+
+	t.Run("anonymous invocation accepts any identity", func(t *testing.T) {
+		svc := newRecordExecutionService(t)
+		id := submitExternal(t, svc, "")
+		ctx := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "agent-b"})
+		resp, err := svc.Get(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.InvocationID != id {
+			t.Fatalf("invocation_id = %q, want %q", resp.InvocationID, id)
+		}
+	})
+}
