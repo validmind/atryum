@@ -18,6 +18,7 @@ import {
   Icon,
   IconButton,
   Input,
+  Link,
   Menu,
   MenuButton,
   MenuItem,
@@ -42,6 +43,7 @@ import {
   useToast,
 } from "@chakra-ui/react";
 import { Select } from "chakra-react-select";
+import { Link as RouterLink } from "react-router-dom";
 import {
   QueueListIcon,
   ChevronDownIcon,
@@ -163,7 +165,14 @@ const AuditEntryRow: React.FC<{ entry: AuditEntry }> = ({ entry }) => {
             color="text.subtle"
             flexShrink={0}
           />
-          <Text fontSize="sm" fontWeight="medium" noOfLines={1}>
+          {/* The name can be a label derived from the rule's action and
+              patterns when the rule has no description, so expose the id on
+              hover — that is what pins down which rule this actually was. */}
+          <Text
+            fontSize="sm"
+            fontWeight="medium"
+            noOfLines={1}
+            title={entry.ruleId ?? undefined}>
             {entry.ruleName ?? "*No rule matched*"}
           </Text>
           {badge}
@@ -1026,6 +1035,17 @@ const Invocations: React.FC = () => {
                           <Text fontSize="xs" color="text.subtle">
                             Matched rule:{" "}
                             <Code fontSize="xs">{detail.matched_rule_id}</Code>
+                          </Text>
+                        )}
+                        {detail.plan_id && (
+                          <Text fontSize="xs" color="text.subtle">
+                            Approved plan:{" "}
+                            <Link
+                              as={RouterLink}
+                              to={`/plans?focus=${encodeURIComponent(detail.plan_id)}`}
+                              color="blue.500">
+                              <Code fontSize="xs">{detail.plan_id}</Code>
+                            </Link>
                           </Text>
                         )}
 

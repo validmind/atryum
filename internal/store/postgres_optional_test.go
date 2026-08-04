@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/invocation"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )

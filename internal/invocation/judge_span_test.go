@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/invocation"
 
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -61,6 +61,10 @@ func spanAttrs(span sdktrace.ReadOnlySpan) (map[string]string, map[string]int64)
 type stubLLMStore struct{ cfg invocation.LocalLLMConfig }
 
 func (s stubLLMStore) GetLLMConfig(context.Context, string) (invocation.LocalLLMConfig, error) {
+	return s.cfg, nil
+}
+
+func (s stubLLMStore) DefaultLLMConfig(context.Context) (invocation.LocalLLMConfig, error) {
 	return s.cfg, nil
 }
 

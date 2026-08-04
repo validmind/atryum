@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Atryum command hook for agents that expose PreToolUse/PostToolUse style hooks.
+// Atryum command hook for agents that expose SessionStart and
+// PreToolUse/PostToolUse style hooks.
 //
 // Supported host modes:
 //   ATRYUM_HOOK_HOST=claude  Claude Code settings hooks
@@ -63,6 +64,8 @@ const SOURCE =
         : process.env.ATRYUM_SOURCE || process.env.ATRYUM_HOOK_HOST || "agent";
 const CLIENT_NAME = process.env.ATRYUM_CLIENT_NAME || SOURCE;
 const CLIENT_VERSION = process.env.ATRYUM_CLIENT_VERSION || "";
+// Per-message cap when trimming chat transcript entries.
+const MAX_MESSAGE_CHARS = 2000;
 const STATE_DIR =
   process.env.ATRYUM_STATE_DIR ||
   path.join(os.homedir(), ".atryum", "agent-hook-state");
@@ -81,7 +84,11 @@ const envMs = (name, fallback) => {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 };
 const TOKEN_REFRESH_SKEW_MS = envMs("ATRYUM_TOKEN_REFRESH_SKEW_MS", 60000);
-const TOKEN_COMMAND_TIMEOUT_MS = envMs("ATRYUM_TOKEN_COMMAND_TIMEOUT_MS", 10000);
+const TOKEN_COMMAND_TIMEOUT_MS = envMs(
+  "ATRYUM_TOKEN_COMMAND_TIMEOUT_MS",
+  10000,
+);
+const PLAN_SUPPORT_CACHE_TTL_MS = 30000;
 const TOKEN_CACHE_FILE = TOKEN_COMMAND
   ? path.join(STATE_DIR, "token-cache.json")
   : "";
@@ -97,6 +104,7 @@ const TOKEN_CACHE_KEY = TOKEN_COMMAND
 let cachedToken = TOKEN_COMMAND ? "" : ACCESS_TOKEN;
 let cachedTokenExpiresAt =
   ACCESS_TOKEN && !TOKEN_COMMAND ? Number.POSITIVE_INFINITY : 0;
+const planSupportCache = new Map();
 
 function parseTokenResponse(raw) {
   const text = String(raw || "").trim();
@@ -288,6 +296,10 @@ function isPostToolUse(event) {
   return /posttooluse/i.test(eventName(event));
 }
 
+function isSessionStart(event) {
+  return /sessionstart/i.test(eventName(event));
+}
+
 function describe(input) {
   const parts = Object.entries(input || {})
     .filter(([, value]) => typeof value === "string")
@@ -306,6 +318,235 @@ function rulesEndpointHint(tool) {
   url.searchParams.set("tool", tool);
   if (AGENT_ID && !ACCESS_TOKEN) url.searchParams.set("agent_id", AGENT_ID);
   return `atryum: to see the approval rules that apply to this call, GET ${url.toString()} (advisory only; Atryum re-checks policy during the actual gated call).`;
+}
+
+function agentRulesURL(tool) {
+  const url = new URL("/api/v1/agent/rules", API);
+  url.searchParams.set("source", SOURCE);
+  if (tool) url.searchParams.set("tool", tool);
+  if (AGENT_ID) url.searchParams.set("agent_id", AGENT_ID);
+  return url.toString();
+}
+
+async function loadAgentRules(tool) {
+  const res = await fetch(agentRulesURL(tool), {
+    headers: await atryumHeaders(),
+  });
+  if (!res.ok) return undefined;
+  return res.json();
+}
+
+function cachedAgentRules(tool) {
+  const key = tool || "";
+  const cached = planSupportCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.promise;
+
+  let entry;
+  const promise = loadAgentRules(tool).then(
+    (rules) => {
+      if (planSupportCache.get(key) === entry) {
+        if (rules) entry.expiresAt = Date.now() + PLAN_SUPPORT_CACHE_TTL_MS;
+        else planSupportCache.delete(key);
+      }
+      return rules;
+    },
+    () => {
+      if (planSupportCache.get(key) === entry) planSupportCache.delete(key);
+      return undefined;
+    },
+  );
+  entry = { promise, expiresAt: Number.POSITIVE_INFINITY };
+  planSupportCache.set(key, entry);
+  return promise;
+}
+
+async function planHint(tool) {
+  const rules = await cachedAgentRules(tool);
+  if (!rules?.plan_submission?.enabled) return "";
+  // The server-authored message is the single source of truth for the plan
+  // workflow (including the source-scoped submission endpoint), so guidance
+  // stays current when plan semantics change server-side.
+  const message = (rules.plan_submission.message || "").trim();
+  return message ? ` ${message}` : "";
+}
+
+function normalizeRole(value) {
+  const role = String(value || "").toLowerCase();
+  if (role === "human") return "user";
+  if (role === "ai") return "assistant";
+  if (role === "user" || role === "assistant" || role === "system") return role;
+  return "";
+}
+
+function trimMessage(text) {
+  const compact = String(text || "")
+    .replace(/\s+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (compact.length <= MAX_MESSAGE_CHARS) return compact;
+  return `${compact.slice(0, MAX_MESSAGE_CHARS)}...`;
+}
+
+function extractText(value) {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return "";
+
+  if (Array.isArray(value)) {
+    return value.map(extractText).filter(Boolean).join("\n");
+  }
+
+  const record = value;
+  if (typeof record.text === "string") return record.text;
+
+  const type = typeof record.type === "string" ? record.type : "";
+  if (type === "tool_use" || type === "tool-call") {
+    const name = typeof record.name === "string" ? record.name : "tool";
+    return `[tool call: ${name}]`;
+  }
+  if (type === "tool_result" || type === "tool-result") {
+    const status =
+      typeof record.status === "string" ? record.status : "completed";
+    return `[tool result: ${status}]`;
+  }
+  if (record.content !== undefined) return extractText(record.content);
+  if (record.message !== undefined) return extractText(record.message);
+  return "";
+}
+
+function messageFromRecord(record) {
+  if (!record || typeof record !== "object") return undefined;
+
+  const codex = messageFromCodexRecord(record);
+  if (codex) return codex;
+
+  const nested =
+    record.message && typeof record.message === "object"
+      ? record.message
+      : undefined;
+  const role = normalizeRole(
+    nested?.role ||
+      record.role ||
+      record.type ||
+      record.sender ||
+      record.author,
+  );
+  if (!role) return undefined;
+
+  const text = trimMessage(
+    extractText(nested?.content ?? record.content ?? nested ?? record),
+  );
+  if (!text) return undefined;
+  return { role, text };
+}
+
+function messageFromCodexRecord(record) {
+  if (record.type === "response_item" && record.payload?.type === "message") {
+    const role = normalizeRole(record.payload.role);
+    const text = trimMessage(extractText(record.payload.content));
+    return role && text ? { role, text } : undefined;
+  }
+
+  if (record.type === "event_msg" && record.payload?.type === "user_message") {
+    const text = trimMessage(record.payload.message);
+    return text ? { role: "user", text } : undefined;
+  }
+
+  if (record.type === "event_msg" && record.payload?.type === "agent_message") {
+    const text = trimMessage(record.payload.message);
+    return text ? { role: "assistant", text } : undefined;
+  }
+
+  if (record.type === "event_msg" && record.payload?.type === "task_complete") {
+    const text = trimMessage(record.payload.last_agent_message);
+    return text ? { role: "assistant", text } : undefined;
+  }
+
+  return undefined;
+}
+
+function parseChatMessages(raw) {
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+
+  if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      const source = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed.messages)
+          ? parsed.messages
+          : Array.isArray(parsed.entries)
+            ? parsed.entries
+            : [];
+      if (source.length > 0) {
+        return source.map(messageFromRecord).filter(Boolean);
+      }
+      const message = messageFromRecord(parsed);
+      return message ? [message] : [];
+    } catch {
+      // Fall through to JSONL parsing below.
+    }
+  }
+
+  const messages = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmedLine = line.trim();
+    if (!trimmedLine) continue;
+    try {
+      const message = messageFromRecord(JSON.parse(trimmedLine));
+      if (message) messages.push(message);
+    } catch {
+      // Ignore malformed or non-message transcript lines.
+    }
+  }
+  return messages;
+}
+
+function chatMessagesFromValue(value) {
+  if (typeof value === "string") return parseChatMessages(value);
+  if (!value || typeof value !== "object") return [];
+  if (Array.isArray(value)) return value.map(messageFromRecord).filter(Boolean);
+
+  const source = Array.isArray(value.messages)
+    ? value.messages
+    : Array.isArray(value.entries)
+      ? value.entries
+      : [];
+  if (source.length > 0) return source.map(messageFromRecord).filter(Boolean);
+
+  const message = messageFromRecord(value);
+  return message ? [message] : [];
+}
+
+function chatMessagesFromEvent(event) {
+  for (const value of [
+    event.chat_messages,
+    event.chatMessages,
+    event.messages,
+    event.conversation,
+    event.transcript,
+    event.chat_history,
+    event.chatHistory,
+    event.history,
+  ]) {
+    const messages = chatMessagesFromValue(value);
+    if (messages.length > 0) return messages;
+  }
+  return [];
+}
+
+function chatHistoryPath(event) {
+  return (
+    process.env.ATRYUM_CHAT_HISTORY_PATH ||
+    process.env.ATRYUM_CLAUDE_TRANSCRIPT_PATH ||
+    process.env.ATRYUM_CURSOR_TRANSCRIPT_PATH ||
+    process.env.ATRYUM_CODEX_TRANSCRIPT_PATH ||
+    event.transcript_path ||
+    event.transcriptPath ||
+    event.conversation_path ||
+    event.conversationPath ||
+    ""
+  );
 }
 
 // A host-native subagent instance id (e.g. Claude Code's Task-tool workers),
@@ -369,15 +610,15 @@ async function submit(event) {
   const res = await atryumFetch(`${API}/api/v1/external/invocations`, {
     method: "POST",
     contentType: true,
-    body: JSON.stringify({
-      source: SOURCE,
-      tool: name,
-      description: describe(input),
-      input,
-      request_id: id,
-      thread_id: clientSessionID,
-      client_session_id: clientSessionID,
-      client_name: clientName,
+      body: JSON.stringify({
+        source: SOURCE,
+        tool: name,
+        description: describe(input),
+        input,
+        request_id: id,
+        thread_id: clientSessionID,
+        client_session_id: clientSessionID,
+        client_name: clientName,
       client_version: CLIENT_VERSION || undefined,
       agent_id: AGENT_ID || undefined,
     }),
@@ -459,6 +700,16 @@ function allowOutput() {
   };
 }
 
+function sessionStartOutput(guidance) {
+  if (HOST === "cursor") return { additional_context: guidance };
+  return {
+    hookSpecificOutput: {
+      hookEventName: "SessionStart",
+      additionalContext: guidance,
+    },
+  };
+}
+
 function denyOutput(reason) {
   if (HOST === "cursor") {
     return { permission: "deny", message: reason };
@@ -511,9 +762,14 @@ async function handlePreToolUse(event) {
   await deleteInvocation(id);
   jsonOut(
     denyOutput(
-      `atryum: tool call '${toolName(event)}' was ${decided.status} by reviewer. ${rulesEndpointHint(toolName(event))}`,
+      `atryum: tool call '${toolName(event)}' was ${decided.status} by reviewer. ${rulesEndpointHint(toolName(event))}${await planHint(toolName(event))}`,
     ),
   );
+}
+
+async function handleSessionStart() {
+  const guidance = (await planHint()).trim();
+  jsonOut(guidance ? sessionStartOutput(guidance) : {});
 }
 
 async function handlePostToolUse(event) {
@@ -544,7 +800,9 @@ async function main() {
   const raw = await readStdin();
   const event = raw.trim() ? JSON.parse(raw) : {};
 
-  if (isPreToolUse(event)) {
+  if (isSessionStart(event)) {
+    await handleSessionStart();
+  } else if (isPreToolUse(event)) {
     await handlePreToolUse(event);
   } else if (isPostToolUse(event)) {
     await handlePostToolUse(event);

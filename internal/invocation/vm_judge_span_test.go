@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/invocation"
 )
 
 // TestVMJudgeGenerationSpan verifies the VM path synthesizes a gen_ai

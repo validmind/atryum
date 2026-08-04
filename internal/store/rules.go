@@ -9,7 +9,7 @@ import (
 
 	sq "github.com/Masterminds/squirrel"
 
-	"atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/invocation"
 )
 
 // Rule is the store-level representation of an approval rule.

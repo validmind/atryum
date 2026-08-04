@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"atryum/internal/config"
+	"github.com/validmind/atryum/internal/config"
 )
 
 type fakeServerStore struct {

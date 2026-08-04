@@ -16,7 +16,10 @@ import {
   FormLabel,
   HStack,
   Icon,
+  IconButton,
   Input,
+  InputGroup,
+  InputRightElement,
   NumberDecrementStepper,
   NumberIncrementStepper,
   NumberInput,
@@ -32,10 +35,16 @@ import {
   Textarea,
   Th,
   Thead,
+  Tooltip,
   Tr,
+  useClipboard,
   VStack,
 } from '@chakra-ui/react';
-import { CircleStackIcon } from '@heroicons/react/24/outline';
+import {
+  CheckIcon,
+  CircleStackIcon,
+  ClipboardDocumentIcon,
+} from '@heroicons/react/24/outline';
 
 import { ContentPageTitle } from '../components/Layout';
 import {
@@ -299,6 +308,9 @@ const Servers: React.FC = () => {
     testServer.isLoading;
 
   const currentServer = servers.find((s) => s.name === selectedName);
+  const { hasCopied, onCopy } = useClipboard(
+    currentServer ? endpointLabel(currentServer) : '',
+  );
 
   return (
     <Box h="full" display="flex" flexDirection="column">
@@ -474,12 +486,34 @@ const Servers: React.FC = () => {
                   {currentServer && endpointLabel(currentServer) && (
                     <FormControl>
                       <FormLabel fontSize="sm">MCP Endpoint</FormLabel>
-                      <Input
-                        size="sm"
-                        fontFamily="mono"
-                        value={endpointLabel(currentServer)}
-                        isReadOnly
-                      />
+                      <InputGroup size="sm">
+                        <Input
+                          fontFamily="mono"
+                          value={endpointLabel(currentServer)}
+                          isReadOnly
+                          pr="2rem"
+                        />
+                        <InputRightElement>
+                          <Tooltip
+                            label={hasCopied ? 'Copied!' : 'Copy'}
+                            closeOnClick={false}
+                          >
+                            <IconButton
+                              aria-label={hasCopied ? 'Copied' : 'Copy MCP endpoint'}
+                              icon={
+                                <Icon
+                                  as={hasCopied ? CheckIcon : ClipboardDocumentIcon}
+                                  boxSize={4}
+                                />
+                              }
+                              variant="ghost"
+                              size="sm"
+                              colorScheme={hasCopied ? 'green' : undefined}
+                              onClick={onCopy}
+                            />
+                          </Tooltip>
+                        </InputRightElement>
+                      </InputGroup>
                     </FormControl>
                   )}
 

@@ -21,8 +21,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"atryum/internal/config"
-	"atryum/internal/version"
+	"github.com/validmind/atryum/internal/config"
+	"github.com/validmind/atryum/internal/version"
 )
 
 type UpstreamMode string

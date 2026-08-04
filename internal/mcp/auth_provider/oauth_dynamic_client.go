@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"atryum/internal/mcp"
+	"github.com/validmind/atryum/internal/mcp"
 )
 
 // OAuthDynamicClientProvider implements RFC 7591 Dynamic Client Registration.

@@ -5,7 +5,7 @@ import (
 	"encoding/base64"
 	"testing"
 
-	"atryum/internal/config"
+	"github.com/validmind/atryum/internal/config"
 )
 
 func TestExporterHeadersBuildsBasicAuthFromKeyPair(t *testing.T) {

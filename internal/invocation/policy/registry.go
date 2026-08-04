@@ -9,7 +9,7 @@ import (
 // Registry holds the available policy providers and tracks which one is active.
 // It implements Provider itself, delegating Evaluate to the active provider, so
 // the Service can hold a single Provider interface value that always reflects
-// runtime provider switches made through the admin API.
+// runtime provider switches made through the operator API.
 // Safe for concurrent use.
 type Registry struct {
 	mu        sync.RWMutex

@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/invocation"
 )
 
 // InvocationGateway is the slice of invocation.Service the bridge reuses to run
@@ -228,20 +228,20 @@ func (s *Service) ClearSessions(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	cleared := 0
 	for _, session := range sessions {
 		if err := s.sessions.Delete(ctx, session.SessionID); err != nil {
-			return 0, err
+			return cleared, err
 		}
-	}
-	s.mu.Lock()
-	for _, session := range sessions {
+		s.mu.Lock()
 		if cancel, ok := s.watchers[session.SessionID]; ok {
 			cancel()
 			delete(s.watchers, session.SessionID)
 		}
+		s.mu.Unlock()
+		cleared++
 	}
-	s.mu.Unlock()
-	return len(sessions), nil
+	return cleared, nil
 }
 
 func (s *Service) startDiscovery() {

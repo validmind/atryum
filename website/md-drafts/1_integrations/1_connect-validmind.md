@@ -38,8 +38,8 @@ Before connecting Atryum to ValidMind:
 
 4. Restart Atryum so it loads the updated ValidMind credentials:
 
-    a. In the terminal where Atryum is running, press `Ctrl+C` to stop it.
-    b. Start Atryum again:
+    1. In the terminal where Atryum is running, press `Ctrl+C` to stop it.
+    2. Start Atryum again:
 
         ```bash
         ./atryum run --init-servers

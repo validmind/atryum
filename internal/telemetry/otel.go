@@ -18,7 +18,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
-	"atryum/internal/config"
+	"github.com/validmind/atryum/internal/config"
 )
 
 func noopShutdown(context.Context) error { return nil }

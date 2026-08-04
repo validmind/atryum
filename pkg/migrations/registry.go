@@ -1,3 +1,8 @@
+// Package migrations defines atryum's schema migrations and the Definition
+// and Step building blocks they are written with. It is public so embedding
+// programs (see pkg/atryum) can express their own migrations with the same
+// vocabulary and pass them to WithMigrations; extension migrations are
+// versioned per namespace, separately from the built-in sequence in All.
 package migrations
 
 import (
@@ -166,5 +171,8 @@ func All() []Definition {
 		migration024(),
 		migration025(),
 		migration026(),
+		migration027(),
+		migration028(),
+		migration029(),
 	}
 }

@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/invocation"
 )
 
 // pendingCall links an Anthropic tool-use event to the Atryum invocation it

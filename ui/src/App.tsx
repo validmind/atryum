@@ -3,6 +3,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 
 import Layout from './components/Layout';
 import Invocations from './pages/Invocations';
+import Plans from './pages/Plans';
 import Agents from './pages/Agents';
 import Servers from './pages/Servers';
 import Rules from './pages/Rules';
@@ -17,6 +18,7 @@ const App: React.FC = () => {
       <Routes>
         <Route index element={<Navigate to="/invocations" replace />} />
         <Route path="/invocations" element={<Invocations />} />
+        <Route path="/plans" element={<Plans />} />
         <Route path="/agents" element={<Agents />} />
         <Route path="/servers" element={<Servers />} />
         <Route path="/rules" element={<Rules />} />

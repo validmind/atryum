@@ -18,9 +18,9 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
-	"atryum/internal/auth"
-	"atryum/internal/invocation/policy"
-	"atryum/internal/mcp"
+	"github.com/validmind/atryum/internal/auth"
+	"github.com/validmind/atryum/internal/invocation/policy"
+	"github.com/validmind/atryum/internal/mcp"
 )
 
 // tracer is a no-op until telemetry.Setup installs a real provider, so the
@@ -100,10 +100,18 @@ type AgentLookup interface {
 // AgentRecord is a lightweight copy of store.AgentRecord used within the
 // invocation package to avoid a circular import.
 type AgentRecord struct {
-	ID                 string // local Atryum agent UUID (used for rule matching)
-	VMCUID             string // VM inventory model CUID (used for charter lookup)
-	VMOrganizationCUID string // VM organization CUID (used for cross-tenant validation)
-	Charter            string // governing text for local LLM-as-judge evaluation
+	ID                 string   // local Atryum agent UUID (used for rule matching)
+	VMCUID             string   // VM inventory model CUID (used for charter lookup)
+	VMOrganizationCUID string   // VM organization CUID (used for cross-tenant validation)
+	Charter            string   // governing text for local LLM-as-judge evaluation
+	Tags               []string // Atryum-native tags, forwarded to the evaluate payload
+	// AgentIDs lists every runtime identity string registered to this same
+	// agent record (agents.agent_ids). Different channels reporting the same
+	// logical agent under no-auth (e.g. an MCP client's self-declared
+	// agent_id vs. a hook's ATRYUM_AGENT_ID) end up with different runtime
+	// ids; grouping them under one record lets plan matching treat them as
+	// the same agent instead of requiring the exact same string everywhere.
+	AgentIDs []string
 }
 
 // EvaluatorClient is the minimal interface required by the invocation service
@@ -131,10 +139,11 @@ type SyncSettingsProvider interface {
 // EvaluateRequest mirrors backend.EvaluateRequest so the service package does
 // not import the backend package directly.
 type EvaluateRequest struct {
-	ModelConfigCUID string `json:"model_config_cuid"`
-	OrgCUID         string `json:"org_cuid,omitempty"`
-	AgentVMCUID     string `json:"agent_vm_cuid,omitempty"`
-	CharterFieldKey string `json:"charter_field_key,omitempty"`
+	ModelConfigCUID string   `json:"model_config_cuid"`
+	OrgCUID         string   `json:"org_cuid,omitempty"`
+	AgentVMCUID     string   `json:"agent_vm_cuid,omitempty"`
+	AgentTags       []string `json:"agent_tags"`
+	CharterFieldKey string   `json:"charter_field_key,omitempty"`
 	// AtryumLLMConfigID references a local LLM config for native evaluation.
 	// When set, the local evaluator is used instead of the VM backend.
 	AtryumLLMConfigID string `json:"atryum_llm_config_id,omitempty"`
@@ -240,6 +249,12 @@ type Service struct {
 	summarizer       SummaryClient
 	syncSettings     SyncSettingsProvider // nil = no charter lookup
 	sessions         sessionStore         // nil = SessionID feature disabled
+	plans            planRepo             // nil = plan submission disabled
+	planEvents       planEventRepo
+	planJudge        PlanEvaluator
+	planPollOrigins  planOriginSet // hosts trusted by the plan-status fast pass
+	planDefaultTTL   int           // seconds; 0 = built-in default
+	planMaxTTL       int           // seconds; 0 = built-in ceiling
 	defaultTimeout   time.Duration
 	mu               sync.Mutex
 	pendingApprovals map[string]chan approvalDecision
@@ -402,6 +417,89 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		span.SetAttributes(attribute.String("atryum.agent.id", agentID))
 	}
 
+	// An approved plan grants a scoped pass. On this MCP proxy path the
+	// tools/call arguments leave no channel for an explicit plan_id, so the
+	// association is implicit: an action on this server in the agent's newest
+	// approved plan. A scoped call is gated exclusively by the plan flow —
+	// a status poll auto-approves, the adherence judge confirms or denies
+	// everything else, and an unverifiable call goes straight to a human,
+	// bypassing rules/policy. Unmatched calls get normal gating.
+	if planMatch, ok, ambiguous := s.matchApprovedPlan(ctx, agentID, upstream.Name, req.Tool); ok || ambiguous {
+		planID := planMatch.Plan.PlanID
+		inv.PlanID = &planID
+		var reason string
+		var confidence *float64
+		var outcome planGateOutcome
+		if ambiguous {
+			planMatch, reason, confidence, outcome = s.ambiguousApprovedPlanPass(ctx, planMatch.Plan, agentRec, upstream.Name, req.Tool, req.Input, "")
+		} else {
+			reason, confidence, outcome = s.approvedPlanPass(ctx, planMatch, agentRec, upstream.Name, req.Tool, req.Input, "")
+		}
+		if outcome == planGateApprovePoll {
+			// A judged status poll grants the pass without binding a plan
+			// step: binding one would advance the execution-order high-water
+			// mark and could complete the plan before its real actions run.
+			// Downstream handling is identical to a plan approval.
+			outcome = planGateApprove
+		} else if planMatch.Action.Tool != "" && !planStatusFastPass(s.planPollOrigins, planID, req.Input) {
+			stepIndex := planMatch.ActionIndex
+			inv.PlanStepIndex = &stepIndex
+		}
+
+		planPayload := map[string]any{
+			"tool": req.Tool, "upstream": upstream.Name,
+			"request_id": req.RequestID,
+			"input":      json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input),
+			"disposition_reason": reason, "plan_id": planID,
+		}
+		if agentID != "" {
+			planPayload["agent_id"] = agentID
+		}
+
+		switch outcome {
+		case planGateApprove:
+			planPayload["disposition"] = "plan_approved"
+			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(planPayload), CreatedAt: now})
+			inv.Status = StatusExecuting
+			inv.Approval = newApproval("plan_approved", reason, confidence)
+			if err := s.invocations.UpdateResult(ctx, inv); err != nil {
+				return InvocationResponse{}, err
+			}
+			_ = s.events.Create(ctx, Event{
+				InvocationID: inv.InvocationID,
+				EventType:    "invocation.executing",
+				Payload: mustJSON(map[string]any{
+					"upstream": upstream.Name, "request_id": req.RequestID,
+					"input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input),
+					"auto_approved": true, "auto_reason": reason, "plan_id": planID,
+				}),
+				CreatedAt: time.Now().UTC(),
+			})
+			return s.finishExecution(ctx, inv, upstream, req)
+
+		case planGateDeny:
+			planPayload["disposition"] = "plan_denied"
+			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(planPayload), CreatedAt: now})
+			completed := time.Now().UTC()
+			inv.Status = StatusDenied
+			inv.CompletedAt = &completed
+			inv.Approval = newApproval("plan_denied", reason, confidence)
+			inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": "Tool call denied: " + reason}}, "isError": true})
+			_ = s.invocations.UpdateResult(context.Background(), inv)
+			_ = s.events.Create(context.Background(), Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"plan_id": planID, "reason": reason, "confidence": confidence}), CreatedAt: completed})
+			return s.toResponse(inv), nil
+
+		default: // planGateHuman: adherence unverifiable — straight to a human.
+			planPayload["disposition"] = "plan_escalated"
+			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(planPayload), CreatedAt: now})
+			inv.Approval = newApproval("plan_escalated", reason, confidence)
+			if err := s.invocations.UpdateResult(ctx, inv); err != nil {
+				return InvocationResponse{}, err
+			}
+			return s.waitForHumanApproval(ctx, inv, upstream, req)
+		}
+	}
+
 	// Determine disposition: check rules first (fine-grained), then fall back to policy (global).
 	// Both resolve to a policy.Decision so the rest of the flow is uniform.
 	var decision policy.Decision
@@ -454,10 +552,16 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 			decision = policy.Decision{Disposition: policy.DispositionHuman, Reason: "policy error: " + policyErr.Error()}
 		}
 	}
-	// Persist matched_rule_id for human-approval invocations so approve/deny handlers can reference it.
-	// Also tag AI-escalated invocations so the UI can distinguish them from direct human_approval rules.
+	// Record the rule that decided this call regardless of disposition. AI-decided
+	// invocations (DispositionNever/DispositionAuto) need it just as much as gated
+	// ones: without it the audit view has no rule to name and has to guess. The
+	// downstream denyByPolicy/executeNow calls carry inv onward and their
+	// UpdateResult persists the id, so no extra write is needed here for those.
+	inv.MatchedRuleID = matchedRuleID
+	// Human-gated invocations must be written now, before the wait, so approve/deny
+	// handlers can reference the rule. Also tag AI-escalated invocations so the UI
+	// can distinguish them from direct human_approval rules.
 	if decision.Disposition == policy.DispositionHuman || decision.Disposition == policy.DispositionWorkflow || decision.Disposition == dispositionAIEscalated {
-		inv.MatchedRuleID = matchedRuleID
 		if decision.Disposition == dispositionAIEscalated {
 			inv.Approval = newApproval("ai_escalated", decision.Reason, aiConfidence)
 		}
@@ -675,6 +779,7 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 		resp, err := s.evaluator.EvaluateToolCall(evalCtx, EvaluateRequest{
 			AtryumLLMConfigID: rule.AtryumLLMConfigID,
 			Charter:           agentRec.Charter,
+			AgentTags:         agentRec.Tags,
 			ServerName:        serverName,
 			ToolName:          toolName,
 			ToolArgs:          toolArgs,
@@ -742,6 +847,7 @@ func (s *Service) runAIEvaluation(ctx context.Context, rule *ApprovalRule, serve
 		ModelConfigCUID: rule.ModelConfigCUID,
 		OrgCUID:         orgCUID,
 		AgentVMCUID:     agentVMCUID,
+		AgentTags:       agentRec.Tags,
 		CharterFieldKey: charterFieldKey,
 		ServerName:      serverName,
 		ToolName:        toolName,
@@ -1256,6 +1362,9 @@ func (s *Service) finishExecution(ctx context.Context, inv Invocation, upstream 
 	if err := s.invocations.UpdateResult(ctx, inv); err != nil {
 		return InvocationResponse{}, err
 	}
+	if inv.Status == StatusSucceeded {
+		s.completePlanAfterSuccessfulFinalAction(ctx, inv)
+	}
 	return s.toResponse(inv), nil
 }
 
@@ -1488,6 +1597,79 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	}
 	if sessionID != "" {
 		_ = s.sessions.TouchSession(ctx, sessionID, now.Add(externalSessionTTL)) // best-effort last-seen/expiry bump
+	}
+
+	// An approved plan grants a scoped pass. The association is implicit —
+	// the agent's newest approved plan scoped to this source — because harness
+	// tool-input schemas leave the agent no channel to declare a plan id. A
+	// scoped call is gated exclusively by the plan flow: a status poll
+	// auto-approves, the adherence judge confirms or denies everything else,
+	// and an unverifiable call goes straight to a human, bypassing approval
+	// rules. Unmatched calls get normal gating.
+	if planMatch, ok, ambiguous := s.matchApprovedPlan(ctx, agentID, source, req.Tool); ok || ambiguous {
+		planID := planMatch.Plan.PlanID
+		inv.PlanID = &planID
+		var reason string
+		var confidence *float64
+		var outcome planGateOutcome
+		if ambiguous {
+			planMatch, reason, confidence, outcome = s.ambiguousApprovedPlanPass(ctx, planMatch.Plan, agentRec, source, req.Tool, req.Input, sessionContext)
+		} else {
+			reason, confidence, outcome = s.approvedPlanPass(ctx, planMatch, agentRec, source, req.Tool, req.Input, sessionContext)
+		}
+		if outcome == planGateApprovePoll {
+			// A judged status poll grants the pass without binding a plan
+			// step: binding one would advance the execution-order high-water
+			// mark and could complete the plan before its real actions run.
+			// Downstream handling is identical to a plan approval.
+			outcome = planGateApprove
+		} else if planMatch.Action.Tool != "" && !planStatusFastPass(s.planPollOrigins, planID, req.Input) {
+			stepIndex := planMatch.ActionIndex
+			inv.PlanStepIndex = &stepIndex
+		}
+
+		planPayload := map[string]any{"tool": req.Tool, "upstream": source, "request_id": req.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "external": true, "plan_id": planID}
+		if agentID != "" {
+			planPayload["agent_id"] = agentID
+		}
+
+		switch outcome {
+		case planGateApprove:
+			inv.Status = StatusApproved
+			inv.Approval = newApproval("plan_approved", reason, confidence)
+			if err := s.invocations.UpdateResult(ctx, inv); err != nil {
+				return InvocationResponse{}, err
+			}
+			planPayload["disposition"] = "plan_approved"
+			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(planPayload), CreatedAt: now})
+			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.approved", Payload: mustJSON(map[string]any{"plan_id": planID, "auto_approved": true, "auto_reason": reason}), CreatedAt: time.Now().UTC()})
+			return s.toResponse(inv), nil
+
+		case planGateDeny:
+			completed := time.Now().UTC()
+			inv.Status = StatusDenied
+			inv.CompletedAt = &completed
+			inv.Approval = newApproval("plan_denied", reason, confidence)
+			inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": "Tool call denied: " + reason}}, "isError": true})
+			_ = s.invocations.UpdateResult(context.Background(), inv)
+			planPayload["disposition"] = "plan_denied"
+			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(planPayload), CreatedAt: now})
+			_ = s.events.Create(context.Background(), Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"plan_id": planID, "reason": reason, "confidence": confidence}), CreatedAt: completed})
+			return s.toResponse(inv), nil
+
+		default: // planGateHuman: adherence unverifiable — straight to a human.
+			inv.Status = StatusPendingApproval
+			inv.Approval = newApproval("plan_escalated", reason, confidence)
+			if err := s.invocations.UpdateResult(ctx, inv); err != nil {
+				return InvocationResponse{}, err
+			}
+			planPayload["disposition"] = "plan_escalated"
+			planPayload["disposition_reason"] = reason
+			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(planPayload), CreatedAt: now})
+			_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.pending_approval", Payload: mustJSON(planPayload), CreatedAt: time.Now().UTC()})
+			s.summarizePendingApproval(inv.InvocationID)
+			return s.toResponse(inv), nil
+		}
 	}
 	ruleAction := ""
 	ruleDeferred := false
@@ -1772,6 +1954,7 @@ func (s *Service) RecordExecution(ctx context.Context, invocationID string, upda
 			return InvocationResponse{}, err
 		}
 		_ = s.events.Create(ctx, Event{InvocationID: inv.InvocationID, EventType: "invocation.succeeded", Payload: mustJSON(map[string]any{"upstream": inv.Upstream, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "body": json.RawMessage(nullableRaw(inv.Response)), "external": true}), CreatedAt: now})
+		s.completePlanAfterSuccessfulFinalAction(ctx, inv)
 	case "failed":
 		if inv.Status == StatusFailed {
 			return s.toResponse(inv), nil // idempotent retry
@@ -1907,7 +2090,7 @@ func (s *Service) SetSummary(ctx context.Context, invocationID string, summary s
 }
 
 func (s *Service) toResponse(inv Invocation) InvocationResponse {
-	resp := InvocationResponse{InvocationID: inv.InvocationID, ServerName: inv.Upstream, ToolName: inv.Tool, Status: inv.Status, Approval: inv.Approval, MatchedRuleID: inv.MatchedRuleID, AgentID: inv.AgentID, RequestID: inv.RequestID, SubmittedAt: inv.SubmittedAt, CompletedAt: inv.CompletedAt}
+	resp := InvocationResponse{InvocationID: inv.InvocationID, ServerName: inv.Upstream, ToolName: inv.Tool, Status: inv.Status, Approval: inv.Approval, MatchedRuleID: inv.MatchedRuleID, PlanID: inv.PlanID, AgentID: inv.AgentID, RequestID: inv.RequestID, SubmittedAt: inv.SubmittedAt, CompletedAt: inv.CompletedAt}
 	if inv.Summary != nil {
 		resp.Summary = *inv.Summary
 	}

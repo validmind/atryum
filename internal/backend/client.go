@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"atryum/internal/config"
+	"github.com/validmind/atryum/internal/config"
 )
 
 const atryumAPIPath = "/api/atryum/unstable"
@@ -17,6 +17,7 @@ const connectionPath = atryumAPIPath + "/connection"
 const agentsPath = atryumAPIPath + "/agents"
 const modelConfigsPath = atryumAPIPath + "/model-configs"
 const evaluatePath = atryumAPIPath + "/evaluate"
+const charterPreviewPath = atryumAPIPath + "/charter-preview"
 const summarizeInvocationPath = atryumAPIPath + "/summarize-invocation"
 const organizationsPath = atryumAPIPath + "/organizations"
 const primaryRecordTypesPath = atryumAPIPath + "/primary-record-types"
@@ -348,6 +349,7 @@ type EvaluateRequest struct {
 	ModelConfigCUID string         `json:"model_config_cuid"`
 	OrgCUID         string         `json:"org_cuid,omitempty"`
 	AgentVMCUID     string         `json:"agent_vm_cuid,omitempty"`
+	AgentTags       []string       `json:"agent_tags"`
 	CharterFieldKey string         `json:"charter_field_key,omitempty"`
 	ServerName      string         `json:"server_name"`
 	ToolName        string         `json:"tool_name"`
@@ -411,6 +413,75 @@ func (c *Client) EvaluateToolCall(ctx context.Context, req EvaluateRequest) (Eva
 		return EvaluateResponse{}, fmt.Errorf("decode evaluate response: %w", err)
 	}
 	return payload, nil
+}
+
+// CharterPreviewRequest is sent to the VM backend to assemble the charter
+// hierarchy for a single synced agent.
+//
+// Deliberately has no tags field: this hits the backend's hierarchy-only
+// /charter-preview endpoint (used by Atryum's own FOSS UI), which never
+// matches organization-wide Global Charters — that's a commercial-only
+// feature with no presence here. The ValidMind frontend's own preview call
+// (a different backend route, /agent-authority/agents/{cuid}/charter-preview)
+// is what sends tags and layers in matching global charters.
+type CharterPreviewRequest struct {
+	AgentVMCUID     string `json:"agent_vm_cuid"`
+	CharterFieldKey string `json:"charter_field_key"`
+}
+
+// CharterSegment is a single labelled piece of the assembled charter hierarchy.
+type CharterSegment struct {
+	Kind   string `json:"kind"`
+	Header string `json:"header"`
+	Text   string `json:"text"`
+}
+
+// CharterPreviewResult is the response returned by the charter-preview endpoint.
+type CharterPreviewResult struct {
+	Segments []CharterSegment `json:"segments"`
+	Combined string           `json:"combined"`
+}
+
+// CharterPreview calls the VM backend's charter-preview endpoint and returns the
+// assembled charter hierarchy for the given synced agent.
+func (c *Client) CharterPreview(ctx context.Context, agentVMCUID, charterFieldKey, orgCUID string) (*CharterPreviewResult, error) {
+	body, err := json.Marshal(CharterPreviewRequest{
+		AgentVMCUID:     agentVMCUID,
+		CharterFieldKey: charterFieldKey,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal charter-preview request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(
+		ctx, http.MethodPost, c.baseURL+charterPreviewPath,
+		strings.NewReader(string(body)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("build charter-preview request: %w", err)
+	}
+	c.setAuthHeaders(httpReq)
+	if orgCUID != "" {
+		httpReq.Header.Set("X-Org-CUID", orgCUID)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("call charter-preview endpoint: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("charter-preview endpoint returned %s", resp.Status)
+	}
+
+	var payload CharterPreviewResult
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("decode charter-preview response: %w", err)
+	}
+	return &payload, nil
 }
 
 // SummarizeInvocationRequest is sent to the VM backend to ask an LLM to

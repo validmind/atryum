@@ -24,15 +24,15 @@ import (
 
 	"github.com/google/uuid"
 
-	"atryum/internal/auth"
-	backendclient "atryum/internal/backend"
-	"atryum/internal/invocation"
-	"atryum/internal/invocation/policy"
-	"atryum/internal/managedagents"
-	"atryum/internal/mcp"
-	authprovider "atryum/internal/mcp/auth_provider"
-	"atryum/internal/store"
-	"atryum/internal/version"
+	"github.com/validmind/atryum/internal/auth"
+	backendclient "github.com/validmind/atryum/internal/backend"
+	"github.com/validmind/atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/invocation/policy"
+	"github.com/validmind/atryum/internal/managedagents"
+	"github.com/validmind/atryum/internal/mcp"
+	authprovider "github.com/validmind/atryum/internal/mcp/auth_provider"
+	"github.com/validmind/atryum/internal/store"
+	"github.com/validmind/atryum/internal/version"
 )
 
 //go:embed web/*
@@ -53,6 +53,17 @@ type service interface {
 	CreateSession(ctx context.Context, req invocation.CreateSessionRequest, agentID string) (invocation.SessionResponse, error)
 	RecordExecution(ctx context.Context, invocationID string, update invocation.ExternalExecutionUpdate) (invocation.InvocationResponse, error)
 	SetSummary(ctx context.Context, invocationID string, summary string) (invocation.InvocationResponse, error)
+	SubmitPlan(ctx context.Context, req invocation.PlanSubmitRequest) (invocation.Plan, error)
+	GetPlan(ctx context.Context, id string) (invocation.Plan, error)
+	ListPlans(ctx context.Context, filter invocation.PlanListFilter) (invocation.PlanListResponse, error)
+	ListPlanRevisions(ctx context.Context, id string) ([]invocation.Plan, error)
+	ApprovePlan(ctx context.Context, id string, ttlSeconds int) (invocation.Plan, error)
+	DenyPlan(ctx context.Context, id string, message string) (invocation.Plan, error)
+	RequestPlanRevision(ctx context.Context, id string, feedback string) (invocation.Plan, error)
+	ExpirePlan(ctx context.Context, id string) (invocation.Plan, error)
+	CancelPlan(ctx context.Context, id string) (invocation.Plan, error)
+	PlanEvents(ctx context.Context, id string, filter invocation.EventListFilter) (invocation.EventListResponse, error)
+	PlansEnabled() bool
 }
 
 type mcpEnvelopeForwarder interface {
@@ -69,8 +80,8 @@ type localInvocationSummarizer interface {
 
 type serverService interface {
 	List(ctx context.Context, filter mcp.ServerFilter) (ServerListResponse, error)
-	Get(ctx context.Context, name string) (AdminServer, error)
-	Upsert(ctx context.Context, name string, req AdminServerUpsertRequest) (AdminServer, error)
+	Get(ctx context.Context, name string) (OperatorServer, error)
+	Upsert(ctx context.Context, name string, req OperatorServerUpsertRequest) (OperatorServer, error)
 	Delete(ctx context.Context, name string, disable bool) error
 	Test(ctx context.Context, name string) (ServerTestResponse, error)
 	StartConnect(ctx context.Context, name string, baseURL string) (OAuthConnectStartResponse, error)
@@ -99,6 +110,7 @@ type agentsRepo interface {
 	UpdateEnabled(ctx context.Context, id string, enabled bool) error
 	UpdateAgentIDs(ctx context.Context, id string, agentIDs string) error
 	UpdateMeta(ctx context.Context, id, name, description, charter string) error
+	UpdateTags(ctx context.Context, id string, tags []string) error
 	Create(ctx context.Context, agent store.AgentRecord) error
 	Delete(ctx context.Context, id string) error
 	DeleteSynced(ctx context.Context) error
@@ -161,12 +173,27 @@ type Handler struct {
 
 	// managedAgents is the optional Claude Managed Agents events bridge.
 	// nil when not configured (no anthropic api key).
-	managedAgents managedAgentsAdmin
+	managedAgents managedAgentsOperator
+
+	// extraRoutes are registrations contributed by embedding programs (via
+	// pkg/atryum WithRoutes). They are applied to the mux after the built-in
+	// routes and outside every auth middleware chain, like /healthz; each
+	// registration is responsible for its own authentication.
+	extraRoutes []func(mux *http.ServeMux)
 }
 
-// managedAgentsAdmin is the slice of the managed-agents service the admin API
-// needs for session registration and Claude agent discovery.
-type managedAgentsAdmin interface {
+// AddExtraRoutes registers a callback that may mount additional routes on the
+// server mux built by Routes. Patterns must not collide with built-in routes
+// (http.ServeMux panics on duplicate registration).
+func (h *Handler) AddExtraRoutes(register func(mux *http.ServeMux)) {
+	if register != nil {
+		h.extraRoutes = append(h.extraRoutes, register)
+	}
+}
+
+// managedAgentsOperator is the slice of the managed-agents service the
+// operator API needs for session registration and Claude agent discovery.
+type managedAgentsOperator interface {
 	RegisterSession(ctx context.Context, req managedagents.RegisterSessionRequest) (managedagents.SessionRegistration, error)
 	ListSessions(ctx context.Context) ([]managedagents.SessionRegistration, error)
 	DeleteSession(ctx context.Context, sessionID string) error
@@ -193,21 +220,17 @@ type PolicyUpdateRequest struct {
 }
 
 type ApproveRequest struct {
-	CreateRule *AdminRuleInput `json:"create_rule,omitempty"`
-	// ActorID identifies the human reviewer who made the decision. Optional —
-	// when omitted no attribution is stored. The VM backend proxy injects this
-	// field from the authenticated user's identity before forwarding.
-	ActorID string `json:"actor_id,omitempty"`
+	CreateRule *OperatorRuleInput `json:"create_rule,omitempty"`
+	ActorID    string             `json:"actor_id,omitempty"`
 }
 
 type DenyRequest struct {
-	Message    string          `json:"message,omitempty"`
-	CreateRule *AdminRuleInput `json:"create_rule,omitempty"`
-	// ActorID identifies the human reviewer who made the decision. Optional.
-	ActorID string `json:"actor_id,omitempty"`
+	Message    string             `json:"message,omitempty"`
+	CreateRule *OperatorRuleInput `json:"create_rule,omitempty"`
+	ActorID    string             `json:"actor_id,omitempty"`
 }
 
-type AdminServer struct {
+type OperatorServer struct {
 	Name                    string            `json:"name"`
 	EndpointSlug            string            `json:"endpoint_slug"`
 	EndpointURL             string            `json:"endpoint_url,omitempty"`
@@ -244,7 +267,7 @@ type AdminServer struct {
 	OAuthGrantedScopes string `json:"oauth_granted_scopes,omitempty"`
 }
 
-type AdminServerUpsertRequest struct {
+type OperatorServerUpsertRequest struct {
 	Name              string            `json:"name,omitempty"`
 	Mode              string            `json:"mode"`
 	BaseURL           string            `json:"base_url,omitempty"`
@@ -263,10 +286,10 @@ type AdminServerUpsertRequest struct {
 }
 
 type ServerListResponse struct {
-	Items  []AdminServer `json:"items"`
-	Total  int           `json:"total"`
-	Offset uint64        `json:"offset"`
-	Limit  uint64        `json:"limit"`
+	Items  []OperatorServer `json:"items"`
+	Total  int              `json:"total"`
+	Offset uint64           `json:"offset"`
+	Limit  uint64           `json:"limit"`
 }
 
 type ServerTestResponse struct {
@@ -295,7 +318,7 @@ type OAuthConnectStatusResponse struct {
 
 // ─── Rules ───────────────────────────────────────────────────────────────────
 
-type AdminRule struct {
+type OperatorRule struct {
 	ID                string    `json:"id"`
 	Action            string    `json:"action"`
 	ServerPatterns    []string  `json:"server_patterns"`
@@ -310,7 +333,7 @@ type AdminRule struct {
 	UpdatedAt         time.Time `json:"updated_at"`
 }
 
-type AdminRuleInput struct {
+type OperatorRuleInput struct {
 	Action            string   `json:"action"`
 	ServerPatterns    []string `json:"server_patterns"`
 	ToolPatterns      []string `json:"tool_patterns"`
@@ -325,22 +348,22 @@ type AdminRuleInput struct {
 	InsertBefore *string `json:"insert_before,omitempty"`
 }
 
-// AdminModelConfig is the API representation of a VM agent model configuration.
-type AdminModelConfig struct {
+// OperatorModelConfig is the API representation of a VM agent model configuration.
+type OperatorModelConfig struct {
 	CUID string `json:"cuid"`
 	Name string `json:"name"`
 }
 
 type ModelConfigListResponse struct {
-	Items []AdminModelConfig `json:"items"`
-	Total int                `json:"total"`
+	Items []OperatorModelConfig `json:"items"`
+	Total int                   `json:"total"`
 }
 
 // ─── Local LLM Config types ───────────────────────────────────────────────────
 
-// AdminLLMConfig is the API representation of a locally-configured LLM.
+// OperatorLLMConfig is the API representation of a locally-configured LLM.
 // APIKey is write-only — on reads it is returned as "***" when set.
-type AdminLLMConfig struct {
+type OperatorLLMConfig struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
 	Provider  string    `json:"provider"`
@@ -351,7 +374,7 @@ type AdminLLMConfig struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-type AdminLLMConfigInput struct {
+type OperatorLLMConfigInput struct {
 	Name     string `json:"name"`
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
@@ -361,52 +384,59 @@ type AdminLLMConfigInput struct {
 }
 
 type LLMConfigListResponse struct {
-	Items []AdminLLMConfig `json:"items"`
+	Items []OperatorLLMConfig `json:"items"`
 }
 
 type RuleListResponse struct {
-	Items []AdminRule `json:"items"`
+	Items []OperatorRule `json:"items"`
 }
 
-// ─── Agent admin types ────────────────────────────────────────────────────────
+// ─── Agent operator types ─────────────────────────────────────────────────────
 
-type AdminAgent struct {
-	CUID                string                     `json:"cuid"`
-	OrgName             string                     `json:"org_name"`
-	Name                string                     `json:"name"`
-	Description         string                     `json:"description,omitempty"`
-	AgentIDs            []string                   `json:"agent_ids"`
-	ClaudeManagedAgents []AdminManagedAgentBinding `json:"claude_managed_agents,omitempty"`
-	SyncedAt            time.Time                  `json:"synced_at"`
-	Enabled             bool                       `json:"enabled"`
-	Charter             string                     `json:"charter,omitempty"`
+type OperatorAgent struct {
+	CUID                string                        `json:"cuid"`
+	VMCUID              string                        `json:"vm_cuid,omitempty"`
+	OrgName             string                        `json:"org_name"`
+	Name                string                        `json:"name"`
+	Description         string                        `json:"description,omitempty"`
+	AgentIDs            []string                      `json:"agent_ids"`
+	ClaudeManagedAgents []OperatorManagedAgentBinding `json:"claude_managed_agents,omitempty"`
+	SyncedAt            time.Time                     `json:"synced_at"`
+	Enabled             bool                          `json:"enabled"`
+	Charter             string                        `json:"charter,omitempty"`
+	Tags                []string                      `json:"tags"`
 	// Synced is true when this agent originated from a ValidMind sync
 	// (vm_organization_cuid is non-empty). Synced agents cannot be deleted
 	// manually — they are removed by re-syncing with a different org/record-type.
 	Synced bool `json:"synced"`
 }
 
-type AdminAgentInput struct {
-	Enabled                        bool                        `json:"enabled"`
-	AgentIDs                       []string                    `json:"agent_ids,omitempty"`
-	Name                           string                      `json:"name,omitempty"`
-	Description                    string                      `json:"description,omitempty"`
-	Charter                        string                      `json:"charter,omitempty"`
-	ClaudeManagedAgents            *[]AdminManagedAgentBinding `json:"claude_managed_agents,omitempty"`
-	ForceClaudeManagedAgentConnect bool                        `json:"force_claude_managed_agent_connect,omitempty"`
+type OperatorAgentInput struct {
+	// Enabled is a pointer so an omitted field means "leave unchanged" rather
+	// than "disable". Callers that only edit agent_ids/tags must not flip the
+	// agent's enabled state.
+	Enabled                        *bool                          `json:"enabled,omitempty"`
+	AgentIDs                       []string                       `json:"agent_ids,omitempty"`
+	Name                           string                         `json:"name,omitempty"`
+	Description                    string                         `json:"description,omitempty"`
+	Charter                        string                         `json:"charter,omitempty"`
+	Tags                           *[]string                      `json:"tags,omitempty"`
+	ClaudeManagedAgents            *[]OperatorManagedAgentBinding `json:"claude_managed_agents,omitempty"`
+	ForceClaudeManagedAgentConnect bool                           `json:"force_claude_managed_agent_connect,omitempty"`
 }
 
-type AdminAgentCreateInput struct {
-	Name                           string                     `json:"name"`
-	Description                    string                     `json:"description,omitempty"`
-	Enabled                        bool                       `json:"enabled"`
-	AgentIDs                       []string                   `json:"agent_ids,omitempty"`
-	Charter                        string                     `json:"charter,omitempty"`
-	ClaudeManagedAgents            []AdminManagedAgentBinding `json:"claude_managed_agents,omitempty"`
-	ForceClaudeManagedAgentConnect bool                       `json:"force_claude_managed_agent_connect,omitempty"`
+type OperatorAgentCreateInput struct {
+	Name                           string                        `json:"name"`
+	Description                    string                        `json:"description,omitempty"`
+	Enabled                        bool                          `json:"enabled"`
+	AgentIDs                       []string                      `json:"agent_ids,omitempty"`
+	Charter                        string                        `json:"charter,omitempty"`
+	Tags                           []string                      `json:"tags,omitempty"`
+	ClaudeManagedAgents            []OperatorManagedAgentBinding `json:"claude_managed_agents,omitempty"`
+	ForceClaudeManagedAgentConnect bool                          `json:"force_claude_managed_agent_connect,omitempty"`
 }
 
-type AdminManagedAgentBinding struct {
+type OperatorManagedAgentBinding struct {
 	ID                 string `json:"id,omitempty"`
 	Account            string `json:"account"`
 	ClaudeAgentID      string `json:"claude_agent_id"`
@@ -432,13 +462,18 @@ type ManagedAgentListResponse struct {
 }
 
 type AgentListResponse struct {
-	Items []AdminAgent `json:"items"`
+	Items []OperatorAgent `json:"items"`
 }
 
-func toAdminAgent(a store.AgentRecord) AdminAgent {
+func toOperatorAgent(a store.AgentRecord) OperatorAgent {
 	ids := parseAgentIDs(a.AgentIDs)
-	return AdminAgent{
+	tags := a.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+	return OperatorAgent{
 		CUID:        a.ID,
+		VMCUID:      a.VMCUID,
 		OrgName:     a.VMOrganizationName,
 		Name:        a.VMName,
 		Description: a.VMDescription,
@@ -446,12 +481,13 @@ func toAdminAgent(a store.AgentRecord) AdminAgent {
 		SyncedAt:    a.SyncedAt,
 		Enabled:     a.Enabled,
 		Charter:     a.Charter,
+		Tags:        tags,
 		Synced:      a.VMOrganizationCUID != "",
 	}
 }
 
-func (h *Handler) toAdminAgent(ctx context.Context, a store.AgentRecord) AdminAgent {
-	out := toAdminAgent(a)
+func (h *Handler) toOperatorAgent(ctx context.Context, a store.AgentRecord) OperatorAgent {
+	out := toOperatorAgent(a)
 	if h.managedAgentBindings == nil {
 		return out
 	}
@@ -459,14 +495,14 @@ func (h *Handler) toAdminAgent(ctx context.Context, a store.AgentRecord) AdminAg
 	if err != nil {
 		return out
 	}
-	out.ClaudeManagedAgents = toAdminManagedAgentBindings(bindings)
+	out.ClaudeManagedAgents = toOperatorManagedAgentBindings(bindings)
 	return out
 }
 
-func toAdminManagedAgentBindings(bindings []store.ManagedAgentBinding) []AdminManagedAgentBinding {
-	out := make([]AdminManagedAgentBinding, 0, len(bindings))
+func toOperatorManagedAgentBindings(bindings []store.ManagedAgentBinding) []OperatorManagedAgentBinding {
+	out := make([]OperatorManagedAgentBinding, 0, len(bindings))
 	for _, b := range bindings {
-		out = append(out, AdminManagedAgentBinding{
+		out = append(out, OperatorManagedAgentBinding{
 			ID:                 b.ID,
 			Account:            b.Account,
 			ClaudeAgentID:      b.ClaudeAgentID,
@@ -478,7 +514,7 @@ func toAdminManagedAgentBindings(bindings []store.ManagedAgentBinding) []AdminMa
 	return out
 }
 
-func toStoreManagedAgentBindings(agentCUID string, bindings []AdminManagedAgentBinding) []store.ManagedAgentBinding {
+func toStoreManagedAgentBindings(agentCUID string, bindings []OperatorManagedAgentBinding) []store.ManagedAgentBinding {
 	out := make([]store.ManagedAgentBinding, 0, len(bindings))
 	seen := make(map[string]bool, len(bindings))
 	for _, b := range bindings {
@@ -632,7 +668,12 @@ const atryumInitializeInstructions = "This MCP server is gated by the Atryum har
 	"Those rules may change between conversation turns, so treat each tool call as subject to the current Atryum policy. " +
 	"To see the static approval rules that currently apply to you, call the atryum_rules_get MCP tool or issue an HTTP GET to /api/v1/agent/rules " +
 	"(optionally with ?server={server}&tool={tool} to preview the disposition for a specific tool); " +
-	"the response is advisory only, as AI-evaluation and human-approval outcomes are decided during the actual gated call."
+	"the response is advisory only, as AI-evaluation and human-approval outcomes are decided during the actual gated call. " +
+	"When the " + atryumPlanSubmitTool + " tool is listed and work is risky or could leave files, systems, or external state inconsistent if a later call is denied, submit a batch plan before running tools. " +
+	"Plans are optional pre-approval, never a prerequisite: tool calls made without a plan are gated by the normal approval rules, so keep working without one when a plan is not warranted or after a plan completes. " +
+	"Use plans for dependent changes whose safe completion requires every step to run. " +
+	"Declare a plan's actions in the exact order they will execute: plans may skip forward but never move backwards, so once a later step has run, calls matching an earlier step are denied — submit a revised plan instead of re-running an earlier step. " +
+	"After submitting a plan, call " + atryumPlanGetTool + " until the plan is approved, denied, needs_revision, completed, expired, cancelled, or superseded; only proceed with planned tool calls after approval."
 
 // Dotted tool names are valid MCP names, but common harnesses have rejected
 // them in practice. Keep this synthetic helper underscore-only for compatibility.
@@ -648,17 +689,94 @@ type AgentRule struct {
 	Order          int      `json:"order"`
 }
 
+type AgentPlanSubmission struct {
+	Enabled  bool   `json:"enabled"`
+	Endpoint string `json:"endpoint,omitempty"`
+	Message  string `json:"message,omitempty"`
+}
+
+// planSubmissionMessage is the plan-workflow guidance served to agents via
+// GET /api/v1/agent/rules. Harness hooks inject it into agent context
+// verbatim, so it is the single source of truth for how agents should submit
+// and follow plans — change plan semantics here, not in per-harness hook
+// scripts. source is the caller's harness source; when known, the action
+// server guidance names it concretely, since an action whose server does not
+// match the source of the tool call that later executes it can never grant
+// the plan pass.
+//
+// agentID is whatever identity this same request already resolved to
+// (verified OAuth, or the no-auth agent_id hint the calling harness sent
+// alongside this GET). Left generic ("invent a stable identifier"), agents
+// reliably invent a fresh one per plan that never matches the identity their
+// harness separately reports for the tool calls that execute it — the plan
+// then never binds to those invocations and just expires. Embedding the
+// already-established value here instead means a plan submitted from this
+// same harness session is self-consistent without any extra configuration.
+func planSubmissionMessage(endpoint, source, agentID string) string {
+	serverGuidance := "Set tool and server to the exact values this harness reports for the call " +
+		"that will execute it. "
+	if source != "" {
+		serverGuidance = "Set each action's server to \"" + source + "\" — the source this harness " +
+			"reports its tool calls under — unless the action targets a different Atryum-gated MCP " +
+			"server; an action whose server does not match the executing call's source can never " +
+			"grant the plan pass. Set tool to the exact tool name this harness reports for the call. "
+	}
+	agentGuidance := "agent_id (a stable identifier for this agent, reused for every plan and tool " +
+		"call this session; required when the harness is not authenticated). "
+	if agentID != "" {
+		agentGuidance = "agent_id set to exactly \"" + agentID + "\" — the identity already " +
+			"established for this request — so the plan matches the invocations that execute it. " +
+			"Do not invent a different value. "
+	}
+	return "Atryum accepts optional pre-approval plans from this agent. A plan is never required: " +
+		"tool calls made without one simply go through Atryum's normal approval flow (rules, AI " +
+		"evaluation, or human review) — do not refuse to work just because no plan is active. " +
+		"Submit a plan when work is risky or dependent — " +
+		"anything that could leave files, systems, or external state inconsistent if a later call is denied — " +
+		"so the whole batch can be reviewed together before the first side effect. " +
+		"Atryum evaluates every declared action against the same invocation rules used for tool calls, in priority order. " +
+		"After the rules are evaluated, one mandatory AI review checks the complete plan against the agent charter. " +
+		"A rule denial or charter violation rejects the plan; human-approval, an unmatched action, or an inconclusive " +
+		"charter review sends the complete plan to a reviewer. " +
+		"POST the plan as JSON to " + endpoint + " with: goal, rationale, actions, ttl_seconds, and " +
+		agentGuidance +
+		"Keep the endpoint's source parameter exactly as given: it scopes the plan's actions to this " +
+		"harness so later tool calls match. " +
+		"Each action is {tool, server, description, input_summary}. " + serverGuidance +
+		"Make every description and " +
+		"input summary precise and distinct — command interpreter, working directory, exact paths read " +
+		"or written — so the adherence judge can tell which declared action a given call belongs to, " +
+		"especially when actions share a tool and server. " +
+		"Declare actions in the exact order they will execute. Plans may skip forward but never move " +
+		"backwards: once a later step has been approved or started, calls matching an earlier step are " +
+		"denied. Declare an expected re-run as its own later action, and if an earlier step must " +
+		"unexpectedly be redone, submit a revision instead of retrying it under the current plan. " +
+		"Do not execute any declared action while the plan status is received, pending_approval, or " +
+		"needs_revision. Poll the plan's status URL until it is decided. If approved, execute the " +
+		"actions in declared order before the plan expires. If needs_revision, incorporate the returned " +
+		"feedback and submit a replacement plan with revision_of set to the prior plan_id, then wait on " +
+		"the replacement. If denied, cancelled, or expired, do not execute; report the final status and " +
+		"any feedback. " +
+		"Once the plan is approved, tool calls matching its declared actions are checked against both " +
+		"the plan and the agent charter — calls confirmed to follow an eligible action are " +
+		"auto-approved; off-plan or charter-violating calls are denied. A successful final action " +
+		"completes the plan and later calls return to the normal approval flow — they can still be " +
+		"made without a new plan; submit one only when the next batch also warrants pre-approval. " +
+		"A plain poll of the approved plan's own status is always auto-approved while the plan is active."
+}
+
 type AgentRulesResponse struct {
-	AgentID        string      `json:"agent_id,omitempty"`
-	Server         string      `json:"server,omitempty"`
-	Tool           string      `json:"tool,omitempty"`
-	DefaultAction  string      `json:"default_action"`
-	Action         string      `json:"action,omitempty"`
-	MatchedRuleID  *string     `json:"matched_rule_id,omitempty"`
-	GeneratedAt    time.Time   `json:"generated_at"`
-	EvaluationMode string      `json:"evaluation_mode"`
-	Explanation    string      `json:"explanation"`
-	Items          []AgentRule `json:"items"`
+	AgentID        string               `json:"agent_id,omitempty"`
+	Server         string               `json:"server,omitempty"`
+	Tool           string               `json:"tool,omitempty"`
+	DefaultAction  string               `json:"default_action"`
+	Action         string               `json:"action,omitempty"`
+	MatchedRuleID  *string              `json:"matched_rule_id,omitempty"`
+	PlanSubmission *AgentPlanSubmission `json:"plan_submission,omitempty"`
+	GeneratedAt    time.Time            `json:"generated_at"`
+	EvaluationMode string               `json:"evaluation_mode"`
+	Explanation    string               `json:"explanation"`
+	Items          []AgentRule          `json:"items"`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -681,11 +799,11 @@ type invocationStreamEnvelope struct {
 	Items []invocation.InvocationResponse `json:"items"`
 }
 
-type AdminAuthConfigResponse struct {
-	Providers []AdminAuthProvider `json:"providers"`
+type AuthConfigResponse struct {
+	Providers []AuthProvider `json:"providers"`
 }
 
-type AdminAuthProvider struct {
+type AuthProvider struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Provider    string `json:"provider"`
@@ -722,8 +840,8 @@ func (h *Handler) SetAuthDebugSkipVerify(enabled bool) {
 }
 
 // SetManagedAgents installs the optional Claude Managed Agents events bridge,
-// enabling the POST /api/v1/admin/managed-agents/sessions endpoint.
-func (h *Handler) SetManagedAgents(m managedAgentsAdmin) {
+// enabling the POST /api/v1/managed-agents/sessions endpoint.
+func (h *Handler) SetManagedAgents(m managedAgentsOperator) {
 	h.managedAgents = m
 }
 
@@ -734,8 +852,9 @@ func (h *Handler) SetManagedAgentBindings(repo managedAgentBindingsRepo) {
 	h.managedAgentBindings = repo
 }
 
-// SetAPIKeyAuth installs the static api-key/secret pair used to protect the
-// read-only invocation reporting endpoints.
+// SetAPIKeyAuth installs the static API-key/secret pair accepted by read-only
+// reporting endpoints and as a trusted machine credential for operator
+// endpoints.
 func (h *Handler) SetAPIKeyAuth(cfg auth.APIKeyConfig) {
 	h.apiKeyAuth = cfg
 }
@@ -751,12 +870,12 @@ func (h *Handler) protectedResourceMetadata() http.Handler {
 	})
 }
 
-func (h *Handler) adminAuthConfig(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) authConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	resp := AdminAuthConfigResponse{Providers: []AdminAuthProvider{}}
+	resp := AuthConfigResponse{Providers: []AuthProvider{}}
 	if h.authValidator == nil {
 		writeJSON(w, http.StatusOK, resp)
 		return
@@ -768,7 +887,7 @@ func (h *Handler) adminAuthConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		// AdminClientID is guaranteed non-empty for admin-enabled configs
 		// (validated in auth.NewValidator).
-		resp.Providers = append(resp.Providers, AdminAuthProvider{
+		resp.Providers = append(resp.Providers, AuthProvider{
 			ID:          cfg.AdminProvider + "-" + cfg.AdminClientID + "-" + cfg.Issuer,
 			Name:        cfg.AdminProvider + " (" + cfg.Issuer + ")",
 			Provider:    cfg.AdminProvider,
@@ -790,41 +909,46 @@ func (h *Handler) Routes() http.Handler {
 		mux.Handle("/.well-known/oauth-protected-resource", h.protectedResourceMetadata())
 	}
 	mcpHandler := h.agentRuntimeHandler(http.HandlerFunc(h.invokeUpstream))
-	adminAuthMW := auth.AdminMiddleware(h.authValidator, h.apiKeyAuth, auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})
-	admin := func(fn http.HandlerFunc) http.Handler {
-		return adminAuthMW(fn)
+	operatorAuthMW := auth.OperatorMiddleware(h.authValidator, h.apiKeyAuth, auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})
+	operator := func(fn http.HandlerFunc) http.Handler {
+		return operatorAuthMW(fn)
 	}
 	mux.HandleFunc("/mcp", h.mcpRootNotFound)
 	mux.Handle("/mcp/", mcpHandler)
 	mux.Handle("/api/v1/invocations", h.agentRuntimeHandler(http.HandlerFunc(h.invocations)))
-	mux.HandleFunc("/api/v1/admin-auth/config", h.adminAuthConfig)
-	mux.Handle("/api/v1/admin/invocations", admin(h.adminInvocations))
-	mux.Handle("/api/v1/admin/invocations/stream", admin(h.adminInvocationStream))
-	mux.Handle("/api/v1/admin/invocations/", admin(h.adminInvocationDetail))
-	mux.Handle("/api/v1/admin/servers", admin(h.adminServers))
-	mux.Handle("/api/v1/admin/servers/", admin(h.adminServerDetail))
-	mux.Handle("/api/v1/admin/rules", admin(h.adminRules))
-	mux.Handle("/api/v1/admin/rules/", admin(h.adminRuleDetail))
-	mux.Handle("/api/v1/admin/agents", admin(h.adminAgents))
-	mux.Handle("/api/v1/admin/agents/", admin(h.adminAgentDetail))
-	mux.Handle("/api/v1/admin/model-configs", admin(h.adminModelConfigs))
-	mux.Handle("/api/v1/admin/llm-configs", admin(h.adminLLMConfigs))
-	mux.Handle("/api/v1/admin/llm-configs/", admin(h.adminLLMConfigDetail))
-	mux.Handle("/api/v1/admin/settings", admin(h.adminSettings))
-	mux.Handle("/api/v1/admin/vm/organizations", admin(h.adminVMOrganizations))
-	mux.Handle("/api/v1/admin/vm/record-types", admin(h.adminVMRecordTypes))
-	mux.Handle("/api/v1/admin/vm/custom-fields", admin(h.adminVMCustomFields))
+	mux.HandleFunc("/api/v1/auth/config", h.authConfig)
+	mux.Handle("/api/v1/review/invocations", operator(h.reviewInvocations))
+	mux.Handle("/api/v1/review/invocations/stream", operator(h.reviewInvocationStream))
+	mux.Handle("/api/v1/review/invocations/", operator(h.reviewInvocationDetail))
+	mux.Handle("/api/v1/servers", operator(h.operatorServers))
+	mux.Handle("/api/v1/servers/", operator(h.operatorServerDetail))
+	mux.Handle("/api/v1/rules", operator(h.operatorRules))
+	mux.Handle("/api/v1/rules/", operator(h.operatorRuleDetail))
+	mux.Handle("/api/v1/agents", operator(h.operatorAgents))
+	mux.Handle("/api/v1/agents/", operator(h.operatorAgentDetail))
+	mux.Handle("/api/v1/model-configs", operator(h.operatorModelConfigs))
+	mux.Handle("/api/v1/llm-configs", operator(h.operatorLLMConfigs))
+	mux.Handle("/api/v1/llm-configs/", operator(h.operatorLLMConfigDetail))
+	mux.Handle("/api/v1/settings", operator(h.operatorSettings))
+	mux.Handle("/api/v1/vm/organizations", operator(h.operatorVMOrganizations))
+	mux.Handle("/api/v1/vm/record-types", operator(h.operatorVMRecordTypes))
+	mux.Handle("/api/v1/vm/custom-fields", operator(h.operatorVMCustomFields))
 	mux.HandleFunc(upstreamMCPOAuthCallbackPath, h.oauthCallback)
-	mux.Handle("/api/v1/admin/policy", admin(h.adminPolicy))
-	mux.Handle("/api/v1/admin/managed-agents/accounts", admin(h.adminManagedAgentAccounts))
-	mux.Handle("/api/v1/admin/managed-agents/agents", admin(h.adminManagedAgents))
-	mux.Handle("/api/v1/admin/managed-agents/sessions/", admin(h.adminManagedAgentSessionDetail))
-	mux.Handle("/api/v1/admin/managed-agents/sessions", admin(h.adminManagedAgentSessions))
+	mux.Handle("/api/v1/policy", operator(h.operatorPolicy))
+	mux.Handle("/api/v1/managed-agents/accounts", operator(h.operatorManagedAgentAccounts))
+	mux.Handle("/api/v1/managed-agents/agents", operator(h.operatorManagedAgents))
+	mux.Handle("/api/v1/managed-agents/sessions/", operator(h.operatorManagedAgentSessionDetail))
+	mux.Handle("/api/v1/managed-agents/sessions", operator(h.operatorManagedAgentSessions))
 	agentRulesHandler := h.agentRuntimeHandler(http.HandlerFunc(h.agentRules))
 	mux.Handle("/api/v1/agent/rules", agentRulesHandler)
 	mux.Handle("/api/v1/external/invocations", h.agentRuntimeHandler(http.HandlerFunc(h.externalInvocations)))
 	mux.Handle("/api/v1/external/invocations/", h.agentRuntimeHandler(http.HandlerFunc(h.externalInvocationDetail)))
 	mux.Handle("/api/v1/external/sessions", h.agentRuntimeHandler(http.HandlerFunc(h.externalSessions)))
+	mux.Handle("/api/v1/external/plans", h.agentRuntimeHandler(http.HandlerFunc(h.externalPlans)))
+	mux.Handle("/api/v1/external/plans/", h.agentRuntimeHandler(http.HandlerFunc(h.externalPlanDetail)))
+	mux.Handle("/api/v1/plans", operator(h.reviewPlans))
+	mux.Handle("/api/v1/plans/stream", operator(h.reviewPlanStream))
+	mux.Handle("/api/v1/plans/", operator(h.reviewPlanDetail))
 	apiKeyMW := auth.APIKeyMiddleware(h.apiKeyAuth)
 	mux.Handle("/agent_ids", apiKeyMW(http.HandlerFunc(h.agentIDs)))
 	mux.Handle("/invocations/", apiKeyMW(http.HandlerFunc(h.invocationsByAgentID)))
@@ -832,6 +956,9 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("/ui", h.uiIndex)
 	mux.Handle("/ui/", http.StripPrefix("/ui/", h.spaFileServer()))
 	mux.HandleFunc("/", h.root)
+	for _, register := range h.extraRoutes {
+		register(mux)
+	}
 	return mux
 }
 
@@ -1024,8 +1151,17 @@ func (h *Handler) agentRules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agentID := auth.AgentIDFromContext(r.Context())
+	// stableAgentID is safe to hand back to the agent as an identity to
+	// reuse (e.g. echoed verbatim into plan-submission guidance): it is
+	// either a verified identity or an explicit agent_id hint. agentID may
+	// additionally fall back to request_id below — a single in-flight tool
+	// call's id, useful for previewing that one call's rule disposition, but
+	// not a stable identity a plan could be submitted under and expect a
+	// later, differently-request_id'd invocation to match.
+	stableAgentID := agentID
 	if agentID == "" && h.authValidator == nil {
 		agentID = normalizeNoAuthAgentID(r.URL.Query().Get("agent_id"))
+		stableAgentID = agentID
 	}
 	if agentID == "" && h.authValidator == nil {
 		agentID = strings.TrimSpace(r.URL.Query().Get("request_id"))
@@ -1036,12 +1172,7 @@ func (h *Handler) agentRules(w http.ResponseWriter, r *http.Request) {
 	}
 	tool := strings.TrimSpace(r.URL.Query().Get("tool"))
 
-	if h.rulesRepo == nil {
-		writeJSON(w, http.StatusOK, newAgentRulesResponse(agentID, server, tool))
-		return
-	}
-
-	resp, err := h.buildAgentRulesResponse(r.Context(), agentID, server, tool)
+	resp, err := h.buildAgentRulesResponse(r.Context(), agentID, stableAgentID, server, tool)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1049,8 +1180,33 @@ func (h *Handler) agentRules(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, server, tool string) (AgentRulesResponse, error) {
+// buildAgentRulesResponse builds the agent-facing rules/plan-submission
+// response. agentID is used for rule matching and echoed back as
+// AgentRulesResponse.AgentID (may be a request-scoped fallback, useful only
+// for previewing that one call's disposition). planAgentID is what the plan
+// submission message may safely present as a stable, reusable identity —
+// pass "" (or agentID itself, when it's already known stable) accordingly.
+func (h *Handler) buildAgentRulesResponse(ctx context.Context, agentID, planAgentID, server, tool string) (AgentRulesResponse, error) {
 	resp := newAgentRulesResponse(agentID, server, tool)
+	if h.svc != nil && h.svc.PlansEnabled() {
+		// Plan submission is available whenever the feature is wired — no
+		// plan configuration is required: a plan with any unmatched action
+		// defaults to human review.
+		//
+		// Bake the caller's source into the submission endpoint: plan
+		// actions are scoped to their source and only match later tool
+		// calls from the same source, and agents copy this endpoint
+		// verbatim from the hint.
+		endpoint := "/api/v1/external/plans"
+		if server != "" {
+			endpoint += "?source=" + url.QueryEscape(server)
+		}
+		resp.PlanSubmission = &AgentPlanSubmission{
+			Enabled:  true,
+			Endpoint: endpoint,
+			Message:  planSubmissionMessage(endpoint, server, planAgentID),
+		}
+	}
 	if h.rulesRepo == nil {
 		return resp, nil
 	}
@@ -1091,8 +1247,10 @@ func (h *Handler) handleAtryumRulesToolCall(w http.ResponseWriter, r *http.Reque
 		arguments = map[string]any{}
 	}
 	agentID := auth.AgentIDFromContext(r.Context())
+	stableAgentID := agentID
 	if agentID == "" && h.authValidator == nil {
 		agentID = normalizeNoAuthAgentID(stringArgument(arguments, "agent_id"))
+		stableAgentID = agentID
 	}
 	if agentID == "" && h.authValidator == nil {
 		agentID = strings.TrimSpace(stringArgument(arguments, "request_id"))
@@ -1106,7 +1264,7 @@ func (h *Handler) handleAtryumRulesToolCall(w http.ResponseWriter, r *http.Reque
 	}
 	tool := strings.TrimSpace(stringArgument(arguments, "tool"))
 
-	resp, err := h.buildAgentRulesResponse(r.Context(), agentID, server, tool)
+	resp, err := h.buildAgentRulesResponse(r.Context(), agentID, stableAgentID, server, tool)
 	if err != nil {
 		h.writeRPCError(w, id, -32000, err.Error())
 		return
@@ -1295,6 +1453,14 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			h.handleAtryumRulesToolCall(w, r, req.ID, server, params.Arguments)
 			return
 		}
+		if params.Name == atryumPlanSubmitTool {
+			h.handleMCPPlanSubmit(w, r, req.ID, server, params.Arguments)
+			return
+		}
+		if params.Name == atryumPlanGetTool {
+			h.handleMCPPlanGet(w, r, req.ID, params.Arguments)
+			return
+		}
 		toolReq := invocation.CreateInvocationRequest{Server: server, Tool: params.Name, Input: params.Arguments}
 		if requestID != "" {
 			toolReq.RequestID = stringPtr(requestID)
@@ -1356,6 +1522,79 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		w.WriteHeader(status)
 		_, _ = w.Write(body)
 	}
+}
+
+func (h *Handler) handleMCPPlanSubmit(w http.ResponseWriter, r *http.Request, id json.RawMessage, server string, args map[string]any) {
+	raw, err := json.Marshal(args)
+	if err != nil {
+		h.writeRPCError(w, id, -32602, "invalid plan arguments")
+		return
+	}
+	var planReq invocation.PlanSubmitRequest
+	if err := json.Unmarshal(raw, &planReq); err != nil {
+		h.writeRPCError(w, id, -32602, "invalid plan arguments")
+		return
+	}
+	if planReq.Source == "" {
+		planReq.Source = server
+	}
+	if planReq.ClientName == "" {
+		if snap, ok := h.lookupClientInfo(r); ok {
+			planReq.ClientName = snap.Name
+			planReq.ClientVersion = snap.Version
+		}
+	}
+	plan, err := h.svc.SubmitPlan(r.Context(), planReq)
+	if err != nil {
+		h.writeRPCError(w, id, -32000, err.Error())
+		return
+	}
+	body, err := json.MarshalIndent(plan, "", "  ")
+	if err != nil {
+		h.writeRPCError(w, id, -32000, "failed to encode plan")
+		return
+	}
+	h.writeRPCResult(w, id, map[string]any{
+		"content": []map[string]any{{
+			"type": "text",
+			"text": "Atryum plan submitted:\n" + string(body),
+		}},
+		"structuredContent": plan,
+	})
+}
+
+func (h *Handler) handleMCPPlanGet(w http.ResponseWriter, r *http.Request, id json.RawMessage, args map[string]any) {
+	rawID, _ := args["plan_id"].(string)
+	planID := strings.TrimSpace(rawID)
+	if planID == "" {
+		h.writeRPCError(w, id, -32602, "plan_id is required")
+		return
+	}
+	plan, err := h.svc.GetPlan(r.Context(), planID)
+	if err != nil {
+		h.writeRPCError(w, id, -32000, err.Error())
+		return
+	}
+	// Match the external polling endpoint's ownership check. In authenticated
+	// deployments a caller may only inspect plans belonging to its verified
+	// agent identity; anonymous no-auth deployments retain their existing
+	// unscoped behavior.
+	if !planOwnedByCaller(r, plan) {
+		h.writeRPCError(w, id, -32000, "plan not found")
+		return
+	}
+	body, err := json.MarshalIndent(plan, "", "  ")
+	if err != nil {
+		h.writeRPCError(w, id, -32000, "failed to encode plan")
+		return
+	}
+	h.writeRPCResult(w, id, map[string]any{
+		"content": []map[string]any{{
+			"type": "text",
+			"text": "Atryum plan status:\n" + string(body),
+		}},
+		"structuredContent": plan,
+	})
 }
 
 // agentIDs returns the distinct enabled agent IDs configured on synced agents.
@@ -1570,11 +1809,51 @@ type atryumToolPolicy struct {
 	MatchedRuleID   string `json:"matched_rule_id,omitempty"`
 }
 
+const (
+	// Keep synthetic MCP helper names Claude-compatible: Anthropic rejects
+	// dotted tool names even though they are otherwise valid MCP identifiers.
+	atryumPlanSubmitTool = "atryum_plan_submit"
+	atryumPlanGetTool    = "atryum_plan_get"
+)
+
+func atryumPlanSubmitMCPTool(server string) annotatedTool {
+	submittingSource := "the submitting source"
+	if server != "" {
+		submittingSource = "this MCP server (\"" + server + "\")"
+	}
+	return annotatedTool{
+		Name:        atryumPlanSubmitTool,
+		Description: "Submit an Atryum plan before running a batch of tools, especially when dependent calls could leave files, systems, or external state inconsistent if a later call is denied. Plans are optional pre-approval, never a prerequisite — tool calls without a plan are gated by the normal approval rules. Arguments: goal string, rationale optional string, actions array of {tool, server?, description?, input_summary?}; an omitted action server defaults to " + submittingSource + ", which is only correct for actions that will be invoked through it — an action executed by your harness's own tools (reported via a hook) must set server to the source that harness reports, or the approved plan can never match the executing call. Declare actions in the exact order they will execute — once a later action has been approved or started, calls matching an earlier action are denied, so declare an expected re-run as its own later action. Give actions sharing a tool and server precise, distinct descriptions and input summaries. ttl_seconds optional number, thread_id optional string, chat_context optional string. After submission, call " + atryumPlanGetTool + " with the returned plan_id until the plan is approved, denied, or needs_revision. Approved plans can preapprove matching later tool calls until the final action succeeds or expires_at is reached.",
+		InputSchema: json.RawMessage(`{"type":"object","required":["goal","actions"],"properties":{"goal":{"type":"string"},"rationale":{"type":"string"},"actions":{"type":"array","minItems":1,"items":{"type":"object","required":["tool"],"properties":{"tool":{"type":"string"},"server":{"type":"string"},"description":{"type":"string"},"input_summary":{"type":"string"}}}},"ttl_seconds":{"type":"integer","minimum":1},"thread_id":{"type":"string"},"chat_context":{"type":"string"},"revision_of":{"type":"string"}}}`),
+		Annotations: &atryumAnnotations{Atryum: atryumToolPolicy{
+			EffectiveAction: invocation.RuleActionHumanApproval,
+		}},
+	}
+}
+
+func atryumPlanGetMCPTool() annotatedTool {
+	return annotatedTool{
+		Name:        atryumPlanGetTool,
+		Description: "Get the current status of an Atryum plan by plan_id. Use this after " + atryumPlanSubmitTool + " while waiting for approved, denied, needs_revision, completed, expired, cancelled, or superseded.",
+		InputSchema: json.RawMessage(`{"type":"object","required":["plan_id"],"properties":{"plan_id":{"type":"string"}}}`),
+		Annotations: &atryumAnnotations{Atryum: atryumToolPolicy{
+			EffectiveAction: invocation.RuleActionHumanApproval,
+		}},
+	}
+}
+
 // annotateToolsWithPolicy decorates each tool with its effective approval
 // disposition for the current agent so the model sees the policy at the moment
 // it picks a tool. Annotation requires both rulesRepo and a concrete server.
 func (h *Handler) annotateToolsWithPolicy(ctx context.Context, agentID, server string, tools []mcp.Tool) []any {
-	out := make([]any, 0, len(tools)+1)
+	out := make([]any, 0, len(tools)+3)
+	// Plan tools are offered whenever the plan feature is wired — no
+	// plan configuration is required: a plan with any unmatched action
+	// defaults to human review.
+	if h.svc != nil && h.svc.PlansEnabled() {
+		out = append(out, atryumPlanSubmitMCPTool(strings.TrimSpace(server)))
+		out = append(out, atryumPlanGetMCPTool())
+	}
 	if h.rulesRepo == nil || strings.TrimSpace(server) == "" {
 		for _, t := range tools {
 			if t.Name != atryumRulesToolName {
@@ -1645,7 +1924,7 @@ func (h *Handler) appendRulesContextToToolResult(ctx context.Context, result any
 	if h.rulesRepo == nil {
 		return result
 	}
-	rulesResp, err := h.buildAgentRulesResponse(ctx, agentID, server, tool)
+	rulesResp, err := h.buildAgentRulesResponse(ctx, agentID, agentID, server, tool)
 	if err != nil {
 		return result
 	}
@@ -1670,7 +1949,7 @@ func (h *Handler) appendRulesContextToToolResult(ctx context.Context, result any
 	return m
 }
 
-func (h *Handler) adminInvocations(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) reviewInvocations(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -1691,7 +1970,7 @@ func (h *Handler) adminInvocations(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *Handler) adminInvocationStream(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) reviewInvocationStream(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "streaming unsupported")
@@ -1732,8 +2011,8 @@ func (h *Handler) adminInvocationStream(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) {
-	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/invocations/")
+func (h *Handler) reviewInvocationDetail(w http.ResponseWriter, r *http.Request) {
+	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/review/invocations/")
 	trimmed = strings.Trim(trimmed, "/")
 	if trimmed == "" {
 		writeError(w, http.StatusNotFound, "not found")
@@ -1880,13 +2159,13 @@ func (h *Handler) adminInvocationDetail(w http.ResponseWriter, r *http.Request) 
 }
 
 // SummarizeInvocationRequest is the JSON body accepted by
-// POST /api/v1/admin/invocations/{id}/summarize.
+// POST /api/v1/review/invocations/{id}/summarize.
 type SummarizeInvocationRequest struct {
 	ModelConfigCUID string `json:"model_config_cuid"`
 }
 
 // SummarizeInvocationResponse is the JSON shape returned by
-// POST /api/v1/admin/invocations/{id}/summarize.
+// POST /api/v1/review/invocations/{id}/summarize.
 type SummarizeInvocationResponse struct {
 	InvocationID string `json:"invocation_id"`
 	Summary      string `json:"summary"`
@@ -1928,7 +2207,7 @@ func (h *Handler) summarizeInvocation(w http.ResponseWriter, r *http.Request, id
 		return
 	}
 
-	// Round-trip via JSON so the backend sees the same shape as the admin
+	// Round-trip via JSON so the backend sees the same shape as the review
 	// detail endpoint (input/result/error are json.RawMessage on the wire).
 	raw, err := json.Marshal(inv)
 	if err != nil {
@@ -2001,7 +2280,7 @@ func (h *Handler) summarizeInvocation(w http.ResponseWriter, r *http.Request, id
 	})
 }
 
-func (h *Handler) adminServers(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorServers(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		filter := mcp.ServerFilter{Offset: readUintQuery(r, "offset", 0), Limit: readUintQuery(r, "limit", 50)}
@@ -2020,7 +2299,7 @@ func (h *Handler) adminServers(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, resp)
 	case http.MethodPost:
-		var req AdminServerUpsertRequest
+		var req OperatorServerUpsertRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
@@ -2036,8 +2315,8 @@ func (h *Handler) adminServers(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Handler) adminServerDetail(w http.ResponseWriter, r *http.Request) {
-	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/servers/")
+func (h *Handler) operatorServerDetail(w http.ResponseWriter, r *http.Request) {
+	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/servers/")
 	trimmed = strings.Trim(trimmed, "/")
 	if trimmed == "" {
 		writeError(w, http.StatusNotFound, "not found")
@@ -2068,14 +2347,14 @@ func (h *Handler) adminServerDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		name := strings.TrimSuffix(trimmed, "/test")
 		name = strings.TrimSuffix(name, "/")
-		h.debugf("admin server test request method=%s path=%s server=%s remote=%s origin=%q referer=%q user_agent=%q content_length=%d", r.Method, r.URL.Path, name, r.RemoteAddr, r.Header.Get("Origin"), r.Header.Get("Referer"), r.UserAgent(), r.ContentLength)
+		h.debugf("operator server test request method=%s path=%s server=%s remote=%s origin=%q referer=%q user_agent=%q content_length=%d", r.Method, r.URL.Path, name, r.RemoteAddr, r.Header.Get("Origin"), r.Header.Get("Referer"), r.UserAgent(), r.ContentLength)
 		resp, err := h.serverSvc.Test(r.Context(), name)
 		if err != nil {
-			h.debugf("admin server test error server=%s err=%v", name, err)
+			h.debugf("operator server test error server=%s err=%v", name, err)
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		h.debugf("admin server test response server=%s ok=%t connection_status=%s auth_status=%s reauth_needed=%t last_check_ok=%t message=%q action_required=%q", name, resp.Ok, resp.ConnectionStatus, resp.AuthStatus, resp.ReauthNeeded, resp.LastCheckOK, resp.Message, debugStringPtr(resp.ActionRequired))
+		h.debugf("operator server test response server=%s ok=%t connection_status=%s auth_status=%s reauth_needed=%t last_check_ok=%t message=%q action_required=%q", name, resp.Ok, resp.ConnectionStatus, resp.AuthStatus, resp.ReauthNeeded, resp.LastCheckOK, resp.Message, debugStringPtr(resp.ActionRequired))
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
@@ -2123,7 +2402,7 @@ func (h *Handler) adminServerDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, server)
 	case http.MethodPut:
-		var req AdminServerUpsertRequest
+		var req OperatorServerUpsertRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
@@ -2169,7 +2448,7 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`<html><body><h1>OAuth connect complete</h1><p>` + escapeHTMLString(message) + `</p><script>window.close && window.close()</script></body></html>`))
 }
 
-func (h *Handler) adminPolicy(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorPolicy(w http.ResponseWriter, r *http.Request) {
 	if h.policyRegistry == nil {
 		writeError(w, http.StatusServiceUnavailable, "policy registry not configured")
 		return
@@ -2232,7 +2511,7 @@ func debugStringPtr(value *string) string {
 	return *value
 }
 
-func (h *Handler) adminRules(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorRules(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		rules, err := h.rulesRepo.List(r.Context())
@@ -2240,13 +2519,13 @@ func (h *Handler) adminRules(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		items := make([]AdminRule, 0, len(rules))
+		items := make([]OperatorRule, 0, len(rules))
 		for _, rule := range rules {
-			items = append(items, toAdminRule(rule))
+			items = append(items, toOperatorRule(rule))
 		}
 		writeJSON(w, http.StatusOK, RuleListResponse{Items: items})
 	case http.MethodPost:
-		var req AdminRuleInput
+		var req OperatorRuleInput
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
@@ -2293,14 +2572,14 @@ func (h *Handler) adminRules(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusCreated, toAdminRule(created))
+		writeJSON(w, http.StatusCreated, toOperatorRule(created))
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
-func (h *Handler) adminRuleDetail(w http.ResponseWriter, r *http.Request) {
-	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/rules/")
+func (h *Handler) operatorRuleDetail(w http.ResponseWriter, r *http.Request) {
+	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/rules/")
 	trimmed = strings.Trim(trimmed, "/")
 	if trimmed == "" {
 		writeError(w, http.StatusNotFound, "not found")
@@ -2330,9 +2609,9 @@ func (h *Handler) adminRuleDetail(w http.ResponseWriter, r *http.Request) {
 			writeError(w, status, err.Error())
 			return
 		}
-		items := make([]AdminRule, 0, len(rules))
+		items := make([]OperatorRule, 0, len(rules))
 		for _, rule := range rules {
-			items = append(items, toAdminRule(rule))
+			items = append(items, toOperatorRule(rule))
 		}
 		writeJSON(w, http.StatusOK, RuleListResponse{Items: items})
 		return
@@ -2350,9 +2629,9 @@ func (h *Handler) adminRuleDetail(w http.ResponseWriter, r *http.Request) {
 			writeError(w, status, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, toAdminRule(rule))
+		writeJSON(w, http.StatusOK, toOperatorRule(rule))
 	case http.MethodPut:
-		var req AdminRuleInput
+		var req OperatorRuleInput
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
@@ -2391,7 +2670,7 @@ func (h *Handler) adminRuleDetail(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, toAdminRule(updated))
+		writeJSON(w, http.StatusOK, toOperatorRule(updated))
 	case http.MethodDelete:
 		if err := h.rulesRepo.Delete(r.Context(), id); err != nil {
 			status := http.StatusInternalServerError
@@ -2409,7 +2688,7 @@ func (h *Handler) adminRuleDetail(w http.ResponseWriter, r *http.Request) {
 
 // ─── Model config handler ─────────────────────────────────────────────────────
 
-func (h *Handler) adminModelConfigs(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorModelConfigs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -2423,17 +2702,17 @@ func (h *Handler) adminModelConfigs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "failed to fetch model configs: "+err.Error())
 		return
 	}
-	items := make([]AdminModelConfig, 0, len(resp.Items))
+	items := make([]OperatorModelConfig, 0, len(resp.Items))
 	for _, c := range resp.Items {
-		items = append(items, AdminModelConfig{CUID: c.CUID, Name: c.Name})
+		items = append(items, OperatorModelConfig{CUID: c.CUID, Name: c.Name})
 	}
 	writeJSON(w, http.StatusOK, ModelConfigListResponse{Items: items, Total: len(items)})
 }
 
 // ─── Agent Sync Settings handlers ────────────────────────────────────────────
 
-// AgentSyncSettingsResponse is the JSON shape returned by GET /admin/settings
-// and PUT /admin/settings. SyncError is non-empty when the post-save agent
+// AgentSyncSettingsResponse is the JSON shape returned by GET /api/v1/settings
+// and PUT /api/v1/settings. SyncError is non-empty when the post-save agent
 // sync failed; settings are persisted regardless.
 type AgentSyncSettingsResponse struct {
 	OrgCUID                  string `json:"org_cuid"`
@@ -2447,7 +2726,7 @@ type AgentSyncSettingsResponse struct {
 	BackendConfigured        bool   `json:"backend_configured"`
 }
 
-// AgentSyncSettingsInput is the JSON body accepted by PUT /admin/settings.
+// AgentSyncSettingsInput is the JSON body accepted by PUT /api/v1/settings.
 type AgentSyncSettingsInput struct {
 	OrgCUID                  string `json:"org_cuid"`
 	AgentRecordTypeSlug      string `json:"agent_record_type_slug"`
@@ -2459,11 +2738,11 @@ type AgentSyncSettingsInput struct {
 
 // ─── Local LLM Config handlers ────────────────────────────────────────────────
 
-func (h *Handler) adminLLMConfigs(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorLLMConfigs(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		if h.llmConfigsRepo == nil {
-			writeJSON(w, http.StatusOK, LLMConfigListResponse{Items: []AdminLLMConfig{}})
+			writeJSON(w, http.StatusOK, LLMConfigListResponse{Items: []OperatorLLMConfig{}})
 			return
 		}
 		cfgs, err := h.llmConfigsRepo.List(r.Context())
@@ -2471,9 +2750,9 @@ func (h *Handler) adminLLMConfigs(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to list llm configs")
 			return
 		}
-		items := make([]AdminLLMConfig, 0, len(cfgs))
+		items := make([]OperatorLLMConfig, 0, len(cfgs))
 		for _, c := range cfgs {
-			items = append(items, toAdminLLMConfig(c))
+			items = append(items, toOperatorLLMConfig(c))
 		}
 		writeJSON(w, http.StatusOK, LLMConfigListResponse{Items: items})
 
@@ -2482,7 +2761,7 @@ func (h *Handler) adminLLMConfigs(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusServiceUnavailable, "llm configs not available")
 			return
 		}
-		var req AdminLLMConfigInput
+		var req OperatorLLMConfigInput
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
@@ -2505,25 +2784,25 @@ func (h *Handler) adminLLMConfigs(w http.ResponseWriter, r *http.Request) {
 			Enabled:  enabled,
 		}
 		if err := h.llmConfigsRepo.Create(r.Context(), cfg); err != nil {
-			log.Printf("[adminLLMConfigs] create failed id=%s provider=%s: %v", cfg.ID, cfg.Provider, err)
+			log.Printf("[operatorLLMConfigs] create failed id=%s provider=%s: %v", cfg.ID, cfg.Provider, err)
 			writeError(w, http.StatusInternalServerError, "failed to create llm config")
 			return
 		}
 		created, err := h.llmConfigsRepo.Get(r.Context(), cfg.ID)
 		if err != nil {
-			log.Printf("[adminLLMConfigs] get after create failed id=%s: %v", cfg.ID, err)
+			log.Printf("[operatorLLMConfigs] get after create failed id=%s: %v", cfg.ID, err)
 			writeError(w, http.StatusInternalServerError, "failed to retrieve llm config")
 			return
 		}
-		writeJSON(w, http.StatusCreated, toAdminLLMConfig(created))
+		writeJSON(w, http.StatusCreated, toOperatorLLMConfig(created))
 
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
-func (h *Handler) adminLLMConfigDetail(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/llm-configs/")
+func (h *Handler) operatorLLMConfigDetail(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/llm-configs/")
 	id = strings.Trim(id, "/")
 	if id == "" {
 		writeError(w, http.StatusNotFound, "not found")
@@ -2545,10 +2824,10 @@ func (h *Handler) adminLLMConfigDetail(w http.ResponseWriter, r *http.Request) {
 			writeError(w, status, "llm config not found")
 			return
 		}
-		writeJSON(w, http.StatusOK, toAdminLLMConfig(cfg))
+		writeJSON(w, http.StatusOK, toOperatorLLMConfig(cfg))
 
 	case http.MethodPatch:
-		var req AdminLLMConfigInput
+		var req OperatorLLMConfigInput
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
@@ -2589,7 +2868,7 @@ func (h *Handler) adminLLMConfigDetail(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to retrieve llm config")
 			return
 		}
-		writeJSON(w, http.StatusOK, toAdminLLMConfig(updated))
+		writeJSON(w, http.StatusOK, toOperatorLLMConfig(updated))
 
 	case http.MethodDelete:
 		if err := h.llmConfigsRepo.Delete(r.Context(), id); err != nil {
@@ -2607,12 +2886,12 @@ func (h *Handler) adminLLMConfigDetail(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func toAdminLLMConfig(c store.LLMConfig) AdminLLMConfig {
+func toOperatorLLMConfig(c store.LLMConfig) OperatorLLMConfig {
 	apiKey := ""
 	if c.APIKey != "" {
 		apiKey = "***"
 	}
-	return AdminLLMConfig{
+	return OperatorLLMConfig{
 		ID:        c.ID,
 		Name:      c.Name,
 		Provider:  string(c.Provider),
@@ -2624,7 +2903,7 @@ func toAdminLLMConfig(c store.LLMConfig) AdminLLMConfig {
 	}
 }
 
-func validateLLMConfigInput(req AdminLLMConfigInput) error {
+func validateLLMConfigInput(req OperatorLLMConfigInput) error {
 	if strings.TrimSpace(req.Name) == "" {
 		return fmt.Errorf("name is required")
 	}
@@ -2644,7 +2923,7 @@ func validateLLMConfigInput(req AdminLLMConfigInput) error {
 
 // ─── Settings handler ─────────────────────────────────────────────────────────
 
-func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorSettings(w http.ResponseWriter, r *http.Request) {
 	if h.agentSyncSettingsRepo == nil {
 		writeError(w, http.StatusServiceUnavailable, "settings not available")
 		return
@@ -2716,7 +2995,7 @@ func (h *Handler) adminSettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to read saved settings: "+err.Error())
 			return
 		}
-		log.Printf("[adminSettings] GET after save: org_cuid=%q record_type=%q", s.OrgCUID, s.AgentRecordTypeSlug)
+		log.Printf("[operatorSettings] GET after save: org_cuid=%q record_type=%q", s.OrgCUID, s.AgentRecordTypeSlug)
 		resp := AgentSyncSettingsResponse{
 			OrgCUID:                  s.OrgCUID,
 			AgentRecordTypeSlug:      s.AgentRecordTypeSlug,
@@ -2772,7 +3051,7 @@ type VMCustomFieldListResponse struct {
 	Total int                 `json:"total"`
 }
 
-func (h *Handler) adminVMOrganizations(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorVMOrganizations(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -2793,7 +3072,7 @@ func (h *Handler) adminVMOrganizations(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, VMOrgListResponse{Items: items, Total: len(items), AuthMode: resp.AuthMode, SingleOrg: resp.SingleOrg})
 }
 
-func (h *Handler) adminVMRecordTypes(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorVMRecordTypes(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -2819,7 +3098,7 @@ func (h *Handler) adminVMRecordTypes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, VMRecordTypeListResponse{Items: items, Total: len(items)})
 }
 
-func (h *Handler) adminVMCustomFields(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorVMCustomFields(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -2848,7 +3127,7 @@ func (h *Handler) adminVMCustomFields(w http.ResponseWriter, r *http.Request) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-func toAdminRule(r store.Rule) AdminRule {
+func toOperatorRule(r store.Rule) OperatorRule {
 	sp := r.ServerPatterns
 	if sp == nil {
 		sp = []string{}
@@ -2861,7 +3140,7 @@ func toAdminRule(r store.Rule) AdminRule {
 	if ac == nil {
 		ac = []string{}
 	}
-	return AdminRule{
+	return OperatorRule{
 		ID:                r.ID,
 		Action:            r.Action,
 		ServerPatterns:    sp,
@@ -2886,7 +3165,7 @@ func normalizePatternSlice(s []string) []string {
 
 // ─── Agent handlers ───────────────────────────────────────────────────────────
 
-func (h *Handler) adminAgents(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorAgents(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		records, err := h.agentsRepo.List(r.Context())
@@ -2894,14 +3173,14 @@ func (h *Handler) adminAgents(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to list agents")
 			return
 		}
-		items := make([]AdminAgent, 0, len(records))
+		items := make([]OperatorAgent, 0, len(records))
 		for _, a := range records {
-			items = append(items, h.toAdminAgent(r.Context(), a))
+			items = append(items, h.toOperatorAgent(r.Context(), a))
 		}
 		writeJSON(w, http.StatusOK, AgentListResponse{Items: items})
 
 	case http.MethodPost:
-		var req AdminAgentCreateInput
+		var req OperatorAgentCreateInput
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
@@ -2939,6 +3218,7 @@ func (h *Handler) adminAgents(w http.ResponseWriter, r *http.Request) {
 			AgentIDs:           agentIDsJSON,
 			Enabled:            req.Enabled,
 			Charter:            req.Charter,
+			Tags:               req.Tags,
 		}
 		var bindings []store.ManagedAgentBinding
 		if h.managedAgentBindings != nil && len(req.ClaudeManagedAgents) > 0 {
@@ -2966,22 +3246,22 @@ func (h *Handler) adminAgents(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to retrieve created agent")
 			return
 		}
-		writeJSON(w, http.StatusCreated, h.toAdminAgent(r.Context(), record))
+		writeJSON(w, http.StatusCreated, h.toOperatorAgent(r.Context(), record))
 
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
-func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
-	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/admin/agents/")
+func (h *Handler) operatorAgentDetail(w http.ResponseWriter, r *http.Request) {
+	trimmed := strings.TrimPrefix(r.URL.Path, "/api/v1/agents/")
 	trimmed = strings.Trim(trimmed, "/")
 	if trimmed == "" {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 
-	// POST /api/v1/admin/agents/sync — trigger a backend sync
+	// POST /api/v1/agents/sync — trigger a backend sync
 	if trimmed == "sync" {
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -3000,15 +3280,23 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		items := make([]AdminAgent, 0, len(records))
+		items := make([]OperatorAgent, 0, len(records))
 		for _, a := range records {
-			items = append(items, h.toAdminAgent(r.Context(), a))
+			items = append(items, h.toOperatorAgent(r.Context(), a))
 		}
 		writeJSON(w, http.StatusOK, AgentListResponse{Items: items})
 		return
 	}
 
-	// /api/v1/admin/agents/:id — GET / PATCH / DELETE
+	// GET /api/v1/agents/:id/charter-preview — assemble the charter hierarchy
+	if strings.HasSuffix(trimmed, "/charter-preview") {
+		id := strings.TrimSuffix(trimmed, "/charter-preview")
+		id = strings.Trim(id, "/")
+		h.operatorAgentCharterPreview(w, r, id)
+		return
+	}
+
+	// /api/v1/agents/:id — GET / PATCH / DELETE
 	id := trimmed
 	switch r.Method {
 	case http.MethodGet:
@@ -3021,10 +3309,10 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 			writeError(w, status, "agent not found")
 			return
 		}
-		writeJSON(w, http.StatusOK, h.toAdminAgent(r.Context(), record))
+		writeJSON(w, http.StatusOK, h.toOperatorAgent(r.Context(), record))
 
 	case http.MethodPatch:
-		var req AdminAgentInput
+		var req OperatorAgentInput
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
@@ -3072,14 +3360,16 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 				h.releaseNewManagedAgentClaims(r.Context(), id, beforeBindings, bindings)
 			}
 		}
-		if err := h.agentsRepo.UpdateEnabled(r.Context(), id, req.Enabled); err != nil {
-			cleanupNewClaims()
-			status := http.StatusInternalServerError
-			if err == sql.ErrNoRows {
-				status = http.StatusNotFound
+		if req.Enabled != nil {
+			if err := h.agentsRepo.UpdateEnabled(r.Context(), id, *req.Enabled); err != nil {
+				cleanupNewClaims()
+				status := http.StatusInternalServerError
+				if err == sql.ErrNoRows {
+					status = http.StatusNotFound
+				}
+				writeError(w, status, "agent not found")
+				return
 			}
-			writeError(w, status, "agent not found")
-			return
 		}
 		if req.AgentIDs != nil {
 			idsJSON, err := json.Marshal(req.AgentIDs)
@@ -3109,6 +3399,20 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		// Tags are editable for all agents (including synced ones). Persist only
+		// when the caller included the field (non-nil pointer), so omitting it
+		// leaves existing tags untouched.
+		if req.Tags != nil {
+			if err := h.agentsRepo.UpdateTags(r.Context(), id, *req.Tags); err != nil {
+				cleanupNewClaims()
+				status := http.StatusInternalServerError
+				if err == sql.ErrNoRows {
+					status = http.StatusNotFound
+				}
+				writeError(w, status, "agent not found")
+				return
+			}
+		}
 		if managedBindingsTouched {
 			if err := h.managedAgentBindings.ReplaceForAgent(r.Context(), id, bindings); err != nil {
 				cleanupNewClaims()
@@ -3122,7 +3426,7 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to retrieve agent")
 			return
 		}
-		writeJSON(w, http.StatusOK, h.toAdminAgent(r.Context(), record))
+		writeJSON(w, http.StatusOK, h.toOperatorAgent(r.Context(), record))
 
 	case http.MethodDelete:
 		record, err := h.agentsRepo.Get(r.Context(), id)
@@ -3153,9 +3457,76 @@ func (h *Handler) adminAgentDetail(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// operatorAgentCharterPreview assembles the per-agent charter hierarchy. For synced
+// agents (with a VM cuid) it delegates to the ValidMind backend; for local
+// agents it returns the agent's own stored charter.
+func (h *Handler) operatorAgentCharterPreview(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if id == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	agent, err := h.agentsRepo.Get(r.Context(), id)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if err == sql.ErrNoRows {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, "agent not found")
+		return
+	}
+
+	var charterFieldKey string
+	if h.agentSyncSettingsRepo != nil {
+		settings, _ := h.agentSyncSettingsRepo.Get(r.Context())
+		charterFieldKey = settings.CharterFieldKey
+	}
+
+	// VMOrganizationCUID (mirrored in OperatorAgent.Synced) is the correct "is this
+	// a real ValidMind-synced agent" signal. VMCUID alone is NOT — manually
+	// created agents get VMCUID reused as their local id (see the create
+	// handler above) while VMOrganizationCUID stays empty, precisely so a fake
+	// VMCUID is never mistaken for a real ValidMind inventory-model cuid here.
+	if agent.VMOrganizationCUID != "" && h.backendClient != nil {
+		result, err := h.backendClient.CharterPreview(r.Context(), agent.VMCUID, charterFieldKey, agent.VMOrganizationCUID)
+		if err != nil {
+			log.Printf("charter-preview: backend call failed for agent %s: %v", id, err)
+			writeError(w, http.StatusBadGateway, "failed to assemble charter from ValidMind backend")
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+
+	// Local agent (or no backend client): show the agent's own stored charter.
+	if agent.Charter != "" {
+		header := agent.VMName
+		if header == "" {
+			header = "This agent"
+		}
+		writeJSON(w, http.StatusOK, backendclient.CharterPreviewResult{
+			Segments: []backendclient.CharterSegment{{
+				Kind:   "agent",
+				Header: header,
+				Text:   agent.Charter,
+			}},
+			Combined: agent.Charter,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, backendclient.CharterPreviewResult{
+		Segments: []backendclient.CharterSegment{},
+		Combined: "",
+	})
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
-func validateRuleInput(req AdminRuleInput) error {
+func validateRuleInput(req OperatorRuleInput) error {
 	switch req.Action {
 	case "auto_approve", "auto_deny", "human_approval":
 	case "ai_evaluation":
@@ -3195,7 +3566,7 @@ func readUintQuery(r *http.Request, key string, fallback uint64) uint64 {
 	return parsed
 }
 
-type ServerAdminService struct {
+type ServerOperatorService struct {
 	repo          serverRepo
 	oauthRepo     *store.OAuthRepo
 	client        *mcp.Client
@@ -3213,36 +3584,36 @@ type serverRepo interface {
 	DisableServer(ctx context.Context, name string) error
 }
 
-func NewServerAdminService(repo serverRepo, oauthRepo *store.OAuthRepo, client *mcp.Client, timeout time.Duration, publicBaseURL string) *ServerAdminService {
-	return &ServerAdminService{repo: repo, oauthRepo: oauthRepo, client: client, timeout: timeout, publicBaseURL: strings.TrimRight(strings.TrimSpace(publicBaseURL), "/")}
+func NewServerOperatorService(repo serverRepo, oauthRepo *store.OAuthRepo, client *mcp.Client, timeout time.Duration, publicBaseURL string) *ServerOperatorService {
+	return &ServerOperatorService{repo: repo, oauthRepo: oauthRepo, client: client, timeout: timeout, publicBaseURL: strings.TrimRight(strings.TrimSpace(publicBaseURL), "/")}
 }
 
-func (s *ServerAdminService) List(ctx context.Context, filter mcp.ServerFilter) (ServerListResponse, error) {
+func (s *ServerOperatorService) List(ctx context.Context, filter mcp.ServerFilter) (ServerListResponse, error) {
 	items, total, err := s.repo.ListServers(ctx, filter)
 	if err != nil {
 		return ServerListResponse{}, err
 	}
-	servers := make([]AdminServer, 0, len(items))
+	servers := make([]OperatorServer, 0, len(items))
 	for _, item := range items {
-		servers = append(servers, s.adminViewWithGrantedScopes(ctx, item))
+		servers = append(servers, s.operatorViewWithGrantedScopes(ctx, item))
 	}
 	return ServerListResponse{Items: servers, Total: total, Offset: filter.Offset, Limit: normalizeLimit(filter.Limit, 50)}, nil
 }
 
-func (s *ServerAdminService) Get(ctx context.Context, name string) (AdminServer, error) {
+func (s *ServerOperatorService) Get(ctx context.Context, name string) (OperatorServer, error) {
 	upstream, err := s.repo.GetServerAny(ctx, name)
 	if err != nil {
-		return AdminServer{}, err
+		return OperatorServer{}, err
 	}
-	return s.adminViewWithGrantedScopes(ctx, upstream), nil
+	return s.operatorViewWithGrantedScopes(ctx, upstream), nil
 }
 
-// adminViewWithGrantedScopes is toAdminServer + an overlay of the actual
+// operatorViewWithGrantedScopes is toOperatorServer + an overlay of the actual
 // scope string the AS granted on the latest successful token exchange.
 // Pulled separately from oauth_credentials.scope so the UI can show both
 // what we requested and what's actually live.
-func (s *ServerAdminService) adminViewWithGrantedScopes(ctx context.Context, upstream mcp.Upstream) AdminServer {
-	view := toAdminServer(upstream)
+func (s *ServerOperatorService) operatorViewWithGrantedScopes(ctx context.Context, upstream mcp.Upstream) OperatorServer {
+	view := toOperatorServer(upstream)
 	view.EndpointURL = s.endpointURL(view.EndpointSlug)
 	if cred, err := s.oauthRepo.GetCredential(ctx, upstream.Name); err == nil {
 		view.OAuthGrantedScopes = cred.Scope
@@ -3250,24 +3621,24 @@ func (s *ServerAdminService) adminViewWithGrantedScopes(ctx context.Context, ups
 	return view
 }
 
-func (s *ServerAdminService) Upsert(ctx context.Context, name string, req AdminServerUpsertRequest) (AdminServer, error) {
+func (s *ServerOperatorService) Upsert(ctx context.Context, name string, req OperatorServerUpsertRequest) (OperatorServer, error) {
 	serverName := strings.TrimSpace(name)
 	requestedName := strings.TrimSpace(req.Name)
 	if serverName == "" {
 		serverName = requestedName
 	}
 	if serverName != "" && requestedName != "" && requestedName != serverName {
-		return AdminServer{}, fmt.Errorf("renaming servers is not supported; create a new server instead")
+		return OperatorServer{}, fmt.Errorf("renaming servers is not supported; create a new server instead")
 	}
 	if serverName == "" {
-		return AdminServer{}, fmt.Errorf("name is required")
+		return OperatorServer{}, fmt.Errorf("name is required")
 	}
 	if mcp.EndpointSlug(serverName) == "" {
-		return AdminServer{}, fmt.Errorf("name must include at least one letter or number")
+		return OperatorServer{}, fmt.Errorf("name must include at least one letter or number")
 	}
 	mode := strings.TrimSpace(req.Mode)
 	if mode == "" {
-		return AdminServer{}, fmt.Errorf("mode is required")
+		return OperatorServer{}, fmt.Errorf("mode is required")
 	}
 	enabled := true
 	if req.Enabled != nil {
@@ -3281,7 +3652,7 @@ func (s *ServerAdminService) Upsert(ctx context.Context, name string, req AdminS
 	if endpointSlug == "" {
 		endpointSlug = mcp.EndpointSlug(serverName)
 		if err := s.validateEndpointSlugAvailable(ctx, serverName, endpointSlug); err != nil {
-			return AdminServer{}, err
+			return OperatorServer{}, err
 		}
 	}
 
@@ -3329,15 +3700,15 @@ func (s *ServerAdminService) Upsert(ctx context.Context, name string, req AdminS
 	}
 	upstream.Status = inferServerStatus(upstream)
 	if err := validateUpstream(upstream); err != nil {
-		return AdminServer{}, err
+		return OperatorServer{}, err
 	}
 	if err := s.repo.UpsertServer(ctx, upstream); err != nil {
-		return AdminServer{}, err
+		return OperatorServer{}, err
 	}
-	return s.adminViewWithGrantedScopes(ctx, upstream), nil
+	return s.operatorViewWithGrantedScopes(ctx, upstream), nil
 }
 
-func (s *ServerAdminService) validateEndpointSlugAvailable(ctx context.Context, serverName string, slug string) error {
+func (s *ServerOperatorService) validateEndpointSlugAvailable(ctx context.Context, serverName string, slug string) error {
 	item, err := s.repo.GetServerByEndpointSlugAny(ctx, slug)
 	if err == sql.ErrNoRows {
 		return nil
@@ -3354,7 +3725,7 @@ func (s *ServerAdminService) validateEndpointSlugAvailable(ctx context.Context, 
 	return nil
 }
 
-func (s *ServerAdminService) endpointURL(slug string) string {
+func (s *ServerOperatorService) endpointURL(slug string) string {
 	if slug == "" {
 		return ""
 	}
@@ -3364,14 +3735,14 @@ func (s *ServerAdminService) endpointURL(slug string) string {
 	return s.publicBaseURL + "/mcp/" + slug
 }
 
-func (s *ServerAdminService) Delete(ctx context.Context, name string, disable bool) error {
+func (s *ServerOperatorService) Delete(ctx context.Context, name string, disable bool) error {
 	if disable {
 		return s.repo.DisableServer(ctx, name)
 	}
 	return s.repo.DeleteServer(ctx, name)
 }
 
-func (s *ServerAdminService) Test(ctx context.Context, name string) (ServerTestResponse, error) {
+func (s *ServerOperatorService) Test(ctx context.Context, name string) (ServerTestResponse, error) {
 	upstream, err := s.repo.GetServerAny(ctx, name)
 	if err != nil {
 		return ServerTestResponse{}, err
@@ -3397,7 +3768,7 @@ func (s *ServerAdminService) Test(ctx context.Context, name string) (ServerTestR
 	return ServerTestResponse{Ok: result.Ok, Message: result.Message, ConnectionStatus: string(result.ConnectionStatus), AuthStatus: string(result.AuthStatus), ReauthNeeded: result.ReauthNeeded, LastCheckedAt: upstream.Status.LastCheckedAt, LastCheckOK: result.LastCheckOK, LastErrorSummary: result.LastErrorSummary, ActionRequired: result.ActionRequired}, nil
 }
 
-func (s *ServerAdminService) StartConnect(ctx context.Context, name string, appBaseURL string) (OAuthConnectStartResponse, error) {
+func (s *ServerOperatorService) StartConnect(ctx context.Context, name string, appBaseURL string) (OAuthConnectStartResponse, error) {
 	upstream, err := s.repo.GetServerAny(ctx, name)
 	if err != nil {
 		return OAuthConnectStartResponse{}, err
@@ -3436,7 +3807,7 @@ func (s *ServerAdminService) StartConnect(ctx context.Context, name string, appB
 	return OAuthConnectStartResponse{ConnectURL: connectReq.URL, State: stateToken}, nil
 }
 
-func (s *ServerAdminService) GetConnectStatus(ctx context.Context, name string) (OAuthConnectStatusResponse, error) {
+func (s *ServerOperatorService) GetConnectStatus(ctx context.Context, name string) (OAuthConnectStatusResponse, error) {
 	session, err := s.oauthRepo.GetLatestConnectSessionByServer(ctx, name)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -3447,7 +3818,7 @@ func (s *ServerAdminService) GetConnectStatus(ctx context.Context, name string) 
 	return OAuthConnectStatusResponse{Status: session.Status, Message: session.ErrorMessage, StartedAt: &session.StartedAt, CompletedAt: session.CompletedAt}, nil
 }
 
-func (s *ServerAdminService) CompleteConnect(ctx context.Context, state string, code string, errorText string) (OAuthConnectStatusResponse, error) {
+func (s *ServerOperatorService) CompleteConnect(ctx context.Context, state string, code string, errorText string) (OAuthConnectStatusResponse, error) {
 	if strings.TrimSpace(state) == "" {
 		return OAuthConnectStatusResponse{}, fmt.Errorf("missing oauth state")
 	}
@@ -3569,6 +3940,8 @@ func (h *Handler) externalInvocations(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// ─── Plan handlers ────────────────────────────────────────────────────────────
+
 // externalSessions mints a harness session (POST /api/v1/external/sessions).
 //
 // Deprecated: harnesses should instead send client_session_id on every
@@ -3590,8 +3963,6 @@ func (h *Handler) externalSessions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	// Authenticated identity wins; otherwise bind to the self-declared agent_id
-	// (no-auth mode), mirroring Submit.
 	agentID := auth.AgentIDFromContext(r.Context())
 	if agentID == "" {
 		agentID = strings.TrimSpace(req.AgentID)
@@ -3604,10 +3975,312 @@ func (h *Handler) externalSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, resp)
 }
 
-// adminManagedAgentSessions registers a Claude Managed Agents session for
+// PlanApproveRequest optionally overrides the pass TTL the agent requested.
+type PlanApproveRequest struct {
+	TTLSeconds int `json:"ttl_seconds,omitempty"`
+}
+
+type PlanDenyRequest struct {
+	Message string `json:"message,omitempty"`
+}
+
+type PlanReviseRequest struct {
+	Feedback string `json:"feedback"`
+}
+
+// PlanDetailResponse is the review detail view: the plan plus its direct revisions.
+type PlanDetailResponse struct {
+	invocation.Plan
+	Revisions []invocation.Plan `json:"revisions"`
+}
+
+// externalPlans handles POST /api/v1/external/plans — an agent proposing a
+// plan for review before executing any tools.
+func (h *Handler) externalPlans(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req invocation.PlanSubmitRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	// Plan actions are scoped to their source, and later tool calls only
+	// match actions declared for the same source. Agents copy the submission
+	// endpoint from the plan hint verbatim, so a ?source= query parameter is
+	// a far more reliable channel for the harness source than a body field
+	// the agent must remember to write. Body fields win.
+	if req.Source == "" {
+		req.Source = strings.TrimSpace(r.URL.Query().Get("source"))
+	}
+	// Header fallbacks for callers that can't (or don't) put their
+	// harness identity in the JSON body. Body fields win.
+	if req.ClientName == "" {
+		if v := strings.TrimSpace(r.Header.Get("X-Atryum-Client-Name")); v != "" {
+			req.ClientName = v
+		}
+	}
+	if req.ClientVersion == "" {
+		if v := strings.TrimSpace(r.Header.Get("X-Atryum-Client-Version")); v != "" {
+			req.ClientVersion = v
+		}
+	}
+	plan, err := h.svc.SubmitPlan(r.Context(), req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, plan)
+}
+
+// planOwnedByCaller enforces agent scoping on the external plan endpoints.
+// When the request carries a verified identity (OAuth via agentRuntimeHandler,
+// or the no-auth agent_id hint) it must match the plan's agent. Anonymous
+// callers (auth disabled, no hint) are not scoped — there is no identity to
+// enforce, matching the external invocation endpoints' trust model.
+func planOwnedByCaller(r *http.Request, plan invocation.Plan) bool {
+	callerID := auth.AgentIDFromContext(r.Context())
+	return callerID == "" || callerID == plan.AgentID
+}
+
+// externalPlanDetail handles GET /api/v1/external/plans/{id} (decision polling)
+// and POST /api/v1/external/plans/{id}/cancel.
+func (h *Handler) externalPlanDetail(w http.ResponseWriter, r *http.Request) {
+	trimmed := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/external/plans/"), "/")
+	if trimmed == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if strings.HasSuffix(trimmed, "/cancel") {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimSuffix(trimmed, "/cancel"), "/")
+		existing, err := h.svc.GetPlan(r.Context(), id)
+		if err != nil {
+			status := http.StatusBadRequest
+			if err == sql.ErrNoRows {
+				status = http.StatusNotFound
+			}
+			writeError(w, status, err.Error())
+			return
+		}
+		// 404 (not 403) on ownership mismatch so callers cannot probe for
+		// other agents' plan IDs.
+		if !planOwnedByCaller(r, existing) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		plan, err := h.svc.CancelPlan(r.Context(), id)
+		if err != nil {
+			status := http.StatusBadRequest
+			if err == sql.ErrNoRows {
+				status = http.StatusNotFound
+			}
+			writeError(w, status, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, plan)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	plan, err := h.svc.GetPlan(r.Context(), trimmed)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if err == sql.ErrNoRows {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	if !planOwnedByCaller(r, plan) {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, plan)
+}
+
+// reviewPlans handles GET /api/v1/plans.
+func (h *Handler) reviewPlans(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	filter := invocation.PlanListFilter{
+		Offset:  readUintQuery(r, "offset", 0),
+		Limit:   readUintQuery(r, "limit", 50),
+		Status:  strings.TrimSpace(r.URL.Query().Get("status")),
+		AgentID: strings.TrimSpace(r.URL.Query().Get("agent_id")),
+	}
+	resp, err := h.svc.ListPlans(r.Context(), filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) reviewPlanStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	filter := invocation.PlanListFilter{
+		Offset:  readUintQuery(r, "offset", 0),
+		Limit:   readUintQuery(r, "limit", 50),
+		Status:  strings.TrimSpace(r.URL.Query().Get("status")),
+		AgentID: strings.TrimSpace(r.URL.Query().Get("agent_id")),
+	}
+	ctx := r.Context()
+	lastPayload := ""
+	for {
+		resp, err := h.svc.ListPlans(ctx, filter)
+		if err != nil {
+			fmt.Fprintf(w, "event: error\ndata: %s\n\n", mustJSONString(map[string]any{"message": err.Error()}))
+			flusher.Flush()
+			return
+		}
+		payload := mustJSONString(resp)
+		if payload != lastPayload {
+			fmt.Fprintf(w, "event: plans\ndata: %s\n\n", payload)
+			flusher.Flush()
+			lastPayload = payload
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+// reviewPlanDetail handles GET /api/v1/plans/{id}, GET .../{id}/events,
+// and POST .../{id}/approve|deny|revise|expire.
+func (h *Handler) reviewPlanDetail(w http.ResponseWriter, r *http.Request) {
+	trimmed := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/plans/"), "/")
+	if trimmed == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if strings.HasSuffix(trimmed, "/events") {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimSuffix(trimmed, "/events"), "/")
+		filter := invocation.EventListFilter{Offset: readUintQuery(r, "offset", 0), Limit: readUintQuery(r, "limit", 200)}
+		events, err := h.svc.PlanEvents(r.Context(), id, filter)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, events)
+		return
+	}
+	if strings.HasSuffix(trimmed, "/approve") {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimSuffix(trimmed, "/approve"), "/")
+		var req PlanApproveRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		plan, err := h.svc.ApprovePlan(r.Context(), id, req.TTLSeconds)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, plan)
+		return
+	}
+	if strings.HasSuffix(trimmed, "/deny") {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimSuffix(trimmed, "/deny"), "/")
+		var req PlanDenyRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		plan, err := h.svc.DenyPlan(r.Context(), id, req.Message)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, plan)
+		return
+	}
+	if strings.HasSuffix(trimmed, "/revise") {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimSuffix(trimmed, "/revise"), "/")
+		var req PlanReviseRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if strings.TrimSpace(req.Feedback) == "" {
+			writeError(w, http.StatusBadRequest, "feedback is required")
+			return
+		}
+		plan, err := h.svc.RequestPlanRevision(r.Context(), id, req.Feedback)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, plan)
+		return
+	}
+	if strings.HasSuffix(trimmed, "/expire") {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		id := strings.TrimSuffix(strings.TrimSuffix(trimmed, "/expire"), "/")
+		plan, err := h.svc.ExpirePlan(r.Context(), id)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, plan)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	plan, err := h.svc.GetPlan(r.Context(), trimmed)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if err == sql.ErrNoRows {
+			status = http.StatusNotFound
+		}
+		writeError(w, status, err.Error())
+		return
+	}
+	revisions, err := h.svc.ListPlanRevisions(r.Context(), trimmed)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, PlanDetailResponse{Plan: plan, Revisions: revisions})
+}
+
+// operatorManagedAgentSessions registers a Claude Managed Agents session for
 // Atryum to watch. Once registered, Atryum streams the session's events into
 // the invocations table and gates blocking tool calls through approval rules.
-func (h *Handler) adminManagedAgentSessions(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorManagedAgentSessions(w http.ResponseWriter, r *http.Request) {
 	if h.managedAgents == nil {
 		h.debugf("managed-agents session registration rejected: bridge not configured method=%s path=%s remote=%s", r.Method, r.URL.Path, r.RemoteAddr)
 		writeError(w, http.StatusNotImplemented, "managed agents bridge not configured (set [managed_agents].api_key)")
@@ -3653,7 +4326,7 @@ func (h *Handler) adminManagedAgentSessions(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *Handler) adminManagedAgentSessionDetail(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorManagedAgentSessionDetail(w http.ResponseWriter, r *http.Request) {
 	if h.managedAgents == nil {
 		writeError(w, http.StatusNotImplemented, "managed agents bridge not configured (set [managed_agents].api_key)")
 		return
@@ -3662,7 +4335,7 @@ func (h *Handler) adminManagedAgentSessionDetail(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	rawID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/admin/managed-agents/sessions/"), "/")
+	rawID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/managed-agents/sessions/"), "/")
 	sessionID, err := url.PathUnescape(rawID)
 	if err != nil || strings.TrimSpace(sessionID) == "" {
 		writeError(w, http.StatusNotFound, "not found")
@@ -3679,7 +4352,7 @@ func (h *Handler) adminManagedAgentSessionDetail(w http.ResponseWriter, r *http.
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *Handler) adminManagedAgentAccounts(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorManagedAgentAccounts(w http.ResponseWriter, r *http.Request) {
 	if h.managedAgents == nil {
 		writeError(w, http.StatusNotImplemented, "managed agents bridge not configured (set [managed_agents].api_key)")
 		return
@@ -3691,7 +4364,7 @@ func (h *Handler) adminManagedAgentAccounts(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, ManagedAgentAccountListResponse{Items: h.managedAgents.Accounts()})
 }
 
-func (h *Handler) adminManagedAgents(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) operatorManagedAgents(w http.ResponseWriter, r *http.Request) {
 	if h.managedAgents == nil {
 		writeError(w, http.StatusNotImplemented, "managed agents bridge not configured (set [managed_agents].api_key)")
 		return
@@ -3755,12 +4428,12 @@ func (h *Handler) externalInvocationDetail(w http.ResponseWriter, r *http.Reques
 	}
 }
 
-func toAdminServer(upstream mcp.Upstream) AdminServer {
+func toOperatorServer(upstream mcp.Upstream) OperatorServer {
 	endpointSlug := upstream.EndpointSlug
 	if endpointSlug == "" {
 		endpointSlug = mcp.EndpointSlug(upstream.Name)
 	}
-	return AdminServer{Name: upstream.Name, EndpointSlug: endpointSlug, Mode: string(upstream.Mode), BaseURL: upstream.BaseURL, AuthToken: upstream.AuthToken, AuthHeaders: append([]mcp.AuthHeader(nil), upstream.AuthHeaders...), TimeoutSeconds: int(upstream.Timeout / time.Second), Command: upstream.Command, Args: append([]string(nil), upstream.Args...), Env: cloneEnv(upstream.Env), Enabled: upstream.Enabled, AuthType: string(upstream.Status.AuthType), ConnectionStatus: string(upstream.Status.ConnectionStatus), AuthStatus: string(upstream.Status.AuthStatus), ReauthNeeded: upstream.Status.ReauthNeeded, LastCheckedAt: upstream.Status.LastCheckedAt, LastCheckOK: upstream.Status.LastCheckOK, LastErrorSummary: upstream.Status.LastErrorSummary, ActionRequired: upstream.Status.ActionRequired, OAuthProviderID: upstream.OAuthProviderID, OAuthProviderLabel: upstream.OAuthProviderLabel, OAuthClientRegistration: string(upstream.OAuthClientRegistration), OAuthClientID: upstream.OAuthClientID, OAuthAuthorizeURL: upstream.OAuthAuthorizeURL, OAuthTokenURL: upstream.OAuthTokenURL, OAuthScopes: upstream.OAuthScopes, HasOAuthClientSecret: strings.TrimSpace(upstream.OAuthClientSecret) != ""}
+	return OperatorServer{Name: upstream.Name, EndpointSlug: endpointSlug, Mode: string(upstream.Mode), BaseURL: upstream.BaseURL, AuthToken: upstream.AuthToken, AuthHeaders: append([]mcp.AuthHeader(nil), upstream.AuthHeaders...), TimeoutSeconds: int(upstream.Timeout / time.Second), Command: upstream.Command, Args: append([]string(nil), upstream.Args...), Env: cloneEnv(upstream.Env), Enabled: upstream.Enabled, AuthType: string(upstream.Status.AuthType), ConnectionStatus: string(upstream.Status.ConnectionStatus), AuthStatus: string(upstream.Status.AuthStatus), ReauthNeeded: upstream.Status.ReauthNeeded, LastCheckedAt: upstream.Status.LastCheckedAt, LastCheckOK: upstream.Status.LastCheckOK, LastErrorSummary: upstream.Status.LastErrorSummary, ActionRequired: upstream.Status.ActionRequired, OAuthProviderID: upstream.OAuthProviderID, OAuthProviderLabel: upstream.OAuthProviderLabel, OAuthClientRegistration: string(upstream.OAuthClientRegistration), OAuthClientID: upstream.OAuthClientID, OAuthAuthorizeURL: upstream.OAuthAuthorizeURL, OAuthTokenURL: upstream.OAuthTokenURL, OAuthScopes: upstream.OAuthScopes, HasOAuthClientSecret: strings.TrimSpace(upstream.OAuthClientSecret) != ""}
 }
 
 func validateUpstream(upstream mcp.Upstream) error {

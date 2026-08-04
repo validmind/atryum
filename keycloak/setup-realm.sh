@@ -24,6 +24,10 @@
 #   ADMIN_CLIENT_ID
 #                (default atryum-admin)   — the public SPA client used by
 #                                            Atryum's admin UI
+#   ADMIN_POST_LOGOUT_REDIRECT_URI_DEV
+#                (default http://localhost:5174/ui/)
+#   ADMIN_POST_LOGOUT_REDIRECT_URI_EMBEDDED
+#                (default http://localhost:8080/ui/)
 #   SCOPE_NAME   (default atryum:mcp)     — resource scope, also the audience
 #   AUDIENCE     (default atryum)         — literal value placed in `aud` claim
 
@@ -41,6 +45,8 @@ AUDIENCE="${AUDIENCE:-atryum}"
 REDIRECT_URI="${REDIRECT_URI:-http://localhost:8080/*}"
 ADMIN_REDIRECT_URI_DEV="${ADMIN_REDIRECT_URI_DEV:-http://localhost:5174/ui/auth/callback}"
 ADMIN_REDIRECT_URI_EMBEDDED="${ADMIN_REDIRECT_URI_EMBEDDED:-http://localhost:8080/ui/auth/callback}"
+ADMIN_POST_LOGOUT_REDIRECT_URI_DEV="${ADMIN_POST_LOGOUT_REDIRECT_URI_DEV:-http://localhost:5174/ui/}"
+ADMIN_POST_LOGOUT_REDIRECT_URI_EMBEDDED="${ADMIN_POST_LOGOUT_REDIRECT_URI_EMBEDDED:-http://localhost:8080/ui/}"
 
 # Token lifespans (seconds). Demo-friendly defaults: 24h access tokens,
 # 30-day sessions. Stock Keycloak defaults (5min access / 30min idle /
@@ -227,6 +233,9 @@ SECRET=$(api GET "/${REALM}/clients/${ATRYUM_UUID}/client-secret" | jq -r .value
 #   Valid redirect URIs:
 #     http://localhost:5174/ui/auth/callback
 #     http://localhost:8080/ui/auth/callback
+#   Valid post logout redirect URIs:
+#     http://localhost:5174/ui/
+#     http://localhost:8080/ui/
 #   Web origins:
 #     http://localhost:5174
 #     http://localhost:8080
@@ -247,7 +256,8 @@ ADMIN_CLIENT_BODY=$(cat <<EOF
   "webOrigins": ["http://localhost:5174", "http://localhost:8080"],
   "attributes": {
     "pkce.code.challenge.method": "S256",
-    "oauth2.device.authorization.grant.enabled": "false"
+    "oauth2.device.authorization.grant.enabled": "false",
+    "post.logout.redirect.uris": "${ADMIN_POST_LOGOUT_REDIRECT_URI_DEV}##${ADMIN_POST_LOGOUT_REDIRECT_URI_EMBEDDED}"
   }
 }
 EOF

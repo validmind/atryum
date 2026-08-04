@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"atryum/internal/auth"
-	"atryum/internal/config"
-	"atryum/internal/invocation"
-	"atryum/internal/invocation/policy"
-	"atryum/internal/mcp"
-	"atryum/internal/store"
+	"github.com/validmind/atryum/internal/auth"
+	"github.com/validmind/atryum/internal/config"
+	"github.com/validmind/atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/invocation/policy"
+	"github.com/validmind/atryum/internal/mcp"
+	"github.com/validmind/atryum/internal/store"
 )
 
 // stubRulesStore returns a fixed rule list so the test can pin the user
@@ -48,6 +48,17 @@ func TestInvokeUsesAuthenticatedAgentIDForRulesAndEvents(t *testing.T) {
 		ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"},
 		Enabled: true,
 	}}}
+	// The stub decides which rule matches, but the id it hands back is still
+	// written to invocations.matched_rule_id, which carries a FK to
+	// approval_rules(id). Auto-approved invocations now persist that id, so the
+	// row has to exist for the write to succeed.
+	if err := store.NewRulesRepo(db).Create(context.Background(), store.Rule{
+		ID: "rule_auto_approve", Action: string(invocation.RuleActionAutoApprove),
+		ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"},
+		Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	svc := invocation.NewService(
 		store.NewInvocationRepo(db), store.NewEventRepo(db), resolver,

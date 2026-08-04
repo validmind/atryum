@@ -14,29 +14,30 @@ import (
 	"testing"
 	"time"
 
-	"atryum/internal/auth"
-	backendclient "atryum/internal/backend"
-	"atryum/internal/config"
-	"atryum/internal/invocation"
-	"atryum/internal/managedagents"
-	"atryum/internal/mcp"
-	"atryum/internal/store"
+	"github.com/validmind/atryum/internal/auth"
+	backendclient "github.com/validmind/atryum/internal/backend"
+	"github.com/validmind/atryum/internal/config"
+	"github.com/validmind/atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/managedagents"
+	"github.com/validmind/atryum/internal/mcp"
+	"github.com/validmind/atryum/internal/store"
 
 	_ "modernc.org/sqlite"
 )
 
 type stubService struct {
-	tools    []mcp.Tool
-	invoke   invocation.InvocationResponse
-	invErr   error
-	getErr   error
-	setResp  invocation.InvocationResponse
-	setID    string
-	setText  string
-	listErr  error
-	upstream mcp.Upstream
-	forward  mcp.ForwardResult
-	fwdErr   error
+	tools         []mcp.Tool
+	invoke        invocation.InvocationResponse
+	invErr        error
+	getErr        error
+	setResp       invocation.InvocationResponse
+	setID         string
+	setText       string
+	listErr       error
+	upstream      mcp.Upstream
+	forward       mcp.ForwardResult
+	fwdErr        error
+	plansDisabled bool
 
 	invokedReq *invocation.CreateInvocationRequest
 	invokedCtx context.Context
@@ -49,6 +50,17 @@ type stubService struct {
 
 	createSessionReq     *invocation.CreateSessionRequest
 	createSessionAgentID string
+	plan                 invocation.Plan
+	planErr              error
+	planSubmitReq        *invocation.PlanSubmitRequest
+	planApproveID        string
+	planTTL              int
+	planDenyID           string
+	planDenyMsg          string
+	planReviseID         string
+	planFeedback         string
+	planExpireID         string
+	planCancelID         string
 }
 
 func (s *stubService) Invoke(ctx context.Context, req invocation.CreateInvocationRequest) (invocation.InvocationResponse, error) {
@@ -109,6 +121,47 @@ func (s *stubService) RecordExecution(ctx context.Context, id string, req invoca
 	}
 	return invocation.InvocationResponse{InvocationID: id, Status: invocation.StatusSucceeded}, s.invErr
 }
+func (s *stubService) SubmitPlan(_ context.Context, req invocation.PlanSubmitRequest) (invocation.Plan, error) {
+	s.planSubmitReq = &req
+	return s.plan, s.planErr
+}
+func (s *stubService) GetPlan(context.Context, string) (invocation.Plan, error) {
+	return s.plan, s.planErr
+}
+func (s *stubService) ListPlans(_ context.Context, filter invocation.PlanListFilter) (invocation.PlanListResponse, error) {
+	return invocation.PlanListResponse{Items: []invocation.Plan{s.plan}, Total: 1, Limit: filter.Limit}, s.planErr
+}
+func (s *stubService) ListPlanRevisions(context.Context, string) ([]invocation.Plan, error) {
+	return []invocation.Plan{}, nil
+}
+func (s *stubService) ApprovePlan(_ context.Context, id string, ttlSeconds int) (invocation.Plan, error) {
+	s.planApproveID = id
+	s.planTTL = ttlSeconds
+	return s.plan, s.planErr
+}
+func (s *stubService) DenyPlan(_ context.Context, id string, message string) (invocation.Plan, error) {
+	s.planDenyID = id
+	s.planDenyMsg = message
+	return s.plan, s.planErr
+}
+func (s *stubService) RequestPlanRevision(_ context.Context, id string, feedback string) (invocation.Plan, error) {
+	s.planReviseID = id
+	s.planFeedback = feedback
+	return s.plan, s.planErr
+}
+func (s *stubService) ExpirePlan(_ context.Context, id string) (invocation.Plan, error) {
+	s.planExpireID = id
+	return s.plan, s.planErr
+}
+func (s *stubService) CancelPlan(_ context.Context, id string) (invocation.Plan, error) {
+	s.planCancelID = id
+	return s.plan, s.planErr
+}
+func (s *stubService) PlansEnabled() bool { return !s.plansDisabled }
+
+func (s *stubService) PlanEvents(context.Context, string, invocation.EventListFilter) (invocation.EventListResponse, error) {
+	return invocation.EventListResponse{}, nil
+}
 func (s *stubService) ForwardEnvelope(context.Context, mcp.Upstream, mcp.Envelope, string) (mcp.ForwardResult, error) {
 	return s.forward, s.fwdErr
 }
@@ -121,9 +174,11 @@ type stubServerService struct{}
 func (stubServerService) List(context.Context, mcp.ServerFilter) (ServerListResponse, error) {
 	return ServerListResponse{}, nil
 }
-func (stubServerService) Get(context.Context, string) (AdminServer, error) { return AdminServer{}, nil }
-func (stubServerService) Upsert(context.Context, string, AdminServerUpsertRequest) (AdminServer, error) {
-	return AdminServer{}, nil
+func (stubServerService) Get(context.Context, string) (OperatorServer, error) {
+	return OperatorServer{}, nil
+}
+func (stubServerService) Upsert(context.Context, string, OperatorServerUpsertRequest) (OperatorServer, error) {
+	return OperatorServer{}, nil
 }
 func (stubServerService) Delete(context.Context, string, bool) error { return nil }
 func (stubServerService) Test(context.Context, string) (ServerTestResponse, error) {
@@ -318,7 +373,7 @@ func TestStartConnectUsesUpstreamMCPOAuthCallbackRedirectURI(t *testing.T) {
 		t.Fatalf("UpsertServer: %v", err)
 	}
 
-	svc := NewServerAdminService(serverRepo, oauthRepo, nil, 5*time.Second, "")
+	svc := NewServerOperatorService(serverRepo, oauthRepo, nil, 5*time.Second, "")
 	resp, err := svc.StartConnect(ctx, "shortcut", "http://localhost:8080/")
 	if err != nil {
 		t.Fatalf("StartConnect: %v", err)
@@ -355,9 +410,9 @@ func TestServerAdminServiceSurfacesEndpointURLForSluggedServerName(t *testing.T)
 	ctx := context.Background()
 	serverRepo := store.NewServerRepo(db)
 	oauthRepo := store.NewOAuthRepo(db)
-	svc := NewServerAdminService(serverRepo, oauthRepo, nil, 5*time.Second, "https://atryum.example")
+	svc := NewServerOperatorService(serverRepo, oauthRepo, nil, 5*time.Second, "https://atryum.example")
 
-	server, err := svc.Upsert(ctx, "", AdminServerUpsertRequest{
+	server, err := svc.Upsert(ctx, "", OperatorServerUpsertRequest{
 		Name:           "Slack Local",
 		Mode:           string(mcp.UpstreamModeHTTP),
 		BaseURL:        "https://mcp.slack.test/mcp",
@@ -399,9 +454,9 @@ func TestServerAdminServiceRejectsDuplicateEndpointSlug(t *testing.T) {
 	ctx := context.Background()
 	serverRepo := store.NewServerRepo(db)
 	oauthRepo := store.NewOAuthRepo(db)
-	svc := NewServerAdminService(serverRepo, oauthRepo, nil, 5*time.Second, "")
+	svc := NewServerOperatorService(serverRepo, oauthRepo, nil, 5*time.Second, "")
 
-	_, err = svc.Upsert(ctx, "", AdminServerUpsertRequest{
+	_, err = svc.Upsert(ctx, "", OperatorServerUpsertRequest{
 		Name:    "Slack Local",
 		Mode:    string(mcp.UpstreamModeHTTP),
 		BaseURL: "https://mcp.slack.test/mcp",
@@ -409,7 +464,7 @@ func TestServerAdminServiceRejectsDuplicateEndpointSlug(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Upsert first server: %v", err)
 	}
-	_, err = svc.Upsert(ctx, "", AdminServerUpsertRequest{
+	_, err = svc.Upsert(ctx, "", OperatorServerUpsertRequest{
 		Name:    "slack-local",
 		Mode:    string(mcp.UpstreamModeHTTP),
 		BaseURL: "https://other.example/mcp",
@@ -432,9 +487,9 @@ func TestServerAdminServiceRejectsCaseOnlyDuplicateNameWithClearError(t *testing
 	ctx := context.Background()
 	serverRepo := store.NewServerRepo(db)
 	oauthRepo := store.NewOAuthRepo(db)
-	svc := NewServerAdminService(serverRepo, oauthRepo, nil, 5*time.Second, "")
+	svc := NewServerOperatorService(serverRepo, oauthRepo, nil, 5*time.Second, "")
 
-	_, err = svc.Upsert(ctx, "", AdminServerUpsertRequest{
+	_, err = svc.Upsert(ctx, "", OperatorServerUpsertRequest{
 		Name:    "slack local",
 		Mode:    string(mcp.UpstreamModeHTTP),
 		BaseURL: "https://mcp.slack.test/mcp",
@@ -442,7 +497,7 @@ func TestServerAdminServiceRejectsCaseOnlyDuplicateNameWithClearError(t *testing
 	if err != nil {
 		t.Fatalf("Upsert first server: %v", err)
 	}
-	_, err = svc.Upsert(ctx, "", AdminServerUpsertRequest{
+	_, err = svc.Upsert(ctx, "", OperatorServerUpsertRequest{
 		Name:    "Slack Local",
 		Mode:    string(mcp.UpstreamModeHTTP),
 		BaseURL: "https://other.example/mcp",
@@ -475,7 +530,7 @@ func TestServerAdminServiceUsesStoredEndpointSlug(t *testing.T) {
 		t.Fatalf("UpsertServer: %v", err)
 	}
 
-	svc := NewServerAdminService(serverRepo, oauthRepo, nil, 5*time.Second, "https://atryum.example")
+	svc := NewServerOperatorService(serverRepo, oauthRepo, nil, 5*time.Second, "https://atryum.example")
 	server, err := svc.Get(ctx, "Slack Local")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -502,7 +557,7 @@ func TestAdminServerTestDebugLogsRequestContext(t *testing.T) {
 	}()
 
 	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/servers/shortcut/test", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/servers/shortcut/test", nil)
 	req.Header.Set("Origin", "http://localhost:8080")
 	req.Header.Set("Referer", "http://localhost:8080/ui/")
 	req.Header.Set("User-Agent", "debug-test")
@@ -516,11 +571,11 @@ func TestAdminServerTestDebugLogsRequestContext(t *testing.T) {
 	}
 	got := logs.String()
 	for _, want := range []string{
-		"admin server test request method=POST path=/api/v1/admin/servers/shortcut/test server=shortcut",
+		"operator server test request method=POST path=/api/v1/servers/shortcut/test server=shortcut",
 		"origin=\"http://localhost:8080\"",
 		"referer=\"http://localhost:8080/ui/\"",
 		"user_agent=\"debug-test\"",
-		"admin server test response server=shortcut",
+		"operator server test response server=shortcut",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected logs to contain %q, got:\n%s", want, got)
@@ -551,7 +606,7 @@ func TestManagedAgentSessionRegistrationDebugLogsFailure(t *testing.T) {
 		"account": "default",
 		"agent_id": "agent_013popGjeyhH8qPYqziHxdLk"
 	}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/managed-agents/sessions", body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/managed-agents/sessions", body)
 	req.Header.Set("content-type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -676,8 +731,18 @@ func (s *stubAgentsRepo) ListEnabled(context.Context) ([]store.AgentRecord, erro
 	}
 	return out, s.err
 }
-func (s *stubAgentsRepo) Get(context.Context, string) (store.AgentRecord, error) {
-	return store.AgentRecord{}, nil
+func (s *stubAgentsRepo) Get(_ context.Context, id string) (store.AgentRecord, error) {
+	for _, r := range s.records {
+		if r.ID == id {
+			return r, nil
+		}
+	}
+	if len(s.records) == 0 {
+		// Preserve the historical zero-value/no-error default for tests that
+		// construct a stub with no records and don't care about Get's result.
+		return store.AgentRecord{}, nil
+	}
+	return store.AgentRecord{}, sql.ErrNoRows
 }
 func (s *stubAgentsRepo) GetByAgentID(_ context.Context, agentID string) (store.AgentRecord, error) {
 	for _, r := range s.records {
@@ -707,6 +772,9 @@ func (s *stubAgentsRepo) UpdateAgentIDs(context.Context, string, string) error {
 	return nil
 }
 func (s *stubAgentsRepo) UpdateMeta(context.Context, string, string, string, string) error {
+	return nil
+}
+func (s *stubAgentsRepo) UpdateTags(context.Context, string, []string) error {
 	return nil
 }
 func (s *stubAgentsRepo) CheckAgentIDConflict(_ context.Context, excludeID string, agentIDs []string) (string, string, error) {
@@ -808,7 +876,7 @@ func TestSummarizeInvocationPersistsBackendSummary(t *testing.T) {
 	summarizer := &stubSummarizer{resp: backendclient.SummarizeInvocationResponse{Summary: "Read /tmp/a and returned hello."}}
 	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	h.summarizeClient = summarizer
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/invocations/inv_123/summarize", strings.NewReader(`{"model_config_cuid":" model_abc "}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/review/invocations/inv_123/summarize", strings.NewReader(`{"model_config_cuid":" model_abc "}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
@@ -858,7 +926,7 @@ func TestSummarizeInvocationUsesSettingsModelConfigWhenRequestBodyEmpty(t *testi
 	summarizer := &stubSummarizer{resp: backendclient.SummarizeInvocationResponse{Summary: "Read /tmp/a."}}
 	h := NewHandler(svc, stubServerService{}, nil, nil, nil, settings, nil, nil, nil, nil)
 	h.summarizeClient = summarizer
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/invocations/inv_123/summarize", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/review/invocations/inv_123/summarize", nil)
 	w := httptest.NewRecorder()
 
 	h.Routes().ServeHTTP(w, req)
@@ -1155,6 +1223,43 @@ func TestMCPToolsList(t *testing.T) {
 	}
 }
 
+func TestMCPToolsListSyntheticToolNamesAvoidDots(t *testing.T) {
+	h := NewHandler(&stubService{tools: []mcp.Tool{{Name: "demo_tool"}}}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	var rpcResp struct {
+		Result struct {
+			Tools []struct {
+				Name string `json:"name"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &rpcResp); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{
+		atryumPlanSubmitTool: false,
+		atryumPlanGetTool:    false,
+		atryumRulesToolName:  false,
+	}
+	for _, tool := range rpcResp.Result.Tools {
+		if strings.Contains(tool.Name, ".") {
+			t.Fatalf("tools/list returned dotted tool name %q", tool.Name)
+		}
+		if _, ok := seen[tool.Name]; ok {
+			seen[tool.Name] = true
+		}
+	}
+	for name, ok := range seen {
+		if !ok {
+			t.Fatalf("expected synthetic tool %q in tools/list", name)
+		}
+	}
+}
+
 func TestMCPRulesToolSchemaIncludesRequestIDFallback(t *testing.T) {
 	h := NewHandler(&stubService{tools: []mcp.Tool{{Name: "demo_tool"}}}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
@@ -1252,6 +1357,63 @@ func TestMCPRulesToolReturnsAgentRulesWithoutInvocation(t *testing.T) {
 	}
 }
 
+func TestMCPPlanSubmitToolSubmitsPlan(t *testing.T) {
+	now := time.Now().UTC()
+	svc := &stubService{plan: invocation.Plan{
+		PlanID:      "plan_123",
+		AgentID:     "agent-1",
+		Source:      "demo",
+		Goal:        "Read files before editing",
+		Actions:     []invocation.PlanAction{{Tool: "Read"}},
+		Status:      invocation.PlanStatusPendingApproval,
+		Revision:    1,
+		TTLSeconds:  3600,
+		SubmittedAt: now,
+	}}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"atryum_plan_submit","arguments":{"goal":"Read files before editing","actions":[{"tool":"Read"}],"ttl_seconds":600}}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if svc.planSubmitReq == nil {
+		t.Fatal("expected plan submission request")
+	}
+	if svc.planSubmitReq.Source != "demo" {
+		t.Fatalf("source = %q, want demo", svc.planSubmitReq.Source)
+	}
+	if svc.planSubmitReq.Goal != "Read files before editing" || len(svc.planSubmitReq.Actions) != 1 || svc.planSubmitReq.Actions[0].Tool != "Read" {
+		t.Fatalf("unexpected plan request: %#v", svc.planSubmitReq)
+	}
+	if !strings.Contains(w.Body.String(), `"plan_123"`) {
+		t.Fatalf("expected plan response, got %s", w.Body.String())
+	}
+}
+
+func TestMCPPlanGetToolGetsPlan(t *testing.T) {
+	now := time.Now().UTC()
+	svc := &stubService{plan: invocation.Plan{
+		PlanID:      "plan_123",
+		AgentID:     "agent-1",
+		Source:      "demo",
+		Goal:        "Read files before editing",
+		Actions:     []invocation.PlanAction{{Tool: "Read"}},
+		Status:      invocation.PlanStatusApproved,
+		Revision:    1,
+		TTLSeconds:  3600,
+		SubmittedAt: now,
+	}}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"atryum_plan_get","arguments":{"plan_id":"plan_123"}}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if !strings.Contains(w.Body.String(), `"approved"`) || !strings.Contains(w.Body.String(), `"plan_123"`) {
+		t.Fatalf("expected plan status response, got %s", w.Body.String())
+	}
+}
+
 func TestMCPNoAuthAgentIDQueryHintSetsIdentity(t *testing.T) {
 	now := time.Now().UTC()
 	svc := &stubService{invoke: invocation.InvocationResponse{InvocationID: "inv_123", ServerName: "demo", ToolName: "demo_tool", Status: invocation.StatusSucceeded, SubmittedAt: now, CompletedAt: &now, Result: json.RawMessage(`{"content":[{"type":"text","text":"ok"}]}`)}}
@@ -1319,6 +1481,7 @@ func TestAgentRulesListsApplicableRulesAndDisposition(t *testing.T) {
 		{ID: "bash-deny", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Bash"}, Enabled: true, Order: 0},
 		{ID: "read-auto", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, Description: "Read is safe", Enabled: true, Order: 1},
 		{ID: "fallback-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 2},
+		{ID: "later-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, Enabled: true, Order: 3},
 		{ID: "disabled", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, Enabled: false, Order: 3},
 	}}
 	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
@@ -1352,10 +1515,32 @@ func TestAgentRulesListsApplicableRulesAndDisposition(t *testing.T) {
 	if !strings.Contains(resp.Explanation, "advisory") {
 		t.Fatalf("expected advisory explanation, got %q", resp.Explanation)
 	}
-	if len(resp.Items) != 3 {
-		t.Fatalf("expected three applicable rules, got %#v", resp.Items)
+	if resp.PlanSubmission == nil || !resp.PlanSubmission.Enabled {
+		t.Fatalf("expected plan submission capability, got %#v", resp.PlanSubmission)
 	}
-	if resp.Items[0].ID != "bash-deny" || resp.Items[1].ID != "read-auto" || resp.Items[2].ID != "fallback-human" {
+	if resp.PlanSubmission.Endpoint != "/api/v1/external/plans?source=amp" {
+		t.Fatalf("plan submission endpoint must carry the caller's source, got %q", resp.PlanSubmission.Endpoint)
+	}
+	if !strings.Contains(resp.PlanSubmission.Message, resp.PlanSubmission.Endpoint) {
+		t.Fatalf("plan submission message must contain the endpoint so hooks can inject it verbatim, got %q", resp.PlanSubmission.Message)
+	}
+	if !strings.Contains(resp.PlanSubmission.Message, "never move backwards") {
+		t.Fatalf("plan submission message must state the execution-order rule, got %q", resp.PlanSubmission.Message)
+	}
+	if !strings.Contains(resp.PlanSubmission.Message, `Set each action's server to "amp"`) {
+		t.Fatalf("plan submission message must name the caller's source for action servers, got %q", resp.PlanSubmission.Message)
+	}
+	// The caller's already-known identity (query-hinted here; verified OAuth
+	// in auth mode) must be echoed verbatim so an agent submitting a plan
+	// doesn't invent a different agent_id that its own tool calls can never
+	// match.
+	if !strings.Contains(resp.PlanSubmission.Message, `agent_id set to exactly "agent-007"`) {
+		t.Fatalf("plan submission message must echo the caller's resolved agent id, got %q", resp.PlanSubmission.Message)
+	}
+	if len(resp.Items) != 4 {
+		t.Fatalf("expected four applicable rules, got %#v", resp.Items)
+	}
+	if resp.Items[0].ID != "bash-deny" || resp.Items[1].ID != "read-auto" || resp.Items[2].ID != "fallback-human" || resp.Items[3].ID != "later-human" {
 		t.Fatalf("unexpected applicable rules order: %#v", resp.Items)
 	}
 	if resp.Items[1].Guidance == "" {
@@ -1398,6 +1583,125 @@ func TestAgentRulesFiltersOutRulesScopedToOtherAgents(t *testing.T) {
 		if item.ID == "other-agent" {
 			t.Fatalf("other-agent scoped rule leaked into response: %#v", resp.Items)
 		}
+	}
+}
+
+func TestAgentRulesAdvertisesPlanSubmissionWithInvocationRules(t *testing.T) {
+	// Plan submission is advertised whenever the feature is enabled; the same
+	// invocation rules are used to evaluate submitted plans.
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "fallback-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 0},
+	}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?agent_id=agent-007&source=cursor", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.PlanSubmission == nil || !resp.PlanSubmission.Enabled {
+		t.Fatalf("expected plan submission capability, got %#v", resp.PlanSubmission)
+	}
+	if resp.PlanSubmission.Endpoint != "/api/v1/external/plans?source=cursor" {
+		t.Fatalf("plan submission endpoint must carry the caller's source, got %q", resp.PlanSubmission.Endpoint)
+	}
+}
+
+// TestAgentRulesPlanSubmissionFallsBackToGenericAgentIDGuidanceWhenAnonymous
+// covers a caller with no resolvable identity at all (no auth, no agent_id
+// hint): the message can't echo an identity that doesn't exist, so it must
+// fall back to telling the agent to invent and reuse a stable one.
+func TestAgentRulesPlanSubmissionFallsBackToGenericAgentIDGuidanceWhenAnonymous(t *testing.T) {
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "fallback-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 0},
+	}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?source=cursor", nil) // no agent_id
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.PlanSubmission == nil {
+		t.Fatalf("expected plan submission capability, got %#v", resp.PlanSubmission)
+	}
+	if strings.Contains(resp.PlanSubmission.Message, "agent_id set to exactly") {
+		t.Fatalf("message must not fabricate an identity to echo when none is known, got %q", resp.PlanSubmission.Message)
+	}
+	if !strings.Contains(resp.PlanSubmission.Message, "a stable identifier for this agent") {
+		t.Fatalf("message must fall back to generic agent_id guidance, got %q", resp.PlanSubmission.Message)
+	}
+}
+
+// TestAgentRulesPlanSubmissionDoesNotEchoRequestIDAsStableIdentity covers a
+// caller identified only by request_id — a single in-flight tool call's id,
+// meant for previewing that one call's disposition, not a stable agent
+// identity. It must still surface as AgentID (existing rule-preview
+// behavior), but the plan message must not tell the agent to submit a plan
+// under it: a later invocation carries a different request_id and would
+// never match, so the plan would silently expire unactioned.
+func TestAgentRulesPlanSubmissionDoesNotEchoRequestIDAsStableIdentity(t *testing.T) {
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "fallback-human", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 0},
+	}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?source=cursor&request_id=req-12345", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.AgentID != "req-12345" {
+		t.Fatalf("expected existing request_id fallback preserved in AgentID, got %q", resp.AgentID)
+	}
+	if resp.PlanSubmission == nil {
+		t.Fatalf("expected plan submission capability, got %#v", resp.PlanSubmission)
+	}
+	if strings.Contains(resp.PlanSubmission.Message, "req-12345") {
+		t.Fatalf("message must not present the request-scoped id as a stable identity to submit a plan under, got %q", resp.PlanSubmission.Message)
+	}
+	if !strings.Contains(resp.PlanSubmission.Message, "a stable identifier for this agent") {
+		t.Fatalf("message must fall back to generic agent_id guidance, got %q", resp.PlanSubmission.Message)
+	}
+}
+
+func TestAgentRulesOmitsPlanSubmissionWhenPlansDisabled(t *testing.T) {
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "human-any", Action: invocation.RuleActionHumanApproval, Enabled: true, Order: 0},
+	}}
+	h := NewHandler(&stubService{plansDisabled: true}, stubServerService{}, nil, rules, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?agent_id=agent-007&source=cursor", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.PlanSubmission != nil {
+		t.Fatalf("expected no plan submission capability when the plan feature is not wired, got %#v", resp.PlanSubmission)
 	}
 }
 
@@ -1599,10 +1903,17 @@ func TestMCPToolsListAnnotationsUseDefaultAgentScopedRules(t *testing.T) {
 	if len(rpcResp.Result.Tools) == 0 {
 		t.Fatalf("expected tools, got %#v", rpcResp.Result.Tools)
 	}
-	bashTool := rpcResp.Result.Tools[0]
-	if bashTool.Name != "Bash" {
-		t.Fatalf("expected Bash tool, got %q", bashTool.Name)
+	bashIdx := -1
+	for i, tool := range rpcResp.Result.Tools {
+		if tool.Name == "Bash" {
+			bashIdx = i
+			break
+		}
 	}
+	if bashIdx < 0 {
+		t.Fatalf("expected Bash tool, got %#v", rpcResp.Result.Tools)
+	}
+	bashTool := rpcResp.Result.Tools[bashIdx]
 	if bashTool.Annotations == nil || bashTool.Annotations.Atryum.EffectiveAction != invocation.RuleActionAutoApprove {
 		t.Fatalf("Bash tool annotations: %#v", bashTool.Annotations)
 	}
@@ -1766,7 +2077,7 @@ func TestAdminInvocationsResponsesIncludeServerToolAndInput(t *testing.T) {
 	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	t.Run("list", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/review/invocations", nil)
 		w := httptest.NewRecorder()
 		h.Routes().ServeHTTP(w, req)
 		if !strings.Contains(w.Body.String(), `"server_name":"demo-server"`) {
@@ -1781,7 +2092,7 @@ func TestAdminInvocationsResponsesIncludeServerToolAndInput(t *testing.T) {
 	})
 
 	t.Run("detail", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/invocations/inv_123", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/review/invocations/inv_123", nil)
 		w := httptest.NewRecorder()
 		h.Routes().ServeHTTP(w, req)
 		if !strings.Contains(w.Body.String(), `"server_name":"demo-server"`) {
@@ -1904,5 +2215,117 @@ func TestExternalInvocationPatchErrorStatusMapping(t *testing.T) {
 				t.Fatalf("RecordExecution update = %+v", svc.recordReq)
 			}
 		})
+	}
+}
+
+func TestAddExtraRoutesMountsRoutesOutsideAuthChains(t *testing.T) {
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	// A configured validator protects the normal runtime and privileged routes;
+	// extra routes are registered outside those middleware chains.
+	h.SetAuthValidator(&auth.Validator{})
+	h.AddExtraRoutes(func(mux *http.ServeMux) {
+		mux.HandleFunc("/extension", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]string{"source": "extension"})
+		})
+	})
+	routes := h.Routes()
+
+	t.Run("extra route is reachable without credentials", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		routes.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/extension", nil))
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET /extension status = %d, want %d", w.Code, http.StatusOK)
+		}
+		if got, want := w.Body.String(), "{\"source\":\"extension\"}\n"; got != want {
+			t.Fatalf("GET /extension body = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("built-in routes are unaffected", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		routes.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET /healthz status = %d, want %d", w.Code, http.StatusOK)
+		}
+	})
+}
+
+func TestOperatorAgentCharterPreviewLocalAgentUsesStoredCharter(t *testing.T) {
+	// A manually-created agent: VMOrganizationCUID is empty (the only reliable
+	// "is this VM-synced" signal), even though VMCUID is non-empty (reused as
+	// the agent's own local id — see the create handler). Regression test for
+	// a bug where checking VMCUID instead of VMOrganizationCUID here caused
+	// manually-created agents to 502 against the (absent) backend client.
+	agent := store.AgentRecord{
+		ID:                 "local-agent-1",
+		VMCUID:             "local-agent-1",
+		VMOrganizationCUID: "",
+		VMName:             "Local Test Agent",
+		Charter:            "Never delete production data.",
+	}
+	agents := &stubAgentsRepo{records: []store.AgentRecord{agent}}
+	settings := &stubAgentSyncSettingsRepo{settings: store.AgentSyncSettings{CharterFieldKey: "charter"}}
+	// backendClient is nil: if the handler mistakenly took the VM-synced
+	// branch, it would either nil-deref or 502 — either way the test fails.
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, agents, settings, nil, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agents/local-agent-1/charter-preview", nil)
+	w := httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Segments []struct {
+			Kind   string `json:"kind"`
+			Header string `json:"header"`
+			Text   string `json:"text"`
+		} `json:"segments"`
+		Combined string `json:"combined"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v (body=%s)", err, w.Body.String())
+	}
+	if len(resp.Segments) != 1 {
+		t.Fatalf("expected exactly one segment (the local charter), got %#v", resp.Segments)
+	}
+	if resp.Segments[0].Text != agent.Charter {
+		t.Fatalf("expected local charter text %q, got %q", agent.Charter, resp.Segments[0].Text)
+	}
+	if resp.Combined != agent.Charter {
+		t.Fatalf("expected combined = local charter text, got %q", resp.Combined)
+	}
+}
+
+func TestOperatorAgentCharterPreviewLocalAgentNoCharterYieldsEmptyResult(t *testing.T) {
+	agent := store.AgentRecord{
+		ID:                 "local-agent-2",
+		VMCUID:             "local-agent-2",
+		VMOrganizationCUID: "",
+		VMName:             "Local Test Agent Two",
+	}
+	agents := &stubAgentsRepo{records: []store.AgentRecord{agent}}
+	settings := &stubAgentSyncSettingsRepo{}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, agents, settings, nil, nil, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agents/local-agent-2/charter-preview", nil)
+	w := httptest.NewRecorder()
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Segments []any  `json:"segments"`
+		Combined string `json:"combined"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(resp.Segments) != 0 || resp.Combined != "" {
+		t.Fatalf("expected empty result for an agent with no charter, got %#v", resp)
 	}
 }

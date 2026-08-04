@@ -7,7 +7,7 @@ import (
 
 	sq "github.com/Masterminds/squirrel"
 
-	"atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/invocation"
 )
 
 // ExternalSessionRepo persists harness sessions for the Invocations API path.
