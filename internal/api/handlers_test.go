@@ -2737,6 +2737,39 @@ func TestExternalInvocationPatchErrorStatusMapping(t *testing.T) {
 	}
 }
 
+func TestExternalInvocationGetErrorStatusMapping(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantStatus int
+	}{
+		{"not owner maps to 404", fmt.Errorf("invocation inv_1: %w", invocation.ErrNotOwner), http.StatusNotFound},
+		{"missing invocation maps to 404", sql.ErrNoRows, http.StatusNotFound},
+		{"generic error maps to 500", fmt.Errorf("boom"), http.StatusInternalServerError},
+		{"success maps to 200", nil, http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &stubService{getErr: tc.err}
+			h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/external/invocations/inv_1", nil)
+			w := httptest.NewRecorder()
+			h.Routes().ServeHTTP(w, req)
+			if w.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d (body=%s)", w.Code, tc.wantStatus, w.Body.String())
+			}
+			// The not-owner 404 must read identically to a real "missing
+			// invocation" 404 — a distinguishable body would leak that the
+			// invocation exists to a non-owning caller.
+			if tc.wantStatus == http.StatusNotFound {
+				if got, want := w.Body.String(), `{"error":{"message":"not found"}}`+"\n"; got != want {
+					t.Fatalf("body = %q, want %q (must not leak ownership details)", got, want)
+				}
+			}
+		})
+	}
+}
+
 func TestAddExtraRoutesMountsRoutesOutsideAuthChains(t *testing.T) {
 	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	// A configured validator protects the normal runtime and privileged routes;
