@@ -4394,11 +4394,15 @@ func (h *Handler) externalInvocationDetail(w http.ResponseWriter, r *http.Reques
 	case http.MethodGet:
 		resp, err := h.svc.Get(r.Context(), id)
 		if err != nil {
-			status := http.StatusInternalServerError
-			if err == sql.ErrNoRows {
-				status = http.StatusNotFound
+			// Not-found and not-owner map to the same generic 404 so a
+			// non-owning caller can't distinguish "doesn't exist" from
+			// "exists but belongs to another agent" (existence would
+			// otherwise leak through the error path).
+			if err == sql.ErrNoRows || errors.Is(err, invocation.ErrNotOwner) {
+				writeError(w, http.StatusNotFound, "not found")
+				return
 			}
-			writeError(w, status, err.Error())
+			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, resp)
