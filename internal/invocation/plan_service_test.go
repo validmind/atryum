@@ -1364,6 +1364,53 @@ func TestApprovedPlanMatchesWhenResolvedRecordOmitsAuthenticatedID(t *testing.T)
 	}
 }
 
+// TestApprovedPlanMatchesWhenPlanPredatesAgentCUID covers a plan that was
+// approved before the plans.agent_cuid column existed (or before it was
+// backfilled) — its row has no AgentCUID even though the calling agent now
+// resolves to a VMCUID. matchApprovedPlan must fall back to the legacy
+// agent_id lookup in that case rather than treating the plan as unowned;
+// regression test for a bug where the CUID-only branch had no fallback and
+// silently dropped an otherwise-valid, human-approved plan pass.
+func TestApprovedPlanMatchesWhenPlanPredatesAgentCUID(t *testing.T) {
+	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
+		"agent-alice": {ID: "agent-rec-a", VMCUID: "cuid-123", Charter: "Only run planned safe commands."},
+	}}
+	judge := &planJudgeStub{adherenceResp: invocation.PlanAdherenceResponse{Verdict: "follows_plan", Reason: "matches human-approved plan"}}
+	svc, plansRepo := newPlanTestService(t, nil, agents, judge)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	legacyPlan := invocation.Plan{
+		PlanID:    "plan_legacy",
+		AgentID:   "agent-alice",
+		AgentCUID: "", // simulates a row written before the CUID backfill
+		Goal:      "achieve x",
+		// Server matches Submit's default source ("external") — SubmitPlan
+		// normally fills this in for a bare tool name; Create bypasses that,
+		// so it's set explicitly here.
+		Actions:     []invocation.PlanAction{{Tool: "Bash", Server: "external"}},
+		Status:      invocation.PlanStatusApproved,
+		Approval:    &invocation.Approval{Status: "human"},
+		TTLSeconds:  3600,
+		SubmittedAt: now,
+		DecidedAt:   &now,
+	}
+	if err := plansRepo.Create(ctx, legacyPlan); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{Tool: "Bash", AgentID: "agent-alice", Input: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Approval == nil || resp.Approval.Status != "plan_approved" {
+		t.Fatalf("approval = %+v, want plan_approved despite the plan predating agent_cuid", resp.Approval)
+	}
+	if resp.PlanID == nil || *resp.PlanID != legacyPlan.PlanID {
+		t.Fatalf("plan_id = %v, want %s", resp.PlanID, legacyPlan.PlanID)
+	}
+}
+
 func TestApprovedPlanAttachesAcrossHarnessToolNameMismatch(t *testing.T) {
 	agents := agentLookupStub{byAgentID: map[string]invocation.AgentRecord{
 		"agent-a": {ID: "agent-rec-a", Charter: "Only run planned safe commands."},

@@ -38,6 +38,7 @@ type PlanAction struct {
 type Plan struct {
 	PlanID        string       `json:"plan_id"`
 	AgentID       string       `json:"agent_id"`
+	AgentCUID     string       `json:"agent_cuid,omitempty"`
 	Source        string       `json:"source,omitempty"`
 	ThreadID      string       `json:"thread_id,omitempty"`
 	Goal          string       `json:"goal"`
@@ -84,10 +85,11 @@ type PlanEvent struct {
 }
 
 type PlanListFilter struct {
-	Offset  uint64
-	Limit   uint64
-	Status  string
-	AgentID string
+	Offset     uint64
+	Limit      uint64
+	Status     string
+	AgentID    string
+	AgentCUIDs []string
 }
 
 type PlanListResponse struct {

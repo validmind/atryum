@@ -67,6 +67,7 @@ or audit records are evaluated.
 | `internal/mcp` | Server resolution, MCP forwarding, upstream authentication and OAuth | Approval policy |
 | `internal/auth` | Inbound OIDC/JWT validation and authenticated identity context | Upstream MCP credentials |
 | `internal/managedagents` | Anthropic session discovery, event replay, confirmation delivery | Independent rule evaluation |
+| `internal/access` | `Principal`/`Capability` types and the `Resolver` interface an embedding program implements to map a verified identity to capabilities and owned agent CUIDs | HTTP transport, storage access, or any built-in authorization decision |
 
 The React application in `ui/` is compiled into `internal/api/web/` for the production
 binary. During development it can run separately, but it still uses the same review and
@@ -276,6 +277,26 @@ The core tables are:
 Schema changes are ordered migrations under `internal/store/migrations/` and are
 applied at startup for both SQLite and PostgreSQL.
 
+### Two identities per agent
+
+`agent_id` is whatever identity claim showed up on a given request — an OAuth
+`client_id`, a self-declared value in no-auth mode, or one of several aliases an
+operator has registered on an `agents` row. It can vary across requests and across
+time. `agents.vm_cuid` is that row's stable identity and does not change when the
+`client_id` rotates or a new alias is added.
+
+`invocations.agent_cuid`, `plans.agent_cuid`, and `external_sessions.agent_cuid` are a
+denormalized pointer to that stable identity, resolved once per request and stored on
+the row so ownership scoping (see "Access control and ownership scoping" below) and
+idempotency-key lookups don't have to re-walk the `agent_id`/alias mapping on every
+read.
+
+`agent_cuid` is nullable: a row can exist with no resolved stable identity, e.g. when
+the caller's agent record had no CUID at write time. Any lookup that keys off the
+stable CUID — plan-pass matching, idempotency-key scoping — must treat an empty CUID
+match as inconclusive and fall back to the `agent_id`/alias lookup, rather than
+treating it as "no match."
+
 An invocation's row is the authoritative record of current state;
 `invocation_events` is best-effort event history. The two writes are separate
 statements, not one transaction, so parity can fail in either direction: a status
@@ -306,9 +327,75 @@ Inbound and upstream authentication are separate trust boundaries:
 - Agent runtime auth validates bearer tokens and places the configured agent identity
   claim in request context. The invocation service uses that trusted identity for rule
   targeting and ownership checks.
-- Privileged API auth protects operator APIs when an auth provider has
-  `admin_enabled = true` and the configured admin claim is present.
+- Privileged API auth protects operator APIs in one of two modes: an admin-claim gate
+  (an auth provider has `admin_enabled = true` and the configured admin claim is
+  present), or capability- and ownership-scoped access when an embedding program
+  supplies an access resolver — see "Access control and ownership scoping" below.
 - Upstream MCP authentication is owned by `internal/mcp/auth_provider`; credentials and
   OAuth tokens are never returned to the agent caller.
 - No-auth mode is a local deployment option. Identity supplied by a caller in this mode
   is attribution, not a cryptographic ownership guarantee.
+
+## Access control and ownership scoping
+
+Authentication (above) establishes *who is calling*. Access control decides *what
+that caller may see or do*. An embedding program configures this by supplying a
+`Resolver` (`pkg/atryum.WithAccessResolver`) that maps a caller's verified token email
+to an `access.Principal`; a deployment with no resolver configured uses the
+admin-claim gate described above instead.
+
+A `Principal` carries:
+
+- `ActorID` — the actor recorded on any approval, denial, or summary this caller
+  performs. Not a client-supplied field.
+- `Capabilities` — a set of `access.Capability` values (`read_resources`,
+  `decide_invocations`, `summarize_invocations`, `decide_plans`, `update_agents`,
+  `administrative_operations`).
+- `AgentCUIDs` — the stable agent identities (see "Two identities per agent" above)
+  this caller is allowed to touch.
+- `Unrestricted` — set for trusted machine callers (API-key auth); bypasses both
+  checks below.
+
+It applies on two request paths:
+
+- **Operator surface** (`/api/v1/review/...`, `/api/v1/plans/...`, `/api/v1/agents/...`,
+  etc.): the authentication middleware verifies the bearer token, calls the resolver
+  once per request, and stores the resulting `Principal` in context.
+- **Runtime surface** (`/mcp/{server}`, `/api/v1/invocations`, ...): a CUID-scoped
+  principal is bound directly for email-less machine tokens; for delegated,
+  user-bearing tokens, the resolver's result must additionally include the calling
+  agent's CUID.
+
+Every request is then checked twice — a route-level capability check, then a
+resource-level ownership check:
+
+```mermaid
+flowchart TD
+    Req[Operator API request]
+    Key{Valid machine API key?}
+    Unrestricted[Unrestricted principal]
+    Bearer[Verify bearer token]
+    Resolve[Resolver maps token email to a principal]
+    CapCheck{Principal has the capability<br/>this route and method require?}
+    OwnCheck{Principal is assigned<br/>the resource's agent_cuid?}
+    Allow[Serve request]
+    Deny[401 or 403]
+
+    Req --> Key
+    Key -->|yes| Unrestricted --> Allow
+    Key -->|no| Bearer --> Resolve --> CapCheck
+    CapCheck -->|no| Deny
+    CapCheck -->|yes| OwnCheck
+    OwnCheck -->|no| Deny
+    OwnCheck -->|yes, or unrestricted| Allow
+```
+
+The capability check is a fixed, route-and-method-based table in
+`authorizeOperatorRequest`; anything not explicitly listed defaults to requiring
+`administrative_operations`, so a new operator route is locked down until someone
+deliberately widens it. The ownership check happens per handler (e.g.
+`reviewInvocationDetail`, `reviewPlanDetail`) by comparing the resource's `agent_cuid`
+against `Principal.AgentCUIDs` — this is what lets a scoped caller (a human reviewer
+limited to certain agents, or an agent's own delegated token) approve, deny, or
+summarize invocations and plans for the agents they own, without granting operator-wide
+trust.

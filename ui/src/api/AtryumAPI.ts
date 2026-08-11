@@ -65,6 +65,10 @@ export interface InvocationFilters {
   limit?: number;
 }
 
+export interface InvocationSummaryConfig {
+  enabled: boolean;
+}
+
 export const invocationsApi = {
   list: async (
     filters: InvocationFilters = {},
@@ -93,6 +97,11 @@ export const invocationsApi = {
     const { data } = await atryumApi.get(
       `/api/v1/review/invocations/${encodeURIComponent(id)}/events?limit=200`,
     );
+    return data;
+  },
+
+  summaryConfig: async (): Promise<InvocationSummaryConfig> => {
+    const { data } = await atryumApi.get('/api/v1/invocation-summary/config');
     return data;
   },
 

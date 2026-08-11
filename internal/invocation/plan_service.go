@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/validmind/atryum/internal/access"
 	"github.com/validmind/atryum/internal/auth"
 )
 
@@ -26,6 +27,10 @@ type planRepo interface {
 	List(ctx context.Context, filter PlanListFilter) ([]Plan, int, error)
 	ListActiveByAgent(ctx context.Context, agentIDs []string) ([]Plan, error)
 	ListRevisions(ctx context.Context, parentID string) ([]Plan, error)
+}
+
+type stablePlanRepo interface {
+	ListActiveByAgentCUID(ctx context.Context, agentCUID string) ([]Plan, error)
 }
 
 type planEventRepo interface {
@@ -127,13 +132,17 @@ func (s *Service) SubmitPlan(ctx context.Context, req PlanSubmitRequest) (Plan, 
 			req.Actions[i].Server = source
 		}
 	}
+	agentRec := s.resolveAgentRecord(ctx, agentID)
 	var parent *Plan
 	if req.RevisionOf != "" {
 		p, err := s.plans.Get(ctx, req.RevisionOf)
 		if err != nil {
 			return Plan{}, fmt.Errorf("revision_of plan %s not found", req.RevisionOf)
 		}
-		if p.AgentID != agentID {
+		if p.AgentCUID != "" && agentRec.VMCUID != "" && p.AgentCUID != agentRec.VMCUID {
+			return Plan{}, fmt.Errorf("revision_of plan %s belongs to a different agent", req.RevisionOf)
+		}
+		if (p.AgentCUID == "" || agentRec.VMCUID == "") && p.AgentID != agentID {
 			return Plan{}, fmt.Errorf("revision_of plan %s belongs to a different agent", req.RevisionOf)
 		}
 		switch p.Status {
@@ -149,6 +158,7 @@ func (s *Service) SubmitPlan(ctx context.Context, req PlanSubmitRequest) (Plan, 
 	plan := Plan{
 		PlanID:      "plan_" + uuid.NewString(),
 		AgentID:     agentID,
+		AgentCUID:   agentRec.VMCUID,
 		Source:      source,
 		ThreadID:    req.ThreadID,
 		Goal:        req.Goal,
@@ -610,6 +620,9 @@ func (s *Service) ApprovePlan(ctx context.Context, id string, ttlSeconds int) (P
 	}
 	plan.TTLSeconds = s.clampPlanTTL(requestedTTL)
 	approval := &Approval{Status: humanDecisionStatus(plan.Approval, true), Reason: stringPtr("human")}
+	if principal, ok := access.PrincipalFromContext(ctx); ok && principal.ActorID != "" {
+		approval.ActorID = stringPtr(principal.ActorID)
+	}
 	return s.finalizePlanDecision(ctx, plan, PlanStatusApproved, approval, "")
 }
 
@@ -630,6 +643,9 @@ func (s *Service) DenyPlan(ctx context.Context, id string, message string) (Plan
 		reason = message
 	}
 	approval := &Approval{Status: humanDecisionStatus(plan.Approval, false), Reason: stringPtr(reason)}
+	if principal, ok := access.PrincipalFromContext(ctx); ok && principal.ActorID != "" {
+		approval.ActorID = stringPtr(principal.ActorID)
+	}
 	return s.finalizePlanDecision(ctx, plan, PlanStatusDenied, approval, "")
 }
 
@@ -650,6 +666,9 @@ func (s *Service) RequestPlanRevision(ctx context.Context, id string, feedback s
 		return Plan{}, fmt.Errorf("plan %s is not pending approval (status=%s)", id, plan.Status)
 	}
 	approval := &Approval{Status: "revise_requested", Reason: stringPtr("human")}
+	if principal, ok := access.PrincipalFromContext(ctx); ok && principal.ActorID != "" {
+		approval.ActorID = stringPtr(principal.ActorID)
+	}
 	return s.finalizePlanDecision(ctx, plan, PlanStatusNeedsRevision, approval, feedback)
 }
 
@@ -750,15 +769,34 @@ func (s *Service) matchApprovedPlan(ctx context.Context, agentID, server, tool s
 	// agentID in that case would make an authenticated managed agent unable
 	// to match its own just-submitted plan.
 	agentIDs := []string{agentID}
+	agentCUID := ""
 	if s.agents != nil {
-		if rec, err := s.agents.GetByAgentID(ctx, agentID); err == nil && len(rec.AgentIDs) > 0 {
-			agentIDs = dedupeAgentIDs(agentIDs, rec.AgentIDs)
+		if rec, err := s.agents.GetByAgentID(ctx, agentID); err == nil {
+			agentCUID = rec.VMCUID
+			if len(rec.AgentIDs) > 0 {
+				agentIDs = dedupeAgentIDs(agentIDs, rec.AgentIDs)
+			}
 		}
 	}
-	plans, err := s.plans.ListActiveByAgent(ctx, agentIDs)
-	if err != nil {
-		slog.Warn("plan pass lookup failed; falling back to normal gating", "agent_id", agentID, "error", err)
-		return approvedPlanMatch{}, false, false
+	var plans []Plan
+	var err error
+	if stable, ok := s.plans.(stablePlanRepo); ok && agentCUID != "" {
+		plans, err = stable.ListActiveByAgentCUID(ctx, agentCUID)
+		if err != nil {
+			slog.Warn("plan pass lookup failed; falling back to normal gating", "agent_id", agentID, "error", err)
+			return approvedPlanMatch{}, false, false
+		}
+	}
+	// A plan approved before agent_cuid was backfilled (or written by a repo
+	// that predates it) has no stable-CUID row to find. Falling back to the
+	// legacy agent_id/alias lookup whenever the CUID lookup comes up empty
+	// keeps those plans matchable instead of silently losing their pass.
+	if len(plans) == 0 {
+		plans, err = s.plans.ListActiveByAgent(ctx, agentIDs)
+		if err != nil {
+			slog.Warn("plan pass lookup failed; falling back to normal gating", "agent_id", agentID, "error", err)
+			return approvedPlanMatch{}, false, false
+		}
 	}
 	for _, plan := range plans {
 		plan = s.expireIfStale(ctx, plan)

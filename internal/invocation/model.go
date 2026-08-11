@@ -46,6 +46,7 @@ type Invocation struct {
 	// from moving backwards after a later step has run.
 	PlanStepIndex *int    `json:"-"`
 	AgentID       *string `json:"agent_id,omitempty"`
+	AgentCUID     *string `json:"agent_cuid,omitempty"`
 	// SessionID links this invocation to an external harness session (see
 	// ExternalSession). Set on the Invocations API path so the judge can be
 	// given the session's prior tool calls as context.
@@ -79,6 +80,7 @@ type InvocationListFilter struct {
 	Tool       string
 	Status     string
 	AgentIDs   []string // filters to invocations whose agent_id is in this list
+	AgentCUIDs []string // filters by stable owning agent CUID
 	PlanID     string   // filters to invocations linked to one approved plan
 	SessionID  string   // filters to invocations belonging to one external session
 	ClientName string
@@ -186,6 +188,7 @@ type InvocationResponse struct {
 	MatchedRuleID *string   `json:"matched_rule_id,omitempty"`
 	PlanID        *string   `json:"plan_id,omitempty"`
 	AgentID       *string   `json:"agent_id,omitempty"`
+	AgentCUID     *string   `json:"agent_cuid,omitempty"`
 	// SessionID is the internal Atryum session (ses_...) this invocation was
 	// linked to, if any. Exposed for observability/debugging — clients never
 	// need to send it back. Populated on both the explicit session_id path and
@@ -244,8 +247,9 @@ type EventListResponse struct {
 // with no stable identity claim fall back to the no-session_id path, which
 // evaluates each call without cross-call history instead.
 type ExternalSession struct {
-	ID      string
-	AgentID string
+	ID        string
+	AgentID   string
+	AgentCUID string
 	// Harness identifies the calling harness (e.g. "amp", "claude"). Bookkeeping
 	// only; Atryum keys off ID.
 	Harness string

@@ -8,6 +8,7 @@ import {
 export const INVOCATIONS_KEY = 'atryum-invocations';
 export const INVOCATION_DETAIL_KEY = 'atryum-invocation-detail';
 export const INVOCATION_EVENTS_KEY = 'atryum-invocation-events';
+export const INVOCATION_SUMMARY_CONFIG_KEY = 'atryum-invocation-summary-config';
 
 export const normalizeInvocationFilters = (
   filters: InvocationFilters = {},
@@ -41,6 +42,13 @@ export const useInvocationEvents = (id: string | null) =>
     enabled: !!id,
     refetchOnWindowFocus: false,
   });
+
+export const useInvocationSummaryConfig = () =>
+  useQuery(
+    [INVOCATION_SUMMARY_CONFIG_KEY],
+    invocationsApi.summaryConfig,
+    { retry: false, staleTime: 30_000 },
+  );
 
 export const useApproveInvocation = () => {
   const queryClient = useQueryClient();

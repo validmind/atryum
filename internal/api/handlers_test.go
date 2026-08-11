@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/validmind/atryum/internal/access"
 	"github.com/validmind/atryum/internal/auth"
 	backendclient "github.com/validmind/atryum/internal/backend"
 	"github.com/validmind/atryum/internal/config"
@@ -61,6 +62,13 @@ type stubService struct {
 	planFeedback         string
 	planExpireID         string
 	planCancelID         string
+	approveID            string
+	approveActorID       string
+	denyID               string
+	denyMessage          string
+	denyActorID          string
+	listCalls            int
+	planListCalls        int
 }
 
 func (s *stubService) Invoke(ctx context.Context, req invocation.CreateInvocationRequest) (invocation.InvocationResponse, error) {
@@ -76,6 +84,7 @@ func (s *stubService) Get(ctx context.Context, _ string) (invocation.InvocationR
 	return s.invoke, s.getErr
 }
 func (s *stubService) List(context.Context, invocation.InvocationListFilter) (invocation.InvocationListResponse, error) {
+	s.listCalls++
 	return invocation.InvocationListResponse{Items: []invocation.InvocationResponse{s.invoke}, Total: 1, Limit: 50}, nil
 }
 func (s *stubService) ListAgentIDs(context.Context) ([]string, error) {
@@ -84,8 +93,17 @@ func (s *stubService) ListAgentIDs(context.Context) ([]string, error) {
 func (s *stubService) Events(context.Context, string, invocation.EventListFilter) (invocation.EventListResponse, error) {
 	return invocation.EventListResponse{}, nil
 }
-func (s *stubService) Approve(context.Context, string, string) error      { return nil }
-func (s *stubService) Deny(context.Context, string, string, string) error { return nil }
+func (s *stubService) Approve(_ context.Context, id string, actorID string) error {
+	s.approveID = id
+	s.approveActorID = actorID
+	return nil
+}
+func (s *stubService) Deny(_ context.Context, id string, message string, actorID string) error {
+	s.denyID = id
+	s.denyMessage = message
+	s.denyActorID = actorID
+	return nil
+}
 func (s *stubService) Submit(ctx context.Context, req invocation.ExternalSubmitRequest) (invocation.InvocationResponse, error) {
 	s.submitReq = &req
 	s.submitCtx = ctx
@@ -129,6 +147,7 @@ func (s *stubService) GetPlan(context.Context, string) (invocation.Plan, error) 
 	return s.plan, s.planErr
 }
 func (s *stubService) ListPlans(_ context.Context, filter invocation.PlanListFilter) (invocation.PlanListResponse, error) {
+	s.planListCalls++
 	return invocation.PlanListResponse{Items: []invocation.Plan{s.plan}, Total: 1, Limit: filter.Limit}, s.planErr
 }
 func (s *stubService) ListPlanRevisions(context.Context, string) ([]invocation.Plan, error) {
@@ -167,6 +186,215 @@ func (s *stubService) ForwardEnvelope(context.Context, mcp.Upstream, mcp.Envelop
 }
 func (s *stubService) ResolveContext(context.Context, string) (mcp.Upstream, error) {
 	return s.upstream, nil
+}
+
+func TestReviewCollectionsShortCircuitWhenPrincipalHasNoAgents(t *testing.T) {
+	svc := &stubService{}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	principal := access.Principal{
+		ActorID:      "user-empty",
+		Capabilities: []access.Capability{access.CapabilityReadResources},
+	}
+
+	tests := []struct {
+		name      string
+		target    string
+		handler   http.HandlerFunc
+		wantBody  string
+		stream    bool
+		listCalls *int
+	}{
+		{
+			name:      "invocation list",
+			target:    "/api/v1/review/invocations?offset=7&limit=9",
+			handler:   h.reviewInvocations,
+			wantBody:  `{"items":[],"total":0,"offset":7,"limit":9}` + "\n",
+			listCalls: &svc.listCalls,
+		},
+		{
+			name:      "invocation stream",
+			target:    "/api/v1/review/invocations/stream?limit=9",
+			handler:   h.reviewInvocationStream,
+			wantBody:  `"items":[]`,
+			stream:    true,
+			listCalls: &svc.listCalls,
+		},
+		{
+			name:      "plan list",
+			target:    "/api/v1/plans?offset=7&limit=9",
+			handler:   h.reviewPlans,
+			wantBody:  `{"items":[],"total":0,"offset":7,"limit":9}` + "\n",
+			listCalls: &svc.planListCalls,
+		},
+		{
+			name:      "plan stream",
+			target:    "/api/v1/plans/stream?offset=7&limit=9",
+			handler:   h.reviewPlanStream,
+			wantBody:  `"items":[]`,
+			stream:    true,
+			listCalls: &svc.planListCalls,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := *tt.listCalls
+			req := httptest.NewRequest(http.MethodGet, tt.target, nil)
+			req = req.WithContext(access.WithPrincipal(req.Context(), principal))
+			w := httptest.NewRecorder()
+			tt.handler(w, req)
+			if got := *tt.listCalls; got != before {
+				t.Fatalf("service list calls = %d, want %d", got, before)
+			}
+			if tt.stream {
+				if !strings.Contains(w.Body.String(), tt.wantBody) {
+					t.Fatalf("body = %q, want substring %q", w.Body.String(), tt.wantBody)
+				}
+				return
+			}
+			if got := w.Body.String(); got != tt.wantBody {
+				t.Fatalf("body = %q, want %q", got, tt.wantBody)
+			}
+		})
+	}
+}
+
+func TestAuthorizeOperatorRequestRequiresRouteSegmentBoundary(t *testing.T) {
+	h := &Handler{}
+	principal := access.Principal{
+		Capabilities: []access.Capability{
+			access.CapabilityReadResources,
+			access.CapabilityUpdateAgents,
+			access.CapabilityDecideInvocations,
+			access.CapabilitySummarizeInvocations,
+			access.CapabilityDecidePlans,
+		},
+	}
+	tests := []struct {
+		method string
+		path   string
+		want   bool
+	}{
+		{http.MethodGet, "/api/v1/agents", true},
+		{http.MethodGet, "/api/v1/agents/agent-1", true},
+		{http.MethodGet, "/api/v1/agents-export", false},
+		{http.MethodGet, "/api/v1/rules-export", false},
+		{http.MethodGet, "/api/v1/plans-export", false},
+		{http.MethodGet, "/api/v1/review/invocations-export", false},
+		{http.MethodGet, "/api/v1/invocation-summary/config", true},
+		{http.MethodGet, "/api/v1/invocation-summary/config-export", false},
+		{http.MethodPatch, "/api/v1/agents/agent-1", true},
+		{http.MethodPatch, "/api/v1/agents-export/agent-1", false},
+		{http.MethodPost, "/api/v1/review/invocations/inv-1/approve", true},
+		{http.MethodPost, "/api/v1/review/invocations/inv-1/deny", true},
+		{http.MethodPost, "/api/v1/review/invocations/inv-1/summarize", true},
+		{http.MethodPost, "/api/v1/review/invocations-export/inv-1/approve", false},
+		{http.MethodPost, "/api/v1/plans/plan-1/approve", true},
+		{http.MethodPost, "/api/v1/plans-export/plan-1/approve", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			if got := h.authorizeOperatorRequest(req, principal); got != tt.want {
+				t.Fatalf("authorizeOperatorRequest() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+
+	withoutInvocationDecision := principal
+	withoutInvocationDecision.Capabilities = []access.Capability{access.CapabilityReadResources}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/review/invocations/inv-1/approve", nil)
+	if h.authorizeOperatorRequest(req, withoutInvocationDecision) {
+		t.Fatal("invocation approval allowed without decide-invocations capability")
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/review/invocations/inv-1/summarize", nil)
+	if h.authorizeOperatorRequest(req, withoutInvocationDecision) {
+		t.Fatal("invocation summary allowed without summarize-invocations capability")
+	}
+}
+
+func TestScopedInvocationDecisionsRequireAssignmentAndKeepRuleCreationAdminOnly(t *testing.T) {
+	agentCUID := "agent-a"
+
+	t.Run("assigned user can approve with resolver actor", func(t *testing.T) {
+		svc := &stubService{invoke: invocation.InvocationResponse{
+			InvocationID: "inv-1",
+			AgentCUID:    &agentCUID,
+		}}
+		h := NewHandler(svc, stubServerService{}, nil, &stubRulesRepo{}, nil, nil, nil, nil, nil, nil)
+		principal := access.Principal{
+			ActorID:      "authority-user-id",
+			AgentCUIDs:   []string{agentCUID},
+			Capabilities: []access.Capability{access.CapabilityDecideInvocations},
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/review/invocations/inv-1/approve", strings.NewReader(`{}`))
+		req = req.WithContext(access.WithPrincipal(req.Context(), principal))
+		w := httptest.NewRecorder()
+
+		h.reviewInvocationDetail(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", w.Code, w.Body.String())
+		}
+		if svc.approveID != "inv-1" || svc.approveActorID != "authority-user-id" {
+			t.Fatalf("approve call = id %q actor %q", svc.approveID, svc.approveActorID)
+		}
+	})
+
+	t.Run("unassigned invocation is hidden", func(t *testing.T) {
+		svc := &stubService{invoke: invocation.InvocationResponse{
+			InvocationID: "inv-1",
+			AgentCUID:    &agentCUID,
+		}}
+		h := NewHandler(svc, stubServerService{}, nil, &stubRulesRepo{}, nil, nil, nil, nil, nil, nil)
+		principal := access.Principal{
+			ActorID:      "authority-user-id",
+			AgentCUIDs:   []string{"agent-b"},
+			Capabilities: []access.Capability{access.CapabilityDecideInvocations},
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/review/invocations/inv-1/approve", strings.NewReader(`{}`))
+		req = req.WithContext(access.WithPrincipal(req.Context(), principal))
+		w := httptest.NewRecorder()
+
+		h.reviewInvocationDetail(w, req)
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404; body = %s", w.Code, w.Body.String())
+		}
+		if svc.approveID != "" {
+			t.Fatalf("unassigned invocation was approved: %q", svc.approveID)
+		}
+	})
+
+	for _, action := range []string{"approve", "deny"} {
+		t.Run(action+" with rule is admin-only", func(t *testing.T) {
+			svc := &stubService{invoke: invocation.InvocationResponse{
+				InvocationID: "inv-1",
+				AgentCUID:    &agentCUID,
+			}}
+			h := NewHandler(svc, stubServerService{}, nil, &stubRulesRepo{}, nil, nil, nil, nil, nil, nil)
+			principal := access.Principal{
+				ActorID:      "authority-user-id",
+				AgentCUIDs:   []string{agentCUID},
+				Capabilities: []access.Capability{access.CapabilityDecideInvocations},
+			}
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/api/v1/review/invocations/inv-1/"+action,
+				strings.NewReader(`{"create_rule":{}}`),
+			)
+			req = req.WithContext(access.WithPrincipal(req.Context(), principal))
+			w := httptest.NewRecorder()
+
+			h.reviewInvocationDetail(w, req)
+
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403; body = %s", w.Code, w.Body.String())
+			}
+			if svc.approveID != "" || svc.denyID != "" {
+				t.Fatalf("decision executed with rule request: approve=%q deny=%q", svc.approveID, svc.denyID)
+			}
+		})
+	}
 }
 
 type stubServerService struct{}
@@ -243,6 +471,19 @@ type stubSummarizer struct {
 func (s *stubSummarizer) SummarizeInvocation(_ context.Context, req backendclient.SummarizeInvocationRequest) (backendclient.SummarizeInvocationResponse, error) {
 	s.req = req
 	return s.resp, s.err
+}
+
+type stubLocalSummarizer struct {
+	llmConfigID    string
+	invocationData map[string]any
+	summary        string
+	err            error
+}
+
+func (s *stubLocalSummarizer) SummarizeInvocation(_ context.Context, llmConfigID string, invocationData map[string]any) (string, error) {
+	s.llmConfigID = llmConfigID
+	s.invocationData = invocationData
+	return s.summary, s.err
 }
 
 type stubManagedAgentsAdmin struct {
@@ -799,6 +1040,106 @@ func (s *stubAgentsRepo) DeleteAll(context.Context) error {
 	return nil
 }
 
+type stubAccessResolver struct {
+	principal access.Principal
+	err       error
+	emails    []string
+}
+
+func (s *stubAccessResolver) ResolveAccess(_ context.Context, email string) (access.Principal, error) {
+	s.emails = append(s.emails, email)
+	return s.principal, s.err
+}
+
+func TestRuntimeAccessAllowsEmailLessMachineAgentToken(t *testing.T) {
+	resolver := &stubAccessResolver{}
+	h := &Handler{
+		accessResolver: resolver,
+		agentsRepo: &stubAgentsRepo{records: []store.AgentRecord{{
+			ID:       "agent-record",
+			VMCUID:   "agent-cuid",
+			AgentIDs: `["machine-client-id"]`,
+		}}},
+	}
+	var principal access.Principal
+	nextCalled := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		principal, _ = access.PrincipalFromContext(r.Context())
+		w.WriteHeader(http.StatusNoContent)
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/invocations", nil)
+	req = req.WithContext(auth.WithIdentity(req.Context(), auth.Identity{
+		AgentID: "machine-client-id",
+		// Client-credentials tokens intentionally have no Email.
+	}))
+	w := httptest.NewRecorder()
+
+	h.runtimeAccess(next).ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent || !nextCalled {
+		t.Fatalf("status = %d, nextCalled = %t, body = %s", w.Code, nextCalled, w.Body.String())
+	}
+	if len(resolver.emails) != 0 {
+		t.Fatalf("access resolver called for M2M token with emails %v", resolver.emails)
+	}
+	if principal.Unrestricted || principal.ActorID != "" ||
+		len(principal.AgentCUIDs) != 1 || principal.AgentCUIDs[0] != "agent-cuid" {
+		t.Fatalf("runtime principal = %+v", principal)
+	}
+}
+
+func TestRuntimeAccessRejectsUnknownMachineAgentIdentity(t *testing.T) {
+	resolver := &stubAccessResolver{}
+	h := &Handler{accessResolver: resolver, agentsRepo: &stubAgentsRepo{}}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/invocations", nil)
+	req = req.WithContext(auth.WithIdentity(req.Context(), auth.Identity{AgentID: "unknown-client-id"}))
+	w := httptest.NewRecorder()
+
+	h.runtimeAccess(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next called for unknown agent")
+	})).ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body = %s", w.Code, w.Body.String())
+	}
+	if len(resolver.emails) != 0 {
+		t.Fatalf("access resolver called for unknown M2M token with emails %v", resolver.emails)
+	}
+}
+
+func TestRuntimeAccessStillChecksUserAssignmentWhenEmailIsPresent(t *testing.T) {
+	resolver := &stubAccessResolver{principal: access.Principal{
+		ActorID:    "user-id",
+		AgentCUIDs: []string{"different-agent"},
+	}}
+	h := &Handler{
+		accessResolver: resolver,
+		agentsRepo: &stubAgentsRepo{records: []store.AgentRecord{{
+			ID:       "agent-record",
+			VMCUID:   "agent-cuid",
+			AgentIDs: `["delegated-client-id"]`,
+		}}},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/invocations", nil)
+	req = req.WithContext(auth.WithIdentity(req.Context(), auth.Identity{
+		AgentID: "delegated-client-id",
+		Email:   "person@example.com",
+	}))
+	w := httptest.NewRecorder()
+
+	h.runtimeAccess(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next called for unassigned user")
+	})).ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body = %s", w.Code, w.Body.String())
+	}
+	if len(resolver.emails) != 1 || resolver.emails[0] != "person@example.com" {
+		t.Fatalf("resolver emails = %v", resolver.emails)
+	}
+}
+
 func TestMCPInitializeNegotiatesProtocolVersion(t *testing.T) {
 	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`))
@@ -907,6 +1248,146 @@ func TestSummarizeInvocationPersistsBackendSummary(t *testing.T) {
 	}
 }
 
+func TestInvocationSummaryConfigExposesOnlyAvailability(t *testing.T) {
+	settings := &stubAgentSyncSettingsRepo{settings: store.AgentSyncSettings{
+		OrgCUID:                "secret-org",
+		SummaryModelConfigCUID: "secret-model",
+	}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, settings, nil, nil, nil, nil)
+	h.summarizeClient = &stubSummarizer{}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/invocation-summary/config", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", w.Code, w.Body.String())
+	}
+	var resp InvocationSummaryConfigResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Enabled {
+		t.Fatal("configured summary model reported unavailable")
+	}
+	if strings.Contains(w.Body.String(), "secret-model") || strings.Contains(w.Body.String(), "secret-org") {
+		t.Fatalf("summary config leaked administrative settings: %s", w.Body.String())
+	}
+}
+
+func TestInvocationSummaryConfigEnabledForLocalOnlySummarizer(t *testing.T) {
+	settings := &stubAgentSyncSettingsRepo{settings: store.AgentSyncSettings{
+		SummaryAtryumLLMConfigID: " local-model ",
+	}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, settings, nil, nil, nil, nil)
+	h.summarizeClient = nil
+	h.localSummarizer = &stubLocalSummarizer{}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/invocation-summary/config", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", w.Code, w.Body.String())
+	}
+	var resp InvocationSummaryConfigResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Enabled {
+		t.Fatal("local-only summary model reported unavailable")
+	}
+}
+
+func TestScopedInvocationSummarizationRequiresAssignment(t *testing.T) {
+	agentCUID := "agent-a"
+	settings := &stubAgentSyncSettingsRepo{settings: store.AgentSyncSettings{
+		SummaryModelConfigCUID: "model-from-settings",
+	}}
+
+	t.Run("assigned invocation", func(t *testing.T) {
+		svc := &stubService{invoke: invocation.InvocationResponse{
+			InvocationID: "inv-1",
+			AgentCUID:    &agentCUID,
+		}}
+		summarizer := &stubSummarizer{resp: backendclient.SummarizeInvocationResponse{Summary: "Safe summary."}}
+		h := NewHandler(svc, stubServerService{}, nil, nil, nil, settings, nil, nil, nil, nil)
+		h.summarizeClient = summarizer
+		principal := access.Principal{
+			AgentCUIDs:   []string{agentCUID},
+			Capabilities: []access.Capability{access.CapabilitySummarizeInvocations},
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/review/invocations/inv-1/summarize", nil)
+		req = req.WithContext(access.WithPrincipal(req.Context(), principal))
+		w := httptest.NewRecorder()
+
+		h.reviewInvocationDetail(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", w.Code, w.Body.String())
+		}
+		if svc.setID != "inv-1" || svc.setText != "Safe summary." {
+			t.Fatalf("summary persistence = id %q text %q", svc.setID, svc.setText)
+		}
+	})
+
+	t.Run("unassigned invocation", func(t *testing.T) {
+		svc := &stubService{invoke: invocation.InvocationResponse{
+			InvocationID: "inv-1",
+			AgentCUID:    &agentCUID,
+		}}
+		summarizer := &stubSummarizer{resp: backendclient.SummarizeInvocationResponse{Summary: "Must not run."}}
+		h := NewHandler(svc, stubServerService{}, nil, nil, nil, settings, nil, nil, nil, nil)
+		h.summarizeClient = summarizer
+		principal := access.Principal{
+			AgentCUIDs:   []string{"agent-b"},
+			Capabilities: []access.Capability{access.CapabilitySummarizeInvocations},
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/review/invocations/inv-1/summarize", nil)
+		req = req.WithContext(access.WithPrincipal(req.Context(), principal))
+		w := httptest.NewRecorder()
+
+		h.reviewInvocationDetail(w, req)
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404; body = %s", w.Code, w.Body.String())
+		}
+		if svc.setID != "" || summarizer.req.ModelConfigCUID != "" {
+			t.Fatalf("unassigned invocation was summarized: setID=%q request=%+v", svc.setID, summarizer.req)
+		}
+	})
+
+	t.Run("model override is admin-only", func(t *testing.T) {
+		svc := &stubService{invoke: invocation.InvocationResponse{
+			InvocationID: "inv-1",
+			AgentCUID:    &agentCUID,
+		}}
+		summarizer := &stubSummarizer{resp: backendclient.SummarizeInvocationResponse{Summary: "Must not run."}}
+		h := NewHandler(svc, stubServerService{}, nil, nil, nil, settings, nil, nil, nil, nil)
+		h.summarizeClient = summarizer
+		principal := access.Principal{
+			AgentCUIDs:   []string{agentCUID},
+			Capabilities: []access.Capability{access.CapabilitySummarizeInvocations},
+		}
+		req := httptest.NewRequest(
+			http.MethodPost,
+			"/api/v1/review/invocations/inv-1/summarize",
+			strings.NewReader(`{"model_config_cuid":"different-model"}`),
+		)
+		req = req.WithContext(access.WithPrincipal(req.Context(), principal))
+		w := httptest.NewRecorder()
+
+		h.reviewInvocationDetail(w, req)
+
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403; body = %s", w.Code, w.Body.String())
+		}
+		if svc.setID != "" || summarizer.req.ModelConfigCUID != "" {
+			t.Fatalf("non-admin model override ran: setID=%q request=%+v", svc.setID, summarizer.req)
+		}
+	})
+}
+
 func TestSummarizeInvocationUsesSettingsModelConfigWhenRequestBodyEmpty(t *testing.T) {
 	now := time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
 	svc := &stubService{invoke: invocation.InvocationResponse{
@@ -941,6 +1422,44 @@ func TestSummarizeInvocationUsesSettingsModelConfigWhenRequestBodyEmpty(t *testi
 		t.Fatalf("org_cuid = %q", summarizer.req.OrgCUID)
 	}
 	if svc.setID != "inv_123" || svc.setText != "Read /tmp/a." {
+		t.Fatalf("SetSummary called with id=%q summary=%q", svc.setID, svc.setText)
+	}
+}
+
+func TestSummarizeInvocationUsesLocalSummarizerWithoutBackendClient(t *testing.T) {
+	now := time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
+	svc := &stubService{invoke: invocation.InvocationResponse{
+		InvocationID: "inv_local",
+		ServerName:   "demo",
+		ToolName:     "read_file",
+		Status:       invocation.StatusSucceeded,
+		Input:        json.RawMessage(`{"path":"/tmp/local"}`),
+		Result:       json.RawMessage(`{"content":"hello"}`),
+		SubmittedAt:  now,
+		CompletedAt:  &now,
+	}}
+	settings := &stubAgentSyncSettingsRepo{settings: store.AgentSyncSettings{
+		SummaryAtryumLLMConfigID: " local-model ",
+	}}
+	summarizer := &stubLocalSummarizer{summary: "Summarized locally."}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, settings, nil, nil, nil, nil)
+	h.summarizeClient = nil
+	h.localSummarizer = summarizer
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/review/invocations/inv_local/summarize", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	if summarizer.llmConfigID != "local-model" {
+		t.Fatalf("llm config id = %q", summarizer.llmConfigID)
+	}
+	if summarizer.invocationData["invocation_id"] != "inv_local" {
+		t.Fatalf("local invocation payload = %#v", summarizer.invocationData)
+	}
+	if svc.setID != "inv_local" || svc.setText != "Summarized locally." {
 		t.Fatalf("SetSummary called with id=%q summary=%q", svc.setID, svc.setText)
 	}
 }

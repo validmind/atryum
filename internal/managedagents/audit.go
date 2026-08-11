@@ -55,6 +55,20 @@ func (s *Service) ensureSessionAuditInvocation(ctx context.Context, reg SessionR
 		ClientVersion: optStrPtr(cfg.ClientVersion),
 		AgentID:       optStrPtr(reg.AgentID),
 	}
+	if s.bindings != nil {
+		if bindings, err := s.bindings.List(ctx); err == nil {
+			for _, binding := range bindings {
+				account := binding.Account
+				if account == "" {
+					account = DefaultAccountName
+				}
+				if account == reg.Account && binding.ClaudeAgentID == reg.AgentID && binding.AgentCUID != "" {
+					inv.AgentCUID = strPtr(binding.AgentCUID)
+					break
+				}
+			}
+		}
+	}
 	if err := s.audit.Create(ctx, inv); err != nil {
 		// A concurrent watcher may have created it first; fall back to lookup.
 		if existing, gerr := s.audit.GetByIdempotencyKey(ctx, key); gerr == nil && existing.InvocationID != "" {

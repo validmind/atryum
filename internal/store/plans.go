@@ -28,7 +28,7 @@ func NewPlansRepoWithDialect(db *sql.DB, dialect Dialect) *PlansRepo {
 }
 
 var planColumns = []string{
-	"plan_id", "agent_id", "source", "thread_id", "goal", "rationale",
+	"plan_id", "agent_id", "agent_cuid", "source", "thread_id", "goal", "rationale",
 	"actions_json", "status", "approval_json", "matched_rule_id", "feedback",
 	"parent_plan_id", "revision", "ttl_seconds", "client_name", "client_version",
 	"expires_at", "submitted_at", "decided_at",
@@ -42,7 +42,7 @@ func (r *PlansRepo) Create(ctx context.Context, p invocation.Plan) error {
 	query, args, err := r.sb.Insert("plans").
 		Columns(planColumns...).
 		Values(
-			p.PlanID, p.AgentID, p.Source, p.ThreadID, p.Goal, p.Rationale,
+			p.PlanID, p.AgentID, emptyToNil(p.AgentCUID), p.Source, p.ThreadID, p.Goal, p.Rationale,
 			actionsJSON, p.Status, approvalJSON, p.MatchedRuleID, p.Feedback,
 			p.ParentPlanID, p.Revision, p.TTLSeconds, p.ClientName, p.ClientVersion,
 			p.ExpiresAt, p.SubmittedAt, p.DecidedAt,
@@ -111,6 +111,10 @@ func (r *PlansRepo) List(ctx context.Context, filter invocation.PlanListFilter) 
 		builder = builder.Where(sq.Eq{"agent_id": filter.AgentID})
 		countBuilder = countBuilder.Where(sq.Eq{"agent_id": filter.AgentID})
 	}
+	if len(filter.AgentCUIDs) > 0 {
+		builder = builder.Where(sq.Eq{"agent_cuid": filter.AgentCUIDs})
+		countBuilder = countBuilder.Where(sq.Eq{"agent_cuid": filter.AgentCUIDs})
+	}
 	query, args, err := builder.OrderBy("submitted_at DESC").Limit(filter.Limit).Offset(filter.Offset).ToSql()
 	if err != nil {
 		return nil, 0, err
@@ -168,6 +172,34 @@ func (r *PlansRepo) ListActiveByAgent(ctx context.Context, agentIDs []string) ([
 	return out, rows.Err()
 }
 
+func (r *PlansRepo) ListActiveByAgentCUID(ctx context.Context, agentCUID string) ([]invocation.Plan, error) {
+	if agentCUID == "" {
+		return nil, nil
+	}
+	query, args, err := r.sb.Select(planColumns...).
+		From("plans").
+		Where(sq.Eq{"agent_cuid": agentCUID, "status": invocation.PlanStatusApproved}).
+		OrderBy("submitted_at DESC").
+		ToSql()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []invocation.Plan
+	for rows.Next() {
+		plan, err := scanPlan(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, plan)
+	}
+	return out, rows.Err()
+}
+
 // ListRevisions returns plans that declare parentID as their parent, oldest first.
 func (r *PlansRepo) ListRevisions(ctx context.Context, parentID string) ([]invocation.Plan, error) {
 	query, args, err := r.sb.Select(planColumns...).
@@ -197,15 +229,18 @@ func (r *PlansRepo) ListRevisions(ctx context.Context, parentID string) ([]invoc
 func scanPlan(scanner interface{ Scan(dest ...any) error }) (invocation.Plan, error) {
 	var p invocation.Plan
 	var actionsJSON string
-	var approvalJSON, matchedRuleID, parentPlanID, clientName, clientVersion sql.NullString
+	var approvalJSON, matchedRuleID, parentPlanID, clientName, clientVersion, agentCUID sql.NullString
 	var expiresAt, decidedAt sql.NullTime
 	if err := scanner.Scan(
-		&p.PlanID, &p.AgentID, &p.Source, &p.ThreadID, &p.Goal, &p.Rationale,
+		&p.PlanID, &p.AgentID, &agentCUID, &p.Source, &p.ThreadID, &p.Goal, &p.Rationale,
 		&actionsJSON, &p.Status, &approvalJSON, &matchedRuleID, &p.Feedback,
 		&parentPlanID, &p.Revision, &p.TTLSeconds, &clientName, &clientVersion,
 		&expiresAt, &p.SubmittedAt, &decidedAt,
 	); err != nil {
 		return invocation.Plan{}, err
+	}
+	if agentCUID.Valid {
+		p.AgentCUID = agentCUID.String
 	}
 	if err := json.Unmarshal([]byte(actionsJSON), &p.Actions); err != nil {
 		p.Actions = []invocation.PlanAction{}
