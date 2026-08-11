@@ -782,12 +782,21 @@ func (s *Service) matchApprovedPlan(ctx context.Context, agentID, server, tool s
 	var err error
 	if stable, ok := s.plans.(stablePlanRepo); ok && agentCUID != "" {
 		plans, err = stable.ListActiveByAgentCUID(ctx, agentCUID)
-	} else {
-		plans, err = s.plans.ListActiveByAgent(ctx, agentIDs)
+		if err != nil {
+			slog.Warn("plan pass lookup failed; falling back to normal gating", "agent_id", agentID, "error", err)
+			return approvedPlanMatch{}, false, false
+		}
 	}
-	if err != nil {
-		slog.Warn("plan pass lookup failed; falling back to normal gating", "agent_id", agentID, "error", err)
-		return approvedPlanMatch{}, false, false
+	// A plan approved before agent_cuid was backfilled (or written by a repo
+	// that predates it) has no stable-CUID row to find. Falling back to the
+	// legacy agent_id/alias lookup whenever the CUID lookup comes up empty
+	// keeps those plans matchable instead of silently losing their pass.
+	if len(plans) == 0 {
+		plans, err = s.plans.ListActiveByAgent(ctx, agentIDs)
+		if err != nil {
+			slog.Warn("plan pass lookup failed; falling back to normal gating", "agent_id", agentID, "error", err)
+			return approvedPlanMatch{}, false, false
+		}
 	}
 	for _, plan := range plans {
 		plan = s.expireIfStale(ctx, plan)
