@@ -38,7 +38,12 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Extract metadata
+      # Two runtime variants are published from Dockerfile.prod:
+      #   - minimal (alpine): default tags; cannot host stdio MCP servers.
+      #   - node (node:22): "-node" suffixed tags; ships node/npm/npx so it
+      #     can host stdio MCP servers (still gated by [mcp] allow_stdio in
+      #     atryum.toml).
+      - name: Extract metadata (minimal)
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -50,14 +55,44 @@ jobs:
             type=raw,value=latest,enable=${{ github.event_name == 'push' }}
             type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
 
-      - name: Build and push
+      - name: Extract metadata (node)
+        id: meta-node
+        uses: docker/metadata-action@v5
+        with:
+          images: validmind/atryum
+          flavor: |
+            suffix=-node,onlatest=true
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+            type=raw,value=latest,enable=${{ github.event_name == 'push' }}
+            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+
+      - name: Build and push (minimal)
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.prod
+          target: minimal
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The ui/builder stages are shared with the minimal build, so this
+      # mostly reuses the build cache and only adds the node runtime layer.
+      - name: Build and push (node)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.prod
+          target: node
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta-node.outputs.tags }}
+          labels: ${{ steps.meta-node.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -3572,6 +3572,10 @@ type ServerOperatorService struct {
 	client        *mcp.Client
 	timeout       time.Duration
 	publicBaseURL string
+	// allowStdioServers mirrors [mcp] allow_stdio from atryum.toml. When
+	// false (the default), creating or updating a stdio-mode server via the
+	// admin API is rejected.
+	allowStdioServers bool
 }
 
 type serverRepo interface {
@@ -3586,6 +3590,13 @@ type serverRepo interface {
 
 func NewServerOperatorService(repo serverRepo, oauthRepo *store.OAuthRepo, client *mcp.Client, timeout time.Duration, publicBaseURL string) *ServerOperatorService {
 	return &ServerOperatorService{repo: repo, oauthRepo: oauthRepo, client: client, timeout: timeout, publicBaseURL: strings.TrimRight(strings.TrimSpace(publicBaseURL), "/")}
+}
+
+// WithStdioServersAllowed opts the admin API into accepting stdio-mode
+// server definitions (see [mcp] allow_stdio in atryum.toml).
+func (s *ServerOperatorService) WithStdioServersAllowed(allowed bool) *ServerOperatorService {
+	s.allowStdioServers = allowed
+	return s
 }
 
 func (s *ServerOperatorService) List(ctx context.Context, filter mcp.ServerFilter) (ServerListResponse, error) {
@@ -3699,7 +3710,7 @@ func (s *ServerOperatorService) Upsert(ctx context.Context, name string, req Ope
 		upstream = prepared
 	}
 	upstream.Status = inferServerStatus(upstream)
-	if err := validateUpstream(upstream); err != nil {
+	if err := validateUpstream(upstream, s.allowStdioServers); err != nil {
 		return OperatorServer{}, err
 	}
 	if err := s.repo.UpsertServer(ctx, upstream); err != nil {
@@ -4440,13 +4451,16 @@ func toOperatorServer(upstream mcp.Upstream) OperatorServer {
 	return OperatorServer{Name: upstream.Name, EndpointSlug: endpointSlug, Mode: string(upstream.Mode), BaseURL: upstream.BaseURL, AuthToken: upstream.AuthToken, AuthHeaders: append([]mcp.AuthHeader(nil), upstream.AuthHeaders...), TimeoutSeconds: int(upstream.Timeout / time.Second), Command: upstream.Command, Args: append([]string(nil), upstream.Args...), Env: cloneEnv(upstream.Env), Enabled: upstream.Enabled, AuthType: string(upstream.Status.AuthType), ConnectionStatus: string(upstream.Status.ConnectionStatus), AuthStatus: string(upstream.Status.AuthStatus), ReauthNeeded: upstream.Status.ReauthNeeded, LastCheckedAt: upstream.Status.LastCheckedAt, LastCheckOK: upstream.Status.LastCheckOK, LastErrorSummary: upstream.Status.LastErrorSummary, ActionRequired: upstream.Status.ActionRequired, OAuthProviderID: upstream.OAuthProviderID, OAuthProviderLabel: upstream.OAuthProviderLabel, OAuthClientRegistration: string(upstream.OAuthClientRegistration), OAuthClientID: upstream.OAuthClientID, OAuthAuthorizeURL: upstream.OAuthAuthorizeURL, OAuthTokenURL: upstream.OAuthTokenURL, OAuthScopes: upstream.OAuthScopes, HasOAuthClientSecret: strings.TrimSpace(upstream.OAuthClientSecret) != ""}
 }
 
-func validateUpstream(upstream mcp.Upstream) error {
+func validateUpstream(upstream mcp.Upstream, allowStdio bool) error {
 	switch upstream.Mode {
 	case mcp.UpstreamModeHTTP:
 		if upstream.BaseURL == "" {
 			return fmt.Errorf("base_url is required for http mode")
 		}
 	case mcp.UpstreamModeStdio:
+		if !allowStdio {
+			return mcp.ErrStdioDisabled
+		}
 		if upstream.Command == "" {
 			return fmt.Errorf("command is required for stdio mode")
 		}

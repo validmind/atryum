@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -235,10 +236,17 @@ type Resolver struct {
 	bootstrap   map[string]Upstream
 }
 
+// ErrStdioDisabled is returned for stdio-mode upstreams when the deployment
+// has not opted in via `allow_stdio = true` under [mcp] in atryum.toml.
+// stdio upstreams make Atryum spawn local subprocesses, so they are off by
+// default and can only be enabled through the config file.
+var ErrStdioDisabled = errors.New("stdio MCP servers are disabled; set allow_stdio = true under [mcp] in atryum.toml to enable them")
+
 type Client struct {
 	httpClient *http.Client
 	nextID     atomic.Int64
 	debug      bool
+	allowStdio bool
 
 	// MCP Streamable HTTP session IDs per upstream. The transport
 	// (since spec rev 2025-03-26) lets a server require an `Mcp-Session-Id`
@@ -311,6 +319,14 @@ func (r *Resolver) WithCredentials(credentials CredentialStore) *Resolver {
 func NewHTTPClient() *Client {
 	debug := strings.EqualFold(os.Getenv("ATRYUM_MCP_DEBUG"), "1") || strings.EqualFold(os.Getenv("ATRYUM_MCP_DEBUG"), "true")
 	return &Client{httpClient: &http.Client{}, debug: debug, sessionInitLocks: make(map[string]*sync.Mutex), sessions: make(map[string]string), sessionProtocols: make(map[string]string)}
+}
+
+// WithStdioEnabled opts the client into stdio-mode upstreams. Without it,
+// every stdio invoke/list/test fails with ErrStdioDisabled regardless of how
+// the server row got into the store.
+func (c *Client) WithStdioEnabled(enabled bool) *Client {
+	c.allowStdio = enabled
+	return c
 }
 
 func (r *Resolver) Resolve(name string) (Upstream, error) {
@@ -415,6 +431,9 @@ func (c *Client) Invoke(ctx context.Context, upstream Upstream, tool string, inp
 	}()
 	switch upstream.Mode {
 	case UpstreamModeStdio:
+		if !c.allowStdio {
+			return InvokeResult{}, ErrStdioDisabled
+		}
 		return c.invokeStdio(ctx, upstream, tool, input)
 	case UpstreamModeHTTP, "":
 		return c.invokeHTTP(ctx, upstream, tool, input, requestID)
@@ -430,6 +449,9 @@ func (c *Client) ListTools(ctx context.Context, upstream Upstream) ([]Tool, erro
 	}()
 	switch upstream.Mode {
 	case UpstreamModeStdio:
+		if !c.allowStdio {
+			return nil, ErrStdioDisabled
+		}
 		return c.listToolsStdio(ctx, upstream)
 	case UpstreamModeHTTP, "":
 		return c.listToolsHTTP(ctx, upstream)
@@ -579,7 +601,13 @@ func (c *Client) TestConnection(ctx context.Context, upstream Upstream) Connecti
 	case UpstreamModeHTTP:
 		result = c.testHTTP(ctx, upstream)
 	case UpstreamModeStdio:
-		result = c.testStdio(ctx, upstream)
+		if !c.allowStdio {
+			message := ErrStdioDisabled.Error()
+			action := "set allow_stdio = true under [mcp] in atryum.toml"
+			result = ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusNeedsAttention, AuthStatus: upstream.Status.AuthStatus, ReauthNeeded: false, LastCheckOK: false, LastErrorSummary: stringPtr(message), ActionRequired: &action}
+		} else {
+			result = c.testStdio(ctx, upstream)
+		}
 	default:
 		message := fmt.Sprintf("unsupported mode %q", upstream.Mode)
 		result = ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusNeedsAttention, AuthStatus: AuthStatusUnknown, ReauthNeeded: false, LastCheckOK: false, LastErrorSummary: stringPtr(message)}

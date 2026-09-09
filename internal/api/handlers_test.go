@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -2360,5 +2361,19 @@ func TestOperatorAgentCharterPreviewLocalAgentNoCharterYieldsEmptyResult(t *test
 	}
 	if len(resp.Segments) != 0 || resp.Combined != "" {
 		t.Fatalf("expected empty result for an agent with no charter, got %#v", resp)
+	}
+}
+
+func TestValidateUpstreamStdioGate(t *testing.T) {
+	stdio := mcp.Upstream{Name: "calc", Mode: mcp.UpstreamModeStdio, Command: "npx"}
+	if err := validateUpstream(stdio, false); !errors.Is(err, mcp.ErrStdioDisabled) {
+		t.Fatalf("validateUpstream err = %v, want ErrStdioDisabled", err)
+	}
+	if err := validateUpstream(stdio, true); err != nil {
+		t.Fatalf("validateUpstream with stdio allowed: %v", err)
+	}
+	httpUpstream := mcp.Upstream{Name: "gh", Mode: mcp.UpstreamModeHTTP, BaseURL: "https://example.com"}
+	if err := validateUpstream(httpUpstream, false); err != nil {
+		t.Fatalf("validateUpstream http: %v", err)
 	}
 }

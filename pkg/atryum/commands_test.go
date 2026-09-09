@@ -77,6 +77,9 @@ func TestBuildDemoConfigIncludesCalcUpstream(t *testing.T) {
 	if !strings.Contains(cfg, `@coo-quack/calc-mcp@latest`) {
 		t.Fatalf("expected calc package in demo config:\n%s", cfg)
 	}
+	if !strings.Contains(cfg, "[mcp]") || !strings.Contains(cfg, "allow_stdio = true") {
+		t.Fatalf("expected stdio opt-in for the calc upstream in demo config:\n%s", cfg)
+	}
 }
 
 func TestRunSetupHelpReturnsNoError(t *testing.T) {
@@ -400,5 +403,27 @@ func TestInstallUninstallAgentPlugins(t *testing.T) {
 				t.Fatalf("expected plugin to be removed, stat err=%v", err)
 			}
 		})
+	}
+}
+
+func TestEnsureStdioAllowedAppendsWhenMissing(t *testing.T) {
+	input := "[server]\nlisten_addr = \":8080\"\n"
+	updated, added := ensureStdioAllowed(input)
+	if !added {
+		t.Fatal("expected [mcp] section to be added")
+	}
+	if !strings.Contains(updated, "[mcp]") || !strings.Contains(updated, "allow_stdio = true") {
+		t.Fatalf("expected allow_stdio opt-in, got:\n%s", updated)
+	}
+}
+
+func TestEnsureStdioAllowedKeepsExistingSection(t *testing.T) {
+	input := "[mcp]\nallow_stdio = false\n"
+	updated, added := ensureStdioAllowed(input)
+	if added {
+		t.Fatal("expected no change when [mcp] already present")
+	}
+	if updated != input {
+		t.Fatalf("expected unchanged content, got:\n%s", updated)
 	}
 }

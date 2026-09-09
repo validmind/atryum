@@ -219,6 +219,11 @@ enabled = false
 [auth_debug]
 skip_verify = false
 
+# stdio MCP servers spawn local subprocesses and are disabled by default.
+# The demo calc upstream below needs them, so opt in here.
+[mcp]
+allow_stdio = true
+
 [[upstreams]]
 name = "calc"
 mode = "stdio"
@@ -249,8 +254,9 @@ func runSetupMCP(configPath string) error {
 		return fmt.Errorf("read config: %w", err)
 	}
 
-	updated, added := addCalcUpstream(string(raw))
-	if !added {
+	updated, addedUpstream := addCalcUpstream(string(raw))
+	updated, addedFlag := ensureStdioAllowed(updated)
+	if !addedUpstream && !addedFlag {
 		fmt.Printf("calc MCP upstream already configured in %s\n", targetPath)
 		return nil
 	}
@@ -259,8 +265,31 @@ func runSetupMCP(configPath string) error {
 		return fmt.Errorf("write config: %w", err)
 	}
 
-	fmt.Printf("added calc MCP upstream to %s\n", targetPath)
+	if addedUpstream {
+		fmt.Printf("added calc MCP upstream to %s\n", targetPath)
+	}
+	if addedFlag {
+		fmt.Printf("enabled stdio MCP servers ([mcp] allow_stdio = true) in %s\n", targetPath)
+	}
 	return nil
+}
+
+// ensureStdioAllowed appends an [mcp] section with allow_stdio = true when
+// the config has no [mcp] section yet. The calc upstream is stdio-mode, so
+// without this opt-in the config written by `atryum setup mcp` would be
+// rejected at startup. An existing [mcp] section is left untouched.
+func ensureStdioAllowed(content string) (string, bool) {
+	for _, line := range strings.Split(content, "\n") {
+		if strings.TrimSpace(line) == "[mcp]" {
+			return content, false
+		}
+	}
+	trimmed := strings.TrimRight(content, "\n")
+	if trimmed != "" {
+		trimmed += "\n\n"
+	}
+	trimmed += "[mcp]\nallow_stdio = true"
+	return trimmed + "\n", true
 }
 
 func addCalcUpstream(content string) (string, bool) {
