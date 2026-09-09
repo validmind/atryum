@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -23,8 +24,12 @@ func globalUsage() string {
 
 Commands:
   run        Start the Atryum server.
-	  setup      First-time setup flows (demo, mcp, validmind).
+  setup      First-time setup flows (demo, mcp, validmind, claude).
   hooks      Install or uninstall agent hooks.
+  login      Sign in to an Atryum server (OAuth device flow).
+  logout     Forget a stored login.
+  whoami     Show who you are signed in as.
+  agent      List/create agents and manage their API keys.
   licenses   Print bundled third-party license notices.
   version    Print the atryum version.
   help       Show this help.
@@ -34,6 +39,10 @@ Commands:
 	  atryum setup demo
 	  atryum setup mcp
 	  atryum setup validmind
+	  atryum setup claude --url https://atryum.example.com
+	  atryum login --url https://atryum.example.com
+	  atryum agent list
+	  atryum agent key create "Claude Code on my-laptop"
 	  atryum hooks install cursor
 	  atryum hooks install claude-code
 	  atryum hooks install codex
@@ -124,18 +133,22 @@ func runSetup(args []string) error {
 		return runSetupMCP(*configPath)
 	case "validmind":
 		return runSetupValidMind(*configPath)
+	case "claude":
+		return runSetupClaude(remaining[1:], stdIO())
 	default:
 		return fmt.Errorf("unknown setup target %q\n%s", remaining[0], setupUsage())
 	}
 }
 
 func setupUsage() string {
-	return strings.TrimSpace(`usage: atryum setup [--config PATH] [demo|mcp|validmind]
+	return strings.TrimSpace(`usage: atryum setup [--config PATH] [demo|mcp|validmind|claude]
 
 Commands:
 	  demo       Create a minimal local config with SQLite and calc MCP upstream.
 	  mcp        Add the calc MCP upstream to an existing config.
 	  validmind  Prompt for API key/secret and store them in an existing config.
+	  claude     Sign in, pick an agent, issue an API key and install Claude Code hooks
+	             (see "atryum setup claude --help").
 
 Examples:
 	  atryum setup demo
@@ -557,6 +570,14 @@ func promptConfirm(reader *bufio.Reader, label string) (bool, error) {
 }
 
 func installHooks(target string) error {
+	return installHooksWithEnv(target, nil, os.Stdout)
+}
+
+// installHooksWithEnv installs hooks for target with extra environment
+// variables (e.g. ATRYUM_URL, ATRYUM_TOKEN_COMMAND) prefixed onto each hook
+// command. Any previously installed Atryum hook commands for the target are
+// replaced so re-running setup never leaves two copies behind.
+func installHooksWithEnv(target string, env map[string]string, out io.Writer) error {
 	if target == "amp" || target == "pi" {
 		return installAgentPlugin(target)
 	}
@@ -585,14 +606,39 @@ func installHooks(target string) error {
 	if err != nil {
 		return err
 	}
-	applyInstallHookConfig(settings, target)
+	if len(env) > 0 {
+		applyUninstallHookConfig(settings, target)
+	}
+	applyInstallHookConfigWithEnv(settings, target, hookEnvPrefix(env))
 	if err := writeJSONMap(settingsPath, settings); err != nil {
 		return err
 	}
 
-	fmt.Printf("installed hooks for %s in %s\n", target, settingsPath)
-	fmt.Println("restart your editor/agent tool to apply hook changes")
+	fmt.Fprintf(out, "installed hooks for %s in %s\n", target, settingsPath)
+	fmt.Fprintln(out, "restart your editor/agent tool to apply hook changes")
 	return nil
+}
+
+// hookEnvPrefix renders env as "K=V K2=V2 " for prefixing onto a shell
+// command, in sorted key order so output is deterministic. Values are
+// single-quoted when they contain shell metacharacters.
+func hookEnvPrefix(env map[string]string) string {
+	if len(env) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString(k)
+		b.WriteString("=")
+		b.WriteString(shellQuote(env[k]))
+		b.WriteString(" ")
+	}
+	return b.String()
 }
 
 func uninstallHooks(target string) error {
@@ -774,6 +820,12 @@ func writeJSONMap(path string, value map[string]any) error {
 }
 
 func applyInstallHookConfig(settings map[string]any, target string) {
+	applyInstallHookConfigWithEnv(settings, target, "")
+}
+
+// applyInstallHookConfigWithEnv is applyInstallHookConfig with an extra
+// "K=V " environment prefix on every hook command (see hookEnvPrefix).
+func applyInstallHookConfigWithEnv(settings map[string]any, target string, envPrefix string) {
 	hooks := ensureMap(settings, "hooks")
 	if target == "cursor" {
 		start := ensureSlice(hooks, "sessionStart")
@@ -781,15 +833,15 @@ func applyInstallHookConfig(settings map[string]any, target string) {
 		post := ensureSlice(hooks, "postToolUse")
 		start = appendUniqueCommand(start, map[string]any{
 			"type":    "command",
-			"command": "ATRYUM_HOOK_HOST=cursor ATRYUM_HOOK_EVENT=sessionStart ATRYUM_SOURCE=cursor node ~/.atryum/hooks/atryum-hook.mjs",
+			"command": envPrefix + "ATRYUM_HOOK_HOST=cursor ATRYUM_HOOK_EVENT=sessionStart ATRYUM_SOURCE=cursor node ~/.atryum/hooks/atryum-hook.mjs",
 		})
 		pre = appendUniqueCommand(pre, map[string]any{
 			"type":    "command",
-			"command": "ATRYUM_HOOK_HOST=cursor ATRYUM_HOOK_EVENT=preToolUse ATRYUM_SOURCE=cursor node ~/.atryum/hooks/atryum-hook.mjs",
+			"command": envPrefix + "ATRYUM_HOOK_HOST=cursor ATRYUM_HOOK_EVENT=preToolUse ATRYUM_SOURCE=cursor node ~/.atryum/hooks/atryum-hook.mjs",
 		})
 		post = appendUniqueCommand(post, map[string]any{
 			"type":    "command",
-			"command": "ATRYUM_HOOK_HOST=cursor ATRYUM_HOOK_EVENT=postToolUse ATRYUM_SOURCE=cursor node ~/.atryum/hooks/atryum-hook.mjs",
+			"command": envPrefix + "ATRYUM_HOOK_HOST=cursor ATRYUM_HOOK_EVENT=postToolUse ATRYUM_SOURCE=cursor node ~/.atryum/hooks/atryum-hook.mjs",
 		})
 		hooks["sessionStart"] = start
 		hooks["preToolUse"] = pre
@@ -806,9 +858,9 @@ func applyInstallHookConfig(settings map[string]any, target string) {
 	start := ensureSlice(hooks, "SessionStart")
 	pre := ensureSlice(hooks, "PreToolUse")
 	post := ensureSlice(hooks, "PostToolUse")
-	start = appendUniqueNestedHookEntry(start, fmt.Sprintf("ATRYUM_HOOK_HOST=%s ATRYUM_HOOK_EVENT=SessionStart ATRYUM_SOURCE=%s node ~/.atryum/hooks/atryum-hook.mjs", host, source))
-	pre = appendUniqueNestedHookEntry(pre, fmt.Sprintf("ATRYUM_HOOK_HOST=%s ATRYUM_HOOK_EVENT=PreToolUse ATRYUM_SOURCE=%s node ~/.atryum/hooks/atryum-hook.mjs", host, source))
-	post = appendUniqueNestedHookEntry(post, fmt.Sprintf("ATRYUM_HOOK_HOST=%s ATRYUM_HOOK_EVENT=PostToolUse ATRYUM_SOURCE=%s node ~/.atryum/hooks/atryum-hook.mjs", host, source))
+	start = appendUniqueNestedHookEntry(start, fmt.Sprintf("%sATRYUM_HOOK_HOST=%s ATRYUM_HOOK_EVENT=SessionStart ATRYUM_SOURCE=%s node ~/.atryum/hooks/atryum-hook.mjs", envPrefix, host, source))
+	pre = appendUniqueNestedHookEntry(pre, fmt.Sprintf("%sATRYUM_HOOK_HOST=%s ATRYUM_HOOK_EVENT=PreToolUse ATRYUM_SOURCE=%s node ~/.atryum/hooks/atryum-hook.mjs", envPrefix, host, source))
+	post = appendUniqueNestedHookEntry(post, fmt.Sprintf("%sATRYUM_HOOK_HOST=%s ATRYUM_HOOK_EVENT=PostToolUse ATRYUM_SOURCE=%s node ~/.atryum/hooks/atryum-hook.mjs", envPrefix, host, source))
 	hooks["SessionStart"] = start
 	hooks["PreToolUse"] = pre
 	hooks["PostToolUse"] = post

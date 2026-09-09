@@ -61,6 +61,14 @@ func Main(opts ...Option) {
 		err = runSetup(os.Args[2:])
 	case "hooks":
 		err = runHooks(os.Args[2:])
+	case "login":
+		err = runLogin(os.Args[2:], stdIO())
+	case "logout":
+		err = runLogout(os.Args[2:], stdIO())
+	case "whoami":
+		err = runWhoami(os.Args[2:], stdIO())
+	case "agent":
+		err = runAgent(os.Args[2:], stdIO())
 	case "licenses":
 		err = runLicenses(o)
 	case "version", "--version", "-v":
