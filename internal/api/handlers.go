@@ -33,6 +33,7 @@ import (
 	authprovider "github.com/validmind/atryum/internal/mcp/auth_provider"
 	"github.com/validmind/atryum/internal/store"
 	"github.com/validmind/atryum/internal/version"
+	"github.com/validmind/atryum/pkg/authz"
 )
 
 //go:embed web/*
@@ -117,6 +118,34 @@ type agentsRepo interface {
 	DeleteAll(ctx context.Context) error
 }
 
+// usersRepo, agentMembersRepo and apiKeysRepo back the open-core identity
+// model (users, agent membership, first-party agent API keys). All three are
+// optional on the Handler: when nil the corresponding endpoints answer 503.
+type usersRepo interface {
+	Get(ctx context.Context, id string) (store.User, error)
+	List(ctx context.Context) ([]store.User, error)
+	SetDisabled(ctx context.Context, id string, disabled bool) error
+	SetRole(ctx context.Context, id, role string) error
+}
+
+type agentMembersRepo interface {
+	Add(ctx context.Context, agentID, userID, role string) error
+	Remove(ctx context.Context, agentID, userID string) error
+	IsMember(ctx context.Context, agentID, userID string) (bool, error)
+	ListByAgent(ctx context.Context, agentID string) ([]store.AgentMember, error)
+	AgentIDsForUser(ctx context.Context, userID string) ([]string, error)
+	RemoveAllForUser(ctx context.Context, userID string) error
+}
+
+type apiKeysRepo interface {
+	Create(ctx context.Context, key store.APIKey) (store.APIKey, error)
+	Get(ctx context.Context, id string) (store.APIKey, error)
+	ListByAgent(ctx context.Context, agentID string) ([]store.APIKey, error)
+	Revoke(ctx context.Context, id, revokedBy string) error
+	RevokeByCreator(ctx context.Context, userID, revokedBy string) (int64, error)
+	RevokeByCreatorForAgent(ctx context.Context, userID, agentID, revokedBy string) (int64, error)
+}
+
 type managedAgentBindingsRepo interface {
 	ListByAgent(ctx context.Context, agentCUID string) ([]store.ManagedAgentBinding, error)
 	GetByClaudeAgentID(ctx context.Context, account, claudeAgentID string) (store.ManagedAgentBinding, error)
@@ -163,6 +192,17 @@ type Handler struct {
 	authValidator         *auth.Validator
 	apiKeyAuth            auth.APIKeyConfig
 
+	// Identity model (see SetIdentityStores / SetAuthz). keyResolver
+	// authenticates atr_ API keys on the agent runtime routes; authorizer
+	// answers per-route authorization questions for the operator API;
+	// userProvisioner upserts users on IdP login.
+	usersRepo        usersRepo
+	agentMembersRepo agentMembersRepo
+	apiKeysRepo      apiKeysRepo
+	keyResolver      auth.AgentKeyResolver
+	authorizer       authz.Authorizer
+	userProvisioner  auth.UserProvisioner
+
 	// clientInfoCache remembers the most recent `initialize.clientInfo`
 	// per MCP session key so that subsequent tools/call requests on the
 	// same session can attach client_name / client_version. The key is the
@@ -180,6 +220,19 @@ type Handler struct {
 	// routes and outside every auth middleware chain, like /healthz; each
 	// registration is responsible for its own authentication.
 	extraRoutes []func(mux *http.ServeMux)
+
+	// authenticatedRoutes are like extraRoutes but receive the operator auth
+	// middleware so embedding programs can mount routes that require a
+	// logged-in principal (see pkg/atryum WithAuthenticatedRoutes).
+	authenticatedRoutes []func(mux *http.ServeMux, authenticate func(http.Handler) http.Handler)
+}
+
+// AddAuthenticatedRoutes registers a callback that may mount routes wrapped in
+// the operator authentication middleware. See pkg/atryum.WithAuthenticatedRoutes.
+func (h *Handler) AddAuthenticatedRoutes(register func(mux *http.ServeMux, authenticate func(http.Handler) http.Handler)) {
+	if register != nil {
+		h.authenticatedRoutes = append(h.authenticatedRoutes, register)
+	}
 }
 
 // AddExtraRoutes registers a callback that may mount additional routes on the
@@ -839,6 +892,53 @@ func (h *Handler) SetAuthDebugSkipVerify(enabled bool) {
 	h.authDebugSkip = enabled
 }
 
+// SetIdentityStores installs the users, agent-membership and API-key stores
+// that back /api/v1/me, /api/v1/users and /api/v1/agents/{id}/{keys,members}.
+func (h *Handler) SetIdentityStores(users usersRepo, members agentMembersRepo, keys apiKeysRepo) {
+	h.usersRepo = users
+	h.agentMembersRepo = members
+	h.apiKeysRepo = keys
+}
+
+// SetAgentKeyResolver enables first-party API keys (Bearer atr_...) on the
+// agent runtime routes (/mcp/, /api/v1/external/*, /api/v1/agent/*).
+func (h *Handler) SetAgentKeyResolver(r auth.AgentKeyResolver) {
+	h.keyResolver = r
+}
+
+// SetAuthz installs the operator-API authorizer and the user provisioner
+// consulted by the operator auth middleware. When authorizer is nil the
+// handler falls back to authz.Default over the installed membership store.
+func (h *Handler) SetAuthz(authorizer authz.Authorizer, provisioner auth.UserProvisioner) {
+	h.authorizer = authorizer
+	h.userProvisioner = provisioner
+}
+
+// can asks the authorizer whether the request principal may perform action on
+// res, writing the HTTP error itself when the answer is no. Returns true when
+// the handler may proceed.
+func (h *Handler) can(w http.ResponseWriter, r *http.Request, action authz.Action, res authz.Resource) bool {
+	p, ok := authz.PrincipalFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthenticated")
+		return false
+	}
+	az := h.authorizer
+	if az == nil {
+		az = authz.Default{Members: h.agentMembersRepo}
+	}
+	allowed, err := az.Can(r.Context(), p, action, res)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "authorization check failed")
+		return false
+	}
+	if !allowed {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return false
+	}
+	return true
+}
+
 // SetManagedAgents installs the optional Claude Managed Agents events bridge,
 // enabling the POST /api/v1/managed-agents/sessions endpoint.
 func (h *Handler) SetManagedAgents(m managedAgentsOperator) {
@@ -909,8 +1009,13 @@ func (h *Handler) Routes() http.Handler {
 		mux.Handle("/.well-known/oauth-protected-resource", h.protectedResourceMetadata())
 	}
 	mcpHandler := h.agentRuntimeHandler(http.HandlerFunc(h.invokeUpstream))
-	operatorAuthMW := auth.OperatorMiddleware(h.authValidator, h.apiKeyAuth, auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})
+	operatorAuthMW := auth.OperatorMiddleware(h.authValidator, h.apiKeyAuth, auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug}, h.userProvisioner)
+	// operator: authenticated + admin role (the historical operator API).
 	operator := func(fn http.HandlerFunc) http.Handler {
+		return operatorAuthMW(auth.RequireAdmin(fn))
+	}
+	// member: authenticated, any role; the handler authorizes per resource.
+	member := func(fn http.HandlerFunc) http.Handler {
 		return operatorAuthMW(fn)
 	}
 	mux.HandleFunc("/mcp", h.mcpRootNotFound)
@@ -924,8 +1029,11 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("/api/v1/servers/", operator(h.operatorServerDetail))
 	mux.Handle("/api/v1/rules", operator(h.operatorRules))
 	mux.Handle("/api/v1/rules/", operator(h.operatorRuleDetail))
-	mux.Handle("/api/v1/agents", operator(h.operatorAgents))
-	mux.Handle("/api/v1/agents/", operator(h.operatorAgentDetail))
+	mux.Handle("/api/v1/agents", member(h.operatorAgents))
+	mux.Handle("/api/v1/agents/", member(h.operatorAgentDetail))
+	mux.Handle("/api/v1/me", member(h.me))
+	mux.Handle("/api/v1/users", operator(h.operatorUsers))
+	mux.Handle("/api/v1/users/", operator(h.operatorUserDetail))
 	mux.Handle("/api/v1/model-configs", operator(h.operatorModelConfigs))
 	mux.Handle("/api/v1/llm-configs", operator(h.operatorLLMConfigs))
 	mux.Handle("/api/v1/llm-configs/", operator(h.operatorLLMConfigDetail))
@@ -959,6 +1067,9 @@ func (h *Handler) Routes() http.Handler {
 	for _, register := range h.extraRoutes {
 		register(mux)
 	}
+	for _, register := range h.authenticatedRoutes {
+		register(mux, operatorAuthMW)
+	}
 	return mux
 }
 
@@ -966,7 +1077,7 @@ func (h *Handler) agentRuntimeHandler(next http.Handler) http.Handler {
 	handler := auth.MiddlewareWithOptions(
 		h.authValidator,
 		"/.well-known/oauth-protected-resource",
-		auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug},
+		auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug, KeyResolver: h.keyResolver},
 	)(next)
 	return h.noAuthAgentIDHint(handler)
 }
@@ -3173,6 +3284,10 @@ func (h *Handler) operatorAgents(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to list agents")
 			return
 		}
+		records, ok := h.filterAgentsForPrincipal(w, r, records)
+		if !ok {
+			return
+		}
 		items := make([]OperatorAgent, 0, len(records))
 		for _, a := range records {
 			items = append(items, h.toOperatorAgent(r.Context(), a))
@@ -3180,6 +3295,14 @@ func (h *Handler) operatorAgents(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, AgentListResponse{Items: items})
 
 	case http.MethodPost:
+		// Any authenticated user may create an agent; the creator becomes its
+		// first member (owner). Admins create unowned agents unless they are
+		// also a real user, in which case they are added like anyone else.
+		principal, ok := authz.PrincipalFromContext(r.Context())
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "unauthenticated")
+			return
+		}
 		var req OperatorAgentCreateInput
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
@@ -3241,6 +3364,13 @@ func (h *Handler) operatorAgents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		if principal.UserID != "" && h.agentMembersRepo != nil {
+			if err := h.agentMembersRepo.Add(r.Context(), id, principal.UserID, store.AgentMemberRoleOwner); err != nil {
+				_ = h.agentsRepo.Delete(r.Context(), id)
+				writeError(w, http.StatusInternalServerError, "failed to record agent ownership")
+				return
+			}
+		}
 		record, err := h.agentsRepo.Get(r.Context(), id)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to retrieve created agent")
@@ -3263,6 +3393,9 @@ func (h *Handler) operatorAgentDetail(w http.ResponseWriter, r *http.Request) {
 
 	// POST /api/v1/agents/sync — trigger a backend sync
 	if trimmed == "sync" {
+		if !h.can(w, r, authz.ActionAdmin, authz.Resource{}) {
+			return
+		}
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
@@ -3292,14 +3425,31 @@ func (h *Handler) operatorAgentDetail(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(trimmed, "/charter-preview") {
 		id := strings.TrimSuffix(trimmed, "/charter-preview")
 		id = strings.Trim(id, "/")
+		if !h.can(w, r, authz.ActionAgentRead, authz.Resource{AgentID: id}) {
+			return
+		}
 		h.operatorAgentCharterPreview(w, r, id)
 		return
 	}
 
-	// /api/v1/agents/:id — GET / PATCH / DELETE
+	// /api/v1/agents/:id/keys[/:key_id] — first-party API keys
+	if id, rest, found := strings.Cut(trimmed, "/keys"); found {
+		h.agentKeys(w, r, strings.Trim(id, "/"), strings.Trim(rest, "/"))
+		return
+	}
+	// /api/v1/agents/:id/members[/:user_id]
+	if id, rest, found := strings.Cut(trimmed, "/members"); found {
+		h.agentMembers(w, r, strings.Trim(id, "/"), strings.Trim(rest, "/"))
+		return
+	}
+
+	// /api/v1/agents/:id — GET (members) / PATCH / DELETE (admin)
 	id := trimmed
 	switch r.Method {
 	case http.MethodGet:
+		if !h.can(w, r, authz.ActionAgentRead, authz.Resource{AgentID: id}) {
+			return
+		}
 		record, err := h.agentsRepo.Get(r.Context(), id)
 		if err != nil {
 			status := http.StatusInternalServerError
@@ -3312,6 +3462,9 @@ func (h *Handler) operatorAgentDetail(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, h.toOperatorAgent(r.Context(), record))
 
 	case http.MethodPatch:
+		if !h.can(w, r, authz.ActionAgentWrite, authz.Resource{AgentID: id}) {
+			return
+		}
 		var req OperatorAgentInput
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
@@ -3429,6 +3582,9 @@ func (h *Handler) operatorAgentDetail(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, h.toOperatorAgent(r.Context(), record))
 
 	case http.MethodDelete:
+		if !h.can(w, r, authz.ActionAgentWrite, authz.Resource{AgentID: id}) {
+			return
+		}
 		record, err := h.agentsRepo.Get(r.Context(), id)
 		if err != nil {
 			status := http.StatusInternalServerError

@@ -34,6 +34,7 @@ import (
 	"github.com/validmind/atryum/internal/mcp"
 	"github.com/validmind/atryum/internal/store"
 	"github.com/validmind/atryum/internal/telemetry"
+	"github.com/validmind/atryum/pkg/authz"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
@@ -181,6 +182,9 @@ func runServer(args []string, o options) error {
 	llmConfigsRepo := store.NewLLMConfigsRepoWithDialect(db, dialect)
 	plansRepo := store.NewPlansRepoWithDialect(db, dialect)
 	planEventsRepo := store.NewPlanEventsRepoWithDialect(db, dialect)
+	usersRepo := store.NewUsersRepoWithDialect(db, dialect)
+	agentMembersRepo := store.NewAgentMembersRepoWithDialect(db, dialect)
+	apiKeysRepo := store.NewAPIKeysRepoWithDialect(db, dialect)
 
 	// syncAgents is the shared sync function used both at startup and via the
 	// operator API POST /api/v1/agents/sync endpoint.
@@ -317,8 +321,18 @@ func runServer(args []string, o options) error {
 	}
 	handler := api.NewHandler(service, serverOperator, policyRegistry, rulesRepo, agentsRepo, agentSyncSettingsRepo, llmConfigsRepo, syncAgentsFn, backendClient, localEvaluator)
 	handler.SetManagedAgentBindings(managedAgentBindingRepo)
+	handler.SetIdentityStores(usersRepo, agentMembersRepo, apiKeysRepo)
+	handler.SetAgentKeyResolver(api.NewAgentKeyResolver(apiKeysRepo, agentsRepo))
+	var authorizer authz.Authorizer = authz.Default{Members: agentMembersRepo}
+	if o.authorizer != nil {
+		authorizer = o.authorizer
+	}
+	handler.SetAuthz(authorizer, api.NewUserProvisioner(usersRepo))
 	for _, register := range o.extraRoutes {
 		handler.AddExtraRoutes(register)
+	}
+	for _, register := range o.authenticatedRoutes {
+		handler.AddAuthenticatedRoutes(register)
 	}
 
 	authValidator, err := auth.NewValidator(cfg.Auth, nil)
@@ -631,6 +645,12 @@ func parseAgentIDs(raw string) []string {
 }
 
 func (a *agentsLookupAdapter) GetByAgentID(ctx context.Context, agentID string) (invocation.AgentRecord, error) {
+	// Key-authenticated agents carry the agents.id itself as their identity
+	// (the key row points at exactly one agent), so try the primary key
+	// before the legacy agent_ids alias list.
+	if rec, err := a.repo.Get(ctx, agentID); err == nil {
+		return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Charter: rec.Charter, Tags: rec.Tags, AgentIDs: parseAgentIDs(rec.AgentIDs)}, nil
+	}
 	rec, err := a.repo.GetByAgentID(ctx, agentID)
 	if err == nil {
 		return invocation.AgentRecord{ID: rec.ID, VMCUID: rec.VMCUID, VMOrganizationCUID: rec.VMOrganizationCUID, Charter: rec.Charter, Tags: rec.Tags, AgentIDs: parseAgentIDs(rec.AgentIDs)}, nil

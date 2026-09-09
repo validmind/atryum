@@ -26,12 +26,21 @@ type Validator struct {
 	now     func() time.Time
 }
 
-// Identity is the authenticated agent extracted from a valid token.
+// Identity is the authenticated agent behind a runtime request. It comes from
+// one of three places: an IdP JWT (Method "jwt"), a first-party API key
+// (Method "api_key", KeyID set, AgentID is the agents.id the key points at),
+// or the no-auth self-declared hint (Method "no_auth").
 type Identity struct {
 	AgentID string
 	Issuer  string
 	Subject string
 	Scope   string
+	// Method records how the agent authenticated (see IdentityMethod*).
+	Method string
+	// KeyID is the api_keys.id when Method is "api_key".
+	KeyID string
+	// UserID is the user who issued the key, when known.
+	UserID string
 }
 
 // Result classifies a validation outcome.
@@ -129,6 +138,7 @@ func (v *Validator) Validate(ctx context.Context, bearer string) (Identity, erro
 		Issuer:  cfg.Issuer,
 		Subject: stringClaim(verifiedClaims, "sub"),
 		Scope:   scope,
+		Method:  IdentityMethodJWT,
 	}
 	if identity.AgentID == "" {
 		return Identity{}, &ValidationError{Result: ResultInvalid, Description: "no usable agent identity claim"}
@@ -141,6 +151,38 @@ type AdminIdentity struct {
 	Subject string
 	Email   string
 	Name    string
+}
+
+// UserIdentity is a human authenticated at the operator API by an IdP token
+// from a login-enabled ([[auth]] admin_enabled = true) issuer. Admin reports
+// whether the configured admin claim matched; the caller maps that to a role.
+type UserIdentity struct {
+	Issuer  string
+	Subject string
+	Email   string
+	Name    string
+	Admin   bool
+}
+
+// ValidateUser verifies a bearer token from a login-enabled issuer and returns
+// the human identity regardless of the admin claim. Use it when the route
+// decides authorization itself (via authz.Authorizer); ValidateAdmin remains
+// for callers that need the claim enforced up front.
+func (v *Validator) ValidateUser(ctx context.Context, bearer string) (UserIdentity, error) {
+	verifiedClaims, cfg, err := v.verify(ctx, bearer)
+	if err != nil {
+		return UserIdentity{}, err
+	}
+	if !cfg.AdminEnabled {
+		return UserIdentity{}, &ValidationError{Result: ResultInvalid, Description: "issuer/audience not allowed for login"}
+	}
+	return UserIdentity{
+		Issuer:  cfg.Issuer,
+		Subject: stringClaim(verifiedClaims, "sub"),
+		Email:   stringClaim(verifiedClaims, "email"),
+		Name:    stringClaim(verifiedClaims, "name"),
+		Admin:   adminClaimMatches(verifiedClaims, cfg.AdminClaim, string(cfg.AdminClaimValue)),
+	}, nil
 }
 
 func (v *Validator) ValidateAdmin(ctx context.Context, bearer string) (AdminIdentity, error) {
