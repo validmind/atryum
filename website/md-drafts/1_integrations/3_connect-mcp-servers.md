@@ -19,6 +19,17 @@ For agent setup, refer to [Connect agents](2_connect-agents.md#connect-other-cod
 
 Use stdio mode for MCP servers that run locally as a subprocess — for example, packages installed with `npx` or a Python module.
 
+:::
+stdio servers are disabled by default because they let Atryum spawn local subprocesses. Opt in by setting the following in your `atryum.toml` before registering one:
+
+```toml
+[mcp]
+allow_stdio = true
+```
+
+If you run Atryum from the published Docker image, use the `validmind/atryum:<version>-node` variant — it ships Node.js so it can host `npx`-based stdio servers. The default minimal image intentionally has no runtimes for stdio servers.
+:::
+
 1. In Atryum, click **Servers** in the left sidebar.
 
 2. Click **New Server**.

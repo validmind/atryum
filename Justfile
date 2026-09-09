@@ -89,9 +89,11 @@ clean:
 build-prod: third-party-notices build-ui
 	CGO_ENABLED=0 go build -tags release_notices -o ./atryum ./cmd/atryum
 
-# Build the production Docker image used by the GitHub publish workflow
+# Build both production Docker images used by the GitHub publish workflow:
+# the minimal (alpine) runtime and the node runtime that can host stdio MCP servers
 docker-build tag="local":
-	docker build -f Dockerfile.prod -t {{docker_image}}:{{tag}} .
+	docker build -f Dockerfile.prod --target minimal -t {{docker_image}}:{{tag}} .
+	docker build -f Dockerfile.prod --target node -t {{docker_image}}:{{tag}}-node .
 
 # Build the FOSS React UI and embed it in internal/api/web/
 build-ui:

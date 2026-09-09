@@ -1455,7 +1455,9 @@ func newTestService(t *testing.T, cfg config.Config) *invocation.Service {
 	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	return invocation.NewService(store.NewInvocationRepo(db), store.NewEventRepo(db), resolver, mcp.NewHTTPClient(), policy.AlwaysApproveProvider{}, 5*time.Second, nil, nil, nil, nil)
+	// Stdio is enabled here the way a deployment would via [mcp]
+	// allow_stdio = true; the gate itself is covered in internal/mcp tests.
+	return invocation.NewService(store.NewInvocationRepo(db), store.NewEventRepo(db), resolver, mcp.NewHTTPClient().WithStdioEnabled(true), policy.AlwaysApproveProvider{}, 5*time.Second, nil, nil, nil, nil)
 }
 
 // AI-decided invocations on the proxy Invoke path must persist the rule that

@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -819,5 +820,27 @@ func writeTestSSEEvents(w http.ResponseWriter, events ...[]string) {
 			_, _ = w.Write([]byte("data: " + line + "\n"))
 		}
 		_, _ = w.Write([]byte("\n"))
+	}
+}
+
+func TestStdioDisabledByDefault(t *testing.T) {
+	client := NewHTTPClient()
+	upstream := Upstream{Name: "calc", Mode: UpstreamModeStdio, Command: "true", Enabled: true, Timeout: time.Second}
+
+	if _, err := client.Invoke(context.Background(), upstream, "add", nil, nil); !errors.Is(err, ErrStdioDisabled) {
+		t.Fatalf("Invoke err = %v, want ErrStdioDisabled", err)
+	}
+	if _, err := client.ListTools(context.Background(), upstream); !errors.Is(err, ErrStdioDisabled) {
+		t.Fatalf("ListTools err = %v, want ErrStdioDisabled", err)
+	}
+	result := client.TestConnection(context.Background(), upstream)
+	if result.Ok {
+		t.Fatal("expected TestConnection to fail while stdio is disabled")
+	}
+	if result.ConnectionStatus != ConnectionStatusNeedsAttention {
+		t.Fatalf("ConnectionStatus = %q, want %q", result.ConnectionStatus, ConnectionStatusNeedsAttention)
+	}
+	if result.ActionRequired == nil || !strings.Contains(*result.ActionRequired, "allow_stdio") {
+		t.Fatalf("ActionRequired = %v, want allow_stdio hint", result.ActionRequired)
 	}
 }

@@ -255,7 +255,10 @@ func runServer(args []string, o options) error {
 			}
 		}
 	}
-	client := mcp.NewHTTPClient()
+	client := mcp.NewHTTPClient().WithStdioEnabled(cfg.MCP.AllowStdio)
+	if cfg.MCP.AllowStdio {
+		log.Printf("stdio MCP servers enabled ([mcp] allow_stdio = true)")
+	}
 	resolver := mcp.NewResolver(serverRepo, cfg).WithCredentials(store.NewRefreshingOAuthCredentialStore(oauthRepo, client))
 	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
 		return fmt.Errorf("bootstrap servers: %w", err)
@@ -303,7 +306,7 @@ func runServer(args []string, o options) error {
 		service.SetInvocationSummarizer(&summaryAdapter{client: backendClient})
 	}
 	service.SetSessionStore(store.NewExternalSessionRepoWithDialect(db, dialect))
-	serverOperator := api.NewServerOperatorService(serverRepo, oauthRepo, client, 5*time.Second, cfg.Server.PublicBaseURL)
+	serverOperator := api.NewServerOperatorService(serverRepo, oauthRepo, client, 5*time.Second, cfg.Server.PublicBaseURL).WithStdioServersAllowed(cfg.MCP.AllowStdio)
 	if *initServers {
 		if err := initEnabledServerStatuses(context.Background(), serverRepo, serverOperator); err != nil {
 			return fmt.Errorf("init servers: %w", err)
