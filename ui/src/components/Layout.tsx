@@ -23,25 +23,38 @@ import {
   CpuChipIcon,
   QueueListIcon,
   ShieldCheckIcon,
+  UsersIcon,
 } from "@heroicons/react/24/outline";
 
 import { useAdminAuth } from "../auth/adminAuth";
+import { useMe } from "../hooks/useIdentity";
 import atryumLogo from "../assets/atryum-logo.svg";
 
 type NavItem = {
   label: string;
   icon: ComponentType;
   path: string;
+  /** Hidden from members; the open-core operator API answers 403 for them. */
+  adminOnly?: boolean;
 };
 
 const NAV_ITEMS: NavItem[] = [
-  { label: "Invocations", icon: QueueListIcon, path: "/invocations" },
-  { label: "Plans", icon: ClipboardDocumentListIcon, path: "/plans" },
+  { label: "Invocations", icon: QueueListIcon, path: "/invocations", adminOnly: true },
+  { label: "Plans", icon: ClipboardDocumentListIcon, path: "/plans", adminOnly: true },
   { label: "Agents", icon: CpuChipIcon, path: "/agents" },
-  { label: "Servers", icon: CircleStackIcon, path: "/servers" },
-  { label: "Rules", icon: ShieldCheckIcon, path: "/rules" },
-  { label: "Settings", icon: Cog6ToothIcon, path: "/settings" },
+  { label: "Servers", icon: CircleStackIcon, path: "/servers", adminOnly: true },
+  { label: "Rules", icon: ShieldCheckIcon, path: "/rules", adminOnly: true },
+  { label: "Users", icon: UsersIcon, path: "/users", adminOnly: true },
+  { label: "Settings", icon: Cog6ToothIcon, path: "/settings", adminOnly: true },
 ];
+
+/**
+ * Nav items visible to the current principal. Until /api/v1/me has answered we
+ * show the full menu so an admin never sees the sidebar collapse and re-expand;
+ * once a member is confirmed, admin-only entries disappear.
+ */
+export const visibleNavItems = (role: string | undefined): NavItem[] =>
+  role === "member" ? NAV_ITEMS.filter((item) => !item.adminOnly) : NAV_ITEMS;
 
 type NavItemRowProps = NavItem & { isActive: boolean };
 
@@ -96,6 +109,8 @@ type LayoutProps = {
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
   const { status: authStatus, signOut } = useAdminAuth();
+  const { data: me } = useMe();
+  const navItems = visibleNavItems(me?.role);
   const isActive = (path: string) => location.pathname.startsWith(path);
 
   return (
@@ -132,7 +147,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             </Link>
           </Stack>
           <Stack gap={0}>
-            {NAV_ITEMS.map((item) => (
+            {navItems.map((item) => (
               <NavItemRow
                 key={item.path}
                 {...item}

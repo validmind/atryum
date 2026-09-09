@@ -15,6 +15,11 @@ import {
   Icon,
   Input,
   Modal,
+  Tab,
+  TabList,
+  TabPanel,
+  TabPanels,
+  Tabs,
   ModalBody,
   ModalCloseButton,
   ModalContent,
@@ -41,6 +46,8 @@ import { useQuery } from 'react-query';
 import { ContentPageTitle } from '../components/Layout';
 import { useAgents, useCreateAgent, useUpdateAgent, useDeleteAgent } from '../hooks/useAgents';
 import { useSettings } from '../hooks/useSettings';
+import { useIsAdmin } from '../hooks/useIdentity';
+import { AgentKeysPanel, AgentMembersPanel } from '../components/AgentAccess';
 import type {
   Agent,
   AgentCreateInput,
@@ -281,6 +288,7 @@ type EditAgentModalProps = {
 };
 
 const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose }) => {
+  const isAdmin = useIsAdmin();
   const [name, setName] = useState(agent.name);
   const [description, setDescription] = useState(agent.description ?? '');
 	const [charter, setCharter] = useState(agent.charter ?? '');
@@ -398,6 +406,22 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
         <ModalHeader>{agent.name}</ModalHeader>
         <ModalCloseButton />
         <ModalBody>
+          <Tabs size="sm" variant="enclosed" isLazy defaultIndex={isAdmin ? 0 : 1}>
+            <TabList>
+              <Tab>Details</Tab>
+              <Tab data-testid="tab-api-keys">API keys</Tab>
+              <Tab data-testid="tab-members">Members</Tab>
+            </TabList>
+            <TabPanels>
+              <TabPanel px={0}>
+          {!isAdmin && (
+            <Alert status="info" borderRadius="md" py={2} mb={4}>
+              <AlertIcon />
+              <AlertDescription fontSize="sm">
+                Only admins can edit agent details. You can manage API keys for this agent.
+              </AlertDescription>
+            </Alert>
+          )}
           <VStack align="stretch" gap={4}>
             {statusMsg && (
               <Alert status={statusMsg.isError ? 'error' : 'success'} borderRadius="md" py={2}>
@@ -647,8 +671,18 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
               <Text fontSize="sm">Enabled</Text>
             </Checkbox>
           </VStack>
+              </TabPanel>
+              <TabPanel px={0}>
+                <AgentKeysPanel agent={agent} isOpen={isOpen} />
+              </TabPanel>
+              <TabPanel px={0}>
+                <AgentMembersPanel agent={agent} isOpen={isOpen} />
+              </TabPanel>
+            </TabPanels>
+          </Tabs>
         </ModalBody>
         <ModalFooter gap={2}>
+          {isAdmin && (
           <Button
             variant="outlineDanger"
             size="sm"
@@ -660,9 +694,11 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
           >
             Delete
           </Button>
+          )}
           <Button variant="ghost" size="sm" isDisabled={isBusy} onClick={onClose}>
-            Cancel
+            {isAdmin ? 'Cancel' : 'Close'}
           </Button>
+          {isAdmin && (
           <Button
             variant="primary"
             size="sm"
@@ -672,6 +708,7 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
           >
             Save
           </Button>
+          )}
         </ModalFooter>
       </ModalContent>
     </Modal>
@@ -801,8 +838,9 @@ const Agents: React.FC = () => {
           </Flex>
         </HStack>
         <Text pl={2} color="text.subtle">
-          Agents are identified by JWT sub claims or client IDs. Associate them
-          here to target rules at specific agents.
+          Agents authenticate to Atryum with an API key issued here, or by a JWT
+          client ID / self-declared agent ID. Open an agent to manage its keys and
+          members, and to target rules at it.
         </Text>
       </Stack>
 

@@ -8,6 +8,7 @@ import Agents from './pages/Agents';
 import Servers from './pages/Servers';
 import Rules from './pages/Rules';
 import Settings from './pages/Settings';
+import Users from './pages/Users';
 import { useApprovalNotifications } from './hooks/useApprovalNotifications';
 
 const App: React.FC = () => {
@@ -23,6 +24,7 @@ const App: React.FC = () => {
         <Route path="/servers" element={<Servers />} />
         <Route path="/rules" element={<Rules />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/users" element={<Users />} />
       </Routes>
     </Layout>
   );
