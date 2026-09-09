@@ -22,6 +22,14 @@ Restart Cursor after changing hooks.
 
 ### Install Atryum hooks for Claude Code
 
+The quickest path signs you in, creates an agent for this machine, issues an API key for it, and installs the hooks in one go:
+
+```bash
+./atryum setup claude --url http://localhost:8080
+```
+
+To install only the hooks (for example in no-auth mode with a self-declared `ATRYUM_AGENT_ID`):
+
 ```bash
 ./atryum hooks install claude-code
 ```
@@ -322,12 +330,49 @@ Synced ValidMind agent records cannot be deleted from Atryum — remove them by 
 
 When coding agents connect to Atryum, they present an _agent identity_ that Atryum uses to tag invocations and match rules ([Rules](../3_rules.md)) scoped to specific agents. Atryum applies the same inbound auth behavior to agent runtime endpoints: `/mcp/<server_name>`, `/api/v1/invocations`, `/api/v1/external/invocations`, `/api/v1/external/invocations/<id>`, and `/api/v1/agent/rules`.
 
-Atryum supports two inbound authentication modes:
+Agents can present identity in three ways:
 
-1. **No-auth mode** — The default when no `[[auth]]` blocks are configured in `atryum.toml`. Agents self-declare an agent ID.
-2. **Auth mode** — Agents authenticate with OAuth bearer tokens. Atryum derives a verified agent ID from the token and ignores self-declared labels.
+1. **API keys** — Atryum issues a key that acts as one agent record. This is the recommended way to connect any harness or MCP client, and it works whether or not an identity provider is configured.
+2. **No-auth mode** — The default when no `[[auth]]` blocks are configured in `atryum.toml`. Agents may also self-declare an agent ID.
+3. **Auth mode (IdP tokens)** — Agents authenticate with OAuth bearer tokens from your identity provider. Atryum derives a verified agent ID from a token claim.
 
-Use no-auth mode for local development and quick setup. Use auth mode when you need verified agent identity for production rule matching and audit.
+Use API keys for anything you want to attribute, target with rules, and revoke. Use self-declared IDs only for local experiments. Use IdP-issued tokens when an agent already holds one from your authorization server.
+
+### API keys
+
+An API key is a first-party Atryum credential tied to exactly one agent record and to the user who issued it. Every request made with the key is recorded against that agent, so agent-scoped rules and charters apply, and the key can be revoked at any time. Keys are presented as a bearer token:
+
+```
+Authorization: Bearer atr_...
+```
+
+Atryum stores only a hash of the key; the full value is shown once, when it is created.
+
+**Create a key in the UI.** Open **Agents**, select the agent, and switch to the **API keys** tab. Give the key a name, optionally pick an expiry, and select **Generate key**. Copy the key before closing the dialog. Members of an agent can issue keys for it; admins can issue keys for any agent.
+
+**Create a key from the CLI.** Sign in once with the OAuth device flow, then issue keys for agents you own:
+
+```bash
+./atryum login --url https://atryum.example.com
+./atryum agent list
+./atryum agent key create "Claude Code on my-laptop" --name laptop --expires 90d
+```
+
+`atryum setup claude` combines sign-in, agent creation, key issuance, and hook installation for Claude Code; the key is written to `~/.atryum/agent-key` with `0600` permissions and the hooks read it through `ATRYUM_TOKEN_COMMAND`.
+
+**Use a key from hooks and extensions.** Set `ATRYUM_ACCESS_TOKEN` to the key, or point `ATRYUM_TOKEN_COMMAND` at a file that holds it:
+
+```bash
+export ATRYUM_TOKEN_COMMAND='cat ~/.atryum/agent-key'
+```
+
+**Use a key from an MCP client.** Configure the client to send the key as an `Authorization: Bearer` header on the proxy URL, for example `http://localhost:8080/mcp/calc`. Do not add `?agent_id=`; the key already identifies the agent.
+
+**Revoke a key.** In the UI, open the agent's **API keys** tab and select **Revoke**, or run `atryum agent key revoke <agent> <key_id>`. Revocation takes effect on the next request. Disabling a user (**Users** page) revokes every key that user issued and removes them from their agents; removing a member from an agent revokes that member's keys for it.
+
+:::
+In no-auth mode a bad or revoked key is still rejected with `401`. Presenting an `atr_` key opts the request into key authentication even when no identity provider is configured.
+:::
 
 ### No-auth mode
 
@@ -339,12 +384,12 @@ In no-auth mode, agents identify themselves with a self-declared agent ID. Atryu
 Refer to the setup examples in the [GitHub `examples` directory](https://github.com/validmind/atryum/tree/main/examples) for agent-specific configuration.
 
 :::
-Self-declared agent IDs are ignored as soon as inbound auth is configured. Do not rely on `?agent_id=` or `ATRYUM_AGENT_ID` when auth mode is enabled.
+Self-declared agent IDs are ignored as soon as inbound auth is configured. Do not rely on `?agent_id=` or `ATRYUM_AGENT_ID` when auth mode is enabled; use an [API key](#api-keys) instead.
 :::
 
 ### Auth mode
 
-In auth mode, agents must authenticate to Atryum with an OAuth bearer token. Atryum validates the token against one or more authorization servers configured in `atryum.toml`, then uses the token's **agent ID claim** — by default `client_id`, falling back to `azp`, then `sub` — as the authenticated agent ID when evaluating rules and recording invocations.
+In auth mode, agents must authenticate to Atryum with either an [API key](#api-keys) or an OAuth bearer token from a configured authorization server. For IdP tokens, Atryum validates the token Atryum validates the token against one or more authorization servers configured in `atryum.toml`, then uses the token's **agent ID claim** — by default `client_id`, falling back to `azp`, then `sub` — as the authenticated agent ID when evaluating rules and recording invocations.
 
 1. Add one or more `[[auth]]` blocks to your `atryum.toml` configuration file:
 
@@ -421,9 +466,13 @@ For Auth0, use a dedicated **Single Page Application** client rather than a conf
 
 When an administrator signs out, Atryum uses the selected provider's autodiscovered OIDC `end_session_endpoint`, supplies the current ID token as a logout hint, and asks the provider to return to `/ui/`. Register `<your-atryum-origin>/ui/` as an allowed post-logout URL for every admin OIDC client. If a provider does not advertise a usable end-session endpoint, Atryum still clears its local session and returns to the sign-in screen.
 
+Every user who signs in through an admin-enabled provider gets a row on the **Users** page the first time they log in. Users whose token carries the admin claim are **admins** and can use every page. Everyone else is a **member**: members see only the agents they belong to, can issue and revoke API keys for those agents, and can create new agents (becoming their first member). Admins add members to agents from the agent's **Members** tab and can disable a user, which revokes every key that user issued.
+
+The CLI signs in through the same providers with the OAuth 2.0 device grant (`atryum login`). Enable the device authorization grant on the admin client in your identity provider; the bundled Keycloak setup script does this for `atryum-admin`.
+
 Admin auth responses use these status codes:
 
 - `401` — the request could not be authenticated: missing bearer token, malformed/expired token, wrong issuer or audience, invalid signature, or token from a non-admin-enabled block.
-- `403` — the token is valid, but it does not contain the configured admin claim/value.
+- `403` — the token is valid, but the user is disabled or lacks permission for the request (for example, a member calling an admin-only endpoint or acting on an agent they do not belong to).
 
 The frontend attaches bearer tokens to Axios calls and uses authenticated fetch-based SSE for the live invocation stream. It attempts silent token refresh before retrying an expiry-related `401` once. Browser console debug logs with the `[admin-auth]` prefix show refresh attempts and outcomes; token values are never logged.
