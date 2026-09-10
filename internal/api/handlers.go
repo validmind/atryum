@@ -857,13 +857,16 @@ type AuthConfigResponse struct {
 }
 
 type AuthProvider struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Provider    string `json:"provider"`
-	Issuer      string `json:"issuer"`
-	Authority   string `json:"authority"`
-	Audience    string `json:"audience"`
-	ClientID    string `json:"client_id"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Provider  string `json:"provider"`
+	Issuer    string `json:"issuer"`
+	Authority string `json:"authority"`
+	Audience  string `json:"audience"`
+	ClientID  string `json:"client_id"`
+	// CLIClientID is the client the CLI uses for the device grant; equals
+	// ClientID unless cli_client_id is configured.
+	CLIClientID string `json:"cli_client_id"`
 	Scopes      string `json:"scopes"`
 	RedirectURI string `json:"redirect_uri"`
 }
@@ -995,6 +998,7 @@ func (h *Handler) authConfig(w http.ResponseWriter, r *http.Request) {
 			Authority:   cfg.Issuer,
 			Audience:    cfg.Audience,
 			ClientID:    cfg.AdminClientID,
+			CLIClientID: cfg.CLIClientID,
 			Scopes:      cfg.AdminScopes,
 			RedirectURI: redirectURI,
 		})

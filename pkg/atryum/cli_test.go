@@ -35,8 +35,10 @@ func newFakeIdP(t *testing.T) *fakeIdP {
 		})
 	})
 	mux.HandleFunc("/device", func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseForm(); err != nil || r.Form.Get("client_id") != "atryum-admin" {
-			http.Error(w, "bad client", http.StatusBadRequest)
+		if err := r.ParseForm(); err != nil || r.Form.Get("client_id") != "atryum-cli" {
+			// Mirror Auth0: a client without the device grant gets a JSON error.
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized_client", "error_description": "Grant type 'urn:ietf:params:oauth:grant-type:device_code' not allowed for the client."})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -190,11 +192,20 @@ func TestSetupClaudeLogsInIssuesKeyAndInstallsHooks(t *testing.T) {
 	home := isolateHome(t)
 	fastDeviceFlow(t)
 	idp := newFakeIdP(t)
-	provider := api.AuthProvider{ID: "keycloak-atryum-admin", Name: "keycloak", Provider: "keycloak", Issuer: idp.srv.URL, ClientID: "atryum-admin", Scopes: "openid profile email offline_access", Audience: "atryum"}
+	provider := api.AuthProvider{ID: "keycloak-atryum-admin", Name: "keycloak", Provider: "keycloak", Issuer: idp.srv.URL, ClientID: "atryum-admin", CLIClientID: "atryum-cli", Scopes: "openid profile email offline_access", Audience: "atryum"}
 	srv := newFakeAtryum(t, []api.AuthProvider{provider}, "access-1", "access-2")
 
 	var out bytes.Buffer
 	io := cliIO{out: &out, in: bufio.NewReader(strings.NewReader(""))}
+
+	// Without a CLI client the IdP refuses the grant; the error must name the
+	// client and surface the IdP's description instead of a bare "no device_code".
+	noCLI := newFakeAtryum(t, []api.AuthProvider{{ID: "kc", Name: "keycloak", Issuer: idp.srv.URL, ClientID: "atryum-admin"}})
+	err := runSetupClaude([]string{"--url", noCLI.srv.URL, "--agent", "x", "-y"}, io)
+	if err == nil || !strings.Contains(err.Error(), `client "atryum-admin"`) || !strings.Contains(err.Error(), "unauthorized_client") || !strings.Contains(err.Error(), "cli_client_id") {
+		t.Fatalf("expected a descriptive device-grant error, got %v", err)
+	}
+	out.Reset()
 	if err := runSetupClaude([]string{"--url", srv.srv.URL, "--agent", "Claude Laptop", "-y"}, io); err != nil {
 		t.Fatalf("setup claude: %v\n%s", err, out.String())
 	}
@@ -218,7 +229,7 @@ func TestSetupClaudeLogsInIssuesKeyAndInstallsHooks(t *testing.T) {
 		t.Fatalf("credentials perms = %o, want 600", info.Mode().Perm())
 	}
 	store, _, err := loadCredentials()
-	if err != nil || store.Servers[srv.srv.URL].AccessToken != "access-1" || store.Servers[srv.srv.URL].RefreshToken != "refresh-1" {
+	if err != nil || store.Servers[srv.srv.URL].AccessToken != "access-1" || store.Servers[srv.srv.URL].RefreshToken != "refresh-1" || store.Servers[srv.srv.URL].ClientID != "atryum-cli" {
 		t.Fatalf("stored credentials wrong: %+v err=%v", store, err)
 	}
 
@@ -298,12 +309,12 @@ func TestSetupClaudeLogsInIssuesKeyAndInstallsHooks(t *testing.T) {
 func TestSessionRefreshesExpiredAccessToken(t *testing.T) {
 	isolateHome(t)
 	idp := newFakeIdP(t)
-	provider := api.AuthProvider{ID: "kc", Name: "keycloak", Issuer: idp.srv.URL, ClientID: "atryum-admin"}
+	provider := api.AuthProvider{ID: "kc", Name: "keycloak", Issuer: idp.srv.URL, ClientID: "atryum-admin", CLIClientID: "atryum-cli"}
 	srv := newFakeAtryum(t, []api.AuthProvider{provider}, "access-2")
 
 	store, _, _ := loadCredentials()
 	store.Servers[srv.srv.URL] = serverCredentials{
-		ProviderID: "kc", Issuer: idp.srv.URL, ClientID: "atryum-admin", TokenEndpoint: idp.srv.URL + "/token",
+		ProviderID: "kc", Issuer: idp.srv.URL, ClientID: "atryum-cli", TokenEndpoint: idp.srv.URL + "/token",
 		AccessToken: "access-1", RefreshToken: "refresh-1", ExpiresAt: time.Now().Add(-time.Minute),
 	}
 	if err := saveCredentials(store); err != nil {

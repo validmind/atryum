@@ -106,6 +106,9 @@ agent_id_claim = "client_id"
 admin_enabled = true
 admin_provider = "auth0"
 admin_client_id = "atryum-admin-spa-client"
+# Auth0 only allows the device grant on Native applications, so the CLI
+# (`atryum login`, `atryum setup claude`) needs its own client there.
+cli_client_id = "atryum-cli-native-client"
 admin_scopes = "openid profile email offline_access"
 admin_claim = "atryum_admin"
 admin_claim_value = "true"
@@ -125,7 +128,7 @@ admin_claim = "atryum_admin"
 admin_claim_value = true
 ```
 
-The admin client must be a browser-safe public SPA client that supports authorization code with PKCE. For Auth0, create a Single Page Application client; allow `http://localhost:5174/ui/auth/callback` for Vite development and `http://localhost:8080/ui/auth/callback` for the embedded UI, and allow the corresponding `http://localhost:5174/ui/` and `http://localhost:8080/ui/` logout URLs. For local Keycloak, run `KC_URL=http://localhost:8089 ./keycloak/setup-realm.sh`; it provisions the `atryum-admin` public client, its callback and post-logout redirect URLs, and an `atryum_admin=true` access-token claim.
+The admin client must be a browser-safe public SPA client that supports authorization code with PKCE. The CLI signs in with the OAuth 2.0 device authorization grant using `cli_client_id`, which defaults to `admin_client_id`; Keycloak allows the device grant on the same public client, while Auth0 requires a separate **Native** application with the **Device Code** grant type enabled (and **Refresh Token** for `offline_access`). For Auth0, create a Single Page Application client; allow `http://localhost:5174/ui/auth/callback` for Vite development and `http://localhost:8080/ui/auth/callback` for the embedded UI, and allow the corresponding `http://localhost:5174/ui/` and `http://localhost:8080/ui/` logout URLs. For local Keycloak, run `KC_URL=http://localhost:8089 ./keycloak/setup-realm.sh`; it provisions the `atryum-admin` public client, its callback and post-logout redirect URLs, and an `atryum_admin=true` access-token claim.
 
 The frontend fetches `/api/v1/auth/config`, shows a sign-in screen, redirects through the selected provider, attaches `Authorization: Bearer <access_token>` to protected API calls, and uses authenticated fetch-based SSE for `/api/v1/review/invocations/stream`. With one configured provider, the screen skips the provider selector; with several, it shows an identity-provider selector. It attempts silent token refresh before retrying an expiry-related `401` once. Signing out uses the provider's autodiscovered OIDC `end_session_endpoint` and returns to `/ui/`; providers without a usable end-session endpoint fall back to local logout. Browser console debug logs are emitted for refresh and logout attempts and outcomes under the `[admin-auth]` prefix; access token values are never logged.
 

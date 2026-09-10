@@ -124,6 +124,8 @@ type oidcDiscovery struct {
 }
 
 type deviceAuthResponse struct {
+	Error                   string `json:"error"`
+	ErrorDescription        string `json:"error_description"`
 	DeviceCode              string `json:"device_code"`
 	UserCode                string `json:"user_code"`
 	VerificationURI         string `json:"verification_uri"`
@@ -176,7 +178,7 @@ func discoverOIDC(ctx context.Context, client *http.Client, issuer string) (oidc
 		return oidcDiscovery{}, errors.New("OIDC discovery has no token_endpoint")
 	}
 	if disc.DeviceAuthorizationEndpoint == "" {
-		return oidcDiscovery{}, fmt.Errorf("identity provider %s does not advertise a device_authorization_endpoint; enable the OAuth 2.0 device grant on client %q", issuer, "")
+		return oidcDiscovery{}, fmt.Errorf("identity provider %s does not advertise a device_authorization_endpoint; it must support the OAuth 2.0 device authorization grant for `atryum login`", issuer)
 	}
 	return disc, nil
 }
@@ -190,7 +192,8 @@ func deviceFlowLogin(ctx context.Context, client *http.Client, out io.Writer, pr
 		return serverCredentials{}, err
 	}
 
-	form := url.Values{"client_id": {provider.ClientID}}
+	clientID := firstNonEmpty(provider.CLIClientID, provider.ClientID)
+	form := url.Values{"client_id": {clientID}}
 	if scopes := strings.TrimSpace(provider.Scopes); scopes != "" {
 		form.Set("scope", scopes)
 	}
@@ -201,8 +204,12 @@ func deviceFlowLogin(ctx context.Context, client *http.Client, out io.Writer, pr
 	if err := postForm(ctx, client, disc.DeviceAuthorizationEndpoint, form, &dev); err != nil {
 		return serverCredentials{}, fmt.Errorf("device authorization: %w", err)
 	}
-	if dev.DeviceCode == "" {
-		return serverCredentials{}, errors.New("device authorization response had no device_code")
+	if dev.Error != "" || dev.DeviceCode == "" {
+		msg := strings.TrimSpace(dev.Error + " " + dev.ErrorDescription)
+		if msg == "" {
+			msg = "response had no device_code"
+		}
+		return serverCredentials{}, fmt.Errorf("device authorization for client %q at %s failed: %s\n\nThe identity provider must allow the OAuth 2.0 device authorization grant for this client. On Auth0 that requires a Native application with the \"Device Code\" grant enabled; point [[auth]] cli_client_id at it.", clientID, provider.Issuer, msg)
 	}
 
 	fmt.Fprintf(out, "\nTo sign in, open this URL in a browser:\n\n    %s\n\n", firstNonEmpty(dev.VerificationURIComplete, dev.VerificationURI))
@@ -237,7 +244,7 @@ func deviceFlowLogin(ctx context.Context, client *http.Client, out io.Writer, pr
 		poll := url.Values{
 			"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
 			"device_code": {dev.DeviceCode},
-			"client_id":   {provider.ClientID},
+			"client_id":   {clientID},
 		}
 		var tok tokenResponse
 		if err := postForm(ctx, client, disc.TokenEndpoint, poll, &tok); err != nil {
@@ -276,7 +283,7 @@ func credentialsFromToken(provider api.AuthProvider, tokenEndpoint string, tok t
 	return serverCredentials{
 		ProviderID:    provider.ID,
 		Issuer:        provider.Issuer,
-		ClientID:      provider.ClientID,
+		ClientID:      firstNonEmpty(provider.CLIClientID, provider.ClientID),
 		TokenEndpoint: tokenEndpoint,
 		Audience:      provider.Audience,
 		Scopes:        provider.Scopes,

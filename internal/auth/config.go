@@ -23,15 +23,21 @@ const (
 // Config describes one configured authorization server (e.g. one Keycloak
 // realm or one Auth0 tenant). Multiple configs are supported.
 type Config struct {
-	Enabled         bool       `toml:"enabled"`
-	Issuer          string     `toml:"issuer"`
-	Audience        string     `toml:"audience"`
-	JWKSURL         string     `toml:"jwks_url"`
-	RequiredScope   string     `toml:"required_scope"`
-	AgentIDClaim    string     `toml:"agent_id_claim"`
-	AdminEnabled    bool       `toml:"admin_enabled"`
-	AdminProvider   string     `toml:"admin_provider"`
-	AdminClientID   string     `toml:"admin_client_id"`
+	Enabled       bool   `toml:"enabled"`
+	Issuer        string `toml:"issuer"`
+	Audience      string `toml:"audience"`
+	JWKSURL       string `toml:"jwks_url"`
+	RequiredScope string `toml:"required_scope"`
+	AgentIDClaim  string `toml:"agent_id_claim"`
+	AdminEnabled  bool   `toml:"admin_enabled"`
+	AdminProvider string `toml:"admin_provider"`
+	AdminClientID string `toml:"admin_client_id"`
+	// CLIClientID is the OAuth client the `atryum` CLI uses for the device
+	// authorization grant. Optional: defaults to AdminClientID, which works
+	// for IdPs that allow the device grant on a public browser client
+	// (Keycloak). Auth0 only permits the device grant on Native applications,
+	// so there it must be a separate client.
+	CLIClientID     string     `toml:"cli_client_id"`
 	AdminScopes     string     `toml:"admin_scopes"`
 	AdminClaim      string     `toml:"admin_claim"`
 	AdminClaimValue ClaimValue `toml:"admin_claim_value"`
@@ -69,6 +75,10 @@ func (c Config) Normalized() Config {
 		c.AdminProvider = DefaultAdminProvider
 	}
 	c.AdminClientID = strings.TrimSpace(c.AdminClientID)
+	c.CLIClientID = strings.TrimSpace(c.CLIClientID)
+	if c.CLIClientID == "" {
+		c.CLIClientID = c.AdminClientID
+	}
 	c.AdminScopes = strings.TrimSpace(c.AdminScopes)
 	if c.AdminScopes == "" {
 		c.AdminScopes = DefaultAdminScopes

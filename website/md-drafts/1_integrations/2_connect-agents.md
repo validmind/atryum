@@ -468,7 +468,7 @@ When an administrator signs out, Atryum uses the selected provider's autodiscove
 
 Every user who signs in through an admin-enabled provider gets a row on the **Users** page the first time they log in. Users whose token carries the admin claim are **admins** and can use every page. Everyone else is a **member**: members see only the agents they belong to, can issue and revoke API keys for those agents, and can create new agents (becoming their first member). Admins add members to agents from the agent's **Members** tab and can disable a user, which revokes every key that user issued.
 
-The CLI signs in through the same providers with the OAuth 2.0 device grant (`atryum login`). Enable the device authorization grant on the admin client in your identity provider; the bundled Keycloak setup script does this for `atryum-admin`.
+The CLI signs in through the same providers with the OAuth 2.0 device grant (`atryum login`), using the `cli_client_id` from the matching `[[auth]]` block (defaults to `admin_client_id`). Keycloak allows the device grant on the public admin client, and the bundled setup script enables it for `atryum-admin`. Auth0 only allows the device grant on **Native** applications: create one (Applications → Create Application → Native), open Settings → Advanced Settings → Grant Types, enable **Device Code** and **Refresh Token**, and set `cli_client_id` to its client id. The application needs no callback URLs.
 
 Admin auth responses use these status codes:
 
