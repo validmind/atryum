@@ -369,6 +369,8 @@ const Invocations: React.FC = () => {
   const agentByAgentID = useMemo(() => {
     const map = new Map<string, { cuid: string; name: string }>();
     for (const agent of agentsData?.items ?? []) {
+      // Key-authenticated agents report the agent record's own id.
+      map.set(agent.cuid, { cuid: agent.cuid, name: agent.name });
       for (const id of agent.agent_ids) {
         if (map.has(id)) {
           console.warn(
