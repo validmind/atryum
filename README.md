@@ -92,7 +92,7 @@ Authentication for the UI and the review/operator APIs is optional. When no `[[a
 
 Admin auth reuses the same issuer/audience/JWKS validation as agent auth, then checks the admin claim configured on the matched `[[auth]]` block. This means different IdPs can use different admin claims at the same time.
 
-Users are provisioned just-in-time on first login and keyed by issuer and subject. Tokens carrying the admin claim make the user an **admin**; everyone else is a **member** who sees only the agents they belong to and can issue API keys for them. Admins manage membership from an agent's **Members** tab and can disable users from the **Users** page. Authorization is a pluggable seam (`pkg/authz`): the open-core default is this flat admin/member model, and embedding programs can supply their own `Authorizer` and mount authenticated routes via `pkg/atryum` options.
+Users are provisioned just-in-time on first login and keyed by issuer and subject. Email and name are read from the access token using the `email_claims` / `name_claims` lists (defaults cover OIDC, Okta, Keycloak and Entra claim names); when a token has neither, Atryum calls the issuer's OIDC `userinfo_endpoint` once with that token and stores the result, so Auth0 users show as their email rather than `google-oauth2|…`. Set `userinfo = false` on a block whose userinfo endpoint rejects API-audience tokens. Tokens carrying the admin claim make the user an **admin**; everyone else is a **member** who sees only the agents they belong to and can issue API keys for them. Admins manage membership from an agent's **Members** tab and can disable users from the **Users** page. Authorization is a pluggable seam (`pkg/authz`): the open-core default is this flat admin/member model, and embedding programs can supply their own `Authorizer` and mount authenticated routes via `pkg/atryum` options.
 
 Example:
 
@@ -112,6 +112,14 @@ cli_client_id = "atryum-cli-native-client"
 admin_scopes = "openid profile email offline_access"
 admin_claim = "atryum_admin"
 admin_claim_value = "true"
+# Optional. Where to read the user's email/name from a verified token. Defaults
+# cover standard OIDC claims plus Entra's upn/unique_name/preferred_username.
+# Auth0 access tokens carry none of these; either leave userinfo on (default)
+# so Atryum asks the issuer's userinfo endpoint once per user, or add a
+# namespaced claim with an Action and list it here.
+# email_claims = ["https://atryum.dev/email", "email"]
+# name_claims  = ["https://atryum.dev/name", "name"]
+# userinfo     = true
 
 [[auth]]
 enabled = true

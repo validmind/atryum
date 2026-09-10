@@ -162,6 +162,10 @@ type UserIdentity struct {
 	Email   string
 	Name    string
 	Admin   bool
+	// AccessToken is the verified bearer, kept so a UserProvisioner can call
+	// the issuer's userinfo endpoint when the token lacks email/name. Never
+	// log or persist it.
+	AccessToken string
 }
 
 // ValidateUser verifies a bearer token from a login-enabled issuer and returns
@@ -177,12 +181,61 @@ func (v *Validator) ValidateUser(ctx context.Context, bearer string) (UserIdenti
 		return UserIdentity{}, &ValidationError{Result: ResultInvalid, Description: "issuer/audience not allowed for login"}
 	}
 	return UserIdentity{
-		Issuer:  cfg.Issuer,
-		Subject: stringClaim(verifiedClaims, "sub"),
-		Email:   stringClaim(verifiedClaims, "email"),
-		Name:    stringClaim(verifiedClaims, "name"),
-		Admin:   adminClaimMatches(verifiedClaims, cfg.AdminClaim, string(cfg.AdminClaimValue)),
+		Issuer:      cfg.Issuer,
+		Subject:     stringClaim(verifiedClaims, "sub"),
+		Email:       emailFromClaims(map[string]any(verifiedClaims), cfg.EmailClaims),
+		Name:        nameFromClaims(map[string]any(verifiedClaims), cfg.NameClaims),
+		Admin:       adminClaimMatches(verifiedClaims, cfg.AdminClaim, string(cfg.AdminClaimValue)),
+		AccessToken: strings.TrimSpace(bearer),
 	}, nil
+}
+
+// ConfigForIssuer returns the normalized config for an issuer (trailing slash
+// insensitive), for callers that need per-issuer settings after validation.
+func (v *Validator) ConfigForIssuer(issuer string) (Config, bool) {
+	if v == nil {
+		return Config{}, false
+	}
+	issuer = strings.TrimRight(strings.TrimSpace(issuer), "/")
+	for _, c := range v.configs {
+		if c.Issuer == issuer {
+			return c, true
+		}
+	}
+	return Config{}, false
+}
+
+// emailFromClaims returns the first non-empty string among the listed claims
+// that looks like an email address, falling back to the first non-empty value
+// at all (some IdPs put a UPN-style identifier under preferred_username).
+func emailFromClaims(claims map[string]any, names []string) string {
+	first := ""
+	for _, n := range names {
+		v := stringClaim(jwt.MapClaims(claims), n)
+		if v == "" {
+			continue
+		}
+		if strings.Contains(v, "@") {
+			return v
+		}
+		if first == "" {
+			first = v
+		}
+	}
+	return first
+}
+
+// nameFromClaims returns the first non-empty listed claim, else joins
+// given_name and family_name when both/either are present.
+func nameFromClaims(claims map[string]any, names []string) string {
+	for _, n := range names {
+		if v := stringClaim(jwt.MapClaims(claims), n); v != "" {
+			return v
+		}
+	}
+	given := stringClaim(jwt.MapClaims(claims), "given_name")
+	family := stringClaim(jwt.MapClaims(claims), "family_name")
+	return strings.TrimSpace(given + " " + family)
 }
 
 func (v *Validator) ValidateAdmin(ctx context.Context, bearer string) (AdminIdentity, error) {

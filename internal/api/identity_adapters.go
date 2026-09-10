@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/validmind/atryum/internal/auth"
@@ -73,16 +75,30 @@ type userLoginStore interface {
 	UpsertLogin(ctx context.Context, issuer, subject, email, name, role string) (store.User, error)
 }
 
+// UserInfoFetcher fills in email/name from the issuer's userinfo endpoint.
+type UserInfoFetcher interface {
+	FetchUserInfo(ctx context.Context, issuer, token string) (auth.UserProfile, error)
+}
+
 // UserProvisioner bridges the users store to auth.UserProvisioner: it upserts
 // the user on every IdP login (just-in-time provisioning) and refuses
-// disabled users.
+// disabled users. When the token carries no email and a UserInfoFetcher is
+// installed, it enriches the row from the userinfo endpoint once; the store
+// keeps known values when later logins present empty ones.
 type UserProvisioner struct {
-	users userLoginStore
+	users    userLoginStore
+	userinfo UserInfoFetcher
 }
 
 // NewUserProvisioner returns a provisioner over the users store.
 func NewUserProvisioner(users userLoginStore) *UserProvisioner {
 	return &UserProvisioner{users: users}
+}
+
+// WithUserInfo enables userinfo enrichment for tokens that lack email/name.
+func (p *UserProvisioner) WithUserInfo(f UserInfoFetcher) *UserProvisioner {
+	p.userinfo = f
+	return p
 }
 
 // ProvisionUser implements auth.UserProvisioner.
@@ -94,6 +110,16 @@ func (p *UserProvisioner) ProvisionUser(ctx context.Context, id auth.UserIdentit
 	u, err := p.users.UpsertLogin(ctx, id.Issuer, id.Subject, id.Email, id.Name, role)
 	if err != nil {
 		return authz.Principal{}, err
+	}
+	if u.Email == "" && p.userinfo != nil && id.AccessToken != "" {
+		// Best effort: a userinfo failure must never block a valid login.
+		if profile, err := p.userinfo.FetchUserInfo(ctx, id.Issuer, id.AccessToken); err == nil && (profile.Email != "" || profile.Name != "") {
+			if enriched, err := p.users.UpsertLogin(ctx, id.Issuer, id.Subject, profile.Email, profile.Name, role); err == nil {
+				u = enriched
+			}
+		} else if err != nil && !errors.Is(err, auth.ErrUserInfoDisabled) {
+			slog.Debug("userinfo enrichment failed", "issuer", id.Issuer, "subject", id.Subject, "error", err)
+		}
 	}
 	if u.Disabled() {
 		return authz.Principal{}, auth.ErrUserDisabled

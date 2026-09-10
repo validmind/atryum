@@ -264,3 +264,77 @@ func TestRequireAdminFailsClosedWithoutPrincipal(t *testing.T) {
 		t.Fatalf("expected 401 when no principal is attached, got %d", w.Code)
 	}
 }
+
+func TestValidateUserUsesConfiguredClaimLists(t *testing.T) {
+	idp := newTestIdP(t)
+	v := newValidatorForIdP(t, idp, adminConfig)
+
+	// Standard claims.
+	claims := validClaims()
+	claims["email"] = "a@example.com"
+	claims["name"] = "Alice"
+	u, err := v.ValidateUser(context.Background(), idp.sign(t, claims))
+	if err != nil || u.Email != "a@example.com" || u.Name != "Alice" || u.AccessToken == "" {
+		t.Fatalf("standard claims: %+v err=%v", u, err)
+	}
+
+	// Entra-style: no email claim, upn + given/family names.
+	claims = validClaims()
+	claims["upn"] = "bob@corp.example"
+	claims["given_name"] = "Bob"
+	claims["family_name"] = "Builder"
+	u, err = v.ValidateUser(context.Background(), idp.sign(t, claims))
+	if err != nil || u.Email != "bob@corp.example" || u.Name != "Bob Builder" {
+		t.Fatalf("entra-style claims: %+v err=%v", u, err)
+	}
+
+	// Auth0-style: nothing but sub, unless a namespaced claim is configured.
+	claims = validClaims()
+	claims["https://atryum.dev/email"] = "carol@example.com"
+	u, err = v.ValidateUser(context.Background(), idp.sign(t, claims))
+	if err != nil || u.Email != "" || u.Name != "" {
+		t.Fatalf("default lists should not find namespaced claim: %+v err=%v", u, err)
+	}
+	v2 := newValidatorForIdP(t, idp, adminConfig, func(c *Config) {
+		c.EmailClaims = []string{"https://atryum.dev/email"}
+	})
+	u, err = v2.ValidateUser(context.Background(), idp.sign(t, claims))
+	if err != nil || u.Email != "carol@example.com" {
+		t.Fatalf("configured namespaced claim: %+v err=%v", u, err)
+	}
+}
+
+func TestUserInfoClientDiscoversAndMapsProfile(t *testing.T) {
+	idp := newTestIdP(t)
+	var gotAuth string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/userinfo", func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"sub":"google-oauth2|123","email":"dana@example.com","name":"Dana"}`))
+	})
+	var srv *httptest.Server
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"userinfo_endpoint":"` + srv.URL + `/userinfo"}`))
+	})
+	srv = httptest.NewServer(mux)
+	defer srv.Close()
+
+	v := newValidatorForIdP(t, idp, adminConfig, func(c *Config) { c.Issuer = srv.URL })
+	client := NewUserInfoClient(v, srv.Client())
+	profile, err := client.FetchUserInfo(context.Background(), srv.URL+"/", "tok-1")
+	if err != nil || profile.Email != "dana@example.com" || profile.Name != "Dana" {
+		t.Fatalf("FetchUserInfo: %+v err=%v", profile, err)
+	}
+	if gotAuth != "Bearer tok-1" {
+		t.Fatalf("userinfo should receive the bearer, got %q", gotAuth)
+	}
+	// Second call reuses the discovered endpoint; disabling per issuer works.
+	if _, err := client.FetchUserInfo(context.Background(), srv.URL, "tok-1"); err != nil {
+		t.Fatalf("second fetch: %v", err)
+	}
+	off := false
+	vOff := newValidatorForIdP(t, idp, adminConfig, func(c *Config) { c.Issuer = srv.URL; c.UserInfo = &off })
+	if _, err := NewUserInfoClient(vOff, srv.Client()).FetchUserInfo(context.Background(), srv.URL, "tok-1"); !errors.Is(err, ErrUserInfoDisabled) {
+		t.Fatalf("expected ErrUserInfoDisabled, got %v", err)
+	}
+}

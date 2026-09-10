@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -309,5 +310,52 @@ func TestNoAuthDeploymentCanStillIssueAndUseKeys(t *testing.T) {
 	}
 	if w = do(http.MethodGet, "/api/v1/agent/rules?source=amp&tool=Read", "atr_bogus", ""); w.Code != http.StatusUnauthorized {
 		t.Fatalf("bogus key should be 401 even in no-auth mode, got %d", w.Code)
+	}
+}
+
+type stubUserInfo struct {
+	profile auth.UserProfile
+	err     error
+	calls   int
+}
+
+func (s *stubUserInfo) FetchUserInfo(_ context.Context, _, _ string) (auth.UserProfile, error) {
+	s.calls++
+	return s.profile, s.err
+}
+
+func TestUserProvisionerEnrichesFromUserInfoOnce(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "prov.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := store.InitDB(db); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	users := store.NewUsersRepo(db)
+	info := &stubUserInfo{profile: auth.UserProfile{Email: "erin@example.com", Name: "Erin"}}
+	prov := NewUserProvisioner(users).WithUserInfo(info)
+	ctx := context.Background()
+
+	// Auth0-style token: only a sub.
+	id := auth.UserIdentity{Issuer: "https://tenant.auth0.example/", Subject: "google-oauth2|123", AccessToken: "tok"}
+	p, err := prov.ProvisionUser(ctx, id)
+	if err != nil || p.Email != "erin@example.com" || p.Name != "Erin" || p.UserID == "" {
+		t.Fatalf("expected enriched principal, got %+v err=%v", p, err)
+	}
+	if info.calls != 1 {
+		t.Fatalf("expected one userinfo call, got %d", info.calls)
+	}
+	// Next login with the same bare token: no further userinfo call, email kept.
+	p, err = prov.ProvisionUser(ctx, id)
+	if err != nil || p.Email != "erin@example.com" || info.calls != 1 {
+		t.Fatalf("second login: %+v err=%v calls=%d", p, err, info.calls)
+	}
+	// A userinfo failure never blocks login.
+	failing := NewUserProvisioner(users).WithUserInfo(&stubUserInfo{err: context.DeadlineExceeded})
+	other := auth.UserIdentity{Issuer: "https://tenant.auth0.example/", Subject: "auth0|999", AccessToken: "tok"}
+	if p, err := failing.ProvisionUser(ctx, other); err != nil || p.Subject != "auth0|999" {
+		t.Fatalf("login should succeed despite userinfo failure: %+v err=%v", p, err)
 	}
 }

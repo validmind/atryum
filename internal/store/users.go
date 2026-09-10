@@ -58,6 +58,8 @@ var userColumns = []string{
 // sight, otherwise refreshes email, name, role and last_login_at. Role is
 // refreshed on every login because the IdP claim is the source of truth for
 // admin today; disabled_at is never touched here (it is an operator action).
+// Empty email/name never overwrite known values, so a token without those
+// claims does not erase what an earlier login (or userinfo enrichment) found.
 // Returns the resulting row.
 func (r *UsersRepo) UpsertLogin(ctx context.Context, issuer, subject, email, name, role string) (User, error) {
 	issuer = strings.TrimRight(strings.TrimSpace(issuer), "/")
@@ -70,6 +72,12 @@ func (r *UsersRepo) UpsertLogin(ctx context.Context, issuer, subject, email, nam
 	existing, err := r.GetByIssuerSubject(ctx, issuer, subject)
 	switch {
 	case err == nil:
+		if strings.TrimSpace(email) == "" {
+			email = existing.Email
+		}
+		if strings.TrimSpace(name) == "" {
+			name = existing.Name
+		}
 		update, args, err := r.sb.Update("users").
 			Set("email", email).
 			Set("name", name).

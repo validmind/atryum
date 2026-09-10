@@ -335,7 +335,8 @@ func runServer(args []string, o options) error {
 	if o.authorizer != nil {
 		authorizer = o.authorizer
 	}
-	handler.SetAuthz(authorizer, api.NewUserProvisioner(usersRepo))
+	userProvisioner := api.NewUserProvisioner(usersRepo)
+	handler.SetAuthz(authorizer, userProvisioner)
 	for _, register := range o.extraRoutes {
 		handler.AddExtraRoutes(register)
 	}
@@ -349,6 +350,7 @@ func runServer(args []string, o options) error {
 	}
 	if authValidator != nil {
 		handler.SetAuthValidator(authValidator)
+		userProvisioner.WithUserInfo(auth.NewUserInfoClient(authValidator, nil))
 		log.Printf("inbound auth enabled (%d issuer(s))", len(authValidator.Configs()))
 	} else {
 		log.Printf("inbound auth disabled (no [[auth]] section configured)")
