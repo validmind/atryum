@@ -360,8 +360,7 @@ func TestApplyInstallUninstallHookConfigCodex(t *testing.T) {
 }
 
 func TestInstallUninstallAgentPlugins(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateHome(t)
 
 	cases := []struct {
 		target   string

@@ -54,8 +54,10 @@ type OperatorUserInput struct {
 // OperatorAPIKey is the listing view of an api_keys row. Token is only ever
 // populated in the response to the POST that created the key.
 type OperatorAPIKey struct {
-	ID         string     `json:"id"`
-	AgentID    string     `json:"agent_id"`
+	ID      string `json:"id"`
+	AgentID string `json:"agent_id"`
+	// AgentName is populated on per-user listings, where rows span agents.
+	AgentName  string     `json:"agent_name,omitempty"`
 	Name       string     `json:"name"`
 	KeyPrefix  string     `json:"key_prefix"`
 	CreatedBy  string     `json:"created_by,omitempty"`
@@ -91,6 +93,20 @@ type OperatorAgentMember struct {
 
 type AgentMemberListResponse struct {
 	Items []OperatorAgentMember `json:"items"`
+}
+
+// OperatorUserAgent is one row of a user's agent list: an agent the user is a
+// member of, with the agent's display fields joined.
+type OperatorUserAgent struct {
+	AgentID   string    `json:"agent_id"`
+	AgentName string    `json:"agent_name"`
+	Enabled   bool      `json:"enabled"`
+	Role      string    `json:"role"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type UserAgentListResponse struct {
+	Items []OperatorUserAgent `json:"items"`
 }
 
 // OperatorAgentMemberInput is the POST body for /api/v1/agents/{id}/members.
@@ -197,8 +213,20 @@ func (h *Handler) operatorUserDetail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "user store not configured")
 		return
 	}
-	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/users/"), "/")
-	if id == "" || strings.Contains(id, "/") {
+	id, sub, _ := strings.Cut(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/users/"), "/"), "/")
+	if id == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	switch sub {
+	case "":
+	case "agents":
+		h.userAgents(w, r, id)
+		return
+	case "keys":
+		h.userKeys(w, r, id)
+		return
+	default:
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
@@ -271,6 +299,82 @@ func (h *Handler) operatorUserDetail(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+// userAgents handles GET /api/v1/users/{id}/agents (admin): the agents the
+// user is a member of. Membership itself is edited from the agent side
+// (/api/v1/agents/{id}/members), so this view is read-only.
+func (h *Handler) userAgents(w http.ResponseWriter, r *http.Request, userID string) {
+	if h.agentMembersRepo == nil {
+		writeError(w, http.StatusServiceUnavailable, "user store not configured")
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if _, err := h.usersRepo.Get(r.Context(), userID); err != nil {
+		writeUserLookupError(w, err)
+		return
+	}
+	members, err := h.agentMembersRepo.ListByUser(r.Context(), userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list memberships")
+		return
+	}
+	items := make([]OperatorUserAgent, 0, len(members))
+	for _, m := range members {
+		items = append(items, OperatorUserAgent{
+			AgentID:   m.AgentID,
+			AgentName: m.AgentName,
+			Enabled:   m.AgentEnabled,
+			Role:      m.Role,
+			CreatedAt: m.CreatedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, UserAgentListResponse{Items: items})
+}
+
+// userKeys handles GET /api/v1/users/{id}/keys (admin): every API key the
+// user issued, across agents, newest first. Revocation goes through the
+// agent-scoped DELETE /api/v1/agents/{agent}/keys/{key}.
+func (h *Handler) userKeys(w http.ResponseWriter, r *http.Request, userID string) {
+	if h.apiKeysRepo == nil {
+		writeError(w, http.StatusServiceUnavailable, "api key store not configured")
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if _, err := h.usersRepo.Get(r.Context(), userID); err != nil {
+		writeUserLookupError(w, err)
+		return
+	}
+	keys, err := h.apiKeysRepo.ListByCreator(r.Context(), userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list keys")
+		return
+	}
+	agentNames := map[string]string{}
+	if len(keys) > 0 {
+		records, err := h.agentsRepo.List(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list agents")
+			return
+		}
+		for _, a := range records {
+			agentNames[a.ID] = a.VMName
+		}
+	}
+	now := time.Now()
+	items := make([]OperatorAPIKey, 0, len(keys))
+	for _, k := range keys {
+		item := toOperatorAPIKey(k, now, "")
+		item.AgentName = agentNames[k.AgentID]
+		items = append(items, item)
+	}
+	writeJSON(w, http.StatusOK, APIKeyListResponse{Items: items})
 }
 
 // agentKeys handles /api/v1/agents/{id}/keys and /keys/{key_id}. Members of

@@ -22,6 +22,9 @@ type AgentMember struct {
 	// Denormalized user fields for list responses; empty when not joined.
 	UserEmail string
 	UserName  string
+	// Denormalized agent fields for per-user list responses; empty when not joined.
+	AgentName    string
+	AgentEnabled bool
 }
 
 // AgentMembersRepo manages the users ↔ agents join table.
@@ -117,6 +120,33 @@ func (r *AgentMembersRepo) ListByAgent(ctx context.Context, agentID string) ([]A
 	for rows.Next() {
 		var m AgentMember
 		if err := rows.Scan(&m.AgentID, &m.UserID, &m.Role, &m.CreatedAt, &m.UserEmail, &m.UserName); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// ListByUser returns every membership of a user with agent display fields
+// joined, oldest membership first.
+func (r *AgentMembersRepo) ListByUser(ctx context.Context, userID string) ([]AgentMember, error) {
+	query, args, err := r.sb.Select("m.agent_id", "m.user_id", "m.role", "m.created_at", "a.vm_name", "a.enabled").
+		From("agent_members m").
+		Join("agents a ON a.id = m.agent_id").
+		Where(sq.Eq{"m.user_id": userID}).
+		OrderBy("m.created_at ASC", "m.agent_id ASC").ToSql()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AgentMember
+	for rows.Next() {
+		var m AgentMember
+		if err := rows.Scan(&m.AgentID, &m.UserID, &m.Role, &m.CreatedAt, &m.AgentName, &m.AgentEnabled); err != nil {
 			return nil, err
 		}
 		out = append(out, m)

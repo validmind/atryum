@@ -359,3 +359,83 @@ func TestUserProvisionerEnrichesFromUserInfoOnce(t *testing.T) {
 		t.Fatalf("login should succeed despite userinfo failure: %+v err=%v", p, err)
 	}
 }
+
+func TestUserAgentsAndKeysViews(t *testing.T) {
+	r := newIdentityRig(t)
+	admin := r.token("admin-2", true)
+	member := r.token("member-2", false)
+
+	w := r.do(http.MethodPost, "/api/v1/agents", admin, `{"name":"Agent A","enabled":true}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create A: %d %s", w.Code, w.Body.String())
+	}
+	agentA := decode[OperatorAgent](t, w).CUID
+	w = r.do(http.MethodPost, "/api/v1/agents", admin, `{"name":"Agent B","enabled":true}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create B: %d %s", w.Code, w.Body.String())
+	}
+	agentB := decode[OperatorAgent](t, w).CUID
+
+	me := decode[MeResponse](t, r.do(http.MethodGet, "/api/v1/me", member, ""))
+	if me.UserID == "" {
+		t.Fatal("member should be provisioned")
+	}
+
+	// Before any membership: empty lists, not errors.
+	w = r.do(http.MethodGet, "/api/v1/users/"+me.UserID+"/agents", admin, "")
+	if w.Code != http.StatusOK || len(decode[UserAgentListResponse](t, w).Items) != 0 {
+		t.Fatalf("expected empty agent list: %d %s", w.Code, w.Body.String())
+	}
+	w = r.do(http.MethodGet, "/api/v1/users/"+me.UserID+"/keys", admin, "")
+	if w.Code != http.StatusOK || len(decode[APIKeyListResponse](t, w).Items) != 0 {
+		t.Fatalf("expected empty key list: %d %s", w.Code, w.Body.String())
+	}
+
+	// Admin adds the member to A; member issues a key for it.
+	if w = r.do(http.MethodPost, "/api/v1/agents/"+agentA+"/members", admin, `{"user_id":"`+me.UserID+`"}`); w.Code != http.StatusCreated {
+		t.Fatalf("add member: %d %s", w.Code, w.Body.String())
+	}
+	w = r.do(http.MethodPost, "/api/v1/agents/"+agentA+"/keys", member, `{"name":"laptop"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create key: %d %s", w.Code, w.Body.String())
+	}
+	created := decode[OperatorAPIKey](t, w)
+
+	w = r.do(http.MethodGet, "/api/v1/users/"+me.UserID+"/agents", admin, "")
+	agents := decode[UserAgentListResponse](t, w).Items
+	if w.Code != http.StatusOK || len(agents) != 1 || agents[0].AgentID != agentA || agents[0].AgentName != "Agent A" || !agents[0].Enabled || agents[0].Role != store.AgentMemberRoleOwner {
+		t.Fatalf("unexpected user agents: %d %s", w.Code, w.Body.String())
+	}
+	w = r.do(http.MethodGet, "/api/v1/users/"+me.UserID+"/keys", admin, "")
+	keys := decode[APIKeyListResponse](t, w).Items
+	if w.Code != http.StatusOK || len(keys) != 1 || keys[0].ID != created.ID || keys[0].AgentName != "Agent A" || keys[0].Token != "" || !keys[0].Active {
+		t.Fatalf("unexpected user keys: %d %s", w.Code, w.Body.String())
+	}
+
+	// Only admins may use the per-user views; unknown users and sub-routes 404.
+	if w = r.do(http.MethodGet, "/api/v1/users/"+me.UserID+"/keys", member, ""); w.Code != http.StatusForbidden {
+		t.Fatalf("member on user keys should be 403, got %d", w.Code)
+	}
+	if w = r.do(http.MethodGet, "/api/v1/users/nope/agents", admin, ""); w.Code != http.StatusNotFound {
+		t.Fatalf("unknown user should be 404, got %d", w.Code)
+	}
+	if w = r.do(http.MethodGet, "/api/v1/users/"+me.UserID+"/bogus", admin, ""); w.Code != http.StatusNotFound {
+		t.Fatalf("unknown sub-route should be 404, got %d", w.Code)
+	}
+	if w = r.do(http.MethodPost, "/api/v1/users/"+me.UserID+"/agents", admin, `{}`); w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST on user agents should be 405, got %d", w.Code)
+	}
+
+	// Removing the membership revokes the key; both views reflect it.
+	if w = r.do(http.MethodDelete, "/api/v1/agents/"+agentA+"/members/"+me.UserID, admin, ""); w.Code != http.StatusNoContent {
+		t.Fatalf("remove member: %d %s", w.Code, w.Body.String())
+	}
+	if w = r.do(http.MethodGet, "/api/v1/users/"+me.UserID+"/agents", admin, ""); len(decode[UserAgentListResponse](t, w).Items) != 0 {
+		t.Fatalf("expected no agents after removal: %s", w.Body.String())
+	}
+	w = r.do(http.MethodGet, "/api/v1/users/"+me.UserID+"/keys", admin, "")
+	if keys = decode[APIKeyListResponse](t, w).Items; len(keys) != 1 || keys[0].Active {
+		t.Fatalf("expected revoked key to remain listed inactive: %s", w.Body.String())
+	}
+	_ = agentB
+}

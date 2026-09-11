@@ -133,6 +133,7 @@ type agentMembersRepo interface {
 	Remove(ctx context.Context, agentID, userID string) error
 	IsMember(ctx context.Context, agentID, userID string) (bool, error)
 	ListByAgent(ctx context.Context, agentID string) ([]store.AgentMember, error)
+	ListByUser(ctx context.Context, userID string) ([]store.AgentMember, error)
 	AgentIDsForUser(ctx context.Context, userID string) ([]string, error)
 	RemoveAllForUser(ctx context.Context, userID string) error
 }
@@ -141,6 +142,7 @@ type apiKeysRepo interface {
 	Create(ctx context.Context, key store.APIKey) (store.APIKey, error)
 	Get(ctx context.Context, id string) (store.APIKey, error)
 	ListByAgent(ctx context.Context, agentID string) ([]store.APIKey, error)
+	ListByCreator(ctx context.Context, userID string) ([]store.APIKey, error)
 	Revoke(ctx context.Context, id, revokedBy string) error
 	RevokeByCreator(ctx context.Context, userID, revokedBy string) (int64, error)
 	RevokeByCreatorForAgent(ctx context.Context, userID, agentID, revokedBy string) (int64, error)

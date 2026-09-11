@@ -814,6 +814,8 @@ export interface AgentMember {
 export interface AgentAPIKey {
   id: string;
   agent_id: string;
+  /** Display name of the agent. Present on per-user listings, where rows span agents. */
+  agent_name?: string;
   name: string;
   key_prefix: string;
   created_by?: string;
@@ -825,6 +827,15 @@ export interface AgentAPIKey {
   active: boolean;
   /** The full secret. Present only in the response that created the key. */
   token?: string;
+}
+
+/** One agent a user is a member of, as returned by /api/v1/users/{id}/agents. */
+export interface UserAgent {
+  agent_id: string;
+  agent_name: string;
+  enabled: boolean;
+  role: string;
+  created_at: string;
 }
 
 export interface AgentAPIKeyCreateInput {
@@ -841,6 +852,21 @@ export const identityApi = {
 
   listUsers: async (): Promise<{ items: AtryumUser[] }> => {
     const { data } = await atryumApi.get('/api/v1/users');
+    return data;
+  },
+
+  getUser: async (id: string): Promise<AtryumUser> => {
+    const { data } = await atryumApi.get(`/api/v1/users/${encodeURIComponent(id)}`);
+    return data;
+  },
+
+  listUserAgents: async (id: string): Promise<{ items: UserAgent[] }> => {
+    const { data } = await atryumApi.get(`/api/v1/users/${encodeURIComponent(id)}/agents`);
+    return data;
+  },
+
+  listUserKeys: async (id: string): Promise<{ items: AgentAPIKey[] }> => {
+    const { data } = await atryumApi.get(`/api/v1/users/${encodeURIComponent(id)}/keys`);
     return data;
   },
 

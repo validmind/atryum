@@ -9,6 +9,7 @@ import {
   Flex,
   HStack,
   Icon,
+  Link,
   Select as NativeSelect,
   Spinner,
   Stack,
@@ -21,6 +22,7 @@ import {
   Tr,
 } from '@chakra-ui/react';
 import { UsersIcon } from '@heroicons/react/24/outline';
+import { Link as RouterLink } from 'react-router-dom';
 
 import { ContentPageTitle } from '../components/Layout';
 import type { AtryumUser, UserRole } from '../api/AtryumAPI';
@@ -108,13 +110,14 @@ const Users: React.FC = () => {
               <Th>Role</Th>
               <Th>Status</Th>
               <Th>Last login</Th>
+              <Th>Access</Th>
               <Th />
             </Tr>
           </Thead>
           <Tbody>
             {isLoading ? (
               <Tr>
-                <Td colSpan={6}>
+                <Td colSpan={7}>
                   <HStack justify="center" py={8}>
                     <Spinner size="sm" />
                     <Text color="text.subtle" fontSize="sm">
@@ -125,7 +128,7 @@ const Users: React.FC = () => {
               </Tr>
             ) : users.length === 0 ? (
               <Tr>
-                <Td colSpan={6}>
+                <Td colSpan={7}>
                   <Text textAlign="center" py={8} color="text.subtle" fontSize="sm">
                     No users yet. Users appear here after their first sign-in.
                   </Text>
@@ -138,16 +141,25 @@ const Users: React.FC = () => {
                 return (
                   <Tr key={user.id} opacity={user.disabled ? 0.5 : 1} data-testid={`user-row-${user.id}`}>
                     <Td fontSize="sm">
-                      <Text fontWeight="medium">{user.email || user.name || user.subject}</Text>
+                      <HStack gap={2} align="center">
+                        <Link
+                          as={RouterLink}
+                          to={`/users/${encodeURIComponent(user.id)}/agents`}
+                          fontWeight="medium"
+                          data-testid={`user-link-${user.id}`}
+                        >
+                          {user.email || user.name || user.subject}
+                        </Link>
+                        {isSelf && (
+                          <Badge fontSize="2xs" colorScheme="blue">
+                            you
+                          </Badge>
+                        )}
+                      </HStack>
                       {user.name && user.email && (
                         <Text fontSize="xs" color="text.subtle">
                           {user.name}
                         </Text>
-                      )}
-                      {isSelf && (
-                        <Badge ml={2} fontSize="2xs" colorScheme="blue">
-                          you
-                        </Badge>
                       )}
                     </Td>
                     <Td maxW="260px">
@@ -175,6 +187,26 @@ const Users: React.FC = () => {
                     </Td>
                     <Td whiteSpace="nowrap" fontSize="sm" color="text.subtle">
                       {formatDate(user.last_login_at)}
+                    </Td>
+                    <Td whiteSpace="nowrap">
+                      <HStack gap={1}>
+                        <Button
+                          as={RouterLink}
+                          to={`/users/${encodeURIComponent(user.id)}/agents`}
+                          size="xs"
+                          variant="ghost"
+                        >
+                          Agents
+                        </Button>
+                        <Button
+                          as={RouterLink}
+                          to={`/users/${encodeURIComponent(user.id)}/keys`}
+                          size="xs"
+                          variant="ghost"
+                        >
+                          Keys
+                        </Button>
+                      </HStack>
                     </Td>
                     <Td textAlign="right">
                       {user.disabled ? (

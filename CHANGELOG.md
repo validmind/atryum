@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Per-user access views in the Users UI: clicking a user (or the new
+  **Agents** / **Keys** links on their row) opens `/ui/users/{id}/agents`
+  and `/ui/users/{id}/keys`, listing the agents that user is a member of
+  and every API key they have issued across agents, with membership
+  removal and key revocation in place. Backed by two new admin endpoints,
+  `GET /api/v1/users/{id}/agents` and `GET /api/v1/users/{id}/keys`; the
+  latter returns the usual key rows plus an `agent_name` field.
+- Several Claude Codes on one machine can now act as different Atryum
+  agents. `ATRYUM_HOME` is the single root for everything the Claude hook
+  touches: `atryum setup claude` and `atryum hooks install claude-code`
+  install the hook script under `$ATRYUM_HOME/hooks/`, reference it by
+  absolute path, and bake `ATRYUM_STATE_DIR=$ATRYUM_HOME/agent-hook-state`
+  into the hook commands whenever the home is not the stock `~/.atryum`.
+  The `claude-code` hook target honours `CLAUDE_CONFIG_DIR` for the
+  `settings.json` it writes, and without `--agent` the default agent and
+  key names gain the home's basename so two instances do not share an agent
+  record. One env pair per instance is enough:
+  `ATRYUM_HOME=~/.atryum-b CLAUDE_CONFIG_DIR=~/.claude-b atryum setup claude`,
+  then launch Claude Code with the same two variables. The shared hook also
+  falls back to `$ATRYUM_HOME/agent-hook-state` when only `ATRYUM_HOME` is
+  set. Default installs are unchanged.
+
+### Fixed
+
+- The **you** badge on the Users page now sits beside the user's email
+  instead of stacking under their name.
+
+### Security
+
+- The shared agent hook no longer writes Atryum API keys (`atr_…`) to its
+  on-disk token cache. The key already lives wherever `ATRYUM_TOKEN_COMMAND`
+  reads it from, so the cache was a second plaintext copy for no gain. Other
+  token kinds are still cached as before.
+- `atryum setup claude` and the shared hook refuse to send a bearer token
+  over plain `http://` to a non-loopback host. Loopback http stays allowed
+  for local development; pass `--allow-insecure-http` to `setup claude`
+  (which bakes `ATRYUM_ALLOW_INSECURE_HTTP=1` into the hook commands) or set
+  that variable yourself to accept a trusted private network.
+
 ## [0.4.0] - 2026-07-27
 
 ### Added

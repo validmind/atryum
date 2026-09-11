@@ -172,12 +172,19 @@ func newFakeAtryum(t *testing.T, providers []api.AuthProvider, accepted ...strin
 	return f
 }
 
+// isolateHome points every location the CLI writes to at a fresh temp dir.
+// It must clear CLAUDE_CONFIG_DIR and ATRYUM_STATE_DIR too: hook installation
+// honours both, and a developer running the suite from inside Claude Code has
+// CLAUDE_CONFIG_DIR set, so leaving it alone would let a test rewrite the live
+// settings.json it is running under.
 func isolateHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("ATRYUM_HOME", filepath.Join(home, ".atryum"))
 	t.Setenv("ATRYUM_URL", "")
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("ATRYUM_STATE_DIR", "")
 	return home
 }
 
@@ -380,5 +387,114 @@ func TestHookEnvPrefixQuotesAndSorts(t *testing.T) {
 	}
 	if hookEnvPrefix(nil) != "" {
 		t.Fatalf("empty env should yield empty prefix")
+	}
+}
+
+func TestInsecureTransport(t *testing.T) {
+	cases := map[string]bool{
+		"http://localhost:8080":      false,
+		"http://127.0.0.1:8080":      false,
+		"http://127.5.5.5":           false,
+		"http://[::1]:8080":          false,
+		"http://dev.localhost:8080":  false,
+		"https://atryum.example.com": false,
+		"http://atryum.example.com":  true,
+		"http://10.0.0.5:8080":       true,
+		"http://atryum:8080":         true,
+		"":                           false,
+		"not a url":                  false,
+	}
+	for in, want := range cases {
+		if got := insecureTransport(in); got != want {
+			t.Errorf("insecureTransport(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestInstanceLabelAppendsCustomHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("ATRYUM_HOME", filepath.Join(home, ".atryum"))
+	if got := instanceLabel(); got != defaultKeyName() {
+		t.Fatalf("default home should not decorate the label, got %q", got)
+	}
+	t.Setenv("ATRYUM_HOME", filepath.Join(home, ".atryum-b"))
+	if got, want := instanceLabel(), defaultKeyName()+" (atryum-b)"; got != want {
+		t.Fatalf("instanceLabel = %q, want %q", got, want)
+	}
+}
+
+func TestSetupClaudeRefusesInsecureHTTP(t *testing.T) {
+	isolateHome(t)
+	var out bytes.Buffer
+	io := cliIO{out: &out, in: bufio.NewReader(strings.NewReader(""))}
+	err := runSetupClaude([]string{"--url", "http://atryum.example.com:8080", "--agent", "x", "-y"}, io)
+	if err == nil || !strings.Contains(err.Error(), "plain http") || !strings.Contains(err.Error(), "--allow-insecure-http") {
+		t.Fatalf("expected an insecure-transport refusal, got %v", err)
+	}
+}
+
+// A custom ATRYUM_HOME plus CLAUDE_CONFIG_DIR gives one Claude Code its own
+// key, hook script, hook state and settings file, so a second instance can
+// act as a different agent on the same machine.
+func TestSetupClaudeHonoursCustomHomeAndClaudeConfigDir(t *testing.T) {
+	home := isolateHome(t)
+	atryumHome := filepath.Join(home, "sandboxes", "b", ".atryum-b")
+	claudeDir := filepath.Join(home, "sandboxes", "b", ".claude-b")
+	t.Setenv("ATRYUM_HOME", atryumHome)
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir)
+	fastDeviceFlow(t)
+	idp := newFakeIdP(t)
+	provider := api.AuthProvider{ID: "kc", Name: "keycloak", Provider: "keycloak", Issuer: idp.srv.URL, ClientID: "atryum-admin", CLIClientID: "atryum-cli", Scopes: "openid", Audience: "atryum"}
+	srv := newFakeAtryum(t, []api.AuthProvider{provider}, "access-1")
+
+	var out bytes.Buffer
+	io := cliIO{out: &out, in: bufio.NewReader(strings.NewReader(""))}
+	if err := runSetupClaude([]string{"--url", srv.srv.URL, "-y"}, io); err != nil {
+		t.Fatalf("setup claude: %v\n%s", err, out.String())
+	}
+
+	// Default agent name is decorated with the home's basename.
+	if !strings.Contains(out.String(), `Created agent "Claude Code on `+defaultKeyName()+` (atryum-b)"`) {
+		t.Fatalf("expected decorated default agent name, got:\n%s", out.String())
+	}
+
+	// Everything the hook touches lives under the custom home.
+	keyPath := filepath.Join(atryumHome, "agent-key")
+	if _, err := os.Stat(keyPath); err != nil {
+		t.Fatalf("agent key should be under ATRYUM_HOME: %v", err)
+	}
+	scriptPath := filepath.Join(atryumHome, "hooks", "atryum-hook.mjs")
+	if _, err := os.Stat(scriptPath); err != nil {
+		t.Fatalf("hook script should be under ATRYUM_HOME: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".atryum", "hooks", "atryum-hook.mjs")); !os.IsNotExist(err) {
+		t.Fatalf("hook script must not also land in the default home (err=%v)", err)
+	}
+
+	// Settings go to CLAUDE_CONFIG_DIR, reference the script by absolute path
+	// and pin the state directory next to the key.
+	if _, err := os.Stat(filepath.Join(home, ".claude", "settings.json")); !os.IsNotExist(err) {
+		t.Fatalf("default ~/.claude/settings.json must be untouched (err=%v)", err)
+	}
+	settingsRaw, err := os.ReadFile(filepath.Join(claudeDir, "settings.json"))
+	if err != nil {
+		t.Fatalf("settings.json under CLAUDE_CONFIG_DIR: %v", err)
+	}
+	settings := string(settingsRaw)
+	if strings.Contains(settings, "~/.atryum/hooks") {
+		t.Fatalf("hook commands must not reference the default home:\n%s", settings)
+	}
+	if strings.Count(settings, "node "+scriptPath) != 3 {
+		t.Fatalf("expected 3 hook commands with the absolute script path:\n%s", settings)
+	}
+	if !strings.Contains(settings, "ATRYUM_STATE_DIR="+filepath.Join(atryumHome, "agent-hook-state")+" ") {
+		t.Fatalf("hook commands should pin ATRYUM_STATE_DIR under ATRYUM_HOME:\n%s", settings)
+	}
+	if !strings.Contains(settings, "ATRYUM_TOKEN_COMMAND=cat "+keyPath) && !strings.Contains(settings, "ATRYUM_TOKEN_COMMAND='cat "+keyPath+"'") {
+		t.Fatalf("hook commands should read the key from ATRYUM_HOME:\n%s", settings)
+	}
+	if strings.Contains(settings, "ATRYUM_ALLOW_INSECURE_HTTP") {
+		t.Fatalf("loopback server must not set the insecure override:\n%s", settings)
 	}
 }

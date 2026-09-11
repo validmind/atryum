@@ -7,7 +7,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -485,7 +487,7 @@ func defaultKeyName() string {
 // ─── atryum setup claude ─────────────────────────────────────────────────────
 
 func setupClaudeUsage() string {
-	return strings.TrimSpace(`usage: atryum setup claude [--url URL] [--agent NAME|ID] [-y|--yes]
+	return strings.TrimSpace(`usage: atryum setup claude [--url URL] [--agent NAME|ID] [-y|--yes] [--allow-insecure-http]
 
 One-shot Claude Code onboarding:
   1. signs in to Atryum (OAuth device flow) if the server requires it,
@@ -497,7 +499,21 @@ Options:
   --url URL          Atryum server (default: $ATRYUM_URL or http://localhost:8080).
   --agent NAME|ID    Agent to act as; created if the name does not exist.
                      Defaults to "Claude Code on <hostname>".
-  -y, --yes          Do not prompt for confirmation.`)
+  -y, --yes          Do not prompt for confirmation.
+  --allow-insecure-http
+                     Permit a plain http:// server that is not on this machine.
+                     The key travels as a bearer token, so this is refused by default.
+
+Running several Claude Codes as different agents:
+  Point each at its own Atryum home and Claude config directory. The key, the
+  hook script and the hook state all move together, and the hooks are written
+  into that Claude config's settings.json:
+
+    ATRYUM_HOME=~/.atryum-b CLAUDE_CONFIG_DIR=~/.claude-b atryum setup claude
+    ATRYUM_HOME=~/.atryum-b CLAUDE_CONFIG_DIR=~/.claude-b claude
+
+  Without --agent the default agent name gains the home's basename so the two
+  instances do not share an agent record.`)
 }
 
 func runSetupClaude(args []string, io cliIO) error {
@@ -511,12 +527,17 @@ func runSetupClaude(args []string, io cliIO) error {
 	agentFlag := fs.String("agent", "", "agent name or id")
 	autoYes := fs.Bool("y", false, "auto-confirm")
 	autoYesLong := fs.Bool("yes", false, "auto-confirm")
+	allowInsecure := fs.Bool("allow-insecure-http", false, "permit a non-loopback http:// server")
 	if err := fs.Parse(args); err != nil {
 		return errors.New(setupClaudeUsage())
 	}
 	confirmed := *autoYes || *autoYesLong
 	server := resolveServerURL(*urlFlag)
 	ctx := context.Background()
+
+	if insecureTransport(server) && !*allowInsecure {
+		return fmt.Errorf("refusing to send an API key over plain http to %s; use an https:// URL, or pass --allow-insecure-http if this network is trusted", server)
+	}
 
 	fmt.Fprintf(io.out, "Atryum server: %s\n", server)
 	session, err := sessionFor(ctx, server, io, true)
@@ -538,7 +559,7 @@ func runSetupClaude(args []string, io cliIO) error {
 	}
 	agentRef := strings.TrimSpace(*agentFlag)
 	if agentRef == "" {
-		agentRef = "Claude Code on " + defaultKeyName()
+		agentRef = "Claude Code on " + instanceLabel()
 	}
 	agent, err := resolveAgent(agents, agentRef)
 	if err != nil {
@@ -578,7 +599,7 @@ func runSetupClaude(args []string, io cliIO) error {
 			return errors.New("aborted")
 		}
 	}
-	key, err := session.createKey(ctx, agent.CUID, "claude-code on "+defaultKeyName(), "")
+	key, err := session.createKey(ctx, agent.CUID, "claude-code on "+instanceLabel(), "")
 	if err != nil {
 		return fmt.Errorf("create key: %w", err)
 	}
@@ -587,10 +608,14 @@ func runSetupClaude(args []string, io cliIO) error {
 	}
 	fmt.Fprintf(io.out, "Saved API key %s… to %s\n", key.KeyPrefix, keyPath)
 
-	// Install hooks pointed at this server and key.
+	// Install hooks pointed at this server and key. installHooksWithEnv adds
+	// ATRYUM_STATE_DIR itself when ATRYUM_HOME is not the default.
 	env := map[string]string{
 		"ATRYUM_URL":           server,
 		"ATRYUM_TOKEN_COMMAND": "cat " + shellQuote(keyPath),
+	}
+	if *allowInsecure && insecureTransport(server) {
+		env["ATRYUM_ALLOW_INSECURE_HTTP"] = "1"
 	}
 	if err := installHooksWithEnv("claude-code", env, io.out); err != nil {
 		return err
@@ -598,6 +623,41 @@ func runSetupClaude(args []string, io cliIO) error {
 	fmt.Fprintln(io.out, "\nDone. Claude Code will authenticate to Atryum as this agent.")
 	fmt.Fprintf(io.out, "Revoke access any time with: atryum agent key revoke %q %s\n", agent.Name, key.ID)
 	return nil
+}
+
+// instanceLabel names this machine for default agent and key names. When
+// ATRYUM_HOME points somewhere other than ~/.atryum the home's basename is
+// appended, so two Claude Codes set up on one host with different homes get
+// different agent records instead of silently sharing one.
+func instanceLabel() string {
+	label := defaultKeyName()
+	home, err := atryumHomeDir()
+	if err != nil || isDefaultAtryumHome(home) {
+		return label
+	}
+	base := strings.TrimPrefix(filepath.Base(filepath.Clean(home)), ".")
+	if base == "" || base == "atryum" {
+		return label
+	}
+	return label + " (" + base + ")"
+}
+
+// insecureTransport reports whether serverURL would carry a bearer token in
+// the clear to another machine: plain http to anything but a loopback host.
+// Loopback http is allowed because that is the local development default.
+func insecureTransport(serverURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(serverURL))
+	if err != nil || !strings.EqualFold(u.Scheme, "http") {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return false
+	}
+	return true
 }
 
 // shellQuote single-quotes a path for the POSIX shell the hook runs under.

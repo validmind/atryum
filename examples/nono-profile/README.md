@@ -73,6 +73,19 @@ Each should answer `ALLOWED` with `Source: profile`.
 
 - **Different state directory.** If you set `ATRYUM_STATE_DIR` in the hook
   command, replace both `agent-hook-state` entries with that path.
+- **Several Claude Codes as several agents.** When `atryum setup claude` runs
+  with `ATRYUM_HOME=~/.atryum-b` (and `CLAUDE_CONFIG_DIR=~/.claude-b`), the
+  hook script, agent key and state all move under `~/.atryum-b`, and the hook
+  commands carry `ATRYUM_STATE_DIR=$HOME/.atryum-b/agent-hook-state`. Copy
+  this profile once per instance, replace `.atryum` with that home's name in
+  all four paths, and add a `read` grant for `$HOME/.claude-b` if the `claude`
+  package profile does not already cover a relocated config directory. Launch
+  each instance with its own profile and the same two variables:
+
+  ```sh
+  ATRYUM_HOME=~/.atryum-b CLAUDE_CONFIG_DIR=~/.claude-b \
+    nono run --profile claude-local-b claude
+  ```
 - **OAuth instead of an API key.** With `ATRYUM_ACCESS_TOKEN` exported, or an
   `ATRYUM_TOKEN_COMMAND` that calls your identity provider, drop the
   `read_file` entry. The token cache still lands in the state directory, so

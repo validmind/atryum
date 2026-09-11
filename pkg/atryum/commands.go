@@ -535,10 +535,13 @@ Commands:
 
 Targets:
   cursor       ~/.cursor/hooks.json
-  claude-code  ~/.claude/settings.json
+  claude-code  ~/.claude/settings.json (or $CLAUDE_CONFIG_DIR/settings.json)
   codex        ~/.codex/hooks.json
   amp          ~/.config/amp/plugins/atryum.ts
   pi           ~/.pi/agent/extensions/atryum/index.ts
+
+The hook script and its state live under ~/.atryum, or under $ATRYUM_HOME when
+set; hook commands are written with that location baked in.
 
 Examples:
   atryum hooks install cursor
@@ -586,16 +589,25 @@ func installHooksWithEnv(target string, env map[string]string, out io.Writer) er
 	if err != nil {
 		return err
 	}
-	homeDir, err := os.UserHomeDir()
+	layout, err := resolveHookLayout()
 	if err != nil {
 		return err
 	}
-	dst := filepath.Join(homeDir, ".atryum", "hooks", "atryum-hook.mjs")
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(layout.ScriptPath), 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(dst, hookScript, 0o755); err != nil {
+	if err := os.WriteFile(layout.ScriptPath, hookScript, 0o755); err != nil {
 		return err
+	}
+	if layout.StateDir != "" {
+		merged := make(map[string]string, len(env)+1)
+		for k, v := range env {
+			merged[k] = v
+		}
+		if _, set := merged["ATRYUM_STATE_DIR"]; !set {
+			merged["ATRYUM_STATE_DIR"] = layout.StateDir
+		}
+		env = merged
 	}
 
 	settingsPath, err := hookSettingsPath(target)
@@ -609,7 +621,7 @@ func installHooksWithEnv(target string, env map[string]string, out io.Writer) er
 	if len(env) > 0 {
 		applyUninstallHookConfig(settings, target)
 	}
-	applyInstallHookConfigWithEnv(settings, target, hookEnvPrefix(env))
+	applyInstallHookConfigWithEnvAndScript(settings, target, hookEnvPrefix(env), layout.CommandScript)
 	if err := writeJSONMap(settingsPath, settings); err != nil {
 		return err
 	}
@@ -617,6 +629,54 @@ func installHooksWithEnv(target string, env map[string]string, out io.Writer) er
 	fmt.Fprintf(out, "installed hooks for %s in %s\n", target, settingsPath)
 	fmt.Fprintln(out, "restart your editor/agent tool to apply hook changes")
 	return nil
+}
+
+// defaultHookScriptRef is how installed hook commands refer to the script when
+// Atryum's home is the stock ~/.atryum: a tilde path, so settings files stay
+// portable and match the hand-written examples.
+const defaultHookScriptRef = "~/.atryum/hooks/atryum-hook.mjs"
+
+// hookLayout is where the hook's files live for one Atryum home. It is the
+// single place ATRYUM_HOME is turned into paths, so a custom home repoints the
+// script, the agent key (see setup claude) and the hook state together.
+type hookLayout struct {
+	// ScriptPath is the absolute location the hook script is written to.
+	ScriptPath string
+	// CommandScript is how hook commands in settings files refer to the
+	// script: the tilde form for the default home, absolute otherwise.
+	CommandScript string
+	// StateDir is the ATRYUM_STATE_DIR to bake into hook commands. Empty for
+	// the default home, where the hook's own default already points there.
+	StateDir string
+}
+
+// resolveHookLayout derives the hook file layout from ATRYUM_HOME (falling
+// back to ~/.atryum). Power users run several Claude Codes as distinct agents
+// by giving each its own ATRYUM_HOME (and CLAUDE_CONFIG_DIR); everything the
+// hook touches then lives under that one directory.
+func resolveHookLayout() (hookLayout, error) {
+	home, err := atryumHomeDir()
+	if err != nil {
+		return hookLayout{}, err
+	}
+	layout := hookLayout{
+		ScriptPath:    filepath.Join(home, "hooks", "atryum-hook.mjs"),
+		CommandScript: defaultHookScriptRef,
+	}
+	if !isDefaultAtryumHome(home) {
+		layout.CommandScript = shellQuote(layout.ScriptPath)
+		layout.StateDir = filepath.Join(home, "agent-hook-state")
+	}
+	return layout, nil
+}
+
+// isDefaultAtryumHome reports whether dir is the stock ~/.atryum.
+func isDefaultAtryumHome(dir string) bool {
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	return filepath.Clean(dir) == filepath.Join(userHome, ".atryum")
 }
 
 // hookEnvPrefix renders env as "K=V K2=V2 " for prefixing onto a shell
@@ -781,6 +841,11 @@ func hookSettingsPath(target string) (string, error) {
 		return filepath.Join(home, ".cursor", "hooks.json"), nil
 	}
 	if target == "claude-code" {
+		// Claude Code's own override for its config directory; honouring it
+		// is what lets two Claude Codes carry two different hook configs.
+		if dir := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")); dir != "" {
+			return filepath.Join(dir, "settings.json"), nil
+		}
 		return filepath.Join(home, ".claude", "settings.json"), nil
 	}
 	if target == "codex" {
@@ -826,6 +891,12 @@ func applyInstallHookConfig(settings map[string]any, target string) {
 // applyInstallHookConfigWithEnv is applyInstallHookConfig with an extra
 // "K=V " environment prefix on every hook command (see hookEnvPrefix).
 func applyInstallHookConfigWithEnv(settings map[string]any, target string, envPrefix string) {
+	applyInstallHookConfigWithEnvAndScript(settings, target, envPrefix, defaultHookScriptRef)
+}
+
+// applyInstallHookConfigWithEnvAndScript is the general form: script is how
+// the commands refer to the hook script (see hookLayout.CommandScript).
+func applyInstallHookConfigWithEnvAndScript(settings map[string]any, target string, envPrefix string, script string) {
 	hooks := ensureMap(settings, "hooks")
 	if target == "cursor" {
 		start := ensureSlice(hooks, "sessionStart")
@@ -833,15 +904,15 @@ func applyInstallHookConfigWithEnv(settings map[string]any, target string, envPr
 		post := ensureSlice(hooks, "postToolUse")
 		start = appendUniqueCommand(start, map[string]any{
 			"type":    "command",
-			"command": envPrefix + "ATRYUM_HOOK_HOST=cursor ATRYUM_HOOK_EVENT=sessionStart ATRYUM_SOURCE=cursor node ~/.atryum/hooks/atryum-hook.mjs",
+			"command": envPrefix + "ATRYUM_HOOK_HOST=cursor ATRYUM_HOOK_EVENT=sessionStart ATRYUM_SOURCE=cursor node " + script,
 		})
 		pre = appendUniqueCommand(pre, map[string]any{
 			"type":    "command",
-			"command": envPrefix + "ATRYUM_HOOK_HOST=cursor ATRYUM_HOOK_EVENT=preToolUse ATRYUM_SOURCE=cursor node ~/.atryum/hooks/atryum-hook.mjs",
+			"command": envPrefix + "ATRYUM_HOOK_HOST=cursor ATRYUM_HOOK_EVENT=preToolUse ATRYUM_SOURCE=cursor node " + script,
 		})
 		post = appendUniqueCommand(post, map[string]any{
 			"type":    "command",
-			"command": envPrefix + "ATRYUM_HOOK_HOST=cursor ATRYUM_HOOK_EVENT=postToolUse ATRYUM_SOURCE=cursor node ~/.atryum/hooks/atryum-hook.mjs",
+			"command": envPrefix + "ATRYUM_HOOK_HOST=cursor ATRYUM_HOOK_EVENT=postToolUse ATRYUM_SOURCE=cursor node " + script,
 		})
 		hooks["sessionStart"] = start
 		hooks["preToolUse"] = pre
@@ -858,9 +929,9 @@ func applyInstallHookConfigWithEnv(settings map[string]any, target string, envPr
 	start := ensureSlice(hooks, "SessionStart")
 	pre := ensureSlice(hooks, "PreToolUse")
 	post := ensureSlice(hooks, "PostToolUse")
-	start = appendUniqueNestedHookEntry(start, fmt.Sprintf("%sATRYUM_HOOK_HOST=%s ATRYUM_HOOK_EVENT=SessionStart ATRYUM_SOURCE=%s node ~/.atryum/hooks/atryum-hook.mjs", envPrefix, host, source))
-	pre = appendUniqueNestedHookEntry(pre, fmt.Sprintf("%sATRYUM_HOOK_HOST=%s ATRYUM_HOOK_EVENT=PreToolUse ATRYUM_SOURCE=%s node ~/.atryum/hooks/atryum-hook.mjs", envPrefix, host, source))
-	post = appendUniqueNestedHookEntry(post, fmt.Sprintf("%sATRYUM_HOOK_HOST=%s ATRYUM_HOOK_EVENT=PostToolUse ATRYUM_SOURCE=%s node ~/.atryum/hooks/atryum-hook.mjs", envPrefix, host, source))
+	start = appendUniqueNestedHookEntry(start, fmt.Sprintf("%sATRYUM_HOOK_HOST=%s ATRYUM_HOOK_EVENT=SessionStart ATRYUM_SOURCE=%s node %s", envPrefix, host, source, script))
+	pre = appendUniqueNestedHookEntry(pre, fmt.Sprintf("%sATRYUM_HOOK_HOST=%s ATRYUM_HOOK_EVENT=PreToolUse ATRYUM_SOURCE=%s node %s", envPrefix, host, source, script))
+	post = appendUniqueNestedHookEntry(post, fmt.Sprintf("%sATRYUM_HOOK_HOST=%s ATRYUM_HOOK_EVENT=PostToolUse ATRYUM_SOURCE=%s node %s", envPrefix, host, source, script))
 	hooks["SessionStart"] = start
 	hooks["PreToolUse"] = pre
 	hooks["PostToolUse"] = post

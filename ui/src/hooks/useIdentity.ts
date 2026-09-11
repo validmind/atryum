@@ -6,6 +6,9 @@ import { useAdminAuth } from '../auth/adminAuth';
 
 export const ME_KEY = 'me';
 export const USERS_KEY = 'users';
+export const userKey = (userID: string) => ['user', userID];
+export const userAgentsKey = (userID: string) => ['user-agents', userID];
+export const userKeysKey = (userID: string) => ['user-keys', userID];
 export const agentMembersKey = (agentID: string) => ['agent-members', agentID];
 export const agentKeysKey = (agentID: string) => ['agent-keys', agentID];
 
@@ -34,11 +37,69 @@ export const useUsers = (enabled = true) =>
     refetchOnWindowFocus: false,
   });
 
+export const useUser = (userID: string, enabled = true) =>
+  useQuery(userKey(userID), () => identityApi.getUser(userID), {
+    enabled: enabled && userID !== '',
+    refetchOnWindowFocus: false,
+  });
+
 export const useUpdateUser = () => {
   const queryClient = useQueryClient();
   return useMutation(
     ({ id, input }: { id: string; input: UserUpdateInput }) => identityApi.updateUser(id, input),
-    { onSuccess: () => queryClient.invalidateQueries(USERS_KEY) },
+    {
+      onSuccess: (_data, { id }) => {
+        queryClient.invalidateQueries(USERS_KEY);
+        queryClient.invalidateQueries(userKey(id));
+        // Disabling cascades to memberships and keys.
+        queryClient.invalidateQueries(userAgentsKey(id));
+        queryClient.invalidateQueries(userKeysKey(id));
+      },
+    },
+  );
+};
+
+/** Agents a user is a member of (admin view, /users/{id}/agents). */
+export const useUserAgents = (userID: string, enabled = true) =>
+  useQuery(userAgentsKey(userID), () => identityApi.listUserAgents(userID), {
+    enabled: enabled && userID !== '',
+    refetchOnWindowFocus: false,
+  });
+
+/** Every API key a user issued, across agents (admin view, /users/{id}/keys). */
+export const useUserKeys = (userID: string, enabled = true) =>
+  useQuery(userKeysKey(userID), () => identityApi.listUserKeys(userID), {
+    enabled: enabled && userID !== '',
+    refetchOnWindowFocus: false,
+  });
+
+/**
+ * Remove a user from an agent, from the user's side. Keys the user issued
+ * for that agent are revoked by the server, so both per-user views refresh.
+ */
+export const useRemoveUserFromAgent = (userID: string) => {
+  const queryClient = useQueryClient();
+  return useMutation((agentID: string) => identityApi.removeMember(agentID, userID), {
+    onSuccess: (_data, agentID) => {
+      queryClient.invalidateQueries(userAgentsKey(userID));
+      queryClient.invalidateQueries(userKeysKey(userID));
+      queryClient.invalidateQueries(agentMembersKey(agentID));
+      queryClient.invalidateQueries(agentKeysKey(agentID));
+    },
+  });
+};
+
+/** Revoke one of a user's keys, from the user's side. */
+export const useRevokeUserKey = (userID: string) => {
+  const queryClient = useQueryClient();
+  return useMutation(
+    ({ agentID, keyID }: { agentID: string; keyID: string }) => identityApi.revokeKey(agentID, keyID),
+    {
+      onSuccess: (_data, { agentID }) => {
+        queryClient.invalidateQueries(userKeysKey(userID));
+        queryClient.invalidateQueries(agentKeysKey(agentID));
+      },
+    },
   );
 };
 
