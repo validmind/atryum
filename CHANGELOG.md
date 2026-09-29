@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Upstream OAuth discovery now tries the RFC 8414 / RFC 9728 *path-inserted*
+  well-known URLs (`https://host/.well-known/oauth-authorization-server/<path>`
+  and `.../oauth-protected-resource/<path>`) before the path-appended and
+  host-root forms, and the `WWW-Authenticate` challenge probe falls back to
+  a POST when the server answers GET with 405. Hosted MCP servers that only
+  publish metadata at the path-inserted URL (for example LaunchDarkly's
+  `https://mcp.launchdarkly.com/mcp/launchdarkly`) previously failed with
+  "could not determine an OAuth strategy for this server" and can now be
+  connected via Dynamic Client Registration without a manual authorize URL
+  or client id.
+- The upstream OAuth callback now marks the connect session **failed** (and
+  logs `[mcp-auth] complete_connect failed …`) on every error path, not
+  only a rejected token exchange. Previously a failure while loading the
+  server, resolving the auth provider, or storing the credential returned a
+  bare error page that closed itself, and the Servers UI kept polling a
+  session stuck on `pending`, showing "Connecting…" forever. OAuth token
+  exchange and refresh requests also get a 30 s timeout instead of sharing
+  the untimed upstream HTTP client.
+- The MCP proxy now answers JSON-RPC `ping` itself whenever the request
+  cannot be forwarded to the upstream (stdio servers, no forwarder, or an
+  upstream resolve/transport failure), returning the empty result the MCP
+  spec requires instead of `-32601 method not found`. Harnesses that use
+  `ping` as a health check (for example the Orchestrator) no longer show
+  the Atryum integration as "error" while tools sync and invoke fine.
+  HTTP upstreams still see `ping` passed through unchanged.
+
+- The **you** badge on the Users page now sits beside the user's email
+  instead of stacking under their name.
+
 ## [0.4.0] - 2026-07-27
 
 ### Added

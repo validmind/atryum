@@ -481,7 +481,7 @@ func (c *Client) ExchangeOAuthCode(ctx context.Context, upstream Upstream, code 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	c.debugf("oauth token exchange server=%s token_url=%s client_id=%s has_secret=%t has_verifier=%t redirect_uri=%s", upstream.Name, upstream.OAuthTokenURL, upstream.OAuthClientID, strings.TrimSpace(upstream.OAuthClientSecret) != "", strings.TrimSpace(codeVerifier) != "", redirectURI)
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.oauthHTTPClient().Do(req)
 	if err != nil {
 		c.debugf("oauth token exchange transport error server=%s err=%v", upstream.Name, err)
 		return OAuthToken{}, err
@@ -516,7 +516,7 @@ func (c *Client) RefreshOAuthToken(ctx context.Context, upstream Upstream, refre
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	c.debugf("oauth token refresh server=%s token_url=%s client_id=%s has_secret=%t", upstream.Name, upstream.OAuthTokenURL, upstream.OAuthClientID, strings.TrimSpace(upstream.OAuthClientSecret) != "")
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.oauthHTTPClient().Do(req)
 	if err != nil {
 		c.debugf("oauth token refresh transport error server=%s err=%v", upstream.Name, err)
 		return OAuthToken{}, err
@@ -525,6 +525,21 @@ func (c *Client) RefreshOAuthToken(ctx context.Context, upstream Upstream, refre
 	bodyBytes, _ := io.ReadAll(resp.Body)
 	c.debugf("oauth token refresh response server=%s status=%d body=%s", upstream.Name, resp.StatusCode, truncateForLog(bodyBytes, 600))
 	return parseOAuthTokenResponse(resp.StatusCode, bodyBytes, "oauth token refresh")
+}
+
+// oauthTokenRequestTimeout bounds a single token-exchange or refresh call.
+// The shared c.httpClient deliberately has no timeout (it carries
+// streamable-HTTP tool calls whose duration is governed by the upstream's
+// own timeout), but an authorization server that never answers must not
+// hang the OAuth callback and leave the connect session pending forever.
+const oauthTokenRequestTimeout = 30 * time.Second
+
+func (c *Client) oauthHTTPClient() *http.Client {
+	base := c.httpClient
+	if base == nil {
+		base = &http.Client{}
+	}
+	return &http.Client{Transport: base.Transport, CheckRedirect: base.CheckRedirect, Jar: base.Jar, Timeout: oauthTokenRequestTimeout}
 }
 
 func parseOAuthTokenResponse(statusCode int, bodyBytes []byte, operation string) (OAuthToken, error) {
