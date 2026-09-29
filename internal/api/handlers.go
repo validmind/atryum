@@ -1612,6 +1612,16 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 				w.WriteHeader(http.StatusAccepted)
 				return
 			}
+			if req.Method == "ping" {
+				// MCP requires every server to answer `ping` with an empty
+				// result. Clients use it as a liveness probe, so when the
+				// upstream cannot take the request (stdio servers, no
+				// forwarder, resolve or transport failure) atryum answers
+				// for itself instead of reporting "method not found",
+				// which harnesses render as an unhealthy integration.
+				h.writeRPCResult(w, req.ID, map[string]any{})
+				return
+			}
 			h.writeRPCError(w, req.ID, -32601, "method not found")
 			return
 		}
@@ -4006,9 +4016,29 @@ func (s *ServerOperatorService) CompleteConnect(ctx context.Context, state strin
 	if strings.TrimSpace(code) == "" {
 		return OAuthConnectStatusResponse{}, fmt.Errorf("missing oauth code")
 	}
+	// Every failure past this point must mark the connect session as
+	// failed. The UI polls the session status and only stops on
+	// succeeded/failed, so returning a bare error here would leave it
+	// spinning on "pending" forever while the popup closes itself.
+	fail := func(upstream *mcp.Upstream, err error) (OAuthConnectStatusResponse, error) {
+		now := time.Now().UTC()
+		message := err.Error()
+		log.Printf("[mcp-auth] complete_connect failed server=%s state=%s err=%v", session.ServerName, session.State, err)
+		_ = s.oauthRepo.UpsertConnectSession(ctx, store.OAuthConnectSession{State: session.State, ServerName: session.ServerName, Status: "failed", RedirectURI: session.RedirectURI, StartedAt: session.StartedAt, CompletedAt: &now, ErrorMessage: &message})
+		if upstream != nil {
+			upstream.Status.AuthStatus = mcp.AuthStatusInvalid
+			upstream.Status.ReauthNeeded = true
+			upstream.Status.ConnectionStatus = mcp.ConnectionStatusNeedsAttention
+			upstream.Status.LastErrorSummary = &message
+			action := "retry connect"
+			upstream.Status.ActionRequired = &action
+			_ = s.repo.UpdateServerStatus(ctx, session.ServerName, upstream.Status)
+		}
+		return OAuthConnectStatusResponse{Status: "failed", Message: &message, StartedAt: &session.StartedAt, CompletedAt: &now}, nil
+	}
 	upstream, err := s.repo.GetServerAny(ctx, session.ServerName)
 	if err != nil {
-		return OAuthConnectStatusResponse{}, err
+		return fail(nil, fmt.Errorf("load server %q: %w", session.ServerName, err))
 	}
 	registry := authprovider.NewRegistry()
 	provider, providerErr := registry.Get(upstream.OAuthProviderID)
@@ -4016,24 +4046,15 @@ func (s *ServerOperatorService) CompleteConnect(ctx context.Context, state strin
 		provider, providerErr = registry.Detect(ctx, upstream)
 	}
 	if providerErr != nil {
-		return OAuthConnectStatusResponse{}, providerErr
+		return fail(&upstream, providerErr)
 	}
+	log.Printf("[mcp-auth] complete_connect server=%s state=%s provider=%s token_url=%s redirect_uri=%s", session.ServerName, session.State, provider.ID(), upstream.OAuthTokenURL, session.RedirectURI)
 	token, err := provider.ExchangeAuthCode(ctx, s.client, upstream, code, session.RedirectURI, authprovider.ConnectSession{State: session.State, CodeVerifier: session.CodeVerifier})
 	if err != nil {
-		now := time.Now().UTC()
-		message := err.Error()
-		_ = s.oauthRepo.UpsertConnectSession(ctx, store.OAuthConnectSession{State: session.State, ServerName: session.ServerName, Status: "failed", RedirectURI: session.RedirectURI, StartedAt: session.StartedAt, CompletedAt: &now, ErrorMessage: &message})
-		upstream.Status.AuthStatus = mcp.AuthStatusInvalid
-		upstream.Status.ReauthNeeded = true
-		upstream.Status.ConnectionStatus = mcp.ConnectionStatusNeedsAttention
-		upstream.Status.LastErrorSummary = &message
-		action := "retry connect"
-		upstream.Status.ActionRequired = &action
-		_ = s.repo.UpdateServerStatus(ctx, session.ServerName, upstream.Status)
-		return OAuthConnectStatusResponse{Status: "failed", Message: &message, StartedAt: &session.StartedAt, CompletedAt: &now}, nil
+		return fail(&upstream, err)
 	}
 	if err := s.oauthRepo.UpsertCredential(ctx, store.OAuthCredential{ServerName: session.ServerName, AccessToken: token.AccessToken, RefreshToken: token.RefreshToken, TokenType: token.TokenType, Scope: token.Scope, ExpiresAt: token.ExpiresAt}); err != nil {
-		return OAuthConnectStatusResponse{}, err
+		return fail(&upstream, fmt.Errorf("store oauth credential: %w", err))
 	}
 	upstream.AuthToken = token.AccessToken
 	upstream.Status.AuthType = mcp.AuthTypeHosted
@@ -4046,8 +4067,9 @@ func (s *ServerOperatorService) CompleteConnect(ctx context.Context, state strin
 	upstream.Status.LastCheckedAt = &now
 	upstream.Status.LastCheckOK = true
 	if err := s.repo.UpdateServerStatus(ctx, session.ServerName, upstream.Status); err != nil {
-		return OAuthConnectStatusResponse{}, err
+		return fail(nil, fmt.Errorf("update server status: %w", err))
 	}
+	log.Printf("[mcp-auth] complete_connect succeeded server=%s state=%s token_type=%s scope=%q has_refresh=%t", session.ServerName, session.State, token.TokenType, token.Scope, token.RefreshToken != "")
 	message := "connected successfully"
 	if err := s.oauthRepo.UpsertConnectSession(ctx, store.OAuthConnectSession{State: session.State, ServerName: session.ServerName, Status: "succeeded", RedirectURI: session.RedirectURI, StartedAt: session.StartedAt, CompletedAt: &now, ErrorMessage: nil}); err != nil {
 		return OAuthConnectStatusResponse{}, err

@@ -48,6 +48,7 @@ import { useAgents, useCreateAgent, useUpdateAgent, useDeleteAgent } from '../ho
 import { useSettings } from '../hooks/useSettings';
 import { useIsAdmin } from '../hooks/useIdentity';
 import { AgentKeysPanel, AgentMembersPanel } from '../components/AgentAccess';
+import { CharterMarkdown, CharterSource } from '../components/CharterMarkdown';
 import type {
   Agent,
   AgentCreateInput,
@@ -309,6 +310,8 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
 	const deleteMutation = useDeleteAgent();
 	const { data: agentsData } = useAgents();
 	const previewDisclosure = useDisclosure();
+	// Rendered markdown by default; source is the literal text the judge receives.
+	const [charterShowSource, setCharterShowSource] = useState(false);
 	const charterPreviewQuery = useQuery(
 		['agent-charter-preview', agent.cuid],
 		() => agentsApi.getAgentCharterPreview(agent.cuid),
@@ -713,7 +716,7 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
       </ModalContent>
     </Modal>
 
-    <Modal size="xl" isCentered isOpen={previewDisclosure.isOpen} onClose={previewDisclosure.onClose}>
+    <Modal size="4xl" isCentered isOpen={previewDisclosure.isOpen} onClose={previewDisclosure.onClose}>
       <ModalOverlay />
       <ModalContent>
         <ModalHeader>Charter preview — {agent.name}</ModalHeader>
@@ -743,27 +746,44 @@ const EditAgentModal: React.FC<EditAgentModalProps> = ({ agent, isOpen, onClose 
                       {segment.header || 'Charter'}
                     </Badge>
                   </HStack>
-                  <Box
-                    as="pre"
-                    fontFamily="mono"
-                    fontSize="xs"
-                    whiteSpace="pre-wrap"
-                    borderWidth="1px"
-                    borderRadius="md"
-                    p={3}
-                    bg="bg.subtle"
-                  >
-                    {segment.text}
-                  </Box>
+                  {charterShowSource ? (
+                    <CharterSource text={segment.text} />
+                  ) : (
+                    <Box
+                      borderWidth="1px"
+                      borderColor="border.base"
+                      borderRadius="md"
+                      px={4}
+                      py={3}
+                      sx={{ '& > *:first-of-type': { mt: 0 }, '& > *:last-child': { mb: 0 } }}
+                    >
+                      <CharterMarkdown text={segment.text} />
+                    </Box>
+                  )}
                 </Box>
               ))}
             </VStack>
           )}
         </ModalBody>
         <ModalFooter>
-          <Button variant="ghost" size="sm" onClick={previewDisclosure.onClose}>
-            Close
-          </Button>
+          <HStack justify="space-between" width="100%">
+            {charterPreviewQuery.data && charterPreviewQuery.data.segments.length > 0 ? (
+              <Button
+                variant="link"
+                size="sm"
+                fontWeight="normal"
+                color="text.subtle"
+                onClick={() => setCharterShowSource((v) => !v)}
+              >
+                {charterShowSource ? 'View rendered' : 'View source'}
+              </Button>
+            ) : (
+              <Box />
+            )}
+            <Button variant="ghost" size="sm" onClick={previewDisclosure.onClose}>
+              Close
+            </Button>
+          </HStack>
         </ModalFooter>
       </ModalContent>
     </Modal>

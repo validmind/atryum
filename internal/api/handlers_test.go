@@ -976,6 +976,39 @@ func TestMCPInitializedNotificationReturnsAccepted(t *testing.T) {
 	}
 }
 
+func TestMCPPingAnsweredLocallyWhenUpstreamCannotForward(t *testing.T) {
+	// stdio upstreams have no generic envelope forwarding, so `ping` used to
+	// fall through to "method not found" and health checks flagged atryum
+	// as unhealthy even though tools/list and tools/call worked.
+	svc := &stubService{upstream: mcp.Upstream{Name: "demo", Mode: mcp.UpstreamModeStdio}, fwdErr: fmt.Errorf("generic stdio forwarding is not implemented")}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"ping","params":{}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp struct {
+		ID     json.RawMessage `json:"id"`
+		Result map[string]any  `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v (%s)", err, w.Body.String())
+	}
+	if string(resp.ID) != "7" {
+		t.Fatalf("expected id 7, got %s", resp.ID)
+	}
+	if len(resp.Error) != 0 {
+		t.Fatalf("expected no error, got %s", resp.Error)
+	}
+	if resp.Result == nil || len(resp.Result) != 0 {
+		t.Fatalf("expected empty result object, got %s", w.Body.String())
+	}
+}
+
 func TestMCPPingPassThrough(t *testing.T) {
 	svc := &stubService{upstream: mcp.Upstream{Name: "demo", Mode: mcp.UpstreamModeHTTP}, forward: mcp.ForwardResult{StatusCode: http.StatusOK, Body: []byte(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`), ContentType: "application/json", ProtocolVersion: "2025-11-25"}}
 	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
