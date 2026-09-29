@@ -109,21 +109,32 @@ func runLicenses(o options) error {
 }
 
 func runSetup(args []string) error {
-	if hasHelpArg(args) {
-		fmt.Println(setupUsage())
-		return nil
-	}
-
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	configPath := fs.String("config", "", "path to TOML config")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fmt.Println(setupUsage())
+			return nil
+		}
 		return errors.New(setupUsage())
 	}
 
 	remaining := fs.Args()
 	if len(remaining) == 0 {
 		return errors.New(setupUsage())
+	}
+	if remaining[0] == "help" {
+		fmt.Println(setupUsage())
+		return nil
+	}
+	// Help after the target belongs to that target: "setup claude --help"
+	// must reach setupClaudeUsage, which is where the --url/--agent/-y
+	// flags are documented. The other targets take no flags of their own,
+	// so their help is this command's usage.
+	if remaining[0] != "claude" && hasHelpArg(remaining[1:]) {
+		fmt.Println(setupUsage())
+		return nil
 	}
 
 	switch remaining[0] {
@@ -618,9 +629,12 @@ func installHooksWithEnv(target string, env map[string]string, out io.Writer) er
 	if err != nil {
 		return err
 	}
-	if len(env) > 0 {
-		applyUninstallHookConfig(settings, target)
-	}
+	// Always strip earlier Atryum entries first. Install dedupes by exact
+	// command string, and the command changes whenever the env prefix, the
+	// script path or the state dir changes (setup claude vs. a bare hooks
+	// install, or a different ATRYUM_HOME), so without this a re-install
+	// leaves two entries firing on every event, one of them unauthenticated.
+	applyUninstallHookConfig(settings, target)
 	applyInstallHookConfigWithEnvAndScript(settings, target, hookEnvPrefix(env), layout.CommandScript)
 	if err := writeJSONMap(settingsPath, settings); err != nil {
 		return err

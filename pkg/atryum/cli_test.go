@@ -498,3 +498,40 @@ func TestSetupClaudeHonoursCustomHomeAndClaudeConfigDir(t *testing.T) {
 		t.Fatalf("loopback server must not set the insecure override:\n%s", settings)
 	}
 }
+
+// A bare "atryum hooks install claude-code" after "atryum setup claude" must
+// replace the env-prefixed entries setup wrote, not sit beside them: two
+// entries would fire the hook twice per event, the second one without a key.
+func TestHooksInstallReplacesEntriesFromSetupClaude(t *testing.T) {
+	home := isolateHome(t)
+	var out bytes.Buffer
+
+	env := map[string]string{"ATRYUM_URL": "https://atryum.example", "ATRYUM_TOKEN_COMMAND": "cat ~/.atryum/agent-key"}
+	if err := installHooksWithEnv("claude-code", env, &out); err != nil {
+		t.Fatalf("prefixed install: %v", err)
+	}
+	if err := installHooksWithEnv("claude-code", nil, &out); err != nil {
+		t.Fatalf("bare install: %v", err)
+	}
+
+	settings, err := readJSONMap(filepath.Join(home, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	hooks := settings["hooks"].(map[string]any)
+	for _, event := range []string{"SessionStart", "PreToolUse", "PostToolUse"} {
+		entries, _ := hooks[event].([]any)
+		var commands []string
+		for _, e := range entries {
+			for _, h := range e.(map[string]any)["hooks"].([]any) {
+				commands = append(commands, h.(map[string]any)["command"].(string))
+			}
+		}
+		if len(commands) != 1 {
+			t.Fatalf("%s: expected exactly one Atryum hook command after re-install, got %d: %q", event, len(commands), commands)
+		}
+		if strings.Contains(commands[0], "ATRYUM_URL=") {
+			t.Fatalf("%s: re-install should have replaced the prefixed command, still have %q", event, commands[0])
+		}
+	}
+}

@@ -84,7 +84,8 @@ const Users: React.FC = () => {
         <Text pl={2} color="text.subtle">
           Users are created automatically the first time they sign in through your identity
           provider. Disabling a user revokes every API key they issued and removes them from
-          their agents. The admin role is refreshed from the identity provider on each login.
+          their agents. Roles follow the identity provider&apos;s admin claim until you change one
+          here; a role set here is kept across logins.
         </Text>
       </Stack>
 
@@ -173,7 +174,13 @@ const Users: React.FC = () => {
                         w="110px"
                         value={user.role}
                         isDisabled={busy || isSelf}
-                        title={isSelf ? 'You cannot change your own role' : undefined}
+                        title={
+                          isSelf
+                            ? 'You cannot change your own role'
+                            : user.role_source === 'manual'
+                              ? 'Set by an operator; logins will not change it'
+                              : 'Follows the identity provider admin claim; changing it here makes it stick'
+                        }
                         onChange={(e) => setRole(user, e.target.value as UserRole)}
                       >
                         <option value="member">member</option>

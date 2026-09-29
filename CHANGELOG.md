@@ -33,6 +33,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `GET /api/v1/agent/rules` and the MCP `tools/list` policy annotations
+  now resolve API-key-authenticated agents by their `agents.id`, the same
+  lookup order the enforcement path uses. Before, a key-authenticated
+  agent's UUID never matched the `agent_ids` alias list, so the advisory
+  response silently fell back to the sync default agent's rules (or none)
+  while enforcement used the right ones.
+- `atryum hooks install` now always replaces previously installed Atryum
+  hook entries. Running it after `atryum setup claude` used to leave the
+  env-prefixed entries in place and add bare copies beside them, firing the
+  hook twice per event with the second copy hitting Atryum unauthenticated.
+- Roles set in the Users UI (or via `PATCH /api/v1/users/{id}`) are kept
+  across logins. A new `users.role_source` column (migration 031) records
+  `manual` once an operator sets a role; `UpsertLogin` only refreshes role
+  from the IdP admin claim while it is still `idp`. The API exposes
+  `role_source` on user rows.
+- `/api/v1/agents/{id}/members` authorizes before probing the agents table,
+  so a non-member gets 403 for unknown and existing ids alike instead of an
+  enumeration oracle (the keys route already did this).
+- `atryum setup claude --help` prints the `setup claude` usage with its
+  `--url`/`--agent`/`-y` options; it used to be caught by the generic
+  `setup` help scan and print the parent usage instead.
+- `docker-compose.yml` publishes Postgres on `127.0.0.1:5432` rather than
+  all interfaces; the credentials in that file are static, so a `0.0.0.0`
+  bind exposed the whole database to anyone who could reach the host.
 - Upstream OAuth discovery now tries the RFC 8414 / RFC 9728 *path-inserted*
   well-known URLs (`https://host/.well-known/oauth-authorization-server/<path>`
   and `.../oauth-protected-resource/<path>`) before the path-appended and

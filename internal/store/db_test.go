@@ -83,6 +83,7 @@ func TestMigrationRegistryPreservesExistingVersionsAndNames(t *testing.T) {
 		{28, "028_plan_step_index"},
 		{29, "029_agent_tags"},
 		{30, "030_users_and_api_keys"},
+		{31, "031_users_role_source"},
 	}
 	for i, w := range want {
 		if migrations[i].Version != w.version || migrations[i].Name != w.name {

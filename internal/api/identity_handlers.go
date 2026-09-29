@@ -35,6 +35,7 @@ type OperatorUser struct {
 	Email       string     `json:"email"`
 	Name        string     `json:"name"`
 	Role        string     `json:"role"`
+	RoleSource  string     `json:"role_source"` // "idp" (refreshed on login) or "manual" (set by an operator)
 	CreatedAt   time.Time  `json:"created_at"`
 	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
 	DisabledAt  *time.Time `json:"disabled_at,omitempty"`
@@ -493,6 +494,16 @@ func (h *Handler) agentMembers(w http.ResponseWriter, r *http.Request, agentID, 
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
+	// Authorize before touching the agents table, as agentKeys does: a caller
+	// who cannot see this agent must get the same 403 whether or not the id
+	// exists, otherwise the 404/403 split enumerates agent ids.
+	action := authz.ActionAgentMembersManage
+	if userID == "" && r.Method == http.MethodGet {
+		action = authz.ActionAgentRead
+	}
+	if !h.can(w, r, action, authz.Resource{AgentID: agentID}) {
+		return
+	}
 	if _, err := h.agentsRepo.Get(r.Context(), agentID); err != nil {
 		status := http.StatusInternalServerError
 		if err == sql.ErrNoRows {
@@ -510,9 +521,6 @@ func (h *Handler) agentMembers(w http.ResponseWriter, r *http.Request, agentID, 
 		}
 		if r.Method != http.MethodDelete {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-			return
-		}
-		if !h.can(w, r, authz.ActionAgentMembersManage, authz.Resource{AgentID: agentID}) {
 			return
 		}
 		if err := h.agentMembersRepo.Remove(r.Context(), agentID, userID); err != nil {
@@ -536,9 +544,6 @@ func (h *Handler) agentMembers(w http.ResponseWriter, r *http.Request, agentID, 
 
 	switch r.Method {
 	case http.MethodGet:
-		if !h.can(w, r, authz.ActionAgentRead, authz.Resource{AgentID: agentID}) {
-			return
-		}
 		members, err := h.agentMembersRepo.ListByAgent(r.Context(), agentID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to list members")
@@ -551,9 +556,6 @@ func (h *Handler) agentMembers(w http.ResponseWriter, r *http.Request, agentID, 
 		writeJSON(w, http.StatusOK, AgentMemberListResponse{Items: items})
 
 	case http.MethodPost:
-		if !h.can(w, r, authz.ActionAgentMembersManage, authz.Resource{AgentID: agentID}) {
-			return
-		}
 		var req OperatorAgentMemberInput
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
@@ -601,6 +603,7 @@ func toOperatorUser(u store.User) OperatorUser {
 		Email:       u.Email,
 		Name:        u.Name,
 		Role:        u.Role,
+		RoleSource:  u.RoleSource,
 		CreatedAt:   u.CreatedAt,
 		LastLoginAt: u.LastLoginAt,
 		DisabledAt:  u.DisabledAt,

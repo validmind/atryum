@@ -1619,6 +1619,41 @@ func TestAgentRulesFiltersOutRulesScopedToOtherAgents(t *testing.T) {
 	}
 }
 
+// Key-authenticated agents identify themselves by agents.id (the primary
+// key), not by an agent_ids alias. The advisory rules path must resolve that
+// the same way the enforcement path does, or the two report different rules.
+func TestAgentRulesResolvesAgentByPrimaryKeyForKeyAuthenticatedAgents(t *testing.T) {
+	agent := store.AgentRecord{ID: "14079491-21a4-4684-8220-43f50223df89", AgentIDs: `["agent-007"]`}
+	other := store.AgentRecord{ID: "agent-cuid-other", AgentIDs: `["other-agent"]`}
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "other-agent", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentCUIDs: []string{other.ID}, Enabled: true, Order: 0},
+		{ID: "this-agent", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentCUIDs: []string{agent.ID}, Enabled: true, Order: 1},
+		{ID: "unscoped", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 2},
+	}}
+	agents := &stubAgentsRepo{records: []store.AgentRecord{agent, other}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, agents, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?agent_id="+agent.ID+"&source=amp&tool=Read", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.MatchedRuleID == nil || *resp.MatchedRuleID != "this-agent" {
+		t.Fatalf("expected the agent's own scoped rule to match by primary key, got %#v (action %q)", resp.MatchedRuleID, resp.Action)
+	}
+	for _, item := range resp.Items {
+		if item.ID == "other-agent" {
+			t.Fatalf("other-agent scoped rule leaked into response: %#v", resp.Items)
+		}
+	}
+}
+
 func TestAgentRulesAdvertisesPlanSubmissionWithInvocationRules(t *testing.T) {
 	// Plan submission is advertised whenever the feature is enabled; the same
 	// invocation rules are used to evaluate submitted plans.

@@ -1425,11 +1425,22 @@ func newAgentRulesResponse(agentID, server, tool string) AgentRulesResponse {
 	}
 }
 
+// resolveAgentRecordForRules maps the identity an agent presents to the
+// agents.id that rules are scoped by. It mirrors the lookup order of the
+// enforcement path (agentsLookupAdapter in pkg/atryum): key-authenticated
+// agents carry agents.id itself as their identity, so the primary key is
+// tried before the legacy agent_ids alias list. Keeping both paths in step
+// matters because this one feeds the advisory /agent/rules response and the
+// MCP tools/list policy annotations; if they diverged an agent would be told
+// one disposition and enforced another.
 func (h *Handler) resolveAgentRecordForRules(ctx context.Context, agentID string) string {
 	if h.agentsRepo == nil {
 		return ""
 	}
 	if agentID != "" {
+		if rec, err := h.agentsRepo.Get(ctx, agentID); err == nil && rec.ID != "" {
+			return rec.ID
+		}
 		if rec, err := h.agentsRepo.GetByAgentID(ctx, agentID); err == nil {
 			return rec.ID
 		}

@@ -18,6 +18,14 @@ const (
 	UserRoleMember = "member"
 )
 
+// Where a user's role came from. The IdP admin claim is authoritative until
+// an operator sets the role by hand; after that logins stop touching it, so
+// a promotion made in the Users UI is not silently undone at next sign-in.
+const (
+	UserRoleSourceIdP    = "idp"
+	UserRoleSourceManual = "manual"
+)
+
 // User is a principal seen at the operator API. Identity is (Issuer, Subject);
 // Email and Name are display-only and refreshed on every login.
 type User struct {
@@ -27,6 +35,7 @@ type User struct {
 	Email       string
 	Name        string
 	Role        string
+	RoleSource  string
 	CreatedAt   time.Time
 	LastLoginAt *time.Time
 	DisabledAt  *time.Time
@@ -51,13 +60,14 @@ func NewUsersRepoWithDialect(db *sql.DB, dialect Dialect) *UsersRepo {
 }
 
 var userColumns = []string{
-	"id", "issuer", "subject", "email", "name", "role", "created_at", "last_login_at", "disabled_at",
+	"id", "issuer", "subject", "email", "name", "role", "role_source", "created_at", "last_login_at", "disabled_at",
 }
 
 // UpsertLogin records a login for (issuer, subject): inserts the user on first
 // sight, otherwise refreshes email, name, role and last_login_at. Role is
-// refreshed on every login because the IdP claim is the source of truth for
-// admin today; disabled_at is never touched here (it is an operator action).
+// refreshed from the IdP claim on every login while role_source is 'idp';
+// once an operator has set it (SetRole) the login leaves it alone.
+// disabled_at is never touched here (it is an operator action).
 // Empty email/name never overwrite known values, so a token without those
 // claims does not erase what an earlier login (or userinfo enrichment) found.
 // Returns the resulting row.
@@ -78,13 +88,15 @@ func (r *UsersRepo) UpsertLogin(ctx context.Context, issuer, subject, email, nam
 		if strings.TrimSpace(name) == "" {
 			name = existing.Name
 		}
-		update, args, err := r.sb.Update("users").
+		ub := r.sb.Update("users").
 			Set("email", email).
 			Set("name", name).
-			Set("role", role).
 			Set("last_login_at", now).
-			Where(sq.Eq{"id": existing.ID}).
-			ToSql()
+			Where(sq.Eq{"id": existing.ID})
+		if existing.RoleSource != UserRoleSourceManual {
+			ub = ub.Set("role", role)
+		}
+		update, args, err := ub.ToSql()
 		if err != nil {
 			return User{}, err
 		}
@@ -96,7 +108,7 @@ func (r *UsersRepo) UpsertLogin(ctx context.Context, issuer, subject, email, nam
 		id := uuid.NewString()
 		insert, args, err := r.sb.Insert("users").
 			Columns(userColumns...).
-			Values(id, issuer, subject, email, name, role, now, now, nil).
+			Values(id, issuer, subject, email, name, role, UserRoleSourceIdP, now, now, nil).
 			ToSql()
 		if err != nil {
 			return User{}, err
@@ -174,14 +186,16 @@ func (r *UsersRepo) SetDisabled(ctx context.Context, id string, disabled bool) e
 	return nil
 }
 
-// SetRole overrides a user's role. The next IdP login refreshes it from the
-// admin claim again, so this is only durable in deployments whose IdP does not
-// carry an admin claim at all.
+// SetRole sets the role by operator action and marks it manual, so later
+// logins do not reset it from the IdP claim (see UpsertLogin).
 func (r *UsersRepo) SetRole(ctx context.Context, id, role string) error {
 	if role != UserRoleAdmin {
 		role = UserRoleMember
 	}
-	query, args, err := r.sb.Update("users").Set("role", role).Where(sq.Eq{"id": id}).ToSql()
+	query, args, err := r.sb.Update("users").
+		Set("role", role).
+		Set("role_source", UserRoleSourceManual).
+		Where(sq.Eq{"id": id}).ToSql()
 	if err != nil {
 		return err
 	}
@@ -198,7 +212,7 @@ func (r *UsersRepo) SetRole(ctx context.Context, id, role string) error {
 func scanUser(row interface{ Scan(dest ...any) error }) (User, error) {
 	var u User
 	var lastLogin, disabled sql.NullTime
-	if err := row.Scan(&u.ID, &u.Issuer, &u.Subject, &u.Email, &u.Name, &u.Role, &u.CreatedAt, &lastLogin, &disabled); err != nil {
+	if err := row.Scan(&u.ID, &u.Issuer, &u.Subject, &u.Email, &u.Name, &u.Role, &u.RoleSource, &u.CreatedAt, &lastLogin, &disabled); err != nil {
 		return User{}, err
 	}
 	if lastLogin.Valid {

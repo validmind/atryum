@@ -439,3 +439,41 @@ func TestUserAgentsAndKeysViews(t *testing.T) {
 	}
 	_ = agentB
 }
+
+// The members routes must not tell a caller who cannot see an agent whether
+// that agent id exists: authorization runs before the existence probe, so a
+// non-member gets 403 for real and made-up ids alike.
+func TestAgentMembersDoesNotRevealAgentExistenceToNonMembers(t *testing.T) {
+	r := newIdentityRig(t)
+	admin := r.token("admin-1", true)
+	member := r.token("member-1", false)
+
+	w := r.do(http.MethodPost, "/api/v1/agents", admin, `{"name":"Agent A","enabled":true}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create A: %d %s", w.Code, w.Body.String())
+	}
+	agentA := decode[OperatorAgent](t, w).CUID
+	// Provision the member's user row.
+	if w = r.do(http.MethodGet, "/api/v1/me", member, ""); w.Code != http.StatusOK {
+		t.Fatalf("me: %d %s", w.Code, w.Body.String())
+	}
+	me := decode[MeResponse](t, w)
+
+	for _, agentID := range []string{agentA, "no-such-agent"} {
+		for _, c := range []struct{ method, path, body string }{
+			{http.MethodGet, "/api/v1/agents/" + agentID + "/members", ""},
+			{http.MethodPost, "/api/v1/agents/" + agentID + "/members", `{"user_id":"` + me.UserID + `"}`},
+			{http.MethodDelete, "/api/v1/agents/" + agentID + "/members/" + me.UserID, ""},
+			{http.MethodGet, "/api/v1/agents/" + agentID + "/keys", ""},
+		} {
+			if w = r.do(c.method, c.path, member, c.body); w.Code != http.StatusForbidden {
+				t.Fatalf("%s %s as non-member: want 403 for existing and unknown ids alike, got %d %s", c.method, c.path, w.Code, w.Body.String())
+			}
+		}
+	}
+
+	// Admins still get a real 404 for an unknown id.
+	if w = r.do(http.MethodGet, "/api/v1/agents/no-such-agent/members", admin, ""); w.Code != http.StatusNotFound {
+		t.Fatalf("admin on unknown agent: want 404, got %d %s", w.Code, w.Body.String())
+	}
+}

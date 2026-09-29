@@ -792,6 +792,8 @@ export interface AtryumUser {
   email: string;
   name: string;
   role: UserRole;
+  /** "idp": refreshed from the identity provider on each login; "manual": set by an operator and kept across logins. */
+  role_source?: 'idp' | 'manual';
   created_at: string;
   last_login_at?: string | null;
   disabled_at?: string | null;

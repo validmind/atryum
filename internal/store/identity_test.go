@@ -201,3 +201,57 @@ func TestAgentMembersRepoAndKeyCascadeOnRemoval(t *testing.T) {
 		t.Fatalf("expected ErrNoRows on second Remove, got %v", err)
 	}
 }
+
+// An operator-set role must survive later logins: UpsertLogin only refreshes
+// role from the IdP claim while role_source is still "idp".
+func TestUsersRepoSetRoleIsKeptAcrossLogins(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+	if err := InitDB(db); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	ctx := context.Background()
+	users := NewUsersRepo(db)
+
+	alice, err := users.UpsertLogin(ctx, "https://idp.example", "sub-1", "a@example.com", "Alice", UserRoleMember)
+	if err != nil {
+		t.Fatalf("UpsertLogin: %v", err)
+	}
+	if alice.RoleSource != UserRoleSourceIdP {
+		t.Fatalf("fresh user should be idp-managed, got %q", alice.RoleSource)
+	}
+
+	// Promote by hand, then log in again with the IdP still saying "member".
+	if err := users.SetRole(ctx, alice.ID, UserRoleAdmin); err != nil {
+		t.Fatalf("SetRole: %v", err)
+	}
+	again, err := users.UpsertLogin(ctx, "https://idp.example", "sub-1", "a@example.com", "Alice", UserRoleMember)
+	if err != nil {
+		t.Fatalf("UpsertLogin after SetRole: %v", err)
+	}
+	if again.Role != UserRoleAdmin || again.RoleSource != UserRoleSourceManual {
+		t.Fatalf("manual promotion was reverted by login: %+v", again)
+	}
+	if again.LastLoginAt == nil {
+		t.Fatalf("login should still be recorded: %+v", again)
+	}
+
+	// Demotion by hand sticks too, even when the IdP claim says admin.
+	if err := users.SetRole(ctx, alice.ID, UserRoleMember); err != nil {
+		t.Fatalf("SetRole demote: %v", err)
+	}
+	demoted, err := users.UpsertLogin(ctx, "https://idp.example", "sub-1", "a@example.com", "Alice", UserRoleAdmin)
+	if err != nil {
+		t.Fatalf("UpsertLogin after demote: %v", err)
+	}
+	if demoted.Role != UserRoleMember {
+		t.Fatalf("manual demotion was reverted by login: %+v", demoted)
+	}
+
+	// A user nobody touched still follows the claim.
+	bob, _ := users.UpsertLogin(ctx, "https://idp.example", "sub-2", "b@example.com", "Bob", UserRoleMember)
+	bob, err = users.UpsertLogin(ctx, "https://idp.example", "sub-2", "b@example.com", "Bob", UserRoleAdmin)
+	if err != nil || bob.Role != UserRoleAdmin || bob.RoleSource != UserRoleSourceIdP {
+		t.Fatalf("idp-managed user should follow the claim: %+v (err=%v)", bob, err)
+	}
+}
