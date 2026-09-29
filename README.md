@@ -78,6 +78,8 @@ Three pieces of identity travel with every invocation:
 
 Auth is OIDC-based and supports multiple authorization servers concurrently (Keycloak, Auth0, etc.) — see `[[auth]]` blocks. API-key-protected legacy endpoints (`/agent_ids`, `/invocations/{agent_id}`) exist for tooling that hasn't moved to bearer tokens yet.
 
+**Agent API keys.** The recommended way to connect a harness or MCP client is a first-party Atryum API key. A key acts as exactly one agent record and remembers which user issued it, so every request is attributed, agent-scoped rules apply, and the key can be revoked (or dies automatically when its user is disabled or removed from the agent). Keys are presented as `Authorization: Bearer atr_...` on every agent runtime surface, work with or without an IdP configured, and are stored hashed. Issue them from the agent's **API keys** tab in the UI, with `atryum agent key create <agent>`, or with `atryum setup claude`, which signs in (OAuth device flow), creates the agent, issues a key into `~/.atryum/agent-key`, and installs the Claude Code hooks pointed at it. Both the CLI and the hook refuse to send a key over plain `http://` to anything but a loopback host unless you opt in with `--allow-insecure-http`. To run several Claude Codes as different agents on one machine, give each its own `ATRYUM_HOME` and `CLAUDE_CONFIG_DIR` (for example `ATRYUM_HOME=~/.atryum-b CLAUDE_CONFIG_DIR=~/.claude-b atryum setup claude`, then launch `claude` with the same two variables): the key, hook script, and hook state all move under that home and the hooks land in that Claude config's `settings.json`. If Claude Code itself runs inside a [nono](https://nono.sh) sandbox, the hook needs a few extra filesystem grants to reach that key and its state directory; see `examples/nono-profile/`.
+
 For local no-auth runtime calls, when no `[[auth]]` blocks are configured, callers may provide a best-effort agent identity with `?agent_id=` on `/mcp/{server}`, `/api/v1/invocations`, and `/api/v1/agent/rules`, or with `agent_id` in external invocation API payloads. For example: `http://localhost:8080/mcp/shortcut?agent_id=hunners-codex`. This ID is ignored as soon as inbound auth is configured.
 
 When inbound auth is configured, all agent runtime surfaces require OAuth bearer tokens: `/mcp/{server}`, `/api/v1/invocations`, `/api/v1/external/invocations`, `/api/v1/external/invocations/{id}`, and `/api/v1/agent/rules`. The Amp and Pi examples, plus the shared hook script installed for agent hooks, read `ATRYUM_ACCESS_TOKEN` and send it as `Authorization: Bearer ...` — the token is used as-is and never refreshed. For short-lived tokens, set `ATRYUM_TOKEN_COMMAND` instead: a shell command that mints a fresh token (raw, or OAuth token JSON with `access_token` plus optional `expires_in`) — typically a client credentials request against your identity provider's token endpoint. The integrations run it on the first request, cache the token, run it again shortly before expiry, and retry once with a freshly minted token after a `401`. If both are set, `ATRYUM_TOKEN_COMMAND` wins and `ATRYUM_ACCESS_TOKEN` is ignored.
@@ -89,6 +91,8 @@ The Settings UI can also select a default ValidMind agent record. AI Evaluation 
 Authentication for the UI and the review/operator APIs is optional. When no `[[auth]]` block has `admin_enabled = true`, the UI and those privileged APIs remain open. When one or more blocks are admin-enabled, Atryum requires a browser OIDC access token for review/operator API calls and accepts tokens from any admin-enabled issuer. The upstream MCP OAuth callback at `/api/v1/mcp/oauth/callback` remains public so external identity providers can complete browser redirects.
 
 Admin auth reuses the same issuer/audience/JWKS validation as agent auth, then checks the admin claim configured on the matched `[[auth]]` block. This means different IdPs can use different admin claims at the same time.
+
+Users are provisioned just-in-time on first login and keyed by issuer and subject. Email and name are read from the access token using the `email_claims` / `name_claims` lists (defaults cover OIDC, Okta, Keycloak and Entra claim names); when a token has neither, Atryum calls the issuer's OIDC `userinfo_endpoint` once with that token and stores the result, so Auth0 users show as their email rather than `google-oauth2|…`. Set `userinfo = false` on a block whose userinfo endpoint rejects API-audience tokens. Tokens carrying the admin claim make the user an **admin**; everyone else is a **member** who sees only the agents they belong to and can issue API keys for them. Admins manage membership from an agent's **Members** tab and can disable users from the **Users** page, which also opens a per-user view of the agents they belong to and every API key they have issued (`GET /api/v1/users/{id}/agents` and `/keys`), with membership removal and key revocation available from there. Authorization is a pluggable seam (`pkg/authz`): the open-core default is this flat admin/member model, and embedding programs can supply their own `Authorizer` and mount authenticated routes via `pkg/atryum` options.
 
 Example:
 
@@ -102,9 +106,20 @@ agent_id_claim = "client_id"
 admin_enabled = true
 admin_provider = "auth0"
 admin_client_id = "atryum-admin-spa-client"
+# Auth0 only allows the device grant on Native applications, so the CLI
+# (`atryum login`, `atryum setup claude`) needs its own client there.
+cli_client_id = "atryum-cli-native-client"
 admin_scopes = "openid profile email offline_access"
 admin_claim = "atryum_admin"
 admin_claim_value = "true"
+# Optional. Where to read the user's email/name from a verified token. Defaults
+# cover standard OIDC claims plus Entra's upn/unique_name/preferred_username.
+# Auth0 access tokens carry none of these; either leave userinfo on (default)
+# so Atryum asks the issuer's userinfo endpoint once per user, or add a
+# namespaced claim with an Action and list it here.
+# email_claims = ["https://atryum.dev/email", "email"]
+# name_claims  = ["https://atryum.dev/name", "name"]
+# userinfo     = true
 
 [[auth]]
 enabled = true
@@ -121,7 +136,7 @@ admin_claim = "atryum_admin"
 admin_claim_value = true
 ```
 
-The admin client must be a browser-safe public SPA client that supports authorization code with PKCE. For Auth0, create a Single Page Application client; allow `http://localhost:5174/ui/auth/callback` for Vite development and `http://localhost:8080/ui/auth/callback` for the embedded UI, and allow the corresponding `http://localhost:5174/ui/` and `http://localhost:8080/ui/` logout URLs. For local Keycloak, run `KC_URL=http://localhost:8089 ./keycloak/setup-realm.sh`; it provisions the `atryum-admin` public client, its callback and post-logout redirect URLs, and an `atryum_admin=true` access-token claim.
+The admin client must be a browser-safe public SPA client that supports authorization code with PKCE. The CLI signs in with the OAuth 2.0 device authorization grant using `cli_client_id`, which defaults to `admin_client_id`; Keycloak allows the device grant on the same public client, while Auth0 requires a separate **Native** application with the **Device Code** grant type enabled (and **Refresh Token** for `offline_access`). For Auth0, create a Single Page Application client; allow `http://localhost:5174/ui/auth/callback` for Vite development and `http://localhost:8080/ui/auth/callback` for the embedded UI, and allow the corresponding `http://localhost:5174/ui/` and `http://localhost:8080/ui/` logout URLs. For local Keycloak, run `KC_URL=http://localhost:8089 ./keycloak/setup-realm.sh`; it provisions the `atryum-admin` public client, its callback and post-logout redirect URLs, and an `atryum_admin=true` access-token claim.
 
 The frontend fetches `/api/v1/auth/config`, shows a sign-in screen, redirects through the selected provider, attaches `Authorization: Bearer <access_token>` to protected API calls, and uses authenticated fetch-based SSE for `/api/v1/review/invocations/stream`. With one configured provider, the screen skips the provider selector; with several, it shows an identity-provider selector. It attempts silent token refresh before retrying an expiry-related `401` once. Signing out uses the provider's autodiscovered OIDC `end_session_endpoint` and returns to `/ui/`; providers without a usable end-session endpoint fall back to local logout. Browser console debug logs are emitted for refresh and logout attempts and outcomes under the `[admin-auth]` prefix; access token values are never logged.
 

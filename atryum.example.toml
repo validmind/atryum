@@ -233,5 +233,16 @@ SHORTCUT_READONLY = "true"
 # # admin_enabled     = true
 # # admin_provider    = "auth0"
 # # admin_client_id   = "auth0-admin-spa-client"
+# # For `atryum login` / `atryum setup claude`: Auth0 only permits the device
+# # authorization grant on a Native application, so create one, enable the
+# # "Device Code" (and "Refresh Token") grant types, and reference it here.
+# # Keycloak can leave this unset (defaults to admin_client_id).
+# # cli_client_id     = "auth0-cli-native-client"
+# # Auth0 access tokens have no email/name claims. By default Atryum fills them
+# # from the issuer's userinfo endpoint on first login; alternatively add
+# # namespaced claims via an Action and list them:
+# # email_claims      = ["https://atryum.dev/email", "email"]
+# # name_claims       = ["https://atryum.dev/name", "name"]
+# # userinfo          = true
 # # admin_claim       = "permissions"
 # # admin_claim_value = "atryum:admin"

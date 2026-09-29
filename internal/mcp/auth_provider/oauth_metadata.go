@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -135,15 +136,28 @@ func DiscoverAuthorizationServer(ctx context.Context, rawBaseURL string) (Author
 
 	client := &http.Client{Timeout: 10 * time.Second}
 
-	// Per RFC 9728 the protected-resource metadata can live at either the
-	// resource path or the host root. Try both, plus look for a
-	// WWW-Authenticate header on a probe request to the MCP endpoint
-	// itself (the spec-canonical "challenge-driven" path).
-	probeURLs := []*url.URL{base}
+	// Per RFC 9728 §3.1 the protected-resource metadata for a resource with
+	// a path component lives at the *path-inserted* URL
+	// (https://host/.well-known/oauth-protected-resource/<path>). Some
+	// servers instead append the well-known suffix to the resource path,
+	// and others only publish at the host root. Try all three, in spec
+	// order, plus look for a WWW-Authenticate header on a probe request to
+	// the MCP endpoint itself (the spec-canonical "challenge-driven" path).
 	rootPath := *base
 	rootPath.Path = ""
 	rootPath.RawPath = ""
-	probeURLs = append(probeURLs, &rootPath)
+	prmURLs := []string{}
+	seenPRM := map[string]bool{}
+	addPRM := func(s string) {
+		if s == "" || seenPRM[s] {
+			return
+		}
+		seenPRM[s] = true
+		prmURLs = append(prmURLs, s)
+	}
+	addPRM(wellKnownPathInserted(base, "/.well-known/oauth-protected-resource"))
+	addPRM(wellKnownPathAppended(base, "/.well-known/oauth-protected-resource"))
+	addPRM(wellKnownPathAppended(&rootPath, "/.well-known/oauth-protected-resource"))
 
 	issuers := []string{}
 	seenIssuer := map[string]bool{}
@@ -156,8 +170,8 @@ func DiscoverAuthorizationServer(ctx context.Context, rawBaseURL string) (Author
 		issuers = append(issuers, s)
 	}
 
-	for _, candidate := range probeURLs {
-		if rm, ok := fetchProtectedResourceMetadata(ctx, client, candidate); ok {
+	for _, candidate := range prmURLs {
+		if rm, ok := fetchProtectedResourceMetadataAt(ctx, client, candidate); ok {
 			for _, server := range rm.AuthorizationServers {
 				addIssuer(server)
 			}
@@ -185,14 +199,62 @@ func DiscoverAuthorizationServer(ctx context.Context, rawBaseURL string) (Author
 	return AuthorizationServerMetadata{}, fmt.Errorf("oauth metadata discovery failed")
 }
 
-// resourceMetadataURLFromChallenge sends an unauthenticated request to the
+// wellKnownPathInserted builds the RFC 8414 §3.1 / RFC 9728 §3.1 form for a
+// URL with a path component: the well-known suffix is inserted between the
+// host and the path (https://host/.well-known/<suffix>/<path>). For a URL
+// with no path this is identical to the appended form, and "" is returned
+// so callers can skip the duplicate.
+func wellKnownPathInserted(u *url.URL, suffix string) string {
+	path := strings.Trim(u.Path, "/")
+	if path == "" {
+		return ""
+	}
+	out := *u
+	out.RawPath = ""
+	out.RawQuery = ""
+	out.Fragment = ""
+	out.Path = suffix + "/" + path
+	return out.String()
+}
+
+// wellKnownPathAppended builds the legacy / OIDC-style form where the
+// well-known suffix is appended after the path
+// (https://host/<path>/.well-known/<suffix>).
+func wellKnownPathAppended(u *url.URL, suffix string) string {
+	out := *u
+	out.RawPath = ""
+	out.RawQuery = ""
+	out.Fragment = ""
+	out.Path = strings.TrimRight(u.Path, "/") + suffix
+	return out.String()
+}
+
+// resourceMetadataURLFromChallenge sends unauthenticated requests to the
 // resource and, if the server responds with a 401 + WWW-Authenticate that
-// includes resource_metadata="...", returns that URL.
+// includes resource_metadata="...", returns that URL. It tries GET first and
+// then a POST (a bare JSON-RPC initialize) because streamable-HTTP MCP
+// servers commonly answer GET with 405 and only challenge on POST.
 func resourceMetadataURLFromChallenge(ctx context.Context, client *http.Client, resource *url.URL) (string, bool) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, resource.String(), nil)
+	if u, ok := challengeFromRequest(ctx, client, http.MethodGet, resource.String(), ""); ok {
+		return u, true
+	}
+	const initialize = `{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"atryum","version":"discovery"}}}`
+	return challengeFromRequest(ctx, client, http.MethodPost, resource.String(), initialize)
+}
+
+func challengeFromRequest(ctx context.Context, client *http.Client, method string, target string, body string) (string, bool) {
+	var reader io.Reader
+	if body != "" {
+		reader = strings.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, target, reader)
 	if err != nil {
 		return "", false
 	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("Accept", "application/json, text/event-stream")
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", false
@@ -224,12 +286,6 @@ func resourceMetadataURLFromChallenge(ctx context.Context, client *http.Client, 
 	return rest[:end], true
 }
 
-func fetchProtectedResourceMetadata(ctx context.Context, client *http.Client, base *url.URL) (protectedResourceMetadata, bool) {
-	wellKnown := *base
-	wellKnown.Path = strings.TrimRight(base.Path, "/") + "/.well-known/oauth-protected-resource"
-	return fetchProtectedResourceMetadataAt(ctx, client, wellKnown.String())
-}
-
 func fetchProtectedResourceMetadataAt(ctx context.Context, client *http.Client, fullURL string) (protectedResourceMetadata, bool) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fullURL, nil)
 	if err != nil {
@@ -256,9 +312,23 @@ func fetchAuthorizationServerMetadata(ctx context.Context, client *http.Client, 
 		return AuthorizationServerMetadata{}, false
 	}
 	parsed.Path = strings.TrimRight(parsed.Path, "/")
-	candidates := []string{
-		parsed.ResolveReference(&url.URL{Path: parsed.Path + "/.well-known/oauth-authorization-server"}).String(),
-		parsed.ResolveReference(&url.URL{Path: parsed.Path + "/.well-known/openid-configuration"}).String(),
+	// Order follows the MCP authorization spec: for an issuer with a path
+	// component try the RFC 8414 path-inserted forms first, then the
+	// OIDC-style path-appended forms. For a bare host both collapse to the
+	// same URLs and the empty path-inserted entries are skipped.
+	candidates := []string{}
+	seen := map[string]bool{}
+	for _, candidate := range []string{
+		wellKnownPathInserted(parsed, "/.well-known/oauth-authorization-server"),
+		wellKnownPathInserted(parsed, "/.well-known/openid-configuration"),
+		wellKnownPathAppended(parsed, "/.well-known/oauth-authorization-server"),
+		wellKnownPathAppended(parsed, "/.well-known/openid-configuration"),
+	} {
+		if candidate == "" || seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		candidates = append(candidates, candidate)
 	}
 	for _, candidate := range candidates {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, candidate, nil)

@@ -1,12 +1,16 @@
 package auth
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"strings"
+
+	"github.com/validmind/atryum/pkg/authz"
 )
 
 // Middleware returns an http.Handler that requires a valid OAuth bearer token
@@ -26,17 +30,29 @@ type MiddlewareOptions struct {
 	SkipVerify bool
 	// DebugLogIdentity logs the extracted identity after successful validation.
 	DebugLogIdentity bool
+	// KeyResolver, when set, authenticates first-party API keys (bearer
+	// tokens starting with AgentKeyPrefix). Keys work with or without an IdP
+	// validator: in a no-auth deployment they are opportunistic (a request
+	// with no bearer still passes anonymously, one presenting an atr_ key is
+	// held to it); with a validator configured every request must carry
+	// either a valid key or a valid JWT.
+	KeyResolver AgentKeyResolver
 }
 
 func MiddlewareWithOptions(v *Validator, resourceMetadataPath string, opts MiddlewareOptions) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		if v == nil || opts.SkipVerify {
+		if opts.SkipVerify || (v == nil && opts.KeyResolver == nil) {
 			return next
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			metadataURL := absoluteURL(r, resourceMetadataPath)
 			header := strings.TrimSpace(r.Header.Get("Authorization"))
 			if header == "" {
+				if v == nil {
+					// No IdP configured: anonymous access is still allowed.
+					next.ServeHTTP(w, r)
+					return
+				}
 				scope := challengeScope(v, nil)
 				if opts.DebugLogIdentity {
 					logAuthFailure(r, "invalid_token", "missing bearer token", scope)
@@ -45,10 +61,36 @@ func MiddlewareWithOptions(v *Validator, resourceMetadataPath string, opts Middl
 				return
 			}
 			if !strings.HasPrefix(strings.ToLower(header), "bearer ") {
+				if v == nil {
+					next.ServeHTTP(w, r)
+					return
+				}
 				writeChallenge(w, http.StatusUnauthorized, "invalid Authorization scheme", "invalid_request", metadataURL, challengeScope(v, nil))
 				return
 			}
 			token := strings.TrimSpace(header[len("Bearer "):])
+
+			// First-party API key path.
+			if opts.KeyResolver != nil && IsAgentKey(token) {
+				identity, err := opts.KeyResolver.ResolveAgentKey(r.Context(), token)
+				if err != nil {
+					logAuthFailure(r, "invalid_token", "invalid api key", "")
+					writeChallenge(w, http.StatusUnauthorized, "invalid api key", "invalid_token", metadataURL, "")
+					return
+				}
+				if opts.DebugLogIdentity {
+					logAuthSuccess(r, identity)
+				}
+				next.ServeHTTP(w, r.WithContext(WithIdentity(r.Context(), identity)))
+				return
+			}
+			if v == nil {
+				// A non-key bearer in a no-auth deployment: ignored, as before.
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// IdP JWT path.
 			identity, err := v.Validate(r.Context(), token)
 			if err != nil {
 				ve, _ := err.(*ValidationError)
@@ -74,25 +116,41 @@ func MiddlewareWithOptions(v *Validator, resourceMetadataPath string, opts Middl
 	}
 }
 
-// OperatorMiddleware returns an HTTP middleware that authenticates privileged
-// operator API requests. It accepts two credential paths:
+// UserProvisioner turns a verified IdP identity into the stored principal,
+// creating the users row on first sight (just-in-time provisioning). It
+// returns ErrUserDisabled when the user exists but has been disabled.
+type UserProvisioner interface {
+	ProvisionUser(ctx context.Context, id UserIdentity) (authz.Principal, error)
+}
+
+// ErrUserDisabled is returned by a UserProvisioner for a disabled user.
+var ErrUserDisabled = errors.New("user is disabled")
+
+// OperatorMiddleware returns an HTTP middleware that authenticates operator
+// API requests and attaches an authz.Principal to the request context. It
+// accepts three credential paths:
 //
-//  1. Machine-key path: when the request carries matching X-API-Key and
-//     X-API-Secret headers (checked against apiKeyCfg), the request is
-//     admitted immediately as a trusted machine caller without requiring a
-//     JWT. This allows server-to-server callers (e.g. the ValidMind backend
-//     proxy) to use the same static credentials they already have rather than
-//     obtaining a Keycloak token.
+//  1. Machine-key path: matching X-API-Key and X-API-Secret headers (checked
+//     against apiKeyCfg) admit the request as a trusted machine caller with
+//     an admin principal. This lets server-to-server callers (e.g. the
+//     ValidMind backend proxy) reuse their static credentials.
 //
-//  2. Bearer-token path: when no API-key headers are present the middleware
-//     falls through to the existing OAuth JWT validation via ValidateAdmin.
+//  2. Bearer-token path: an IdP JWT from a login-enabled issuer. The user is
+//     provisioned/refreshed via provisioner (when non-nil) and the resulting
+//     principal — admin or member — is attached. Authorization is the
+//     handler's job (see RequireAdmin and authz.Authorizer); this middleware
+//     only rejects invalid tokens and disabled users.
 //
-// When v is nil, AdminEnabled() is false, or SkipVerify is set, the
-// middleware is a no-op (auth disabled).
-func OperatorMiddleware(v *Validator, apiKeyCfg APIKeyConfig, opts MiddlewareOptions) func(http.Handler) http.Handler {
+//  3. Auth disabled (v nil, no login-enabled issuer, or SkipVerify): every
+//     request carries a synthetic admin principal so downstream checks stay
+//     uniform.
+func OperatorMiddleware(v *Validator, apiKeyCfg APIKeyConfig, opts MiddlewareOptions, provisioner UserProvisioner) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		if v == nil || !v.AdminEnabled() || opts.SkipVerify {
-			return next
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				p := authz.Principal{Role: authz.RoleAdmin, Method: authz.MethodNone}
+				next.ServeHTTP(w, r.WithContext(authz.WithPrincipal(r.Context(), p)))
+			})
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Machine-key fast path: if the caller sends matching API key/secret
@@ -107,7 +165,8 @@ func OperatorMiddleware(v *Validator, apiKeyCfg APIKeyConfig, opts MiddlewareOpt
 						if opts.DebugLogIdentity {
 							log.Printf("[auth] valid_admin_machine_key method=%s path=%s remote=%s", r.Method, r.URL.Path, r.RemoteAddr)
 						}
-						next.ServeHTTP(w, r)
+						p := authz.Principal{Role: authz.RoleAdmin, Method: authz.MethodMachineKey}
+						next.ServeHTTP(w, r.WithContext(authz.WithPrincipal(r.Context(), p)))
 						return
 					}
 					// Keys were present but wrong — reject immediately; don't
@@ -118,7 +177,7 @@ func OperatorMiddleware(v *Validator, apiKeyCfg APIKeyConfig, opts MiddlewareOpt
 				}
 			}
 
-			// Bearer-token path for human UI logins.
+			// Bearer-token path for human UI/CLI logins.
 			header := strings.TrimSpace(r.Header.Get("Authorization"))
 			if header == "" {
 				logAuthFailure(r, "invalid_token", "missing bearer token", "")
@@ -131,28 +190,70 @@ func OperatorMiddleware(v *Validator, apiKeyCfg APIKeyConfig, opts MiddlewareOpt
 				return
 			}
 			token := strings.TrimSpace(header[len("Bearer "):])
-			identity, err := v.ValidateAdmin(r.Context(), token)
+			user, err := v.ValidateUser(r.Context(), token)
 			if err != nil {
 				ve, _ := err.(*ValidationError)
-				switch {
-				case ve != nil && ve.Result == ResultMissingAdminClaim:
-					logAuthFailure(r, "insufficient_scope", ve.Description, "")
-					writeChallenge(w, http.StatusForbidden, ve.Description, "insufficient_scope", "", "")
-				case ve != nil:
+				if ve != nil {
 					logAuthFailure(r, "invalid_token", ve.Description, "")
 					writeChallenge(w, http.StatusUnauthorized, ve.Description, "invalid_token", "", "")
-				default:
+				} else {
 					logAuthFailure(r, "invalid_token", "invalid token", "")
 					writeChallenge(w, http.StatusUnauthorized, "invalid token", "invalid_token", "", "")
 				}
 				return
 			}
-			if opts.DebugLogIdentity {
-				log.Printf("[auth] valid_admin_token method=%s path=%s remote=%s issuer=%q subject=%q email=%q", r.Method, r.URL.Path, r.RemoteAddr, identity.Issuer, identity.Subject, identity.Email)
+			principal := authz.Principal{
+				Issuer:  user.Issuer,
+				Subject: user.Subject,
+				Email:   user.Email,
+				Name:    user.Name,
+				Role:    authz.RoleMember,
+				Method:  authz.MethodJWT,
 			}
-			next.ServeHTTP(w, r)
+			if user.Admin {
+				principal.Role = authz.RoleAdmin
+			}
+			if provisioner != nil {
+				stored, err := provisioner.ProvisionUser(r.Context(), user)
+				switch {
+				case errors.Is(err, ErrUserDisabled):
+					logAuthFailure(r, "access_denied", "user is disabled", "")
+					writeChallenge(w, http.StatusForbidden, "user is disabled", "access_denied", "", "")
+					return
+				case err != nil:
+					log.Printf("[auth] provision_user_failed method=%s path=%s issuer=%q subject=%q err=%v", r.Method, r.URL.Path, user.Issuer, user.Subject, err)
+					writeAPIKeyError(w, http.StatusInternalServerError, "failed to provision user")
+					return
+				}
+				principal = stored
+			}
+			if opts.DebugLogIdentity {
+				log.Printf("[auth] valid_user_token method=%s path=%s remote=%s issuer=%q subject=%q email=%q role=%s", r.Method, r.URL.Path, r.RemoteAddr, principal.Issuer, principal.Subject, principal.Email, principal.Role)
+			}
+			next.ServeHTTP(w, r.WithContext(authz.WithPrincipal(r.Context(), principal)))
 		})
 	}
+}
+
+// RequireAdmin is a route-level guard for operator endpoints that have no
+// finer-grained authorization yet: it admits admin principals (including the
+// machine-key and auth-disabled synthetic ones) and returns 403 otherwise. A
+// request with no principal at all is refused with 401 — that means the
+// route was mounted without OperatorMiddleware, which is a wiring bug, and
+// failing closed is the safer default.
+func RequireAdmin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p, ok := authz.PrincipalFromContext(r.Context())
+		if !ok {
+			writeAPIKeyError(w, http.StatusUnauthorized, "unauthenticated")
+			return
+		}
+		if !p.IsAdmin() {
+			writeAPIKeyError(w, http.StatusForbidden, "admin role required")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func logAuthFailure(r *http.Request, code string, description string, scope string) {
