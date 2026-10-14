@@ -82,6 +82,30 @@ func Main(opts ...Option) {
 	}
 }
 
+// Migrate applies atryum's migrations, then every WithMigrations set, to the
+// database at databaseURL without starting the server. Embedding programs use
+// it for a separate migrate step (for example a pre-upgrade job).
+func Migrate(databaseURL string, opts ...Option) error {
+	db, dialect, err := store.OpenDatabase(databaseURL, "")
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer db.Close()
+	return migrate(db, dialect, buildOptions(opts))
+}
+
+func migrate(db *sql.DB, dialect store.Dialect, o options) error {
+	if err := store.InitDBWithDialect(db, dialect); err != nil {
+		return fmt.Errorf("init db: %w", err)
+	}
+	for _, em := range o.extensionMigrations {
+		if err := store.RunExtensionMigrationsWithDialect(db, dialect, em.namespace, em.definitions); err != nil {
+			return fmt.Errorf("apply extension migrations: %w", err)
+		}
+	}
+	return nil
+}
+
 // resolveInstanceIdentity returns atryum's stable per-deployment identity: the
 // configured atryum_instance, falling back to public_base_url. It is the shared
 // source for the managed-agents ownership tag and the OTEL deployment.environment
@@ -167,14 +191,8 @@ func runServer(args []string, o options) error {
 	}
 	defer db.Close()
 
-	if err := store.InitDBWithDialect(db, dialect); err != nil {
-		return fmt.Errorf("init db: %w", err)
-	}
-
-	for _, em := range o.extensionMigrations {
-		if err := store.RunExtensionMigrationsWithDialect(db, dialect, em.namespace, em.definitions); err != nil {
-			return fmt.Errorf("apply extension migrations: %w", err)
-		}
+	if err := migrate(db, dialect, o); err != nil {
+		return err
 	}
 	for _, hook := range o.databaseHooks {
 		hook(db, dialect == store.DialectPostgres)

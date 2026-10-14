@@ -230,6 +230,9 @@ func Load(path string) (Config, error) {
 	if err != nil && !os.IsNotExist(err) {
 		return cfg, err
 	}
+	if value := os.Getenv("ATRYUM_DATABASE_URL"); value != "" {
+		cfg.Server.DatabaseURL = value
+	}
 	cfg.Backend.ApplyEnv()
 	cfg.applyManagedAgentsEnv()
 	if err := cfg.Plans.normalize(); err != nil {

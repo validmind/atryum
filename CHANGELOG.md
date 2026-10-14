@@ -38,6 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `pkg/atryum.WithEventHook`: called inside the transaction that changes an
   invocation, with that transaction, so an embedding program can append its
   own records atomically.
+- `pkg/atryum.Migrate` applies the built-in and extension migrations without
+  starting the server.
+- The `ATRYUM_DATABASE_URL` environment variable overrides
+  `server.database_url`.
 
 ### Fixed
 
