@@ -19,6 +19,12 @@ func TestCheckAgentAuth(t *testing.T) {
 		"enabled issuer":         {cfg: config.Config{Auth: []auth.Config{issuer}}, wantOK: true},
 		"skip_verify in config":  {cfg: config.Config{Auth: []auth.Config{issuer}, AuthDebug: config.AuthDebugConfig{SkipVerify: true}}},
 		"skip_verify in the env": {cfg: config.Config{Auth: []auth.Config{issuer}}, env: "1"},
+		"plain http issuer":      {cfg: config.Config{Auth: []auth.Config{{Enabled: true, Issuer: "http://idp.bank", Audience: "aa"}}}},
+		"plain http jwks":        {cfg: config.Config{Auth: []auth.Config{{Enabled: true, Issuer: "https://idp", Audience: "aa", JWKSURL: "http://idp.bank/jwks"}}}},
+		"not a web url":          {cfg: config.Config{Auth: []auth.Config{{Enabled: true, Issuer: "ftp://idp", Audience: "aa"}}}},
+		"http on loopback":       {cfg: config.Config{Auth: []auth.Config{{Enabled: true, Issuer: "http://127.0.0.1:9091", Audience: "aa", JWKSURL: "http://localhost:9091/jwks"}}}, wantOK: true},
+		"http on ipv6 loopback":  {cfg: config.Config{Auth: []auth.Config{{Enabled: true, Issuer: "http://[::1]:9091", Audience: "aa"}}}, wantOK: true},
+		"http on a lookalike":    {cfg: config.Config{Auth: []auth.Config{{Enabled: true, Issuer: "http://127.0.0.1.evil.example", Audience: "aa"}}}},
 	} {
 		t.Setenv("ATRYUM_AUTH_DEBUG_SKIP_VERIFY", tc.env)
 		if err := checkAgentAuth(tc.cfg); (err == nil) != tc.wantOK {
