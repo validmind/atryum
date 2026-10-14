@@ -229,6 +229,8 @@ type Handler struct {
 	authenticatedRoutes []func(mux *http.ServeMux, authenticate func(http.Handler) http.Handler)
 	// externalDecider: see UseExternalDecider.
 	externalDecider bool
+	// requireAgentIdentity: see RequireAgentIdentity.
+	requireAgentIdentity bool
 }
 
 // AddAuthenticatedRoutes registers a callback that may mount routes wrapped in
@@ -1099,7 +1101,22 @@ func (h *Handler) Routes() http.Handler {
 	return mux
 }
 
+// RequireAgentIdentity makes every agent route reject a request without a
+// verified agent identity, whatever the auth configuration. Caller-supplied
+// agent IDs (the ?agent_id= hint, a body agent_id) then never stand in for one.
+func (h *Handler) RequireAgentIdentity() { h.requireAgentIdentity = true }
+
 func (h *Handler) agentRuntimeHandler(next http.Handler) http.Handler {
+	if h.requireAgentIdentity {
+		inner := next
+		next = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if auth.AgentIDFromContext(r.Context()) == "" {
+				writeError(w, http.StatusUnauthorized, "a verified agent identity is required")
+				return
+			}
+			inner.ServeHTTP(w, r)
+		})
+	}
 	handler := auth.MiddlewareWithOptions(
 		h.authValidator,
 		"/.well-known/oauth-protected-resource",
@@ -1109,7 +1126,7 @@ func (h *Handler) agentRuntimeHandler(next http.Handler) http.Handler {
 }
 
 func (h *Handler) noAuthAgentIDHint(next http.Handler) http.Handler {
-	if h.authValidator != nil {
+	if h.authValidator != nil || h.requireAgentIdentity {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

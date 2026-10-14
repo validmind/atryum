@@ -288,7 +288,14 @@ the database handle, an embedding program can set:
   notify, deny, or pending with a review ID). Rules, plans and the default policy
   are skipped, a decider error denies, and only agent-facing routes are mounted.
 - `WithEventHook`: called with the transaction for every invocation change, so
-  the program's own records commit or roll back with it.
+  the program's own records commit or roll back with it. A change that cannot
+  be recorded before a tool runs stops the call (it is denied); once the tool
+  has run, its outcome is recorded even if the caller has gone, and a failure
+  to record it is logged rather than returned, so the agent is not invited to
+  retry a call that already ran.
+- `WithRequireAgentAuth`: refuse to start without an enabled `[[auth]]` issuer
+  or with `skip_verify`, and reject agent requests without a verified identity.
+- `WithDatabaseURL`: the database URL, overriding the config file.
 
 ## Configuration and ownership
 

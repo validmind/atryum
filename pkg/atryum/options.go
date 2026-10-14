@@ -51,6 +51,8 @@ type options struct {
 	thirdPartyNotices   string
 	decider             Decider
 	eventHook           EventHook
+	databaseURL         string
+	requireAgentAuth    bool
 }
 
 type extensionMigrations struct {
@@ -146,6 +148,22 @@ func WithDecider(d Decider) Option {
 // running it.
 func WithEventHook(h EventHook) Option {
 	return func(o *options) { o.eventHook = h }
+}
+
+// WithDatabaseURL sets the database URL, overriding server.database_url in
+// the config file, so an embedding program keeps one database setting for the
+// server and its own commands.
+func WithDatabaseURL(url string) Option {
+	return func(o *options) { o.databaseURL = url }
+}
+
+// WithRequireAgentAuth makes agent authentication mandatory: the server
+// refuses to start unless an [[auth]] issuer is enabled, refuses to start
+// with auth_debug.skip_verify or ATRYUM_AUTH_DEBUG_SKIP_VERIFY set, and agent
+// routes reject a request that carries no verified agent identity. A
+// caller-supplied agent_id is then never used for an HTTP caller.
+func WithRequireAgentAuth() Option {
+	return func(o *options) { o.requireAgentAuth = true }
 }
 
 // WithThirdPartyNotices sets the text printed by the `licenses` command.

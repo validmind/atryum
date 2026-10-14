@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/validmind/atryum/internal/invocation/policy"
@@ -116,6 +117,19 @@ func (s *Service) commit(ctx context.Context, inv Invocation, write func(context
 	})
 }
 
+// commitOrLog is commit for paths that cannot stop the call any further (a
+// denial, or recording a tool that already ran): a failure is logged loudly
+// rather than returned.
+func (s *Service) commitOrLog(ctx context.Context, inv Invocation, write func(context.Context, Invocation) error, evts ...Event) {
+	if err := s.commit(ctx, inv, write, evts...); err != nil {
+		types := make([]string, len(evts))
+		for i, e := range evts {
+			types[i] = e.EventType
+		}
+		slog.Error("invocation change NOT recorded", "invocation_id", inv.InvocationID, "status", inv.Status, "events", types, "error", err)
+	}
+}
+
 // updateFrom writes inv only if its row is still in status from, so two
 // processes cannot both decide or finish the same call.
 func (s *Service) updateFrom(from Status) func(context.Context, Invocation) error {
@@ -131,8 +145,15 @@ func (s *Service) updateFrom(from Status) func(context.Context, Invocation) erro
 	}
 }
 
-// decide asks the decider, failing closed to deny on error or an unknown verdict.
-func (s *Service) decide(ctx context.Context, call ToolCall) Decision {
+// decide asks the decider, failing closed to deny on an error, a panic or an
+// unknown verdict.
+func (s *Service) decide(ctx context.Context, call ToolCall) (d Decision) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("decider panicked; denying the call", "invocation_id", call.InvocationID, "panic", r)
+			d = Decision{Verdict: VerdictDeny, Reason: fmt.Sprintf("decider panic: %v", r)}
+		}
+	}()
 	d, err := s.decider(ctx, call)
 	if err != nil {
 		return Decision{Verdict: VerdictDeny, Reason: "decider error: " + err.Error()}
