@@ -63,4 +63,28 @@ func TestPostgresOptional_InitAndInvocationCRUD(t *testing.T) {
 	if got.InvocationID != inv.InvocationID || got.Tool != inv.Tool || string(got.Input) != string(inv.Input) {
 		t.Fatalf("unexpected invocation: %+v", got)
 	}
+
+	// UpdateResultFrom only moves a row that is still in the expected status.
+	inv.Status = invocation.StatusApproved
+	if ok, err := repo.UpdateResultFrom(context.Background(), inv, invocation.StatusPendingApproval); err != nil || ok {
+		t.Fatalf("UpdateResultFrom(wrong status) = %v, %v; want false", ok, err)
+	}
+	if ok, err := repo.UpdateResultFrom(context.Background(), inv, "pending"); err != nil || !ok {
+		t.Fatalf("UpdateResultFrom(pending) = %v, %v; want true", ok, err)
+	}
+
+	// Writes made with InTx's ctx roll back together.
+	err = InTx(context.Background(), db, func(ctx context.Context, _ *sql.Tx) error {
+		inv.Status = invocation.StatusDenied
+		if err := repo.UpdateResult(ctx, inv); err != nil {
+			return err
+		}
+		return fmt.Errorf("abort")
+	})
+	if err == nil {
+		t.Fatal("InTx swallowed the error")
+	}
+	if got, _ := repo.Get(context.Background(), inv.InvocationID); got.Status != invocation.StatusApproved {
+		t.Fatalf("status after rollback = %s, want approved", got.Status)
+	}
 }
