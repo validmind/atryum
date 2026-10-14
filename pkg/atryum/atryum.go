@@ -346,7 +346,7 @@ func runServer(args []string, o options) error {
 	handler := api.NewHandler(service, serverOperator, policyRegistry, rulesRepo, agentsRepo, agentSyncSettingsRepo, llmConfigsRepo, syncAgentsFn, backendClient, localEvaluator)
 	handler.SetManagedAgentBindings(managedAgentBindingRepo)
 	if o.decider != nil {
-		handler.SetAgentRoutesOnly()
+		handler.UseExternalDecider()
 	}
 	for _, register := range o.extraRoutes {
 		handler.AddExtraRoutes(register)
