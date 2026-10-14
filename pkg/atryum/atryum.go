@@ -366,7 +366,7 @@ func runServer(args []string, o options) error {
 	userProvisioner := api.NewUserProvisioner(usersRepo)
 	handler.SetAuthz(authorizer, userProvisioner)
 	if o.decider != nil {
-		handler.SetAgentRoutesOnly()
+		handler.UseExternalDecider()
 	}
 	for _, register := range o.extraRoutes {
 		handler.AddExtraRoutes(register)

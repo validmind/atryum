@@ -227,8 +227,8 @@ type Handler struct {
 	// middleware so embedding programs can mount routes that require a
 	// logged-in principal (see pkg/atryum WithAuthenticatedRoutes).
 	authenticatedRoutes []func(mux *http.ServeMux, authenticate func(http.Handler) http.Handler)
-	// agentRoutesOnly: see SetAgentRoutesOnly.
-	agentRoutesOnly bool
+	// externalDecider: see UseExternalDecider.
+	externalDecider bool
 }
 
 // AddAuthenticatedRoutes registers a callback that may mount routes wrapped in
@@ -1010,10 +1010,11 @@ func (h *Handler) authConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// SetAgentRoutesOnly makes Routes mount only the agent-facing endpoints, for
-// an embedding program whose decider replaces Atryum's rules, operator API
-// and UI.
-func (h *Handler) SetAgentRoutesOnly() { h.agentRoutesOnly = true }
+// UseExternalDecider is for an embedding program whose decider replaces
+// Atryum's rules, plans, operator API and UI. Routes mounts only the
+// agent-facing endpoints, and the MCP proxy stops offering Atryum's rules and
+// plan tools, annotating tools/list with rules, and attaching rules to denials.
+func (h *Handler) UseExternalDecider() { h.externalDecider = true }
 
 func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
@@ -1022,7 +1023,7 @@ func (h *Handler) Routes() http.Handler {
 		mux.Handle("/.well-known/oauth-protected-resource", h.protectedResourceMetadata())
 	}
 	mcpHandler := h.agentRuntimeHandler(http.HandlerFunc(h.invokeUpstream))
-	if h.agentRoutesOnly {
+	if h.externalDecider {
 		mux.HandleFunc("/mcp", h.mcpRootNotFound)
 		mux.Handle("/mcp/", mcpHandler)
 		mux.Handle("/api/v1/invocations", h.agentRuntimeHandler(http.HandlerFunc(h.invocations)))
@@ -1575,6 +1576,9 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			},
 			"instructions": atryumInitializeInstructions,
 		}
+		if h.externalDecider {
+			delete(result, "instructions") // they describe Atryum's own rules tools
+		}
 		h.writeRPCResult(w, req.ID, result)
 	case "notifications/initialized":
 		w.WriteHeader(http.StatusAccepted)
@@ -1585,6 +1589,10 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			return
 		}
 		_ = h.emitTraceEvent(r.Context(), server, "mcp.tools.list", map[string]any{"tool_count": len(tools), "request_id": requestID})
+		if h.externalDecider {
+			h.writeRPCResult(w, req.ID, map[string]any{"tools": tools})
+			return
+		}
 		annotated := h.annotateToolsWithPolicy(r.Context(), auth.AgentIDFromContext(r.Context()), server, tools)
 		h.writeRPCResult(w, req.ID, map[string]any{"tools": annotated})
 	case "tools/call":
@@ -1596,15 +1604,15 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			h.writeRPCError(w, req.ID, -32602, "invalid params")
 			return
 		}
-		if params.Name == atryumRulesToolName {
+		if params.Name == atryumRulesToolName && !h.externalDecider {
 			h.handleAtryumRulesToolCall(w, r, req.ID, server, params.Arguments)
 			return
 		}
-		if params.Name == atryumPlanSubmitTool {
+		if params.Name == atryumPlanSubmitTool && !h.externalDecider {
 			h.handleMCPPlanSubmit(w, r, req.ID, server, params.Arguments)
 			return
 		}
-		if params.Name == atryumPlanGetTool {
+		if params.Name == atryumPlanGetTool && !h.externalDecider {
 			h.handleMCPPlanGet(w, r, req.ID, params.Arguments)
 			return
 		}
@@ -1628,7 +1636,7 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		_ = h.emitTraceEvent(r.Context(), server, "mcp.tools.call", tracePayload)
 		if len(resp.Error) > 0 {
 			result := normalizeToolCallResult(resp.Error, true)
-			if resp.Status == invocation.StatusDenied {
+			if resp.Status == invocation.StatusDenied && !h.externalDecider {
 				result = h.appendRulesContextToToolResult(r.Context(), result, auth.AgentIDFromContext(r.Context()), server, params.Name)
 			}
 			h.writeRPCResult(w, req.ID, result)
