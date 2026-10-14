@@ -27,6 +27,8 @@ type (
 	Change = invocation.Change
 	// Invocation is the invocation row as written.
 	Invocation = invocation.Invocation
+	// Approval is how an invocation was decided (Invocation.Approval).
+	Approval = invocation.Approval
 	// Status is an invocation status.
 	Status = invocation.Status
 )
