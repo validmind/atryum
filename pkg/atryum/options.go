@@ -4,8 +4,38 @@ import (
 	"database/sql"
 	"net/http"
 
+	"github.com/validmind/atryum/internal/invocation"
 	"github.com/validmind/atryum/pkg/authz"
 	"github.com/validmind/atryum/pkg/migrations"
+)
+
+// The types an embedding program's decider and event hook work with. They
+// are aliases, so the invocation service uses them without conversion.
+type (
+	// Decider decides every tool call; see WithDecider.
+	Decider = invocation.Decider
+	// ToolCall is the call a Decider is asked about.
+	ToolCall = invocation.ToolCall
+	// Decision is a Decider's result.
+	Decision = invocation.Decision
+	// Verdict is allow, notify, deny or pending.
+	Verdict = invocation.Verdict
+	// EventHook receives every invocation change inside its transaction.
+	EventHook = invocation.EventHook
+	// Change is one invocation change: Atryum's event type, payload and the
+	// invocation as written.
+	Change = invocation.Change
+	// Invocation is the invocation row as written.
+	Invocation = invocation.Invocation
+	// Status is an invocation status.
+	Status = invocation.Status
+)
+
+const (
+	VerdictAllow   = invocation.VerdictAllow
+	VerdictNotify  = invocation.VerdictNotify
+	VerdictDeny    = invocation.VerdictDeny
+	VerdictPending = invocation.VerdictPending
 )
 
 // options collects the extension points an embedding program can configure
@@ -17,6 +47,8 @@ type options struct {
 	databaseHooks       []func(db *sql.DB, usePostgres bool)
 	authorizer          authz.Authorizer
 	thirdPartyNotices   string
+	decider             Decider
+	eventHook           EventHook
 }
 
 type extensionMigrations struct {
@@ -94,6 +126,24 @@ func WithDatabase(hook func(db *sql.DB, usePostgres bool)) Option {
 			o.databaseHooks = append(o.databaseHooks, hook)
 		}
 	}
+}
+
+// WithDecider hands every tool call on every path (MCP proxy, direct
+// invocation, harness hook, Managed Agents bridge) to d, which returns allow,
+// notify, deny, or pending with a review ID. Atryum's own rules, plans and
+// default policy are skipped, a decider error denies the call, and only the
+// agent-facing routes are mounted: no operator API and no UI.
+func WithDecider(d Decider) Option {
+	return func(o *options) { o.decider = d }
+}
+
+// WithEventHook calls h inside the database transaction that changes an
+// invocation, with that transaction, once per Atryum event written (and once
+// as "invocation.created" for the insert). An error from h rolls the change
+// back; on the paths that would run a tool, the call then fails without
+// running it.
+func WithEventHook(h EventHook) Option {
+	return func(o *options) { o.eventHook = h }
 }
 
 // WithThirdPartyNotices sets the text printed by the `licenses` command.

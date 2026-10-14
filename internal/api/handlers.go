@@ -227,6 +227,8 @@ type Handler struct {
 	// middleware so embedding programs can mount routes that require a
 	// logged-in principal (see pkg/atryum WithAuthenticatedRoutes).
 	authenticatedRoutes []func(mux *http.ServeMux, authenticate func(http.Handler) http.Handler)
+	// agentRoutesOnly: see SetAgentRoutesOnly.
+	agentRoutesOnly bool
 }
 
 // AddAuthenticatedRoutes registers a callback that may mount routes wrapped in
@@ -1008,6 +1010,11 @@ func (h *Handler) authConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// SetAgentRoutesOnly makes Routes mount only the agent-facing endpoints, for
+// an embedding program whose decider replaces Atryum's rules, operator API
+// and UI.
+func (h *Handler) SetAgentRoutesOnly() { h.agentRoutesOnly = true }
+
 func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", h.healthz)
@@ -1015,6 +1022,18 @@ func (h *Handler) Routes() http.Handler {
 		mux.Handle("/.well-known/oauth-protected-resource", h.protectedResourceMetadata())
 	}
 	mcpHandler := h.agentRuntimeHandler(http.HandlerFunc(h.invokeUpstream))
+	if h.agentRoutesOnly {
+		mux.HandleFunc("/mcp", h.mcpRootNotFound)
+		mux.Handle("/mcp/", mcpHandler)
+		mux.Handle("/api/v1/invocations", h.agentRuntimeHandler(http.HandlerFunc(h.invocations)))
+		mux.Handle("/api/v1/external/invocations", h.agentRuntimeHandler(http.HandlerFunc(h.externalInvocations)))
+		mux.Handle("/api/v1/external/invocations/", h.agentRuntimeHandler(http.HandlerFunc(h.externalInvocationDetail)))
+		mux.Handle("/api/v1/external/sessions", h.agentRuntimeHandler(http.HandlerFunc(h.externalSessions)))
+		for _, register := range h.extraRoutes {
+			register(mux)
+		}
+		return mux
+	}
 	operatorAuthMW := auth.OperatorMiddleware(h.authValidator, h.apiKeyAuth, auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug}, h.userProvisioner)
 	// operator: authenticated + admin role (the historical operator API).
 	operator := func(fn http.HandlerFunc) http.Handler {

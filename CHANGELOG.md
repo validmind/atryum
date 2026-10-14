@@ -30,6 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   then launch Claude Code with the same two variables. The shared hook also
   falls back to `$ATRYUM_HOME/agent-hook-state` when only `ATRYUM_HOME` is
   set. Default installs are unchanged.
+- `pkg/atryum.WithDecider`: an embedding program decides every tool call on
+  every path (MCP proxy, direct invocation, harness hook, Managed Agents
+  bridge) as allow, notify, deny, or pending with a review ID. Atryum's rules,
+  plans, default policy, operator API and UI are then not used; a decider error
+  denies the call.
+- `pkg/atryum.WithEventHook`: called inside the transaction that changes an
+  invocation, with that transaction, so an embedding program can append its
+  own records atomically.
 
 ### Fixed
 
@@ -97,6 +105,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for local development; pass `--allow-insecure-http` to `setup claude`
   (which bakes `ATRYUM_ALLOW_INSECURE_HTTP=1` into the hook commands) or set
   that variable yourself to accept a trusted private network.
+
+### Changed
+
+- Each invocation state change and its `invocation_events` row are now written
+  in one transaction, closing the gap where either could commit without the
+  other.
+- A human-gated MCP call now waits on its database row instead of an in-process
+  channel, so an approval or denial recorded by another Atryum process releases
+  it. Decisions and the move to executing are compare-and-set, so a call is
+  decided and run once.
 
 ## [0.4.0] - 2026-07-27
 

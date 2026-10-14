@@ -6,6 +6,7 @@ package atryum
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -315,6 +316,15 @@ func runServer(args []string, o options) error {
 		service.SetInvocationSummarizer(&summaryAdapter{client: backendClient})
 	}
 	service.SetSessionStore(store.NewExternalSessionRepoWithDialect(db, dialect))
+	service.SetTx(func(ctx context.Context, fn func(context.Context, *sql.Tx) error) error {
+		return store.InTx(ctx, db, fn)
+	})
+	if o.decider != nil {
+		service.SetDecider(o.decider)
+	}
+	if o.eventHook != nil {
+		service.SetEventHook(o.eventHook)
+	}
 	serverOperator := api.NewServerOperatorService(serverRepo, oauthRepo, client, 5*time.Second, cfg.Server.PublicBaseURL)
 	if *initServers {
 		if err := initEnabledServerStatuses(context.Background(), serverRepo, serverOperator); err != nil {
@@ -337,6 +347,9 @@ func runServer(args []string, o options) error {
 	}
 	userProvisioner := api.NewUserProvisioner(usersRepo)
 	handler.SetAuthz(authorizer, userProvisioner)
+	if o.decider != nil {
+		handler.SetAgentRoutesOnly()
+	}
 	for _, register := range o.extraRoutes {
 		handler.AddExtraRoutes(register)
 	}
@@ -544,6 +557,9 @@ func (a *managedBindingStoreAdapter) List(ctx context.Context) ([]managedagents.
 
 // managedAuditAdapter bridges the invocation/event repos →
 // managedagents.InvocationAuditStore for the synthetic per-session audit row.
+// ponytail: these session audit rows bypass WithEventHook; they record session
+// lifecycle, not tool calls (those go through Submit). Route them through the
+// service if an embedder needs them in its record.
 type managedAuditAdapter struct {
 	inv    *store.InvocationRepo
 	events *store.EventRepo
