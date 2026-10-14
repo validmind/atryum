@@ -48,3 +48,25 @@ func TestExternalDeciderHidesAtryumRulesFromMCP(t *testing.T) {
 		t.Fatalf("initialize = %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// With RequireAgentIdentity, an agent route without a verified identity is
+// refused, and the ?agent_id= hint does not stand in for one.
+func TestRequireAgentIdentity(t *testing.T) {
+	h := NewHandler(&stubService{}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	h.UseExternalDecider()
+	h.RequireAgentIdentity()
+	routes := h.Routes()
+	for _, path := range []string{
+		"/api/v1/external/invocations?agent_id=agent-a",
+		"/api/v1/external/invocations/inv_1?agent_id=agent-a",
+		"/api/v1/external/sessions",
+		"/api/v1/invocations",
+		"/mcp/demo?agent_id=agent-a",
+	} {
+		rec := httptest.NewRecorder()
+		routes.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"agent_id":"agent-a","tool":"Bash"}`)))
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("POST %s = %d, want 401", path, rec.Code)
+		}
+	}
+}

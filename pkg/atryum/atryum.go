@@ -73,6 +73,19 @@ func Main(opts ...Option) {
 	}
 }
 
+// checkAgentAuth is WithRequireAgentAuth's startup check.
+func checkAgentAuth(cfg config.Config) error {
+	if cfg.AuthDebug.SkipVerify || truthyEnv("ATRYUM_AUTH_DEBUG_SKIP_VERIFY") {
+		return errors.New("agent auth is required: auth_debug.skip_verify and ATRYUM_AUTH_DEBUG_SKIP_VERIFY are not allowed")
+	}
+	for _, a := range cfg.Auth {
+		if a.Enabled {
+			return nil
+		}
+	}
+	return errors.New("agent auth is required: configure at least one [[auth]] issuer with enabled = true")
+}
+
 // Migrate applies atryum's migrations, then every WithMigrations set, to the
 // database at databaseURL without starting the server. Embedding programs use
 // it for a separate migrate step (for example a pre-upgrade job).
@@ -133,6 +146,14 @@ func runServer(args []string, o options) error {
 	cfg, err := config.Load(resolvedConfigPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+	if o.databaseURL != "" {
+		cfg.Server.DatabaseURL = o.databaseURL
+	}
+	if o.requireAgentAuth {
+		if err := checkAgentAuth(cfg); err != nil {
+			return err
+		}
 	}
 	if err := configureLogging(cfg.Server.LogLevel); err != nil {
 		return err
@@ -367,6 +388,9 @@ func runServer(args []string, o options) error {
 		log.Printf("api key auth enabled for /invocations/{agent_id} and /agent_ids")
 	} else {
 		log.Printf("api key auth NOT configured: /invocations/{agent_id} and /agent_ids will refuse all requests")
+	}
+	if o.requireAgentAuth {
+		handler.RequireAgentIdentity()
 	}
 	authDebugSkipVerify := cfg.AuthDebug.SkipVerify || truthyEnv("ATRYUM_AUTH_DEBUG_SKIP_VERIFY")
 	if authDebugSkipVerify {

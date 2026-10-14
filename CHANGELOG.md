@@ -19,8 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   own records atomically.
 - `pkg/atryum.Migrate` applies the built-in and extension migrations without
   starting the server.
-- The `ATRYUM_DATABASE_URL` environment variable overrides
-  `server.database_url`.
+- `pkg/atryum.WithDatabaseURL` sets the database URL for an embedding
+  program, overriding `server.database_url`.
+- `pkg/atryum.WithRequireAgentAuth`: the server refuses to start without an
+  enabled `[[auth]]` issuer or with `auth_debug.skip_verify` (or
+  `ATRYUM_AUTH_DEBUG_SKIP_VERIFY`) set, and agent routes reject any request
+  without a verified agent identity.
 
 ### Changed
 

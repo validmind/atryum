@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/validmind/atryum/internal/auth"
 	"github.com/validmind/atryum/internal/config"
 	"github.com/validmind/atryum/internal/invocation"
 	"github.com/validmind/atryum/internal/invocation/policy"
@@ -251,4 +252,161 @@ func hookLog(t *testing.T, db *sql.DB) string {
 		t.Fatal(err)
 	}
 	return got.String
+}
+
+// failingHook fails on the listed change types and records the rest.
+func failingHook(fail ...string) (invocation.EventHook, *[]string) {
+	var seen []string
+	return func(_ context.Context, _ *sql.Tx, c invocation.Change) error {
+		for _, f := range fail {
+			if c.Type == f {
+				return errors.New("record unavailable")
+			}
+		}
+		seen = append(seen, c.Type)
+		return nil
+	}, &seen
+}
+
+// A decision that cannot be recorded never runs: the call fails closed, even
+// when the denial cannot be recorded either.
+func TestUnrecordedDecisionFailsClosed(t *testing.T) {
+	for _, fail := range [][]string{{"invocation.received"}, {"invocation.received", "invocation.denied"}} {
+		upstream, calls := fakeMCP(t)
+		svc := newHookedService(t, newSQLiteTestDB(t), upstream.URL)
+		svc.SetDecider(verdictDecider(invocation.VerdictAllow))
+		hook, _ := failingHook(fail...)
+		svc.SetEventHook(hook)
+		resp, err := svc.Invoke(context.Background(), invocation.CreateInvocationRequest{Server: "bank", Tool: "pay", Input: map[string]any{}})
+		if err != nil || resp.Status != invocation.StatusDenied || calls.Load() != 0 {
+			t.Fatalf("failing %v: status=%s err=%v calls=%d; want denied and no call", fail, resp.Status, err, calls.Load())
+		}
+	}
+}
+
+// Once the tool has run, a record failure is not an error (which would invite
+// a retry), and a caller that hangs up mid-call does not stop the outcome
+// from being recorded.
+func TestOutcomeAfterExecution(t *testing.T) {
+	t.Run("record failure is not an error", func(t *testing.T) {
+		upstream, calls := fakeMCP(t)
+		svc := newHookedService(t, newSQLiteTestDB(t), upstream.URL)
+		svc.SetDecider(verdictDecider(invocation.VerdictAllow))
+		hook, _ := failingHook("invocation.succeeded")
+		svc.SetEventHook(hook)
+		resp, err := svc.Invoke(context.Background(), invocation.CreateInvocationRequest{Server: "bank", Tool: "pay", Input: map[string]any{}})
+		if err != nil || resp.Status != invocation.StatusSucceeded || calls.Load() != 1 {
+			t.Fatalf("status=%s err=%v calls=%d; want succeeded, no error, one call", resp.Status, err, calls.Load())
+		}
+	})
+	t.Run("caller hangs up during the call", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["method"] == "tools/call" {
+				cancel() // the tool ran; now the caller goes away
+				time.Sleep(50 * time.Millisecond)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": body["id"], "result": map[string]any{"content": []map[string]any{{"type": "text", "text": "ok"}}}})
+		}))
+		defer upstream.Close()
+		db := newSQLiteTestDB(t)
+		svc := newHookedService(t, db, upstream.URL)
+		svc.SetDecider(verdictDecider(invocation.VerdictAllow))
+		hook, seen := failingHook()
+		svc.SetEventHook(hook)
+		resp, err := svc.Invoke(ctx, invocation.CreateInvocationRequest{Server: "bank", Tool: "pay", Input: map[string]any{}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := svc.Get(context.Background(), resp.InvocationID)
+		last := (*seen)[len(*seen)-1]
+		if got.Status == invocation.StatusExecuting || (last != "invocation.failed" && last != "invocation.succeeded") {
+			t.Fatalf("row %s, last change %s: the outcome was not recorded", got.Status, last)
+		}
+	})
+}
+
+// A caller that goes away after its call was approved leaves the row failed
+// with the recorded approval intact.
+func TestCancelAfterApprovalKeepsTheApproval(t *testing.T) {
+	upstream, calls := fakeMCP(t)
+	db := newSQLiteTestDB(t)
+	holder := newHookedService(t, db, upstream.URL)
+	holder.SetDecider(verdictDecider(invocation.VerdictPending))
+	invocation.SetApprovalPoll(holder, time.Hour) // the holder never sees the approval
+	other := newHookedService(t, db, upstream.URL)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		for {
+			time.Sleep(20 * time.Millisecond)
+			list, err := other.List(context.Background(), invocation.InvocationListFilter{Limit: 1})
+			if err == nil && len(list.Items) == 1 && list.Items[0].Status == invocation.StatusPendingApproval {
+				if err := other.Approve(context.Background(), list.Items[0].InvocationID, "manager@bank"); err != nil {
+					t.Error(err)
+				}
+				cancel()
+				return
+			}
+		}
+	}()
+	resp, err := holder.Invoke(ctx, invocation.CreateInvocationRequest{Server: "bank", Tool: "pay", Input: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := other.Get(context.Background(), resp.InvocationID)
+	if got.Status != invocation.StatusFailed || calls.Load() != 0 {
+		t.Fatalf("status=%s calls=%d; want failed and not run", got.Status, calls.Load())
+	}
+	if got.Approval == nil || got.Approval.Status != "approved" || got.Approval.ActorID == nil || *got.Approval.ActorID != "manager@bank" {
+		t.Fatalf("approval = %+v; want the recorded approval by manager@bank", got.Approval)
+	}
+}
+
+func TestDeciderPanicDenies(t *testing.T) {
+	upstream, calls := fakeMCP(t)
+	svc := newHookedService(t, newSQLiteTestDB(t), upstream.URL)
+	svc.SetDecider(func(context.Context, invocation.ToolCall) (invocation.Decision, error) { panic("boom") })
+	resp, err := svc.Invoke(context.Background(), invocation.CreateInvocationRequest{Server: "bank", Tool: "pay", Input: map[string]any{}})
+	if err != nil || resp.Status != invocation.StatusDenied || calls.Load() != 0 {
+		t.Fatalf("status=%s err=%v calls=%d; want denied", resp.Status, err, calls.Load())
+	}
+	sub, err := svc.Submit(context.Background(), invocation.ExternalSubmitRequest{Source: "hook", Tool: "Bash", Input: map[string]any{}})
+	if err != nil || sub.Status != invocation.StatusDenied {
+		t.Fatalf("submit status=%s err=%v; want denied", sub.Status, err)
+	}
+}
+
+// Under a decider a held call's arguments are not sent to Atryum's summarizer.
+func TestNoSummaryUnderADecider(t *testing.T) {
+	for _, withDecider := range []bool{false, true} {
+		db := newSQLiteTestDB(t)
+		svc := invocation.NewService(store.NewInvocationRepo(db), store.NewEventRepo(db), nil, nil, nil, 5*time.Second, nil, nil, nil, summarySettingsStub{modelConfigCUID: "model"})
+		summarizer := &summaryClientStub{summary: "s"}
+		svc.SetInvocationSummarizer(summarizer)
+		if withDecider {
+			svc.SetDecider(verdictDecider(invocation.VerdictPending))
+		}
+		resp, err := svc.Submit(context.Background(), invocation.ExternalSubmitRequest{Source: "hook", Tool: "Bash", Input: map[string]any{"secret": "x"}})
+		if err != nil || resp.Status != invocation.StatusPendingApproval {
+			t.Fatalf("status=%s err=%v", resp.Status, err)
+		}
+		time.Sleep(200 * time.Millisecond)
+		if called := summarizer.request().Invocation != nil; called == withDecider {
+			t.Fatalf("decider=%v: summarizer called=%v", withDecider, called)
+		}
+	}
+}
+
+// A verified identity wins over an agent_id in the request body.
+func TestSubmitUsesTheVerifiedIdentity(t *testing.T) {
+	svc := newHookedService(t, newSQLiteTestDB(t), "http://unused")
+	svc.SetDecider(verdictDecider(invocation.VerdictAllow))
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "agent-a", Issuer: "https://idp", Subject: "agent-a"})
+	resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{Source: "hook", Tool: "Bash", AgentID: "agent-b", Input: map[string]any{}})
+	if err != nil || resp.AgentID == nil || *resp.AgentID != "agent-a" {
+		t.Fatalf("agent = %v (%v), want agent-a", resp.AgentID, err)
+	}
 }

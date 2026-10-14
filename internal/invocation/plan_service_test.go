@@ -919,6 +919,15 @@ func TestPlanInvocationRulesStopAtEarlierHumanApproval(t *testing.T) {
 	if got := judge.adherenceRequest(); got.ToolName != "deploy" || got.Charter == "" {
 		t.Fatalf("execution must still run charter/adherence review, got %+v", got)
 	}
+
+	// Under a decider the approved plan grants nothing: the decider decides.
+	svc.SetDecider(verdictDecider(invocation.VerdictDeny))
+	resp, err = svc.Submit(ctx, invocation.ExternalSubmitRequest{
+		Source: "external", Tool: "deploy", AgentID: "agent-a", Input: map[string]any{},
+	})
+	if err != nil || resp.Status != invocation.StatusDenied || resp.PlanID != nil {
+		t.Fatalf("under a decider: response = %+v, %v; want denied with no plan", resp, err)
+	}
 }
 
 func TestPlanAutoDenyOnLaterActionOverridesEarlierHumanReview(t *testing.T) {

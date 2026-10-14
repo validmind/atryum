@@ -734,6 +734,9 @@ type approvedPlanMatch struct {
 // The third return value reports that more than one action could describe the
 // call. Callers must ask the adherence judge to select among those actions.
 func (s *Service) matchApprovedPlan(ctx context.Context, agentID, server, tool string) (approvedPlanMatch, bool, bool) {
+	if s.decider != nil {
+		return approvedPlanMatch{}, false, false // the decider governs every call
+	}
 	if !s.plansEnabled() || agentID == "" || tool == "" {
 		return approvedPlanMatch{}, false, false
 	}
