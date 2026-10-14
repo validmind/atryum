@@ -379,21 +379,32 @@ func TestDeciderPanicDenies(t *testing.T) {
 	}
 }
 
-// Under a decider a held call's arguments are not sent to Atryum's summarizer.
+// Under a decider a held MCP proxy call's arguments are not sent to Atryum's
+// summarizer; without one (a manual-approval policy holds it) they are.
 func TestNoSummaryUnderADecider(t *testing.T) {
 	for _, withDecider := range []bool{false, true} {
+		upstream, _ := fakeMCP(t)
 		db := newSQLiteTestDB(t)
-		svc := invocation.NewService(store.NewInvocationRepo(db), store.NewEventRepo(db), nil, nil, nil, 5*time.Second, nil, nil, nil, summarySettingsStub{modelConfigCUID: "model"})
+		resolver := mcp.NewResolver(store.NewServerRepo(db), config.Config{
+			Upstreams: []config.UpstreamConfig{{Name: "bank", Mode: "http", BaseURL: upstream.URL, Enabled: true, TimeoutSeconds: 5}},
+		})
+		if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		svc := invocation.NewService(store.NewInvocationRepo(db), store.NewEventRepo(db), resolver, mcp.NewHTTPClient(), policy.ManualApprovalProvider{}, 5*time.Second, nil, nil, nil, summarySettingsStub{modelConfigCUID: "model"})
 		summarizer := &summaryClientStub{summary: "s"}
 		svc.SetInvocationSummarizer(summarizer)
 		if withDecider {
 			svc.SetDecider(verdictDecider(invocation.VerdictPending))
 		}
-		resp, err := svc.Submit(context.Background(), invocation.ExternalSubmitRequest{Source: "hook", Tool: "Bash", Input: map[string]any{"secret": "x"}})
-		if err != nil || resp.Status != invocation.StatusPendingApproval {
-			t.Fatalf("status=%s err=%v", resp.Status, err)
+		// The call is held until the caller gives up.
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		resp, err := svc.Invoke(ctx, invocation.CreateInvocationRequest{Server: "bank", Tool: "pay", Input: map[string]any{"secret": "x"}})
+		cancel()
+		if err != nil || resp.Status != invocation.StatusFailed {
+			t.Fatalf("decider=%v: status=%s err=%v; want the held call to fail when the caller leaves", withDecider, resp.Status, err)
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 		if called := summarizer.request().Invocation != nil; called == withDecider {
 			t.Fatalf("decider=%v: summarizer called=%v", withDecider, called)
 		}

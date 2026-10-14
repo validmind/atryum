@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -87,12 +88,42 @@ func checkAgentAuth(cfg config.Config) error {
 	if cfg.AuthDebug.SkipVerify || truthyEnv("ATRYUM_AUTH_DEBUG_SKIP_VERIFY") {
 		return errors.New("agent auth is required: auth_debug.skip_verify and ATRYUM_AUTH_DEBUG_SKIP_VERIFY are not allowed")
 	}
+	enabled := false
 	for _, a := range cfg.Auth {
-		if a.Enabled {
-			return nil
+		if !a.Enabled {
+			continue
+		}
+		enabled = true
+		// Keys fetched over plain HTTP could be swapped in transit, letting
+		// anyone mint agent tokens. Loopback is allowed for local development.
+		for _, u := range []string{a.Issuer, a.JWKSURL} {
+			if u != "" && !secureOrLoopback(u) {
+				return fmt.Errorf("agent auth is required: %q must be an https URL (plain http only on loopback)", u)
+			}
 		}
 	}
-	return errors.New("agent auth is required: configure at least one [[auth]] issuer with enabled = true")
+	if !enabled {
+		return errors.New("agent auth is required: configure at least one [[auth]] issuer with enabled = true")
+	}
+	return nil
+}
+
+func secureOrLoopback(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	if u.Scheme == "https" {
+		return true
+	}
+	if u.Scheme != "http" {
+		return false
+	}
+	if u.Hostname() == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(u.Hostname())
+	return ip != nil && ip.IsLoopback()
 }
 
 // Migrate applies atryum's migrations, then every WithMigrations set, to the
