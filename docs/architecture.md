@@ -116,30 +116,24 @@ review; missing charter context denies; and an unknown verdict is treated as
 
 ## Atryum-executed calls
 
-`Invoke` owns the complete execution lifecycle. A human-gated HTTP request remains
-blocked on an in-memory channel until an admin decision or until the caller's request
-context is cancelled (a client disconnect or a client-side timeout). Atryum imposes no
-approval deadline of its own: the configured `request_timeout_seconds` bounds upstream
-tool execution, not the human wait. The durable invocation is still visible while the
-request is blocked.
+`Invoke` owns the complete execution lifecycle. A human-gated HTTP request stays
+open, re-reading its invocation row every 250 ms, until the row leaves
+`pending_approval` or the caller's request context is cancelled (a client
+disconnect or a client-side timeout). Atryum imposes no approval deadline of its
+own: the configured `request_timeout_seconds` bounds upstream tool execution, not
+the human wait.
 
-Human-approval coordination for Atryum-executed calls is process-local. PostgreSQL
-persists the invocation but does not provide distributed signaling for the in-memory
-waiter (the blocked request goroutine), so these calls require a single active Atryum
-process. Concretely:
+Because the row is the source of truth, an approval or denial recorded by any
+process releases the held request. Decisions and the move to `executing` are
+compare-and-set on the row's status, so a call is decided once and run once.
+What is not implemented:
 
-- With multiple replicas, an approval handled by a different process updates the row
-  without waking the original request; when that request's context is later cancelled,
-  it overwrites the approved state as failed.
-- Caller cancellation marks the invocation failed. The stored error text says
-  "cancelled", but the persisted status is `failed`, not `cancelled`.
-- An abrupt process exit drops the waiter and caller while the durable invocation can
-  remain `pending_approval`. Nothing resumes pending invocations at startup, so a
-  later approval updates that row but does not execute the tool.
-
-Multi-replica or crash-resumable execution requires durable coordination — for
-example a work queue, or an outbox table that a worker drains — which is not
-implemented.
+- Wake-up is by polling, not a database notification.
+- Caller cancellation marks a still-pending (or approved but not yet running)
+  invocation failed. The stored error text says "cancelled", but the persisted
+  status is `failed`.
+- An abrupt process exit drops the held request. Nothing resumes it on another
+  process, so a later approval updates the row but does not execute the tool.
 
 ```mermaid
 sequenceDiagram
@@ -167,10 +161,10 @@ sequenceDiagram
         Service-->>Caller: Result
     else human approval
         Service->>Store: Persist pending_approval status and event
-        Note over Service: Wait on pendingApprovals invocation channel
+        Note over Service: Re-read the invocation row until it is decided
         Operator->>API: Approve or deny
         API->>Service: Approve or Deny
-        Service->>Service: Deliver decision to waiter
+        Service->>Store: Persist decision (compare-and-set) and event
         alt approved
             Service->>Store: Persist approved and executing events
             Service->>MCP: Execute tool
@@ -264,7 +258,7 @@ The core tables are:
 | Table | Architectural role |
 |---|---|
 | `invocations` | Current state and request/result material for each governed call |
-| `invocation_events` | Ordered, best-effort event history for an invocation |
+| `invocation_events` | Ordered event history for an invocation, written with each state change |
 | `approval_rules` | Ordered match criteria and decision action |
 | `agents` | Mapping from runtime identities to named governance records |
 | `mcp_servers` | Runtime upstream definitions and connection state |
@@ -276,17 +270,21 @@ The core tables are:
 Schema changes are ordered migrations under `internal/store/migrations/` and are
 applied at startup for both SQLite and PostgreSQL.
 
-An invocation's row is the authoritative record of current state;
-`invocation_events` is best-effort event history. The two writes are separate
-statements, not one transaction, so parity can fail in either direction: a status
-update can commit while its event append fails, and — where code appends the event
-before updating the row — an event can exist for a status update that never
-committed. Event-append errors are currently discarded without a log line. Code that
-adds a transition must attempt to update both representations, but consumers must not
-reconstruct current state solely from events or assume complete parity. Deployments
-that require a transactionally complete compliance audit need to wrap both writes in
-one transaction (or adopt an outbox design) before treating the event history as
-such.
+An invocation's row is the authoritative record of current state. Every change
+to it is written in one transaction with its `invocation_events` row, so state
+and history cannot disagree; an embedding program's event hook
+(`pkg/atryum.WithEventHook`) runs inside that same transaction.
+
+## Embedding
+
+`pkg/atryum` runs this server as a library. Besides extra routes, migrations and
+the database handle, an embedding program can set:
+
+- `WithDecider`: every call on every path is decided by the program (allow,
+  notify, deny, or pending with a review ID). Rules, plans and the default policy
+  are skipped, a decider error denies, and only agent-facing routes are mounted.
+- `WithEventHook`: called with the transaction for every invocation change, so
+  the program's own records commit or roll back with it.
 
 ## Configuration and ownership
 
