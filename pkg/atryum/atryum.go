@@ -242,6 +242,15 @@ func runServer(args []string, o options) error {
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer db.Close()
+	if dialect == store.DialectPostgres {
+		p := cfg.Server.DatabasePool
+		store.ConfigurePool(db, store.DBPool{
+			MaxOpenConns:    p.MaxOpenConns,
+			MaxIdleConns:    p.MaxIdleConns,
+			ConnMaxIdleTime: time.Duration(p.ConnMaxIdleTimeSeconds) * time.Second,
+			ConnMaxLifetime: time.Duration(p.ConnMaxLifetimeSeconds) * time.Second,
+		}.Over(o.dbPool))
+	}
 
 	if err := migrate(db, dialect, o); err != nil {
 		return err
