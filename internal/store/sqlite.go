@@ -89,22 +89,41 @@ func (r *InvocationRepo) Create(ctx context.Context, inv invocation.Invocation) 
 	if err != nil {
 		return err
 	}
-	_, err = r.db.ExecContext(ctx, query, args...)
+	_, err = conn(ctx, r.db).ExecContext(ctx, query, args...)
 	return err
 }
 
 func (r *InvocationRepo) UpdateResult(ctx context.Context, inv invocation.Invocation) error {
+	query, args, err := r.updateResult(inv).ToSql()
+	if err != nil {
+		return err
+	}
+	_, err = conn(ctx, r.db).ExecContext(ctx, query, args...)
+	return err
+}
+
+// UpdateResultFrom is UpdateResult only while the row is still in status
+// from; it reports whether the row was updated.
+func (r *InvocationRepo) UpdateResultFrom(ctx context.Context, inv invocation.Invocation, from invocation.Status) (bool, error) {
+	query, args, err := r.updateResult(inv).Where(sq.Eq{"status": from}).ToSql()
+	if err != nil {
+		return false, err
+	}
+	res, err := conn(ctx, r.db).ExecContext(ctx, query, args...)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+func (r *InvocationRepo) updateResult(inv invocation.Invocation) sq.UpdateBuilder {
 	var approval any
 	if inv.Approval != nil {
 		b, _ := json.Marshal(inv.Approval)
 		approval = string(b)
 	}
-	query, args, err := r.sb.Update("invocations").Set("status", inv.Status).Set("approval_json", approval).Set("response_json", nullableString(inv.Response)).Set("error_json", nullableString(inv.Error)).Set("completed_at", inv.CompletedAt).Set("matched_rule_id", inv.MatchedRuleID).Set("plan_id", inv.PlanID).Set("plan_step_index", inv.PlanStepIndex).Where(sq.Eq{"invocation_id": inv.InvocationID}).ToSql()
-	if err != nil {
-		return err
-	}
-	_, err = r.db.ExecContext(ctx, query, args...)
-	return err
+	return r.sb.Update("invocations").Set("status", inv.Status).Set("approval_json", approval).Set("response_json", nullableString(inv.Response)).Set("error_json", nullableString(inv.Error)).Set("completed_at", inv.CompletedAt).Set("matched_rule_id", inv.MatchedRuleID).Set("plan_id", inv.PlanID).Set("plan_step_index", inv.PlanStepIndex).Where(sq.Eq{"invocation_id": inv.InvocationID})
 }
 
 // UpdateSummary persists the LLM-generated summary for an invocation. The
@@ -118,7 +137,7 @@ func (r *InvocationRepo) UpdateSummary(ctx context.Context, id string, summary s
 	if err != nil {
 		return err
 	}
-	_, err = r.db.ExecContext(ctx, query, args...)
+	_, err = conn(ctx, r.db).ExecContext(ctx, query, args...)
 	return err
 }
 
@@ -179,7 +198,7 @@ func (r *EventRepo) Create(ctx context.Context, evt invocation.Event) error {
 	if err != nil {
 		return err
 	}
-	_, err = r.db.ExecContext(ctx, query, args...)
+	_, err = conn(ctx, r.db).ExecContext(ctx, query, args...)
 	return err
 }
 

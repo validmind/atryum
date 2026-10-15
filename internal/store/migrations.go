@@ -92,6 +92,9 @@ func InitDBWithDialect(db *sql.DB, dialect Dialect) error {
 }
 
 func ensureMigrationsTable(db *sql.DB) error {
+	if tableReadable(db, "schema_migrations") {
+		return nil
+	}
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version INTEGER PRIMARY KEY,
@@ -100,6 +103,19 @@ func ensureMigrationsTable(db *sql.DB) error {
 		)
 	`)
 	return err
+}
+
+// tableReadable reports whether table exists and can be read. Checking first
+// lets a role without CREATE on the schema (an embedding program's service
+// role) start once the schema is in place: Postgres checks that privilege even
+// for CREATE TABLE IF NOT EXISTS on an existing table. table is a constant.
+func tableReadable(db *sql.DB, table string) bool {
+	rows, err := db.Query("SELECT 1 FROM " + table + " LIMIT 1")
+	if err != nil {
+		return false
+	}
+	_ = rows.Close()
+	return true
 }
 
 func getAppliedMigrations(db *sql.DB, dialect Dialect) (map[int]bool, error) {
@@ -225,6 +241,9 @@ func RunExtensionMigrationsWithDialect(db *sql.DB, dialect Dialect, namespace st
 }
 
 func ensureExtensionMigrationsTable(db *sql.DB) error {
+	if tableReadable(db, "extension_schema_migrations") {
+		return nil
+	}
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS extension_schema_migrations (
 			namespace  TEXT NOT NULL,

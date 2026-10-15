@@ -4,8 +4,40 @@ import (
 	"database/sql"
 	"net/http"
 
+	"github.com/validmind/atryum/internal/invocation"
 	"github.com/validmind/atryum/pkg/authz"
 	"github.com/validmind/atryum/pkg/migrations"
+)
+
+// The types an embedding program's decider and event hook work with. They
+// are aliases, so the invocation service uses them without conversion.
+type (
+	// Decider decides every tool call; see WithDecider.
+	Decider = invocation.Decider
+	// ToolCall is the call a Decider is asked about.
+	ToolCall = invocation.ToolCall
+	// Decision is a Decider's result.
+	Decision = invocation.Decision
+	// Verdict is allow, notify, deny or pending.
+	Verdict = invocation.Verdict
+	// EventHook receives every invocation change inside its transaction.
+	EventHook = invocation.EventHook
+	// Change is one invocation change: Atryum's event type, payload and the
+	// invocation as written.
+	Change = invocation.Change
+	// Invocation is the invocation row as written.
+	Invocation = invocation.Invocation
+	// Approval is how an invocation was decided (Invocation.Approval).
+	Approval = invocation.Approval
+	// Status is an invocation status.
+	Status = invocation.Status
+)
+
+const (
+	VerdictAllow   = invocation.VerdictAllow
+	VerdictNotify  = invocation.VerdictNotify
+	VerdictDeny    = invocation.VerdictDeny
+	VerdictPending = invocation.VerdictPending
 )
 
 // options collects the extension points an embedding program can configure
@@ -17,6 +49,11 @@ type options struct {
 	databaseHooks       []func(db *sql.DB, usePostgres bool)
 	authorizer          authz.Authorizer
 	thirdPartyNotices   string
+	agentAPIKeys        *bool // nil: on unless a decider is set
+	decider             Decider
+	eventHook           EventHook
+	databaseURL         string
+	requireAgentAuth    bool
 }
 
 type extensionMigrations struct {
@@ -94,6 +131,60 @@ func WithDatabase(hook func(db *sql.DB, usePostgres bool)) Option {
 			o.databaseHooks = append(o.databaseHooks, hook)
 		}
 	}
+}
+
+// WithDecider hands every tool call on every path (MCP proxy, direct
+// invocation, harness hook, Managed Agents bridge) to d, which returns allow,
+// notify, deny, or pending with a review ID. Atryum's own rules, plans and
+// default policy are skipped, a decider error denies the call, and only the
+// agent-facing routes are mounted: no operator API and no UI.
+func WithDecider(d Decider) Option {
+	return func(o *options) { o.decider = d }
+}
+
+// WithEventHook calls h inside the database transaction that changes an
+// invocation, with that transaction, once per Atryum event written (and once
+// as "invocation.created" for the insert). An error from h rolls the change
+// back; on the paths that would run a tool, the call then fails without
+// running it.
+func WithEventHook(h EventHook) Option {
+	return func(o *options) { o.eventHook = h }
+}
+
+// WithDatabaseURL sets the database URL, overriding server.database_url in
+// the config file, so an embedding program keeps one database setting for the
+// server and its own commands.
+func WithDatabaseURL(url string) Option {
+	return func(o *options) { o.databaseURL = url }
+}
+
+// WithRequireAgentAuth makes agent authentication mandatory: the server
+// refuses to start unless an [[auth]] issuer is enabled, refuses to start
+// with auth_debug.skip_verify or ATRYUM_AUTH_DEBUG_SKIP_VERIFY set, and agent
+// routes reject a request that carries no verified agent identity. A
+// caller-supplied agent_id is then never used for an HTTP caller. Agent API
+// keys (see WithAgentAPIKeys) do not count as the required issuer.
+func WithRequireAgentAuth() Option {
+	return func(o *options) { o.requireAgentAuth = true }
+}
+
+// WithAgentAPIKeys turns Atryum's agent API keys (Bearer atr_..., issued
+// through the operator API) on or off for the agent routes (/mcp/,
+// /api/v1/invocations, /api/v1/external/*). They are on by default, and off by
+// default under WithDecider, whose embedder registers agents itself and would
+// not know a key's agents.id. When off, an atr_ bearer gets 401 on those
+// routes. Keys never satisfy WithRequireAgentAuth's need for an [[auth]]
+// issuer at startup.
+func WithAgentAPIKeys(enabled bool) Option {
+	return func(o *options) { o.agentAPIKeys = &enabled }
+}
+
+// agentAPIKeysEnabled resolves WithAgentAPIKeys against its default.
+func (o options) agentAPIKeysEnabled() bool {
+	if o.agentAPIKeys != nil {
+		return *o.agentAPIKeys
+	}
+	return o.decider == nil
 }
 
 // WithThirdPartyNotices sets the text printed by the `licenses` command.

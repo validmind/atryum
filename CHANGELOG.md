@@ -30,6 +30,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   then launch Claude Code with the same two variables. The shared hook also
   falls back to `$ATRYUM_HOME/agent-hook-state` when only `ATRYUM_HOME` is
   set. Default installs are unchanged.
+- `pkg/atryum.WithDecider`: an embedding program decides every tool call on
+  every path (MCP proxy, direct invocation, harness hook, Managed Agents
+  bridge) as allow, notify, deny, or pending with a review ID. Atryum's rules,
+  plans, default policy, operator API and UI are then not used; a decider error
+  denies the call.
+- `pkg/atryum.WithAgentAPIKeys(enabled)`: turns agent API keys (`atr_…`) on
+  or off for the agent routes. They stay on by default, and are off by
+  default under `WithDecider`, whose embedder keeps its own agent registry;
+  when off, an `atr_` bearer gets 401 on `/mcp/`, `/api/v1/invocations` and
+  `/api/v1/external/*`.
+- `pkg/atryum.WithEventHook`: called inside the transaction that changes an
+  invocation, with that transaction, so an embedding program can append its
+  own records atomically.
+- `pkg/atryum.Migrate` applies the built-in and extension migrations without
+  starting the server.
+- `pkg/atryum.WithDatabaseURL` sets the database URL for an embedding
+  program, overriding `server.database_url`.
+- `pkg/atryum.WithRequireAgentAuth`: the server refuses to start without an
+  enabled `[[auth]]` issuer or with `auth_debug.skip_verify` (or
+  `ATRYUM_AUTH_DEBUG_SKIP_VERIFY`) set, or with an issuer or JWKS URL that
+  is not HTTPS (plain HTTP is allowed only on loopback), and agent routes
+  reject any request without a verified agent identity.
 
 ### Fixed
 
@@ -97,6 +119,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for local development; pass `--allow-insecure-http` to `setup claude`
   (which bakes `ATRYUM_ALLOW_INSECURE_HTTP=1` into the hook commands) or set
   that variable yourself to accept a trusted private network.
+
+### Changed
+
+- Each invocation state change and its `invocation_events` row are now written
+  in one transaction, closing the gap where either could commit without the
+  other.
+- A human-gated MCP call now waits on its database row instead of an in-process
+  channel, so an approval or denial recorded by another Atryum process releases
+  it. Decisions and the move to executing are compare-and-set, so a call is
+  decided and run once.
 
 ## [0.4.0] - 2026-07-27
 
