@@ -49,6 +49,7 @@ type options struct {
 	databaseHooks       []func(db *sql.DB, usePostgres bool)
 	authorizer          authz.Authorizer
 	thirdPartyNotices   string
+	agentAPIKeys        *bool // nil: on unless a decider is set
 	decider             Decider
 	eventHook           EventHook
 	databaseURL         string
@@ -161,9 +162,29 @@ func WithDatabaseURL(url string) Option {
 // refuses to start unless an [[auth]] issuer is enabled, refuses to start
 // with auth_debug.skip_verify or ATRYUM_AUTH_DEBUG_SKIP_VERIFY set, and agent
 // routes reject a request that carries no verified agent identity. A
-// caller-supplied agent_id is then never used for an HTTP caller.
+// caller-supplied agent_id is then never used for an HTTP caller. Agent API
+// keys (see WithAgentAPIKeys) do not count as the required issuer.
 func WithRequireAgentAuth() Option {
 	return func(o *options) { o.requireAgentAuth = true }
+}
+
+// WithAgentAPIKeys turns Atryum's agent API keys (Bearer atr_..., issued
+// through the operator API) on or off for the agent routes (/mcp/,
+// /api/v1/invocations, /api/v1/external/*). They are on by default, and off by
+// default under WithDecider, whose embedder registers agents itself and would
+// not know a key's agents.id. When off, an atr_ bearer gets 401 on those
+// routes. Keys never satisfy WithRequireAgentAuth's need for an [[auth]]
+// issuer at startup.
+func WithAgentAPIKeys(enabled bool) Option {
+	return func(o *options) { o.agentAPIKeys = &enabled }
+}
+
+// agentAPIKeysEnabled resolves WithAgentAPIKeys against its default.
+func (o options) agentAPIKeysEnabled() bool {
+	if o.agentAPIKeys != nil {
+		return *o.agentAPIKeys
+	}
+	return o.decider == nil
 }
 
 // WithThirdPartyNotices sets the text printed by the `licenses` command.

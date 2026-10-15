@@ -35,6 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bridge) as allow, notify, deny, or pending with a review ID. Atryum's rules,
   plans, default policy, operator API and UI are then not used; a decider error
   denies the call.
+- `pkg/atryum.WithAgentAPIKeys(enabled)`: turns agent API keys (`atr_…`) on
+  or off for the agent routes. They stay on by default, and are off by
+  default under `WithDecider`, whose embedder keeps its own agent registry;
+  when off, an `atr_` bearer gets 401 on `/mcp/`, `/api/v1/invocations` and
+  `/api/v1/external/*`.
 - `pkg/atryum.WithEventHook`: called inside the transaction that changes an
   invocation, with that transaction, so an embedding program can append its
   own records atomically.

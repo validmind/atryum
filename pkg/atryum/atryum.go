@@ -410,7 +410,11 @@ func runServer(args []string, o options) error {
 	handler := api.NewHandler(service, serverOperator, policyRegistry, rulesRepo, agentsRepo, agentSyncSettingsRepo, llmConfigsRepo, syncAgentsFn, backendClient, localEvaluator)
 	handler.SetManagedAgentBindings(managedAgentBindingRepo)
 	handler.SetIdentityStores(usersRepo, agentMembersRepo, apiKeysRepo)
-	handler.SetAgentKeyResolver(api.NewAgentKeyResolver(apiKeysRepo, agentsRepo))
+	if o.agentAPIKeysEnabled() {
+		handler.SetAgentKeyResolver(api.NewAgentKeyResolver(apiKeysRepo, agentsRepo))
+	} else {
+		log.Printf("agent API keys disabled on agent routes")
+	}
 	var authorizer authz.Authorizer = authz.Default{Members: agentMembersRepo}
 	if o.authorizer != nil {
 		authorizer = o.authorizer

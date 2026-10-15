@@ -911,6 +911,7 @@ func (h *Handler) SetIdentityStores(users usersRepo, members agentMembersRepo, k
 
 // SetAgentKeyResolver enables first-party API keys (Bearer atr_...) on the
 // agent runtime routes (/mcp/, /api/v1/external/*, /api/v1/agent/*).
+// Without a resolver those routes refuse any atr_ bearer with 401.
 func (h *Handler) SetAgentKeyResolver(r auth.AgentKeyResolver) {
 	h.keyResolver = r
 }
@@ -1122,7 +1123,19 @@ func (h *Handler) agentRuntimeHandler(next http.Handler) http.Handler {
 		"/.well-known/oauth-protected-resource",
 		auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug, KeyResolver: h.keyResolver},
 	)(next)
-	return h.noAuthAgentIDHint(handler)
+	handler = h.noAuthAgentIDHint(handler)
+	if h.keyResolver != nil {
+		return handler
+	}
+	// Agent API keys are off (no resolver): refuse an atr_ bearer outright,
+	// even where an unrecognised bearer would otherwise be ignored (no IdP).
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if bearer, ok := strings.CutPrefix(strings.TrimSpace(r.Header.Get("Authorization")), "Bearer "); ok && auth.IsAgentKey(bearer) {
+			writeError(w, http.StatusUnauthorized, "agent API keys are not accepted by this server")
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
 }
 
 func (h *Handler) noAuthAgentIDHint(next http.Handler) http.Handler {

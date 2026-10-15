@@ -1,6 +1,7 @@
 package atryum
 
 import (
+	"context"
 	"testing"
 
 	"github.com/validmind/atryum/internal/auth"
@@ -29,6 +30,26 @@ func TestCheckAgentAuth(t *testing.T) {
 		t.Setenv("ATRYUM_AUTH_DEBUG_SKIP_VERIFY", tc.env)
 		if err := checkAgentAuth(tc.cfg); (err == nil) != tc.wantOK {
 			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+}
+
+// Agent API keys default on for standalone Atryum and off under a decider;
+// WithAgentAPIKeys overrides either way.
+func TestAgentAPIKeysDefault(t *testing.T) {
+	decider := WithDecider(func(context.Context, ToolCall) (Decision, error) { return Decision{}, nil })
+	for name, tc := range map[string]struct {
+		opts []Option
+		want bool
+	}{
+		"standalone":             {nil, true},
+		"standalone, off":        {[]Option{WithAgentAPIKeys(false)}, false},
+		"decider":                {[]Option{decider}, false},
+		"decider, opted in":      {[]Option{decider, WithAgentAPIKeys(true)}, true},
+		"opted in, then decider": {[]Option{WithAgentAPIKeys(true), decider}, true},
+	} {
+		if got := buildOptions(tc.opts).agentAPIKeysEnabled(); got != tc.want {
+			t.Errorf("%s: agentAPIKeysEnabled = %v, want %v", name, got, tc.want)
 		}
 	}
 }
