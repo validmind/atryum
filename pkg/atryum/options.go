@@ -1,6 +1,7 @@
 package atryum
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
 
@@ -33,6 +34,18 @@ type (
 	Status = invocation.Status
 )
 
+// ResolvePending approves or denies a call held for a person. Pass the
+// transaction the embedder already holds to make the decision, its Atryum
+// event and the event hook commit with the embedder's own writes (the
+// embedder then commits, which releases the held call on whichever replica
+// holds it); pass nil to let Atryum commit on its own. A call that is no
+// longer pending (already decided, abandoned by its caller, or finished)
+// returns an error wrapping ErrNotPending.
+type ResolvePending func(ctx context.Context, tx *sql.Tx, invocationID string, approve bool, actor, reason string) error
+
+// ErrNotPending is wrapped by ResolvePending when the call is no longer pending.
+var ErrNotPending = invocation.ErrNotPending
+
 const (
 	VerdictAllow   = invocation.VerdictAllow
 	VerdictNotify  = invocation.VerdictNotify
@@ -55,6 +68,7 @@ type options struct {
 	databaseURL         string
 	requireAgentAuth    bool
 	stuckReports        bool
+	resolveHooks        []func(ResolvePending)
 }
 
 type extensionMigrations struct {
@@ -195,6 +209,16 @@ func (o options) agentAPIKeysEnabled() bool {
 // "invocation.stuck_reported", and the agent gets a short acknowledgement.
 func WithStuckReports() Option {
 	return func(o *options) { o.stuckReports = true }
+}
+
+// WithResolvePending hands the embedding program a ResolvePending once the
+// invocation service is built, before the server accepts requests.
+func WithResolvePending(receive func(ResolvePending)) Option {
+	return func(o *options) {
+		if receive != nil {
+			o.resolveHooks = append(o.resolveHooks, receive)
+		}
+	}
 }
 
 // WithThirdPartyNotices sets the text printed by the `licenses` command.

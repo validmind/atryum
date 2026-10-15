@@ -400,6 +400,14 @@ func runServer(args []string, o options) error {
 	if o.eventHook != nil {
 		service.SetEventHook(o.eventHook)
 	}
+	for _, receive := range o.resolveHooks {
+		receive(func(ctx context.Context, tx *sql.Tx, invocationID string, approve bool, actor, reason string) error {
+			if tx != nil {
+				ctx = store.WithTx(ctx, tx)
+			}
+			return service.ResolvePending(ctx, invocationID, approve, actor, reason)
+		})
+	}
 	serverOperator := api.NewServerOperatorService(serverRepo, oauthRepo, client, 5*time.Second, cfg.Server.PublicBaseURL)
 	if *initServers {
 		if err := initEnabledServerStatuses(context.Background(), serverRepo, serverOperator); err != nil {

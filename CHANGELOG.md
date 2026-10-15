@@ -60,6 +60,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`task`, `boundary`, optional `detail`). It authorizes nothing; it records an
   invocation of that tool, which the event hook sees as
   `invocation.stuck_reported`, and acknowledges the agent.
+- `pkg/atryum.WithResolvePending` hands an embedding program a
+  `ResolvePending(ctx, tx, invocationID, approve, actor, reason)` that approves
+  or denies a held call through Atryum's own compare-and-set path, inside the
+  embedder's transaction (or Atryum's own when `tx` is nil): the event row,
+  the event hook and the Postgres wake-up all commit with it. A call no longer
+  pending returns an error wrapping `atryum.ErrNotPending`.
 
 ### Fixed
 

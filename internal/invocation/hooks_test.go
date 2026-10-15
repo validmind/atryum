@@ -458,3 +458,74 @@ func TestReportStuck(t *testing.T) {
 		t.Fatalf("status=%s result=%s calls=%d", resp.Status, resp.Result, calls.Load())
 	}
 }
+
+// ResolvePending joins the embedder's transaction: rolled back, the call stays
+// held; committed, it is released; resolved again, it reports ErrNotPending.
+func TestResolvePendingInEmbedderTransaction(t *testing.T) {
+	upstream, calls := fakeMCP(t)
+	db := newSQLiteTestDB(t)
+	svc := newHookedService(t, db, upstream.URL)
+	svc.SetDecider(verdictDecider(invocation.VerdictPending))
+	invocation.SetApprovalPoll(svc, 10*time.Millisecond)
+	if _, err := db.Exec(`CREATE TABLE review_log (decision TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	svc.SetEventHook(func(ctx context.Context, tx *sql.Tx, c invocation.Change) error {
+		if c.Type == "invocation.approved" {
+			_, err := tx.ExecContext(ctx, `INSERT INTO review_log (decision) VALUES ('approved')`)
+			return err
+		}
+		return nil
+	})
+
+	done := make(chan invocation.InvocationResponse, 1)
+	go func() {
+		resp, err := svc.Invoke(context.Background(), invocation.CreateInvocationRequest{Server: "bank", Tool: "pay", Input: map[string]any{}})
+		if err != nil {
+			t.Error(err)
+		}
+		done <- resp
+	}()
+	var id string
+	for id == "" {
+		time.Sleep(10 * time.Millisecond)
+		list, err := svc.List(context.Background(), invocation.InvocationListFilter{Limit: 1})
+		if err == nil && len(list.Items) == 1 && list.Items[0].Status == invocation.StatusPendingApproval {
+			id = list.Items[0].InvocationID
+		}
+	}
+
+	resolve := func(commit bool) {
+		tx, err := db.BeginTx(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.ResolvePending(store.WithTx(context.Background(), tx), id, true, "manager@bank", "ok"); err != nil {
+			t.Fatal(err)
+		}
+		if commit {
+			err = tx.Commit()
+		} else {
+			err = tx.Rollback()
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	resolve(false)
+	time.Sleep(50 * time.Millisecond)
+	if got, _ := svc.Get(context.Background(), id); got.Status != invocation.StatusPendingApproval {
+		t.Fatalf("after rollback status=%s, want pending_approval", got.Status)
+	}
+	resolve(true)
+	if resp := <-done; resp.Status != invocation.StatusSucceeded || calls.Load() != 1 {
+		t.Fatalf("status=%s calls=%d, want succeeded and 1", resp.Status, calls.Load())
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM review_log`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("review_log rows=%d err=%v, want 1 (the rolled-back write must not stick)", n, err)
+	}
+	if err := svc.ResolvePending(context.Background(), id, false, "x", "late"); !errors.Is(err, invocation.ErrNotPending) {
+		t.Fatalf("second resolve: %v, want ErrNotPending", err)
+	}
+}
