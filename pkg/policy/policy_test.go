@@ -350,6 +350,9 @@ func TestRuleJSON(t *testing.T) {
 // F-01 denies every call with facts.contains_secret, so both misses and
 // false alarms matter.
 func TestContainsSecret(t *testing.T) {
+	if !ContainsSecret(k8sSecretWithData()) {
+		t.Error("a Secret manifest with a literal password was not flagged")
+	}
 	for _, tc := range []struct {
 		name string
 		args any
@@ -373,6 +376,12 @@ func TestContainsSecret(t *testing.T) {
 		{"anthropic key", map[string]any{"text": "use sk-ant-api03-" + strings.Repeat("x", 30)}, true},
 		{"url credentials", map[string]any{"dsn": "postgresql://app:Tr0ub4dor@db.internal:5432/ledger"}, true},
 		{"nested list", map[string]any{"steps": []any{map[string]any{"env": map[string]any{"REFRESH_TOKEN": "8f14e45fceea167a5a36dedd4bea2543"}}}}, true},
+		{"camelCase secret key", map[string]any{"clientSecret": "9b2f0c7e4a1d"}, true},
+		{"bare token key", map[string]any{"token": "8f14e45fceea167a5a36dedd4bea2543"}, true},
+		{"space-separated aws key", map[string]any{"command": "aws configure set aws_secret_access_key wJalrXUtnFEMI/K7MDENG"}, true},
+		{"space-separated flag", map[string]any{"command": "vault login --password hunter2222"}, true},
+		{"mysql -p", map[string]any{"command": "mysql -u root -ps3cr3t ledger"}, true},
+		{"curl -u", map[string]any{"command": "curl -u admin:Tr0ub4dor https://ci.internal/api"}, true},
 		// Not secrets.
 		{"feature branch push", map[string]any{"command": "git push origin feature/PAY-2291"}, false},
 		{"sql on a password column", map[string]any{"query": "select * from users where password_reset = true"}, false},
@@ -387,6 +396,17 @@ func TestContainsSecret(t *testing.T) {
 		{"template", map[string]any{"secret": "{{ vault.ledger }}"}, false},
 		{"short value", map[string]any{"password": "abc"}, false},
 		{"secret name", map[string]any{"secret_name": "ledger-db-credentials"}, false},
+		{"k8s secretName", map[string]any{"secretName": "tls-cert-retail-prod"}, false},
+		{"k8s secretKeyRef", map[string]any{"secretKeyRef": map[string]any{"name": "ledger-db", "key": "password"}}, false},
+		{"k8s secretRef", map[string]any{"secretRef": map[string]any{"name": "ledger-db-env"}}, false},
+		{"helm existingSecret", map[string]any{"existingSecret": "ledger-db-credentials"}, false},
+		{"prefixed secret name", map[string]any{"tlsSecretName": "retail-prod-wildcard"}, false},
+		{"secretary", map[string]any{"secretary": "Jane Wolfenden"}, false},
+		{"plural secrets list", map[string]any{"secrets": []any{"ledger-db-credentials"}}, false},
+		{"page token", map[string]any{"nextPageToken": "CiAKGjBpNDd2Nmp2Zml2cXRwYjBpOXA3"}, false},
+		{"prose with secret", map[string]any{"text": "the secret ingredient is patience"}, false},
+		{"mysql password from env", map[string]any{"command": "mysql -u root -p$MYSQL_PWD ledger"}, false},
+		{"k8s deployment", k8sDeployment(), false},
 		{"lower-case akia is not an aws key", map[string]any{"slug": "akiaiosfodnn7example"}, false},
 		{"url without password", map[string]any{"url": "https://user@example.com/path"}, false},
 		{"url placeholder password", map[string]any{"dsn": "postgres://app:${PGPASSWORD}@db/ledger"}, false},
@@ -398,4 +418,35 @@ func TestContainsSecret(t *testing.T) {
 			t.Errorf("%s: ContainsSecret(%v) = %v, want %v", tc.name, tc.args, got, tc.want)
 		}
 	}
+}
+
+// k8sDeployment is a realistic manifest that references secrets by name, as
+// the k8s-ops agent patches them, and must never trip F-01.
+func k8sDeployment() any {
+	return jsonNumber(`{
+	  "apiVersion": "apps/v1", "kind": "Deployment",
+	  "metadata": {"name": "ledger-sync", "namespace": "retail-prod-payments",
+	    "annotations": {"secret.reloader.stakater.com/reload": "ledger-db-credentials"}},
+	  "spec": {"replicas": 3, "template": {"spec": {
+	    "serviceAccountName": "ledger-sync",
+	    "imagePullSecrets": [{"name": "registry-pull-secret"}],
+	    "containers": [{
+	      "name": "ledger-sync", "image": "registry.internal/ledger-sync:4.2.1",
+	      "env": [
+	        {"name": "DB_PASSWORD", "valueFrom": {"secretKeyRef": {"name": "ledger-db-credentials", "key": "password"}}},
+	        {"name": "API_TOKEN", "valueFrom": {"secretKeyRef": {"name": "ledger-api", "key": "token", "optional": false}}},
+	        {"name": "LOG_LEVEL", "value": "info"}
+	      ],
+	      "envFrom": [{"secretRef": {"name": "ledger-sync-env"}}],
+	      "volumeMounts": [{"name": "tls", "mountPath": "/etc/tls", "readOnly": true}]
+	    }],
+	    "volumes": [{"name": "tls", "secret": {"secretName": "retail-prod-wildcard-tls", "defaultMode": 420}}]
+	  }}}
+	}`)
+}
+
+// k8sSecretWithData holds a password literal in stringData, which is a secret.
+func k8sSecretWithData() any {
+	return jsonNumber(`{"apiVersion": "v1", "kind": "Secret", "metadata": {"name": "ledger-db-credentials"},
+	  "type": "Opaque", "stringData": {"username": "ledger", "password": "Tr0ub4dor&3xyz"}}`)
 }
