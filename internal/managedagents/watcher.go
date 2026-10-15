@@ -544,11 +544,18 @@ func (w *watcher) resolveDecision(ctx context.Context, blockingID string, pc pen
 		}
 		switch resp.Status {
 		case invocation.StatusApproved:
+			return w.startAndAllow(ctx, blockingID, pc)
+		case invocation.StatusExecuting:
+			// Running was recorded but the allow may not have reached Claude
+			// (the cursor only advances once it has): send it again.
 			return w.sendAllow(ctx, blockingID, pc)
 		case invocation.StatusDenied:
 			return w.sendDeny(ctx, blockingID, pc, denyReason(resp))
-		case invocation.StatusExecuting, invocation.StatusSucceeded, invocation.StatusFailed, invocation.StatusCancelled:
-			// Already advanced (e.g. replayed after we sent the confirmation).
+		case invocation.StatusCancelled:
+			// Refused at start; the deny may not have reached Claude.
+			return w.sendDeny(ctx, blockingID, pc, notStartedReason)
+		case invocation.StatusSucceeded, invocation.StatusFailed:
+			// Already ran (e.g. replayed after we sent the confirmation).
 			return true
 		default: // received, pending_approval
 			select {
@@ -560,15 +567,31 @@ func (w *watcher) resolveDecision(ctx context.Context, blockingID string, pc pen
 	}
 }
 
+// notStartedReason is the deny message for an approved call Atryum refused to
+// start.
+const notStartedReason = "Atryum could not start this approved call, so it did not run."
+
+// startAndAllow records the approved call as running and only then lets
+// Claude run it. Recording can be refused (an embedder's event hook rejecting
+// the start, say for an expired lease); Claude then gets a deny instead, so a
+// call recorded as not started never runs.
+func (w *watcher) startAndAllow(ctx context.Context, blockingID string, pc pendingCall) bool {
+	if _, err := w.svc.inv.RecordExecution(ctx, pc.InvocationID, invocation.ExternalExecutionUpdate{ExecutionStatus: "running"}); err != nil {
+		w.log().Warn("start refused; denying the approved call", "invocation_id", pc.InvocationID, "error", err)
+		reason := notStartedReason + " " + err.Error()
+		if _, cerr := w.svc.inv.RecordExecution(ctx, pc.InvocationID, invocation.ExternalExecutionUpdate{ExecutionStatus: "cancelled", Message: reason}); cerr != nil {
+			w.log().Warn("could not record the refused call as cancelled", "invocation_id", pc.InvocationID, "error", cerr)
+		}
+		return w.sendDeny(ctx, blockingID, pc, reason)
+	}
+	return w.sendAllow(ctx, blockingID, pc)
+}
+
 func (w *watcher) sendAllow(ctx context.Context, blockingID string, pc pendingCall) bool {
 	evt := allowEvent(blockingID, pc)
 	if err := w.acct.client.SendEvents(ctx, w.reg.SessionID, []OutboundEvent{evt}); err != nil {
 		w.log().Warn("send allow failed", "tool_use_event_id", blockingID, "error", err)
 		return false
-	}
-	// Mark the invocation as running now that Claude will execute it.
-	if _, err := w.svc.inv.RecordExecution(ctx, pc.InvocationID, invocation.ExternalExecutionUpdate{ExecutionStatus: "running"}); err != nil {
-		w.log().Debug("record running failed", "invocation_id", pc.InvocationID, "error", err)
 	}
 	w.log().Info("tool call approved -> allow sent", "invocation_id", pc.InvocationID)
 	return true

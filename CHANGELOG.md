@@ -68,6 +68,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An executor cancelling a call (`RecordExecution` with `cancelled`) moves the
   row compare-and-set from the status it read, so a decision recorded in
   between is not overwritten.
+- The Managed Agents bridge records an approved call as running before it
+  tells Claude to run it. If recording is refused (for example by an
+  embedder's event hook) or fails, Claude gets a deny with the reason, the
+  call is recorded as cancelled, and a warning is logged; before, Claude was
+  allowed first and the refusal only debug-logged, so the call ran anyway.
 
 ## [0.4.0] - 2026-07-27
 
