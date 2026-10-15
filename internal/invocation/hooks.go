@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"strings"
 	"time"
 
@@ -267,4 +268,62 @@ func (s *Service) ReportStuck(ctx context.Context, server string, args map[strin
 		return InvocationResponse{}, err
 	}
 	return s.toResponse(inv), nil
+}
+
+// ErrIdempotencyConflict means the caller reused an idempotency key for a
+// different request (another tool, server or input, or the other submit
+// path). The earlier invocation is not returned or described.
+var ErrIdempotencyConflict = errors.New("idempotency key was already used for a different request")
+
+// priorRequest returns the invocation an earlier request from agentID created
+// with key, when the request was the same: same upstream (empty on the submit
+// path), tool and input (compared as JSON values). A different request
+// returns ErrIdempotencyConflict; no key or no earlier request returns nil.
+//
+// Keys are scoped to agentID, the identity the invocation is recorded under:
+// the verified agent when auth is on (always with WithRequireAgentAuth), else
+// on the submit path the agent_id the caller declares, else "" (anonymous
+// callers share one scope). Without verified identity a key is only as
+// private as the agent ID a caller claims, which is how standalone Atryum
+// without auth trusts its callers anyway.
+func (s *Service) priorRequest(ctx context.Context, agentID string, key *string, upstream, tool string, input []byte) (*Invocation, error) {
+	if key == nil || *key == "" {
+		return nil, nil
+	}
+	prior, err := s.invocations.GetByIdempotencyKey(ctx, agentID, *key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if prior.Upstream != upstream || prior.Tool != tool || !sameJSON(prior.Input, input) {
+		return nil, ErrIdempotencyConflict
+	}
+	return &prior, nil
+}
+
+// lostCreateRace handles a failed insert: when a concurrent request with the
+// same key won, it answers like priorRequest; otherwise it returns createErr.
+func (s *Service) lostCreateRace(ctx context.Context, agentID string, key *string, upstream, tool string, input []byte, createErr error) (InvocationResponse, error) {
+	prior, err := s.priorRequest(ctx, agentID, key, upstream, tool, input)
+	if err != nil || prior != nil {
+		return prior.response(s), err
+	}
+	return InvocationResponse{}, createErr
+}
+
+func (inv *Invocation) response(s *Service) InvocationResponse {
+	if inv == nil {
+		return InvocationResponse{}
+	}
+	return s.toResponse(*inv)
+}
+
+func sameJSON(a, b []byte) bool {
+	var x, y any
+	if json.Unmarshal(a, &x) != nil || json.Unmarshal(b, &y) != nil {
+		return false
+	}
+	return reflect.DeepEqual(x, y)
 }

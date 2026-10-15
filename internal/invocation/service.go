@@ -195,7 +195,7 @@ type invocationRepo interface {
 	UpdateResultFrom(ctx context.Context, inv Invocation, from Status) (bool, error)
 	UpdateSummary(ctx context.Context, id string, summary string) error
 	Get(ctx context.Context, id string) (Invocation, error)
-	GetByIdempotencyKey(ctx context.Context, key string) (Invocation, error)
+	GetByIdempotencyKey(ctx context.Context, agentID, key string) (Invocation, error)
 	List(ctx context.Context, filter InvocationListFilter) ([]Invocation, int, error)
 	ListAgentIDs(ctx context.Context) ([]string, error)
 }
@@ -363,15 +363,6 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		attribute.String("atryum.tool", req.Tool),
 	))
 	defer span.End()
-	if req.IdempotencyKey != nil && *req.IdempotencyKey != "" {
-		existing, err := s.invocations.GetByIdempotencyKey(ctx, *req.IdempotencyKey)
-		if err == nil {
-			return s.toResponse(existing), nil
-		}
-		if err != nil && err != sql.ErrNoRows {
-			return InvocationResponse{}, err
-		}
-	}
 	upstream, err := s.resolver.ResolveContext(ctx, req.Server)
 	if err != nil {
 		return InvocationResponse{}, err
@@ -385,6 +376,9 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	// is disabled the field is empty and we fall back to request_id for rule
 	// matching to preserve pre-auth behavior.
 	agentID := auth.AgentIDFromContext(ctx)
+	if prior, err := s.priorRequest(ctx, agentID, req.IdempotencyKey, upstream.Name, req.Tool, inputJSON); err != nil || prior != nil {
+		return prior.response(s), err
+	}
 	agentRec := s.resolveAgentRecord(ctx, agentID)
 
 	now := time.Now().UTC()
@@ -410,7 +404,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		inv.ClientVersion = &v
 	}
 	if err := s.create(ctx, inv); err != nil {
-		return InvocationResponse{}, err
+		return s.lostCreateRace(ctx, agentID, req.IdempotencyKey, upstream.Name, req.Tool, inputJSON, err)
 	}
 	span.SetAttributes(attribute.String("atryum.invocation.id", inv.InvocationID))
 	if agentID != "" {
@@ -1516,15 +1510,6 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		attribute.Bool("atryum.external", true),
 	))
 	defer span.End()
-	if req.IdempotencyKey != nil && *req.IdempotencyKey != "" {
-		existing, err := s.invocations.GetByIdempotencyKey(ctx, *req.IdempotencyKey)
-		if err == nil {
-			return s.toResponse(existing), nil
-		}
-		if err != nil && err != sql.ErrNoRows {
-			return InvocationResponse{}, err
-		}
-	}
 	inputJSON, err := json.Marshal(req.Input)
 	if err != nil {
 		return InvocationResponse{}, err
@@ -1541,6 +1526,11 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	}
 	if len([]rune(agentID)) > maxExternalSessionAgentIDChars {
 		return InvocationResponse{}, fmt.Errorf("agent_id is too long")
+	}
+	// Upstream is always empty on this path (see below), which also keeps a
+	// key used for an Invoke from matching a Submit.
+	if prior, err := s.priorRequest(ctx, agentID, req.IdempotencyKey, "", req.Tool, inputJSON); err != nil || prior != nil {
+		return prior.response(s), err
 	}
 	agentRec := s.resolveAgentRecord(ctx, agentID)
 
@@ -1613,7 +1603,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		inv.SessionID = &sessionID
 	}
 	if err := s.create(ctx, inv); err != nil {
-		return InvocationResponse{}, err
+		return s.lostCreateRace(ctx, agentID, req.IdempotencyKey, "", req.Tool, inputJSON, err)
 	}
 	span.SetAttributes(attribute.String("atryum.invocation.id", inv.InvocationID))
 	if agentID != "" {

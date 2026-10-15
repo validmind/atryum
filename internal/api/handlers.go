@@ -1582,10 +1582,19 @@ func (h *Handler) handleInvocation(w http.ResponseWriter, r *http.Request, serve
 	}
 	resp, err := h.svc.Invoke(r.Context(), req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, submitErrorStatus(err), err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// submitErrorStatus is 409 for an idempotency key reused for a different
+// request, else 400.
+func submitErrorStatus(err error) int {
+	if errors.Is(err, invocation.ErrIdempotencyConflict) {
+		return http.StatusConflict
+	}
+	return http.StatusBadRequest
 }
 
 func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server string) {
@@ -4223,7 +4232,7 @@ func (h *Handler) externalInvocations(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.svc.Submit(r.Context(), req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, submitErrorStatus(err), err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)

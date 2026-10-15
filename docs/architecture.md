@@ -57,6 +57,15 @@ or audit records are evaluated.
 `Submit` intentionally leaves `upstream_name` empty because it makes a decision only.
 `Invoke` resolves a configured MCP server before evaluating and executing the call.
 
+Both operations accept an idempotency key (`idempotency_key` or the `Idempotency-Key`
+header). Keys are unique per agent: the verified agent identity when auth is on, else
+the `agent_id` a `Submit` caller declares, else one shared anonymous scope. A retry
+with the same key and the same request (path, server, tool, and input compared as
+JSON) returns the original invocation. The same key with a different request is
+rejected with `409 Conflict` (`invocation.ErrIdempotencyConflict`) and reveals nothing
+about the earlier call, and another agent's key never finds that agent's invocation.
+Without verified identity, a key is only as private as the agent ID a caller claims.
+
 ## Component boundaries
 
 | Package | Responsibility | Must not own |

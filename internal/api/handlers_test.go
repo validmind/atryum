@@ -700,6 +700,26 @@ func TestExternalSessionMintRejectionReturns400(t *testing.T) {
 // server-side get-or-create resolves the session), and that the resolved
 // internal session id is surfaced in the response. This is the field that
 // replaces the old mint-then-echo session_id flow for harnesses.
+// A reused idempotency key for a different request is a 409 on both paths.
+func TestIdempotencyConflictIs409(t *testing.T) {
+	for path, body := range map[string]string{
+		"/api/v1/external/invocations": `{"source":"amp","tool":"bash","input":{}}`,
+		"/api/v1/invocations":          `{"server":"demo","tool":"bash","input":{}}`,
+	} {
+		svc := &stubService{invErr: fmt.Errorf("submit: %w", invocation.ErrIdempotencyConflict)}
+		h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		req.Header.Set("content-type", "application/json")
+		req.Header.Set("Idempotency-Key", "k1")
+		req = req.WithContext(auth.WithIdentity(req.Context(), auth.Identity{AgentID: "amp-1"}))
+		w := httptest.NewRecorder()
+		h.Routes().ServeHTTP(w, req)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("%s: status %d body=%s, want 409", path, w.Code, w.Body.String())
+		}
+	}
+}
+
 func TestExternalSubmitForwardsClientSessionID(t *testing.T) {
 	resolved := "ses_resolved"
 	svc := &stubService{invoke: invocation.InvocationResponse{

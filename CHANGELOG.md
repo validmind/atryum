@@ -145,6 +145,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Security:** idempotency keys are now unique per agent (migration 032) and
+  bound to the request. Before, a key returned whatever invocation held it,
+  so another agent sending the same key received that invocation's status,
+  approval and result, and a retry with a different tool or input silently
+  got the old call. Now another agent's key never finds that invocation; the
+  same agent reusing a key for a different request (path, server, tool or
+  input) gets `409 Conflict` (`invocation.ErrIdempotencyConflict`); an
+  identical retry still returns the original invocation.
+
 - Each invocation state change and its `invocation_events` row are now written
   in one transaction, closing the gap where either could commit without the
   other.

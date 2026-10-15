@@ -645,7 +645,7 @@ func (w *watcher) pendingCall(ctx context.Context, toolUseEventID string, needKi
 	if w.svc.audit == nil {
 		return pendingCall{}, false
 	}
-	inv, err := w.svc.audit.GetByIdempotencyKey(ctx, toolUseEventID)
+	inv, err := w.svc.audit.GetByIdempotencyKey(ctx, strings.TrimSpace(w.reg.AgentID), toolUseEventID)
 	if err != nil || inv.InvocationID == "" {
 		return pendingCall{}, false
 	}
@@ -674,7 +674,7 @@ func (w *watcher) customToolUse(ctx context.Context, toolUseEventID string) (boo
 	if isCustom, ok := w.cachedCustomToolUse(toolUseEventID); ok {
 		return isCustom, ok
 	}
-	inv, err := w.svc.audit.GetByIdempotencyKey(ctx, toolUseEventID)
+	inv, err := w.svc.audit.GetByIdempotencyKey(ctx, strings.TrimSpace(w.reg.AgentID), toolUseEventID)
 	if err != nil {
 		return false, false
 	}

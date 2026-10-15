@@ -64,6 +64,8 @@ func TestPostgresOptional_InitAndInvocationCRUD(t *testing.T) {
 		t.Fatalf("unexpected invocation: %+v", got)
 	}
 
+	checkIdempotencyPerAgent(t, repo)
+
 	// UpdateResultFrom only moves a row that is still in the expected status.
 	inv.Status = invocation.StatusApproved
 	if ok, err := repo.UpdateResultFrom(context.Background(), inv, invocation.StatusPendingApproval); err != nil || ok {
