@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -334,6 +335,20 @@ func jsonNumber(s string) any {
 		panic(err)
 	}
 	return v
+}
+
+// The glob cache stays bounded however many distinct patterns it sees.
+func TestGlobCacheBounded(t *testing.T) {
+	for i := 0; i < 3*maxGlobs; i++ {
+		if !glob(fmt.Sprintf("tool_%d|other", i), "other") {
+			t.Fatal("glob stopped matching")
+		}
+	}
+	n := 0
+	globs.Range(func(any, any) bool { n++; return true })
+	if n > maxGlobs {
+		t.Fatalf("cache holds %d patterns, want at most %d", n, maxGlobs)
+	}
 }
 
 func TestRuleJSON(t *testing.T) {

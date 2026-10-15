@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // Action is what a rule does with a matching call: "allow", "notify" (allow,
@@ -165,10 +166,16 @@ func matches(r *Rule, c Call) bool {
 	return true
 }
 
-// globs caches compiled patterns by their text.
-// ponytail: never evicted; rule sets are small and change rarely. Use an LRU
-// if patterns ever come from unbounded input.
-var globs sync.Map
+// globs caches compiled patterns by their text, up to maxGlobs of them.
+// Published rule sets hold a few hundred patterns; the bound only guards
+// against patterns from unbounded input (drafts, replays of edited rules), by
+// starting over when it is reached.
+var (
+	globs     sync.Map
+	globCount atomic.Int64
+)
+
+const maxGlobs = 4096
 
 // glob reports whether s matches one of the "|"-separated patterns in g.
 func glob(g, s string) bool {
@@ -178,7 +185,12 @@ func glob(g, s string) bool {
 		for i, p := range alts {
 			alts[i] = strings.ReplaceAll(regexp.QuoteMeta(p), `\*`, `.*`)
 		}
-		re, _ = globs.LoadOrStore(g, regexp.MustCompile(`^(?s:`+strings.Join(alts, "|")+`)$`))
+		re = regexp.MustCompile(`^(?s:` + strings.Join(alts, "|") + `)$`)
+		if globCount.Add(1) > maxGlobs {
+			globs.Clear()
+			globCount.Store(1)
+		}
+		globs.Store(g, re)
 	}
 	return re.(*regexp.Regexp).MatchString(s)
 }

@@ -40,6 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connection pool, which now defaults to 20 open and 10 idle connections,
   idle ones closed after 5 minutes and each replaced after 30 (it was
   unbounded).
+- `server.database_listen = false` turns off the PostgreSQL decision listener
+  (for PgBouncer in transaction mode, which never delivers notifications);
+  held calls then re-read their row every 250 ms.
 - `pkg/atryum.WithResolvePending` hands an embedding program a
   `ResolvePending(ctx, tx, invocationID, approve, actor, reason)` that approves
   or denies a held call through Atryum's own compare-and-set path, inside the
