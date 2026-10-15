@@ -7,4 +7,7 @@ import "time"
 var RecordVMJudgeGeneration = recordVMJudgeGeneration
 
 // SetApprovalPoll sets how often a held call re-reads its row.
-func SetApprovalPoll(s *Service, d time.Duration) { s.approvalPoll = d }
+func SetApprovalPoll(s *Service, d time.Duration) { s.approvalPoll, s.wakePoll = d, d }
+
+// SetPolls sets the poll interval without and with a connected DecisionWaker.
+func SetPolls(s *Service, approval, wake time.Duration) { s.approvalPoll, s.wakePoll = approval, wake }

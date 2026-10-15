@@ -252,7 +252,8 @@ type Service struct {
 	planMaxTTL      int           // seconds; 0 = built-in ceiling
 	defaultTimeout  time.Duration
 	approvalPoll    time.Duration // how often a held call re-reads its row
-	wake            DecisionWake  // nil = held calls only poll
+	wakePoll        time.Duration // approvalPoll while wake is connected
+	wake            DecisionWaker // nil = held calls only poll
 	inTx            TxRunner      // nil = each write commits on its own
 	decider         Decider       // nil = rules, plans and policy decide
 	hook            EventHook     // nil = no hook
@@ -285,6 +286,7 @@ func NewService(
 		syncSettings:   syncSettings,
 		defaultTimeout: defaultTimeout,
 		approvalPoll:   250 * time.Millisecond,
+		wakePoll:       2 * time.Second,
 		toolCatalog:    make(map[string]toolCatalogEntry),
 	}
 }
@@ -1234,8 +1236,9 @@ func (s *Service) executeNow(ctx context.Context, inv Invocation, upstream mcp.U
 // waitForHumanApproval holds the request until the invocation's row leaves
 // pending_approval — an approval or denial recorded by any process — or the
 // context ends. The row, not process memory, is the source of truth, so the
-// decision can be made on another replica. A DecisionWake re-reads the row as
-// soon as a decision is announced; polling every approvalPoll is the fallback.
+// decision can be made on another replica. A DecisionWaker re-reads the row as
+// soon as a decision is announced; polling is the fallback, every wakePoll
+// while the waker is connected and every approvalPoll otherwise.
 // ponytail: a held call is lost if its process dies; resuming it on another
 // replica is the upgrade.
 func (s *Service) waitForHumanApproval(ctx context.Context, inv Invocation, upstream mcp.Upstream, req CreateInvocationRequest) (InvocationResponse, error) {
@@ -1243,7 +1246,7 @@ func (s *Service) waitForHumanApproval(ctx context.Context, inv Invocation, upst
 	var woken <-chan struct{}
 	if s.wake != nil {
 		var stop func()
-		woken, stop = s.wake(inv.InvocationID)
+		woken, stop = s.wake.Wait(inv.InvocationID)
 		defer stop()
 	}
 	inv.Status = StatusPendingApproval
@@ -1261,14 +1264,19 @@ func (s *Service) waitForHumanApproval(ctx context.Context, inv Invocation, upst
 	}
 	s.summarizePendingApproval(inv.InvocationID)
 
-	tick := time.NewTicker(s.approvalPoll)
-	defer tick.Stop()
 	for {
+		poll := s.approvalPoll
+		if s.wake != nil && s.wake.Connected() {
+			poll = s.wakePoll
+		}
+		timer := time.NewTimer(poll)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return s.abandonHeld(context.WithoutCancel(ctx), inv), nil
-		case <-tick.C:
+		case <-timer.C:
 		case <-woken:
+			timer.Stop()
 		}
 		cur, err := s.invocations.Get(ctx, inv.InvocationID)
 		if err != nil || cur.Status == StatusPendingApproval {
@@ -2028,6 +2036,7 @@ func (s *Service) RecordExecution(ctx context.Context, invocationID string, upda
 		if err := requireStatus(inv, "cancelled", StatusApproved, StatusExecuting, StatusPendingApproval); err != nil {
 			return InvocationResponse{}, err
 		}
+		from := inv.Status
 		inv.Status = StatusCancelled
 		inv.CompletedAt = &now
 		if len(update.Error) > 0 {
@@ -2039,7 +2048,9 @@ func (s *Service) RecordExecution(ctx context.Context, invocationID string, upda
 			}
 			inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": msg}}, "isError": true})
 		}
-		if err := s.commit(ctx, inv, s.invocations.UpdateResult, Event{InvocationID: inv.InvocationID, EventType: "invocation.cancelled", Payload: mustJSON(map[string]any{"upstream": inv.Upstream, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "body": json.RawMessage(inv.Error), "external": true}), CreatedAt: now}); err != nil {
+		// From the status read, so a decision landing in between is not
+		// overwritten (and leaving pending_approval wakes its waiters).
+		if err := s.commit(ctx, inv, s.updateFrom(from), Event{InvocationID: inv.InvocationID, EventType: "invocation.cancelled", Payload: mustJSON(map[string]any{"upstream": inv.Upstream, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "body": json.RawMessage(inv.Error), "external": true}), CreatedAt: now}); err != nil {
 			return InvocationResponse{}, err
 		}
 	default:
