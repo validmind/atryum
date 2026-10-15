@@ -5,9 +5,9 @@ package migrations
 // invocation. A NULL agent_id counts as the empty agent.
 //
 // ponytail: on Postgres the index is built without CONCURRENTLY (migrations
-// run in a transaction), so writes to invocations wait for the build: about a
-// second per million rows. Build it CONCURRENTLY by hand before upgrading if
-// the table is large; IF NOT EXISTS then skips this step.
+// run in a transaction), so writes to invocations wait until the build
+// finishes. Build it CONCURRENTLY by hand before upgrading if the table is
+// large; IF NOT EXISTS then skips this step.
 func migration032() Definition {
 	return Definition{
 		Version: 32,
