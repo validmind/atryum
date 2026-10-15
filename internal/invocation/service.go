@@ -252,6 +252,7 @@ type Service struct {
 	planMaxTTL      int           // seconds; 0 = built-in ceiling
 	defaultTimeout  time.Duration
 	approvalPoll    time.Duration // how often a held call re-reads its row
+	wake            DecisionWake  // nil = held calls only poll
 	inTx            TxRunner      // nil = each write commits on its own
 	decider         Decider       // nil = rules, plans and policy decide
 	hook            EventHook     // nil = no hook
@@ -1233,10 +1234,18 @@ func (s *Service) executeNow(ctx context.Context, inv Invocation, upstream mcp.U
 // waitForHumanApproval holds the request until the invocation's row leaves
 // pending_approval — an approval or denial recorded by any process — or the
 // context ends. The row, not process memory, is the source of truth, so the
-// decision can be made on another replica.
-// ponytail: polls the row every approvalPoll; a Postgres LISTEN/NOTIFY wake-up
-// (and resuming a held call on another replica after a crash) is the upgrade.
+// decision can be made on another replica. A DecisionWake re-reads the row as
+// soon as a decision is announced; polling every approvalPoll is the fallback.
+// ponytail: a held call is lost if its process dies; resuming it on another
+// replica is the upgrade.
 func (s *Service) waitForHumanApproval(ctx context.Context, inv Invocation, upstream mcp.Upstream, req CreateInvocationRequest) (InvocationResponse, error) {
+	// Before the row is pending, so no decision can be announced unheard.
+	var woken <-chan struct{}
+	if s.wake != nil {
+		var stop func()
+		woken, stop = s.wake(inv.InvocationID)
+		defer stop()
+	}
 	inv.Status = StatusPendingApproval
 	if err := s.commit(ctx, inv, s.invocations.UpdateResult, Event{
 		InvocationID: inv.InvocationID,
@@ -1259,6 +1268,7 @@ func (s *Service) waitForHumanApproval(ctx context.Context, inv Invocation, upst
 		case <-ctx.Done():
 			return s.abandonHeld(context.WithoutCancel(ctx), inv), nil
 		case <-tick.C:
+		case <-woken:
 		}
 		cur, err := s.invocations.Get(ctx, inv.InvocationID)
 		if err != nil || cur.Status == StatusPendingApproval {
@@ -1372,7 +1382,7 @@ func (s *Service) finishExecution(ctx context.Context, inv Invocation, upstream 
 }
 
 // Approve records a human approval on the invocation's row. A held proxy call
-// sees it on its next poll and runs the tool; a submit caller sees it when it
+// sees it when woken or on its next poll and runs the tool; a submit caller sees it when it
 // polls Get.
 func (s *Service) Approve(ctx context.Context, invocationID string, actorID string) error {
 	return s.recordExternalDecision(ctx, invocationID, true, "", actorID)

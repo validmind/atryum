@@ -377,6 +377,11 @@ func runServer(args []string, o options) error {
 	service.SetTx(func(ctx context.Context, fn func(context.Context, *sql.Tx) error) error {
 		return store.InTx(ctx, db, fn)
 	})
+	if dialect == store.DialectPostgres {
+		listenCtx, stopListening := context.WithCancel(context.Background())
+		defer stopListening()
+		service.SetDecisionWake(store.ListenForDecisions(listenCtx, cfg.Server.DatabaseURL).Wait)
+	}
 	if o.decider != nil {
 		service.SetDecider(o.decider)
 	}
