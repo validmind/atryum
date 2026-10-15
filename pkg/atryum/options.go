@@ -150,10 +150,12 @@ func WithRequireAgentAuth() Option {
 }
 
 // WithStuckReports makes the MCP proxy offer the atryum_report_stuck tool
-// (arguments task, boundary and optional detail), which an agent calls to
-// report that it cannot finish within its authority. It authorizes nothing:
-// the call is recorded as an invocation of that tool, and the event hook sees
-// "invocation.stuck_reported", and the agent gets a short acknowledgement.
+// (arguments task and boundary, up to 1 KB each, and an optional detail up to
+// 4 KB), which an agent calls to report that it cannot finish within its
+// authority. It authorizes nothing: the report is recorded as an invocation of
+// that tool in status "reported", the event hook sees only
+// "invocation.stuck_reported" (no "invocation.created"), and the agent gets a
+// short acknowledgement. The server in the MCP path must be a configured one.
 func WithStuckReports() Option {
 	return func(o *options) { o.stuckReports = true }
 }

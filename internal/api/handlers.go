@@ -1518,8 +1518,13 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		}
 		if params.Name == invocation.StuckReportTool && h.stuckReports {
 			resp, err := h.svc.ReportStuck(r.Context(), server, params.Arguments)
-			if err != nil {
+			if errors.Is(err, invocation.ErrInvalidStuckReport) {
 				h.writeRPCError(w, req.ID, -32602, err.Error())
+				return
+			}
+			if err != nil {
+				log.Printf("could not record a stuck report on %s: %v", server, err)
+				h.writeRPCError(w, req.ID, -32000, "could not record the stuck report; try again")
 				return
 			}
 			h.writeRPCResult(w, req.ID, normalizeToolCallResult(resp.Result, false))
