@@ -33,6 +33,7 @@ import (
 	authprovider "github.com/validmind/atryum/internal/mcp/auth_provider"
 	"github.com/validmind/atryum/internal/store"
 	"github.com/validmind/atryum/internal/version"
+	"github.com/validmind/atryum/pkg/authz"
 )
 
 //go:embed web/*
@@ -117,6 +118,36 @@ type agentsRepo interface {
 	DeleteAll(ctx context.Context) error
 }
 
+// usersRepo, agentMembersRepo and apiKeysRepo back the open-core identity
+// model (users, agent membership, first-party agent API keys). All three are
+// optional on the Handler: when nil the corresponding endpoints answer 503.
+type usersRepo interface {
+	Get(ctx context.Context, id string) (store.User, error)
+	List(ctx context.Context) ([]store.User, error)
+	SetDisabled(ctx context.Context, id string, disabled bool) error
+	SetRole(ctx context.Context, id, role string) error
+}
+
+type agentMembersRepo interface {
+	Add(ctx context.Context, agentID, userID, role string) error
+	Remove(ctx context.Context, agentID, userID string) error
+	IsMember(ctx context.Context, agentID, userID string) (bool, error)
+	ListByAgent(ctx context.Context, agentID string) ([]store.AgentMember, error)
+	ListByUser(ctx context.Context, userID string) ([]store.AgentMember, error)
+	AgentIDsForUser(ctx context.Context, userID string) ([]string, error)
+	RemoveAllForUser(ctx context.Context, userID string) error
+}
+
+type apiKeysRepo interface {
+	Create(ctx context.Context, key store.APIKey) (store.APIKey, error)
+	Get(ctx context.Context, id string) (store.APIKey, error)
+	ListByAgent(ctx context.Context, agentID string) ([]store.APIKey, error)
+	ListByCreator(ctx context.Context, userID string) ([]store.APIKey, error)
+	Revoke(ctx context.Context, id, revokedBy string) error
+	RevokeByCreator(ctx context.Context, userID, revokedBy string) (int64, error)
+	RevokeByCreatorForAgent(ctx context.Context, userID, agentID, revokedBy string) (int64, error)
+}
+
 type managedAgentBindingsRepo interface {
 	ListByAgent(ctx context.Context, agentCUID string) ([]store.ManagedAgentBinding, error)
 	GetByClaudeAgentID(ctx context.Context, account, claudeAgentID string) (store.ManagedAgentBinding, error)
@@ -163,6 +194,17 @@ type Handler struct {
 	authValidator         *auth.Validator
 	apiKeyAuth            auth.APIKeyConfig
 
+	// Identity model (see SetIdentityStores / SetAuthz). keyResolver
+	// authenticates atr_ API keys on the agent runtime routes; authorizer
+	// answers per-route authorization questions for the operator API;
+	// userProvisioner upserts users on IdP login.
+	usersRepo        usersRepo
+	agentMembersRepo agentMembersRepo
+	apiKeysRepo      apiKeysRepo
+	keyResolver      auth.AgentKeyResolver
+	authorizer       authz.Authorizer
+	userProvisioner  auth.UserProvisioner
+
 	// clientInfoCache remembers the most recent `initialize.clientInfo`
 	// per MCP session key so that subsequent tools/call requests on the
 	// same session can attach client_name / client_version. The key is the
@@ -180,6 +222,19 @@ type Handler struct {
 	// routes and outside every auth middleware chain, like /healthz; each
 	// registration is responsible for its own authentication.
 	extraRoutes []func(mux *http.ServeMux)
+
+	// authenticatedRoutes are like extraRoutes but receive the operator auth
+	// middleware so embedding programs can mount routes that require a
+	// logged-in principal (see pkg/atryum WithAuthenticatedRoutes).
+	authenticatedRoutes []func(mux *http.ServeMux, authenticate func(http.Handler) http.Handler)
+}
+
+// AddAuthenticatedRoutes registers a callback that may mount routes wrapped in
+// the operator authentication middleware. See pkg/atryum.WithAuthenticatedRoutes.
+func (h *Handler) AddAuthenticatedRoutes(register func(mux *http.ServeMux, authenticate func(http.Handler) http.Handler)) {
+	if register != nil {
+		h.authenticatedRoutes = append(h.authenticatedRoutes, register)
+	}
 }
 
 // AddExtraRoutes registers a callback that may mount additional routes on the
@@ -804,13 +859,16 @@ type AuthConfigResponse struct {
 }
 
 type AuthProvider struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Provider    string `json:"provider"`
-	Issuer      string `json:"issuer"`
-	Authority   string `json:"authority"`
-	Audience    string `json:"audience"`
-	ClientID    string `json:"client_id"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Provider  string `json:"provider"`
+	Issuer    string `json:"issuer"`
+	Authority string `json:"authority"`
+	Audience  string `json:"audience"`
+	ClientID  string `json:"client_id"`
+	// CLIClientID is the client the CLI uses for the device grant; equals
+	// ClientID unless cli_client_id is configured.
+	CLIClientID string `json:"cli_client_id"`
 	Scopes      string `json:"scopes"`
 	RedirectURI string `json:"redirect_uri"`
 }
@@ -837,6 +895,53 @@ func (h *Handler) SetAuthValidator(v *auth.Validator) {
 
 func (h *Handler) SetAuthDebugSkipVerify(enabled bool) {
 	h.authDebugSkip = enabled
+}
+
+// SetIdentityStores installs the users, agent-membership and API-key stores
+// that back /api/v1/me, /api/v1/users and /api/v1/agents/{id}/{keys,members}.
+func (h *Handler) SetIdentityStores(users usersRepo, members agentMembersRepo, keys apiKeysRepo) {
+	h.usersRepo = users
+	h.agentMembersRepo = members
+	h.apiKeysRepo = keys
+}
+
+// SetAgentKeyResolver enables first-party API keys (Bearer atr_...) on the
+// agent runtime routes (/mcp/, /api/v1/external/*, /api/v1/agent/*).
+func (h *Handler) SetAgentKeyResolver(r auth.AgentKeyResolver) {
+	h.keyResolver = r
+}
+
+// SetAuthz installs the operator-API authorizer and the user provisioner
+// consulted by the operator auth middleware. When authorizer is nil the
+// handler falls back to authz.Default over the installed membership store.
+func (h *Handler) SetAuthz(authorizer authz.Authorizer, provisioner auth.UserProvisioner) {
+	h.authorizer = authorizer
+	h.userProvisioner = provisioner
+}
+
+// can asks the authorizer whether the request principal may perform action on
+// res, writing the HTTP error itself when the answer is no. Returns true when
+// the handler may proceed.
+func (h *Handler) can(w http.ResponseWriter, r *http.Request, action authz.Action, res authz.Resource) bool {
+	p, ok := authz.PrincipalFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthenticated")
+		return false
+	}
+	az := h.authorizer
+	if az == nil {
+		az = authz.Default{Members: h.agentMembersRepo}
+	}
+	allowed, err := az.Can(r.Context(), p, action, res)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "authorization check failed")
+		return false
+	}
+	if !allowed {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return false
+	}
+	return true
 }
 
 // SetManagedAgents installs the optional Claude Managed Agents events bridge,
@@ -895,6 +1000,7 @@ func (h *Handler) authConfig(w http.ResponseWriter, r *http.Request) {
 			Authority:   cfg.Issuer,
 			Audience:    cfg.Audience,
 			ClientID:    cfg.AdminClientID,
+			CLIClientID: cfg.CLIClientID,
 			Scopes:      cfg.AdminScopes,
 			RedirectURI: redirectURI,
 		})
@@ -909,8 +1015,13 @@ func (h *Handler) Routes() http.Handler {
 		mux.Handle("/.well-known/oauth-protected-resource", h.protectedResourceMetadata())
 	}
 	mcpHandler := h.agentRuntimeHandler(http.HandlerFunc(h.invokeUpstream))
-	operatorAuthMW := auth.OperatorMiddleware(h.authValidator, h.apiKeyAuth, auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug})
+	operatorAuthMW := auth.OperatorMiddleware(h.authValidator, h.apiKeyAuth, auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug}, h.userProvisioner)
+	// operator: authenticated + admin role (the historical operator API).
 	operator := func(fn http.HandlerFunc) http.Handler {
+		return operatorAuthMW(auth.RequireAdmin(fn))
+	}
+	// member: authenticated, any role; the handler authorizes per resource.
+	member := func(fn http.HandlerFunc) http.Handler {
 		return operatorAuthMW(fn)
 	}
 	mux.HandleFunc("/mcp", h.mcpRootNotFound)
@@ -924,8 +1035,11 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("/api/v1/servers/", operator(h.operatorServerDetail))
 	mux.Handle("/api/v1/rules", operator(h.operatorRules))
 	mux.Handle("/api/v1/rules/", operator(h.operatorRuleDetail))
-	mux.Handle("/api/v1/agents", operator(h.operatorAgents))
-	mux.Handle("/api/v1/agents/", operator(h.operatorAgentDetail))
+	mux.Handle("/api/v1/agents", member(h.operatorAgents))
+	mux.Handle("/api/v1/agents/", member(h.operatorAgentDetail))
+	mux.Handle("/api/v1/me", member(h.me))
+	mux.Handle("/api/v1/users", operator(h.operatorUsers))
+	mux.Handle("/api/v1/users/", operator(h.operatorUserDetail))
 	mux.Handle("/api/v1/model-configs", operator(h.operatorModelConfigs))
 	mux.Handle("/api/v1/llm-configs", operator(h.operatorLLMConfigs))
 	mux.Handle("/api/v1/llm-configs/", operator(h.operatorLLMConfigDetail))
@@ -959,6 +1073,9 @@ func (h *Handler) Routes() http.Handler {
 	for _, register := range h.extraRoutes {
 		register(mux)
 	}
+	for _, register := range h.authenticatedRoutes {
+		register(mux, operatorAuthMW)
+	}
 	return mux
 }
 
@@ -966,7 +1083,7 @@ func (h *Handler) agentRuntimeHandler(next http.Handler) http.Handler {
 	handler := auth.MiddlewareWithOptions(
 		h.authValidator,
 		"/.well-known/oauth-protected-resource",
-		auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug},
+		auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug, KeyResolver: h.keyResolver},
 	)(next)
 	return h.noAuthAgentIDHint(handler)
 }
@@ -1308,11 +1425,22 @@ func newAgentRulesResponse(agentID, server, tool string) AgentRulesResponse {
 	}
 }
 
+// resolveAgentRecordForRules maps the identity an agent presents to the
+// agents.id that rules are scoped by. It mirrors the lookup order of the
+// enforcement path (agentsLookupAdapter in pkg/atryum): key-authenticated
+// agents carry agents.id itself as their identity, so the primary key is
+// tried before the legacy agent_ids alias list. Keeping both paths in step
+// matters because this one feeds the advisory /agent/rules response and the
+// MCP tools/list policy annotations; if they diverged an agent would be told
+// one disposition and enforced another.
 func (h *Handler) resolveAgentRecordForRules(ctx context.Context, agentID string) string {
 	if h.agentsRepo == nil {
 		return ""
 	}
 	if agentID != "" {
+		if rec, err := h.agentsRepo.Get(ctx, agentID); err == nil && rec.ID != "" {
+			return rec.ID
+		}
 		if rec, err := h.agentsRepo.GetByAgentID(ctx, agentID); err == nil {
 			return rec.ID
 		}
@@ -1493,6 +1621,16 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		if !forwardedOK {
 			if req.IsNotification() {
 				w.WriteHeader(http.StatusAccepted)
+				return
+			}
+			if req.Method == "ping" {
+				// MCP requires every server to answer `ping` with an empty
+				// result. Clients use it as a liveness probe, so when the
+				// upstream cannot take the request (stdio servers, no
+				// forwarder, resolve or transport failure) atryum answers
+				// for itself instead of reporting "method not found",
+				// which harnesses render as an unhealthy integration.
+				h.writeRPCResult(w, req.ID, map[string]any{})
 				return
 			}
 			h.writeRPCError(w, req.ID, -32601, "method not found")
@@ -3173,6 +3311,10 @@ func (h *Handler) operatorAgents(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to list agents")
 			return
 		}
+		records, ok := h.filterAgentsForPrincipal(w, r, records)
+		if !ok {
+			return
+		}
 		items := make([]OperatorAgent, 0, len(records))
 		for _, a := range records {
 			items = append(items, h.toOperatorAgent(r.Context(), a))
@@ -3180,6 +3322,14 @@ func (h *Handler) operatorAgents(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, AgentListResponse{Items: items})
 
 	case http.MethodPost:
+		// Any authenticated user may create an agent; the creator becomes its
+		// first member (owner). Admins create unowned agents unless they are
+		// also a real user, in which case they are added like anyone else.
+		principal, ok := authz.PrincipalFromContext(r.Context())
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "unauthenticated")
+			return
+		}
 		var req OperatorAgentCreateInput
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
@@ -3241,6 +3391,13 @@ func (h *Handler) operatorAgents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		if principal.UserID != "" && h.agentMembersRepo != nil {
+			if err := h.agentMembersRepo.Add(r.Context(), id, principal.UserID, store.AgentMemberRoleOwner); err != nil {
+				_ = h.agentsRepo.Delete(r.Context(), id)
+				writeError(w, http.StatusInternalServerError, "failed to record agent ownership")
+				return
+			}
+		}
 		record, err := h.agentsRepo.Get(r.Context(), id)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to retrieve created agent")
@@ -3263,6 +3420,9 @@ func (h *Handler) operatorAgentDetail(w http.ResponseWriter, r *http.Request) {
 
 	// POST /api/v1/agents/sync — trigger a backend sync
 	if trimmed == "sync" {
+		if !h.can(w, r, authz.ActionAdmin, authz.Resource{}) {
+			return
+		}
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
@@ -3292,14 +3452,31 @@ func (h *Handler) operatorAgentDetail(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(trimmed, "/charter-preview") {
 		id := strings.TrimSuffix(trimmed, "/charter-preview")
 		id = strings.Trim(id, "/")
+		if !h.can(w, r, authz.ActionAgentRead, authz.Resource{AgentID: id}) {
+			return
+		}
 		h.operatorAgentCharterPreview(w, r, id)
 		return
 	}
 
-	// /api/v1/agents/:id — GET / PATCH / DELETE
+	// /api/v1/agents/:id/keys[/:key_id] — first-party API keys
+	if id, rest, found := strings.Cut(trimmed, "/keys"); found {
+		h.agentKeys(w, r, strings.Trim(id, "/"), strings.Trim(rest, "/"))
+		return
+	}
+	// /api/v1/agents/:id/members[/:user_id]
+	if id, rest, found := strings.Cut(trimmed, "/members"); found {
+		h.agentMembers(w, r, strings.Trim(id, "/"), strings.Trim(rest, "/"))
+		return
+	}
+
+	// /api/v1/agents/:id — GET (members) / PATCH / DELETE (admin)
 	id := trimmed
 	switch r.Method {
 	case http.MethodGet:
+		if !h.can(w, r, authz.ActionAgentRead, authz.Resource{AgentID: id}) {
+			return
+		}
 		record, err := h.agentsRepo.Get(r.Context(), id)
 		if err != nil {
 			status := http.StatusInternalServerError
@@ -3312,6 +3489,9 @@ func (h *Handler) operatorAgentDetail(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, h.toOperatorAgent(r.Context(), record))
 
 	case http.MethodPatch:
+		if !h.can(w, r, authz.ActionAgentWrite, authz.Resource{AgentID: id}) {
+			return
+		}
 		var req OperatorAgentInput
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
@@ -3429,6 +3609,9 @@ func (h *Handler) operatorAgentDetail(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, h.toOperatorAgent(r.Context(), record))
 
 	case http.MethodDelete:
+		if !h.can(w, r, authz.ActionAgentWrite, authz.Resource{AgentID: id}) {
+			return
+		}
 		record, err := h.agentsRepo.Get(r.Context(), id)
 		if err != nil {
 			status := http.StatusInternalServerError
@@ -3844,9 +4027,29 @@ func (s *ServerOperatorService) CompleteConnect(ctx context.Context, state strin
 	if strings.TrimSpace(code) == "" {
 		return OAuthConnectStatusResponse{}, fmt.Errorf("missing oauth code")
 	}
+	// Every failure past this point must mark the connect session as
+	// failed. The UI polls the session status and only stops on
+	// succeeded/failed, so returning a bare error here would leave it
+	// spinning on "pending" forever while the popup closes itself.
+	fail := func(upstream *mcp.Upstream, err error) (OAuthConnectStatusResponse, error) {
+		now := time.Now().UTC()
+		message := err.Error()
+		log.Printf("[mcp-auth] complete_connect failed server=%s state=%s err=%v", session.ServerName, session.State, err)
+		_ = s.oauthRepo.UpsertConnectSession(ctx, store.OAuthConnectSession{State: session.State, ServerName: session.ServerName, Status: "failed", RedirectURI: session.RedirectURI, StartedAt: session.StartedAt, CompletedAt: &now, ErrorMessage: &message})
+		if upstream != nil {
+			upstream.Status.AuthStatus = mcp.AuthStatusInvalid
+			upstream.Status.ReauthNeeded = true
+			upstream.Status.ConnectionStatus = mcp.ConnectionStatusNeedsAttention
+			upstream.Status.LastErrorSummary = &message
+			action := "retry connect"
+			upstream.Status.ActionRequired = &action
+			_ = s.repo.UpdateServerStatus(ctx, session.ServerName, upstream.Status)
+		}
+		return OAuthConnectStatusResponse{Status: "failed", Message: &message, StartedAt: &session.StartedAt, CompletedAt: &now}, nil
+	}
 	upstream, err := s.repo.GetServerAny(ctx, session.ServerName)
 	if err != nil {
-		return OAuthConnectStatusResponse{}, err
+		return fail(nil, fmt.Errorf("load server %q: %w", session.ServerName, err))
 	}
 	registry := authprovider.NewRegistry()
 	provider, providerErr := registry.Get(upstream.OAuthProviderID)
@@ -3854,24 +4057,15 @@ func (s *ServerOperatorService) CompleteConnect(ctx context.Context, state strin
 		provider, providerErr = registry.Detect(ctx, upstream)
 	}
 	if providerErr != nil {
-		return OAuthConnectStatusResponse{}, providerErr
+		return fail(&upstream, providerErr)
 	}
+	log.Printf("[mcp-auth] complete_connect server=%s state=%s provider=%s token_url=%s redirect_uri=%s", session.ServerName, session.State, provider.ID(), upstream.OAuthTokenURL, session.RedirectURI)
 	token, err := provider.ExchangeAuthCode(ctx, s.client, upstream, code, session.RedirectURI, authprovider.ConnectSession{State: session.State, CodeVerifier: session.CodeVerifier})
 	if err != nil {
-		now := time.Now().UTC()
-		message := err.Error()
-		_ = s.oauthRepo.UpsertConnectSession(ctx, store.OAuthConnectSession{State: session.State, ServerName: session.ServerName, Status: "failed", RedirectURI: session.RedirectURI, StartedAt: session.StartedAt, CompletedAt: &now, ErrorMessage: &message})
-		upstream.Status.AuthStatus = mcp.AuthStatusInvalid
-		upstream.Status.ReauthNeeded = true
-		upstream.Status.ConnectionStatus = mcp.ConnectionStatusNeedsAttention
-		upstream.Status.LastErrorSummary = &message
-		action := "retry connect"
-		upstream.Status.ActionRequired = &action
-		_ = s.repo.UpdateServerStatus(ctx, session.ServerName, upstream.Status)
-		return OAuthConnectStatusResponse{Status: "failed", Message: &message, StartedAt: &session.StartedAt, CompletedAt: &now}, nil
+		return fail(&upstream, err)
 	}
 	if err := s.oauthRepo.UpsertCredential(ctx, store.OAuthCredential{ServerName: session.ServerName, AccessToken: token.AccessToken, RefreshToken: token.RefreshToken, TokenType: token.TokenType, Scope: token.Scope, ExpiresAt: token.ExpiresAt}); err != nil {
-		return OAuthConnectStatusResponse{}, err
+		return fail(&upstream, fmt.Errorf("store oauth credential: %w", err))
 	}
 	upstream.AuthToken = token.AccessToken
 	upstream.Status.AuthType = mcp.AuthTypeHosted
@@ -3884,8 +4078,9 @@ func (s *ServerOperatorService) CompleteConnect(ctx context.Context, state strin
 	upstream.Status.LastCheckedAt = &now
 	upstream.Status.LastCheckOK = true
 	if err := s.repo.UpdateServerStatus(ctx, session.ServerName, upstream.Status); err != nil {
-		return OAuthConnectStatusResponse{}, err
+		return fail(nil, fmt.Errorf("update server status: %w", err))
 	}
+	log.Printf("[mcp-auth] complete_connect succeeded server=%s state=%s token_type=%s scope=%q has_refresh=%t", session.ServerName, session.State, token.TokenType, token.Scope, token.RefreshToken != "")
 	message := "connected successfully"
 	if err := s.oauthRepo.UpsertConnectSession(ctx, store.OAuthConnectSession{State: session.State, ServerName: session.ServerName, Status: "succeeded", RedirectURI: session.RedirectURI, StartedAt: session.StartedAt, CompletedAt: &now, ErrorMessage: nil}); err != nil {
 		return OAuthConnectStatusResponse{}, err

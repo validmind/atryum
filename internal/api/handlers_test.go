@@ -976,6 +976,39 @@ func TestMCPInitializedNotificationReturnsAccepted(t *testing.T) {
 	}
 }
 
+func TestMCPPingAnsweredLocallyWhenUpstreamCannotForward(t *testing.T) {
+	// stdio upstreams have no generic envelope forwarding, so `ping` used to
+	// fall through to "method not found" and health checks flagged atryum
+	// as unhealthy even though tools/list and tools/call worked.
+	svc := &stubService{upstream: mcp.Upstream{Name: "demo", Mode: mcp.UpstreamModeStdio}, fwdErr: fmt.Errorf("generic stdio forwarding is not implemented")}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":7,"method":"ping","params":{}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp struct {
+		ID     json.RawMessage `json:"id"`
+		Result map[string]any  `json:"result"`
+		Error  json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v (%s)", err, w.Body.String())
+	}
+	if string(resp.ID) != "7" {
+		t.Fatalf("expected id 7, got %s", resp.ID)
+	}
+	if len(resp.Error) != 0 {
+		t.Fatalf("expected no error, got %s", resp.Error)
+	}
+	if resp.Result == nil || len(resp.Result) != 0 {
+		t.Fatalf("expected empty result object, got %s", w.Body.String())
+	}
+}
+
 func TestMCPPingPassThrough(t *testing.T) {
 	svc := &stubService{upstream: mcp.Upstream{Name: "demo", Mode: mcp.UpstreamModeHTTP}, forward: mcp.ForwardResult{StatusCode: http.StatusOK, Body: []byte(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`), ContentType: "application/json", ProtocolVersion: "2025-11-25"}}
 	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
@@ -1578,6 +1611,41 @@ func TestAgentRulesFiltersOutRulesScopedToOtherAgents(t *testing.T) {
 	}
 	if len(resp.Items) != 2 {
 		t.Fatalf("expected two visible rules, got %#v", resp.Items)
+	}
+	for _, item := range resp.Items {
+		if item.ID == "other-agent" {
+			t.Fatalf("other-agent scoped rule leaked into response: %#v", resp.Items)
+		}
+	}
+}
+
+// Key-authenticated agents identify themselves by agents.id (the primary
+// key), not by an agent_ids alias. The advisory rules path must resolve that
+// the same way the enforcement path does, or the two report different rules.
+func TestAgentRulesResolvesAgentByPrimaryKeyForKeyAuthenticatedAgents(t *testing.T) {
+	agent := store.AgentRecord{ID: "14079491-21a4-4684-8220-43f50223df89", AgentIDs: `["agent-007"]`}
+	other := store.AgentRecord{ID: "agent-cuid-other", AgentIDs: `["other-agent"]`}
+	rules := &stubRulesRepo{rules: []store.Rule{
+		{ID: "other-agent", Action: invocation.RuleActionAutoDeny, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentCUIDs: []string{other.ID}, Enabled: true, Order: 0},
+		{ID: "this-agent", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"amp"}, ToolPatterns: []string{"Read"}, AgentCUIDs: []string{agent.ID}, Enabled: true, Order: 1},
+		{ID: "unscoped", Action: invocation.RuleActionHumanApproval, ServerPatterns: []string{"*"}, ToolPatterns: []string{"*"}, Enabled: true, Order: 2},
+	}}
+	agents := &stubAgentsRepo{records: []store.AgentRecord{agent, other}}
+	h := NewHandler(&stubService{}, stubServerService{}, nil, rules, agents, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/rules?agent_id="+agent.ID+"&source=amp&tool=Read", nil)
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp AgentRulesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.MatchedRuleID == nil || *resp.MatchedRuleID != "this-agent" {
+		t.Fatalf("expected the agent's own scoped rule to match by primary key, got %#v (action %q)", resp.MatchedRuleID, resp.Action)
 	}
 	for _, item := range resp.Items {
 		if item.ID == "other-agent" {

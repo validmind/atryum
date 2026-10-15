@@ -239,6 +239,8 @@ SECRET=$(api GET "/${REALM}/clients/${ATRYUM_UUID}/client-secret" | jq -r .value
 #   Web origins:
 #     http://localhost:5174
 #     http://localhost:8080
+#   Advanced → OAuth 2.0 Device Authorization Grant: ON
+#     (used by `atryum login` / `atryum setup claude`)
 log "Ensuring public admin UI client '${ADMIN_CLIENT_ID}'..."
 ADMIN_UUID=$(api GET "/${REALM}/clients?clientId=${ADMIN_CLIENT_ID}" | jq -r '.[0].id // empty')
 
@@ -256,7 +258,7 @@ ADMIN_CLIENT_BODY=$(cat <<EOF
   "webOrigins": ["http://localhost:5174", "http://localhost:8080"],
   "attributes": {
     "pkce.code.challenge.method": "S256",
-    "oauth2.device.authorization.grant.enabled": "false",
+    "oauth2.device.authorization.grant.enabled": "true",
     "post.logout.redirect.uris": "${ADMIN_POST_LOGOUT_REDIRECT_URI_DEV}##${ADMIN_POST_LOGOUT_REDIRECT_URI_EMBEDDED}"
   }
 }

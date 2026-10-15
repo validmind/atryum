@@ -8,6 +8,8 @@ import Agents from './pages/Agents';
 import Servers from './pages/Servers';
 import Rules from './pages/Rules';
 import Settings from './pages/Settings';
+import Users from './pages/Users';
+import UserDetail from './pages/UserDetail';
 import { useApprovalNotifications } from './hooks/useApprovalNotifications';
 
 const App: React.FC = () => {
@@ -23,6 +25,10 @@ const App: React.FC = () => {
         <Route path="/servers" element={<Servers />} />
         <Route path="/rules" element={<Rules />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/users" element={<Users />} />
+        <Route path="/users/:id" element={<UserDetail />} />
+        <Route path="/users/:id/agents" element={<UserDetail />} />
+        <Route path="/users/:id/keys" element={<UserDetail />} />
       </Routes>
     </Layout>
   );

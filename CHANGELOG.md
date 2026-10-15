@@ -7,6 +7,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Per-user access views in the Users UI: clicking a user (or the new
+  **Agents** / **Keys** links on their row) opens `/ui/users/{id}/agents`
+  and `/ui/users/{id}/keys`, listing the agents that user is a member of
+  and every API key they have issued across agents, with membership
+  removal and key revocation in place. Backed by two new admin endpoints,
+  `GET /api/v1/users/{id}/agents` and `GET /api/v1/users/{id}/keys`; the
+  latter returns the usual key rows plus an `agent_name` field.
+- Several Claude Codes on one machine can now act as different Atryum
+  agents. `ATRYUM_HOME` is the single root for everything the Claude hook
+  touches: `atryum setup claude` and `atryum hooks install claude-code`
+  install the hook script under `$ATRYUM_HOME/hooks/`, reference it by
+  absolute path, and bake `ATRYUM_STATE_DIR=$ATRYUM_HOME/agent-hook-state`
+  into the hook commands whenever the home is not the stock `~/.atryum`.
+  The `claude-code` hook target honours `CLAUDE_CONFIG_DIR` for the
+  `settings.json` it writes, and without `--agent` the default agent and
+  key names gain the home's basename so two instances do not share an agent
+  record. One env pair per instance is enough:
+  `ATRYUM_HOME=~/.atryum-b CLAUDE_CONFIG_DIR=~/.claude-b atryum setup claude`,
+  then launch Claude Code with the same two variables. The shared hook also
+  falls back to `$ATRYUM_HOME/agent-hook-state` when only `ATRYUM_HOME` is
+  set. Default installs are unchanged.
+
+### Fixed
+
+- `GET /api/v1/agent/rules` and the MCP `tools/list` policy annotations
+  now resolve API-key-authenticated agents by their `agents.id`, the same
+  lookup order the enforcement path uses. Before, a key-authenticated
+  agent's UUID never matched the `agent_ids` alias list, so the advisory
+  response silently fell back to the sync default agent's rules (or none)
+  while enforcement used the right ones.
+- `atryum hooks install` now always replaces previously installed Atryum
+  hook entries. Running it after `atryum setup claude` used to leave the
+  env-prefixed entries in place and add bare copies beside them, firing the
+  hook twice per event with the second copy hitting Atryum unauthenticated.
+- Roles set in the Users UI (or via `PATCH /api/v1/users/{id}`) are kept
+  across logins. A new `users.role_source` column (migration 031) records
+  `manual` once an operator sets a role; `UpsertLogin` only refreshes role
+  from the IdP admin claim while it is still `idp`. The API exposes
+  `role_source` on user rows.
+- `/api/v1/agents/{id}/members` authorizes before probing the agents table,
+  so a non-member gets 403 for unknown and existing ids alike instead of an
+  enumeration oracle (the keys route already did this).
+- `atryum setup claude --help` prints the `setup claude` usage with its
+  `--url`/`--agent`/`-y` options; it used to be caught by the generic
+  `setup` help scan and print the parent usage instead.
+- `docker-compose.yml` publishes Postgres on `127.0.0.1:5432` rather than
+  all interfaces; the credentials in that file are static, so a `0.0.0.0`
+  bind exposed the whole database to anyone who could reach the host.
+- Upstream OAuth discovery now tries the RFC 8414 / RFC 9728 *path-inserted*
+  well-known URLs (`https://host/.well-known/oauth-authorization-server/<path>`
+  and `.../oauth-protected-resource/<path>`) before the path-appended and
+  host-root forms, and the `WWW-Authenticate` challenge probe falls back to
+  a POST when the server answers GET with 405. Hosted MCP servers that only
+  publish metadata at the path-inserted URL (for example LaunchDarkly's
+  `https://mcp.launchdarkly.com/mcp/launchdarkly`) previously failed with
+  "could not determine an OAuth strategy for this server" and can now be
+  connected via Dynamic Client Registration without a manual authorize URL
+  or client id.
+- The upstream OAuth callback now marks the connect session **failed** (and
+  logs `[mcp-auth] complete_connect failed …`) on every error path, not
+  only a rejected token exchange. Previously a failure while loading the
+  server, resolving the auth provider, or storing the credential returned a
+  bare error page that closed itself, and the Servers UI kept polling a
+  session stuck on `pending`, showing "Connecting…" forever. OAuth token
+  exchange and refresh requests also get a 30 s timeout instead of sharing
+  the untimed upstream HTTP client.
+- The MCP proxy now answers JSON-RPC `ping` itself whenever the request
+  cannot be forwarded to the upstream (stdio servers, no forwarder, or an
+  upstream resolve/transport failure), returning the empty result the MCP
+  spec requires instead of `-32601 method not found`. Harnesses that use
+  `ping` as a health check (for example the Orchestrator) no longer show
+  the Atryum integration as "error" while tools sync and invoke fine.
+  HTTP upstreams still see `ping` passed through unchanged.
+
+- The **you** badge on the Users page now sits beside the user's email
+  instead of stacking under their name.
+
+### Security
+
+- The shared agent hook no longer writes Atryum API keys (`atr_…`) to its
+  on-disk token cache. The key already lives wherever `ATRYUM_TOKEN_COMMAND`
+  reads it from, so the cache was a second plaintext copy for no gain. Other
+  token kinds are still cached as before.
+- `atryum setup claude` and the shared hook refuse to send a bearer token
+  over plain `http://` to a non-loopback host. Loopback http stays allowed
+  for local development; pass `--allow-insecure-http` to `setup claude`
+  (which bakes `ATRYUM_ALLOW_INSECURE_HTTP=1` into the hook commands) or set
+  that variable yourself to accept a trusted private network.
+
 ## [0.4.0] - 2026-07-27
 
 ### Added

@@ -767,3 +767,158 @@ export const vmDiscoveryApi = {
     return data;
   },
 };
+
+// ─── Identity: current user, users, agent members, agent API keys ────────────
+
+export type UserRole = 'admin' | 'member';
+
+export interface Me {
+  user_id?: string;
+  issuer?: string;
+  subject?: string;
+  email?: string;
+  name?: string;
+  role: UserRole;
+  /** How the request authenticated: jwt, machine_key, or none (auth disabled). */
+  method: 'jwt' | 'machine_key' | 'none';
+  /** Agents the user is a member of. Empty for admins, who can see every agent. */
+  agent_ids: string[];
+}
+
+export interface AtryumUser {
+  id: string;
+  issuer: string;
+  subject: string;
+  email: string;
+  name: string;
+  role: UserRole;
+  /** "idp": refreshed from the identity provider on each login; "manual": set by an operator and kept across logins. */
+  role_source?: 'idp' | 'manual';
+  created_at: string;
+  last_login_at?: string | null;
+  disabled_at?: string | null;
+  disabled: boolean;
+}
+
+export interface UserUpdateInput {
+  disabled?: boolean;
+  role?: UserRole;
+}
+
+export interface AgentMember {
+  user_id: string;
+  email: string;
+  name: string;
+  role: string;
+  created_at: string;
+}
+
+export interface AgentAPIKey {
+  id: string;
+  agent_id: string;
+  /** Display name of the agent. Present on per-user listings, where rows span agents. */
+  agent_name?: string;
+  name: string;
+  key_prefix: string;
+  created_by?: string;
+  created_at: string;
+  expires_at?: string | null;
+  last_used_at?: string | null;
+  revoked_at?: string | null;
+  revoked_by?: string;
+  active: boolean;
+  /** The full secret. Present only in the response that created the key. */
+  token?: string;
+}
+
+/** One agent a user is a member of, as returned by /api/v1/users/{id}/agents. */
+export interface UserAgent {
+  agent_id: string;
+  agent_name: string;
+  enabled: boolean;
+  role: string;
+  created_at: string;
+}
+
+export interface AgentAPIKeyCreateInput {
+  name: string;
+  /** Optional lifetime such as "30d" or "720h". Omit for no expiry. */
+  expires_in?: string;
+}
+
+export const identityApi = {
+  me: async (): Promise<Me> => {
+    const { data } = await atryumApi.get('/api/v1/me');
+    return data;
+  },
+
+  listUsers: async (): Promise<{ items: AtryumUser[] }> => {
+    const { data } = await atryumApi.get('/api/v1/users');
+    return data;
+  },
+
+  getUser: async (id: string): Promise<AtryumUser> => {
+    const { data } = await atryumApi.get(`/api/v1/users/${encodeURIComponent(id)}`);
+    return data;
+  },
+
+  listUserAgents: async (id: string): Promise<{ items: UserAgent[] }> => {
+    const { data } = await atryumApi.get(`/api/v1/users/${encodeURIComponent(id)}/agents`);
+    return data;
+  },
+
+  listUserKeys: async (id: string): Promise<{ items: AgentAPIKey[] }> => {
+    const { data } = await atryumApi.get(`/api/v1/users/${encodeURIComponent(id)}/keys`);
+    return data;
+  },
+
+  updateUser: async (id: string, input: UserUpdateInput): Promise<AtryumUser> => {
+    const { data } = await atryumApi.patch(
+      `/api/v1/users/${encodeURIComponent(id)}`,
+      input,
+    );
+    return data;
+  },
+
+  listMembers: async (agentID: string): Promise<{ items: AgentMember[] }> => {
+    const { data } = await atryumApi.get(
+      `/api/v1/agents/${encodeURIComponent(agentID)}/members`,
+    );
+    return data;
+  },
+
+  addMember: async (agentID: string, userID: string): Promise<{ items: AgentMember[] }> => {
+    const { data } = await atryumApi.post(
+      `/api/v1/agents/${encodeURIComponent(agentID)}/members`,
+      { user_id: userID },
+    );
+    return data;
+  },
+
+  removeMember: async (agentID: string, userID: string): Promise<void> => {
+    await atryumApi.delete(
+      `/api/v1/agents/${encodeURIComponent(agentID)}/members/${encodeURIComponent(userID)}`,
+    );
+  },
+
+  listKeys: async (agentID: string): Promise<{ items: AgentAPIKey[] }> => {
+    const { data } = await atryumApi.get(
+      `/api/v1/agents/${encodeURIComponent(agentID)}/keys`,
+    );
+    return data;
+  },
+
+  createKey: async (agentID: string, input: AgentAPIKeyCreateInput): Promise<AgentAPIKey> => {
+    const { data } = await atryumApi.post(
+      `/api/v1/agents/${encodeURIComponent(agentID)}/keys`,
+      input,
+    );
+    return data;
+  },
+
+  revokeKey: async (agentID: string, keyID: string): Promise<void> => {
+    await atryumApi.delete(
+      `/api/v1/agents/${encodeURIComponent(agentID)}/keys/${encodeURIComponent(keyID)}`,
+    );
+  },
+};

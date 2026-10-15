@@ -394,3 +394,110 @@ func TestPrepareResourceMetadataPointsToIssuer(t *testing.T) {
 		t.Fatalf("expected dcr provider id, got %q", prepared.OAuthProviderID)
 	}
 }
+
+// TestPrepareDiscoversPathInsertedWellKnown mirrors the LaunchDarkly hosted
+// MCP server: the resource lives at /mcp/launchdarkly, nothing is served at
+// the host root or at the path-appended well-known URLs, and both metadata
+// documents are only published at the RFC 8414 / RFC 9728 path-inserted
+// URLs (/.well-known/<suffix>/mcp/launchdarkly).
+func TestPrepareDiscoversPathInsertedWellKnown(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/oauth-protected-resource/mcp/launchdarkly", func(w http.ResponseWriter, r *http.Request) {
+		base := "http://" + r.Host
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"resource":"` + base + `/mcp/launchdarkly","authorization_servers":["` + base + `/mcp/launchdarkly"]}`))
+	})
+	mux.HandleFunc("/.well-known/oauth-authorization-server/mcp/launchdarkly", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"issuer":"http://` + r.Host + `/mcp/launchdarkly","authorization_endpoint":"https://app.example.com/trust/oauth/authorize","token_endpoint":"https://app.example.com/trust/oauth/token","registration_endpoint":"https://app.example.com/trust/oauth/register","scopes_supported":["reader","writer"],"token_endpoint_auth_methods_supported":["none"],"code_challenge_methods_supported":["S256"]}`))
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(404)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	prepared, err := Prepare(context.Background(), NewRegistry(), mcp.Upstream{
+		Mode:    mcp.UpstreamModeHTTP,
+		BaseURL: server.URL + "/mcp/launchdarkly",
+	})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if prepared.OAuthAuthorizeURL != "https://app.example.com/trust/oauth/authorize" {
+		t.Fatalf("expected authorize endpoint from path-inserted metadata, got %q", prepared.OAuthAuthorizeURL)
+	}
+	if prepared.OAuthTokenURL != "https://app.example.com/trust/oauth/token" {
+		t.Fatalf("expected token endpoint from path-inserted metadata, got %q", prepared.OAuthTokenURL)
+	}
+	if prepared.OAuthProviderID != "oauth_dcr" {
+		t.Fatalf("expected oauth_dcr (registration advertised), got %q", prepared.OAuthProviderID)
+	}
+}
+
+// TestPrepareDiscoversPathInsertedASWithoutProtectedResource covers the
+// same layout when the server publishes no protected-resource document at
+// all: the issuer fallback (the resource URL itself) must still be probed
+// at its path-inserted well-known URL.
+func TestPrepareDiscoversPathInsertedASWithoutProtectedResource(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/oauth-authorization-server/mcp/thing", func(w http.ResponseWriter, r *http.Request) {
+		base := "http://" + r.Host
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"authorization_endpoint":"` + base + `/auth","token_endpoint":"` + base + `/token"}`))
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(404)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	metadata, err := DiscoverAuthorizationServer(context.Background(), server.URL+"/mcp/thing")
+	if err != nil {
+		t.Fatalf("DiscoverAuthorizationServer: %v", err)
+	}
+	if metadata.AuthorizationEndpoint != server.URL+"/auth" {
+		t.Fatalf("expected path-inserted AS metadata, got %+v", metadata)
+	}
+}
+
+// TestChallengeProbeFallsBackToPOST covers streamable-HTTP servers that
+// answer GET with 405 and only emit the RFC 9728 WWW-Authenticate challenge
+// on a POST.
+func TestChallengeProbeFallsBackToPOST(t *testing.T) {
+	var issuer *httptest.Server
+	issuerMux := http.NewServeMux()
+	issuerMux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"authorization_endpoint":"` + issuer.URL + `/auth","token_endpoint":"` + issuer.URL + `/token"}`))
+	})
+	issuer = httptest.NewServer(issuerMux)
+	defer issuer.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/prm", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"resource":"x","authorization_servers":["` + issuer.URL + `"]}`))
+	})
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(405)
+			return
+		}
+		w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="http://`+r.Host+`/prm"`)
+		w.WriteHeader(401)
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(404)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	metadata, err := DiscoverAuthorizationServer(context.Background(), server.URL+"/mcp")
+	if err != nil {
+		t.Fatalf("DiscoverAuthorizationServer: %v", err)
+	}
+	if metadata.AuthorizationEndpoint != issuer.URL+"/auth" {
+		t.Fatalf("expected issuer found via POST challenge, got %+v", metadata)
+	}
+}

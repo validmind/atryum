@@ -1,6 +1,7 @@
 package atryum
 
 import (
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -82,6 +83,50 @@ func TestBuildDemoConfigIncludesCalcUpstream(t *testing.T) {
 func TestRunSetupHelpReturnsNoError(t *testing.T) {
 	if err := runSetup([]string{"--help"}); err != nil {
 		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+// captureStdout runs fn and returns what it printed to os.Stdout.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stdout
+	os.Stdout = w
+	defer func() { os.Stdout = orig }()
+	fn()
+	w.Close()
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+// "atryum setup claude --help" must print the claude target's own usage (the
+// --url/--agent/-y docs), not the generic setup usage that points at it.
+func TestRunSetupClaudeHelpPrintsClaudeUsage(t *testing.T) {
+	var err error
+	out := captureStdout(t, func() { err = runSetup([]string{"claude", "--help"}) })
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !strings.Contains(out, "--allow-insecure-http") || !strings.Contains(out, "usage: atryum setup claude") {
+		t.Fatalf("expected setup claude usage, got:\n%s", out)
+	}
+
+	// Help before the target, and on targets without their own flags, is
+	// still the generic setup usage.
+	for _, args := range [][]string{{"--help", "claude"}, {"demo", "--help"}, {"help"}} {
+		out = captureStdout(t, func() { err = runSetup(args) })
+		if err != nil {
+			t.Fatalf("%v: expected no error, got: %v", args, err)
+		}
+		if !strings.Contains(out, "usage: atryum setup [") {
+			t.Fatalf("%v: expected generic setup usage, got:\n%s", args, out)
+		}
 	}
 }
 
@@ -360,8 +405,7 @@ func TestApplyInstallUninstallHookConfigCodex(t *testing.T) {
 }
 
 func TestInstallUninstallAgentPlugins(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	home := isolateHome(t)
 
 	cases := []struct {
 		target   string

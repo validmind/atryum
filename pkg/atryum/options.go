@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"net/http"
 
+	"github.com/validmind/atryum/pkg/authz"
 	"github.com/validmind/atryum/pkg/migrations"
 )
 
@@ -11,8 +12,10 @@ import (
 // before handing control to Main.
 type options struct {
 	extraRoutes         []func(mux *http.ServeMux)
+	authenticatedRoutes []func(mux *http.ServeMux, authenticate func(http.Handler) http.Handler)
 	extensionMigrations []extensionMigrations
 	databaseHooks       []func(db *sql.DB, usePostgres bool)
+	authorizer          authz.Authorizer
 	thirdPartyNotices   string
 }
 
@@ -32,6 +35,35 @@ func WithRoutes(register func(mux *http.ServeMux)) Option {
 	return func(o *options) {
 		if register != nil {
 			o.extraRoutes = append(o.extraRoutes, register)
+		}
+	}
+}
+
+// WithAuthenticatedRoutes registers additional HTTP routes that sit behind
+// atryum's operator authentication. The callback receives the mux and an
+// `authenticate` wrapper: handlers wrapped with it run only for requests
+// carrying a valid IdP token (or machine key), with the resulting
+// authz.Principal available via authz.PrincipalFromContext. Authorization is
+// the handler's job — use the Authorizer (WithAuthorizer) or
+// auth.RequireAdmin-style checks. Patterns must not collide with built-in
+// routes.
+func WithAuthenticatedRoutes(register func(mux *http.ServeMux, authenticate func(http.Handler) http.Handler)) Option {
+	return func(o *options) {
+		if register != nil {
+			o.authenticatedRoutes = append(o.authenticatedRoutes, register)
+		}
+	}
+}
+
+// WithAuthorizer replaces the open-core authorization policy (authz.Default:
+// admins do anything, members act on agents they belong to) with the
+// embedding program's own. The built-in handlers consult it for every
+// agent-scoped action, so richer roles, groups or external policy apply to
+// them without forking.
+func WithAuthorizer(a authz.Authorizer) Option {
+	return func(o *options) {
+		if a != nil {
+			o.authorizer = a
 		}
 	}
 }

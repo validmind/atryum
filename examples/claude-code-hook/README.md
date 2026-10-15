@@ -73,7 +73,9 @@ Restart Claude Code after changing settings.
 | `ATRYUM_TOKEN_COMMAND`            | _(empty)_                    | optional command run to mint each new token; prints a raw token with no whitespace or OAuth token JSON with `access_token` |
 | `ATRYUM_TOKEN_REFRESH_SKEW_MS`    | `60000`                      | refresh command cache skew before token expiry                                                                             |
 | `ATRYUM_TOKEN_COMMAND_TIMEOUT_MS` | `10000`                      | timeout for the token command subprocess                                                                                   |
-| `ATRYUM_STATE_DIR`                | `~/.atryum/agent-hook-state` | tool-use to invocation-id state and the on-disk token cache (`token-cache.json`, mode 0600)                                 |
+| `ATRYUM_STATE_DIR`                | `$ATRYUM_HOME/agent-hook-state` | tool-use to invocation-id state and the on-disk token cache (`token-cache.json`, mode 0600)                              |
+| `ATRYUM_HOME`                     | `~/.atryum`                  | Atryum home the state directory defaults under; `atryum setup claude` keeps the hook script, agent key and state here      |
+| `ATRYUM_ALLOW_INSECURE_HTTP`      | _(unset)_                    | set to `1` to allow sending a credential over plain `http://` to a non-loopback host; refused otherwise                    |
 
 ## Authentication
 
@@ -127,6 +129,16 @@ ignored), so changing either invalidates it; environment variables referenced
 by the command are not part of the cache key. If the command fails (non-zero exit, timeout after
 `ATRYUM_TOKEN_COMMAND_TIMEOUT_MS`, empty output, or invalid token output), the
 runtime call fails — run the command by hand in a shell to debug it.
+
+Atryum API keys (`atr_…`) are the exception: they are long-lived and the token
+command already reads them from disk, so the hook never copies one into
+`token-cache.json`. The command runs once per hook process, which for
+`cat ~/.atryum/agent-key` costs nothing.
+
+Whichever way the credential arrives, the hook refuses to send it as a bearer
+over plain `http://` to a host other than loopback. Use an `https://`
+`ATRYUM_URL`, or set `ATRYUM_ALLOW_INSECURE_HTTP=1` for a trusted private
+network.
 
 Export these variables in the terminal session where you launch Claude Code
 (or prefix them in the hook `command` strings in settings, as with

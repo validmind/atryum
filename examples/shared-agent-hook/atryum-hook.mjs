@@ -66,9 +66,17 @@ const CLIENT_NAME = process.env.ATRYUM_CLIENT_NAME || SOURCE;
 const CLIENT_VERSION = process.env.ATRYUM_CLIENT_VERSION || "";
 // Per-message cap when trimming chat transcript entries.
 const MAX_MESSAGE_CHARS = 2000;
+// Hook state (tool-use to invocation-id map, and the token cache for
+// non-Atryum tokens). ATRYUM_STATE_DIR wins; otherwise it sits under
+// ATRYUM_HOME when that is set (so a relocated Atryum home keeps everything
+// together), and under ~/.atryum by default. `atryum setup claude` bakes
+// ATRYUM_STATE_DIR into the hook command for non-default homes so this does
+// not depend on the launch environment.
+const ATRYUM_HOME =
+  (process.env.ATRYUM_HOME || "").trim() ||
+  path.join(os.homedir(), ".atryum");
 const STATE_DIR =
-  process.env.ATRYUM_STATE_DIR ||
-  path.join(os.homedir(), ".atryum", "agent-hook-state");
+  process.env.ATRYUM_STATE_DIR || path.join(ATRYUM_HOME, "agent-hook-state");
 // Self-declared agent identity sent to Atryum as the invocation `agent_id`.
 // When this string is listed in an Agent Record's `agent_ids` array in the
 // Atryum UI, invocations from this hook get tagged to that Agent Record
@@ -77,6 +85,39 @@ const STATE_DIR =
 const AGENT_ID = process.env.ATRYUM_AGENT_ID || "";
 const ACCESS_TOKEN = process.env.ATRYUM_ACCESS_TOKEN || "";
 const TOKEN_COMMAND = process.env.ATRYUM_TOKEN_COMMAND || "";
+// First-party Atryum API keys carry this prefix. They are long-lived secrets
+// that the token command (typically `cat ~/.atryum/agent-key`) can produce on
+// demand, so they are never copied into the on-disk token cache.
+const ATRYUM_KEY_PREFIX = "atr_";
+const isAtryumKey = (token) =>
+  typeof token === "string" && token.startsWith(ATRYUM_KEY_PREFIX);
+// Refuse to send a credential in the clear to another machine. Plain http to
+// a loopback host is the local-development default and stays allowed; set
+// ATRYUM_ALLOW_INSECURE_HTTP=1 to accept a trusted private network.
+const ALLOW_INSECURE_HTTP = /^(1|true|yes)$/i.test(
+  process.env.ATRYUM_ALLOW_INSECURE_HTTP || "",
+);
+function insecureTransport(apiURL) {
+  let u;
+  try {
+    u = new URL(apiURL);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== "http:") return false;
+  const host = u.hostname.toLowerCase();
+  if (host === "localhost" || host.endsWith(".localhost")) return false;
+  if (host === "[::1]" || host === "::1") return false;
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return false;
+  return true;
+}
+function assertTransportSafe() {
+  if (!ACCESS_TOKEN && !TOKEN_COMMAND) return; // nothing secret to protect
+  if (ALLOW_INSECURE_HTTP || !insecureTransport(API)) return;
+  throw new Error(
+    `refusing to send credentials over plain http to ${API}; use an https:// ATRYUM_URL or set ATRYUM_ALLOW_INSECURE_HTTP=1 on a trusted network`,
+  );
+}
 // Malformed values (e.g. "10s") would otherwise become NaN, which silently
 // disables the cache comparisons and makes exec() throw ERR_OUT_OF_RANGE.
 const envMs = (name, fallback) => {
@@ -208,7 +249,11 @@ async function accessToken(forceRefresh = false) {
   const token = parseTokenResponse(stdout);
   cachedToken = token.accessToken;
   cachedTokenExpiresAt = token.expiresAt;
-  await writeTokenCache(cachedToken, cachedTokenExpiresAt);
+  // Atryum API keys stay only where the token command keeps them; caching
+  // one here would leave a second plaintext copy on disk for no benefit.
+  if (!isAtryumKey(cachedToken)) {
+    await writeTokenCache(cachedToken, cachedTokenExpiresAt);
+  }
   return cachedToken;
 }
 
@@ -797,6 +842,7 @@ async function handlePostToolUse(event) {
 }
 
 async function main() {
+  assertTransportSafe();
   const raw = await readStdin();
   const event = raw.trim() ? JSON.parse(raw) : {};
 

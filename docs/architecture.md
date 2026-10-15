@@ -65,7 +65,8 @@ or audit records are evaluated.
 | `internal/invocation` | Invocation lifecycle, rule matching, AI evaluation dispatch, approval coordination | SQL or upstream transport details |
 | `internal/store` | SQLite/PostgreSQL repositories, schema migrations, durable query semantics | Policy decisions |
 | `internal/mcp` | Server resolution, MCP forwarding, upstream authentication and OAuth | Approval policy |
-| `internal/auth` | Inbound OIDC/JWT validation and authenticated identity context | Upstream MCP credentials |
+| `internal/auth` | Inbound OIDC/JWT and API-key validation, authenticated identity and principal context | Upstream MCP credentials |
+| `pkg/authz` | Human principal, actions, and the pluggable `Authorizer` seam (default: admin/member + agent membership) | Authentication |
 | `internal/managedagents` | Anthropic session discovery, event replay, confirmation delivery | Independent rule evaluation |
 
 The React application in `ui/` is compiled into `internal/api/web/` for the production
@@ -267,6 +268,9 @@ The core tables are:
 | `invocation_events` | Ordered, best-effort event history for an invocation |
 | `approval_rules` | Ordered match criteria and decision action |
 | `agents` | Mapping from runtime identities to named governance records |
+| `users` | Just-in-time cache of humans seen at the operator API, keyed by issuer and subject; role and disabled flag |
+| `agent_members` | Which users may operate which agents (join table) |
+| `api_keys` | Hashed first-party agent credentials with creator, expiry, revocation, and last-use |
 | `mcp_servers` | Runtime upstream definitions and connection state |
 | `oauth_credentials` and `oauth_connect_sessions` | Upstream OAuth credentials and browser-flow state |
 | `llm_configs` | Local AI-evaluation providers |
@@ -303,11 +307,24 @@ configuration reconciliation.
 
 Inbound and upstream authentication are separate trust boundaries:
 
-- Agent runtime auth validates bearer tokens and places the configured agent identity
-  claim in request context. The invocation service uses that trusted identity for rule
-  targeting and ownership checks.
-- Privileged API auth protects operator APIs when an auth provider has
-  `admin_enabled = true` and the configured admin claim is present.
+- Agent runtime auth accepts two bearer shapes. A token starting with `atr_` is an
+  Atryum API key: it is hashed and resolved against `api_keys` (joined to the creator's
+  `users.disabled_at`), and identifies the agent as the `agents.id` the key points at.
+  Any other bearer is an IdP JWT whose configured agent identity claim is used. Either
+  way the invocation service receives the same trusted identity for rule targeting and
+  ownership checks. Keys also work with no IdP configured; presenting one opts the
+  request into key authentication.
+- Operator API auth authenticates any user from an `admin_enabled = true` provider,
+  provisions a `users` row on first sight, and attaches an `authz.Principal` (admin when
+  the configured admin claim is present, member otherwise). Authorization is decided per
+  route through `authz.Authorizer`: legacy operator routes require admin; agents, their
+  keys and members are authorized by membership. Disabling a user revokes the keys they
+  issued; removing a member revokes their keys on that agent.
+- The open core owns authentication and this minimal identity model. Embedding programs
+  layer richer roles and groups on top by replacing the `Authorizer`
+  (`pkg/atryum.WithAuthorizer`), mounting routes behind the operator auth chain
+  (`WithAuthenticatedRoutes`), and adding namespaced migrations that reference
+  `users.id`; the open core never references extension tables.
 - Upstream MCP authentication is owned by `internal/mcp/auth_provider`; credentials and
   OAuth tokens are never returned to the agent caller.
 - No-auth mode is a local deployment option. Identity supplied by a caller in this mode

@@ -721,7 +721,7 @@ func TestOperatorMiddlewareLogsMissingToken(t *testing.T) {
 	t.Cleanup(func() { log.SetOutput(origWriter) })
 
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
-	h := OperatorMiddleware(v, APIKeyConfig{}, MiddlewareOptions{})(next)
+	h := OperatorMiddleware(v, APIKeyConfig{}, MiddlewareOptions{}, nil)(next)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/review/invocations", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -747,7 +747,7 @@ func TestOperatorMiddlewareLogsInvalidScheme(t *testing.T) {
 	t.Cleanup(func() { log.SetOutput(origWriter) })
 
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
-	h := OperatorMiddleware(v, APIKeyConfig{}, MiddlewareOptions{})(next)
+	h := OperatorMiddleware(v, APIKeyConfig{}, MiddlewareOptions{}, nil)(next)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/review/invocations", nil)
 	req.Header.Set("Authorization", "Basic abc")
 	w := httptest.NewRecorder()
@@ -775,7 +775,7 @@ func TestOperatorMiddlewareMachineKeyBypassesBearer(t *testing.T) {
 
 	admitted := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { admitted = true })
-	h := OperatorMiddleware(v, apiKeyCfg, MiddlewareOptions{})(next)
+	h := OperatorMiddleware(v, apiKeyCfg, MiddlewareOptions{}, nil)(next)
 
 	// Correct machine key/secret — should be admitted without a Bearer token.
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/review/invocations", nil)

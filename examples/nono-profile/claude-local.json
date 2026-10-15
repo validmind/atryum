@@ -1,0 +1,22 @@
+{
+  "extends": "claude",
+  "meta": {
+    "name": "claude-local",
+    "description": "claude package profile plus read access to the atryum hook script and agent key"
+  },
+  "workdir": {
+    "access": "readwrite"
+  },
+  "filesystem": {
+    "read": [
+      "$HOME/.atryum/hooks",
+      "$HOME/.atryum/agent-hook-state"
+    ],
+    "write": [
+      "$HOME/.atryum/agent-hook-state"
+    ],
+    "read_file": [
+      "$HOME/.atryum/agent-key"
+    ]
+  }
+}
