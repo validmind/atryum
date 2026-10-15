@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/validmind/atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/store"
 	"github.com/validmind/atryum/pkg/migrations"
 )
 
@@ -65,6 +66,7 @@ type options struct {
 	requireAgentAuth    bool
 	stuckReports        bool
 	resolveHooks        []func(ResolvePending)
+	dbPool              DBPool
 }
 
 type extensionMigrations struct {
@@ -158,6 +160,17 @@ func WithRequireAgentAuth() Option {
 // short acknowledgement. The server in the MCP path must be a configured one.
 func WithStuckReports() Option {
 	return func(o *options) { o.stuckReports = true }
+}
+
+// DBPool sizes the PostgreSQL connection pool; see WithDBPool.
+type DBPool = store.DBPool
+
+// WithDBPool sizes the PostgreSQL connection pool. Each set (non-zero) field
+// overrides server.database_pool in the config file, which overrides the
+// defaults: 20 open and 10 idle connections, idle ones closed after 5
+// minutes, every one replaced after 30. SQLite always uses one connection.
+func WithDBPool(p DBPool) Option {
+	return func(o *options) { o.dbPool = p }
 }
 
 // WithResolvePending hands the embedding program a ResolvePending once the

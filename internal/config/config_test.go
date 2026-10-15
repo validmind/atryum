@@ -16,6 +16,10 @@ database_path = "./atryum.db"
 database_url = "postgresql://postgres:password@127.0.0.1:5432/postgres"
 log_level = "debug"
 
+[server.database_pool]
+max_open_conns = 40
+conn_max_lifetime_seconds = 600
+
 [backend]
 base_url = "https://backend.example"
 machine_key = "toml-key"
@@ -31,6 +35,9 @@ connection_timeout_seconds = 7
 	}
 	if cfg.Server.DatabaseURL != "postgresql://postgres:password@127.0.0.1:5432/postgres" {
 		t.Fatalf("DatabaseURL = %q", cfg.Server.DatabaseURL)
+	}
+	if p := cfg.Server.DatabasePool; p.MaxOpenConns != 40 || p.ConnMaxLifetimeSeconds != 600 || p.MaxIdleConns != 0 {
+		t.Fatalf("DatabasePool = %+v", p)
 	}
 	if cfg.Server.PublicBaseURL != "https://atryum.example.com" {
 		t.Fatalf("PublicBaseURL = %q", cfg.Server.PublicBaseURL)

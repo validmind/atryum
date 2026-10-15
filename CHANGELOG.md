@@ -27,13 +27,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is not HTTPS (plain HTTP is allowed only on loopback), and agent routes
   reject any request without a verified agent identity.
 - `pkg/policy`: a two-level rule engine (firm and agent rules, first match per
-  level, strictest level wins, judge rules that fall back to a person) and a
-  minimal secret-literal detector, `ContainsSecret`, for
-  `facts.contains_secret`.
+  level, strictest level wins, judge rules that fall back to a person; a level
+  whose matching rules are all judges with no verdict is `human`, never a
+  pass to the other level) and a secret-literal detector, `ContainsSecret`,
+  for `facts.contains_secret`.
 - `pkg/atryum.WithStuckReports`: the MCP proxy offers `atryum_report_stuck`
-  (`task`, `boundary`, optional `detail`). It authorizes nothing; it records an
-  invocation of that tool, which the event hook sees as
-  `invocation.stuck_reported`, and acknowledges the agent.
+  (`task`, `boundary`, optional `detail`, capped at 1, 1 and 4 KB). It
+  authorizes nothing; it records an invocation of that tool in the new status
+  `reported`, which the event hook sees once, as `invocation.stuck_reported`,
+  and acknowledges the agent. The server in the MCP path must be configured.
+- `pkg/atryum.WithDBPool` and `[server.database_pool]` size the PostgreSQL
+  connection pool, which now defaults to 20 open and 10 idle connections,
+  idle ones closed after 5 minutes and each replaced after 30 (it was
+  unbounded).
 - `pkg/atryum.WithResolvePending` hands an embedding program a
   `ResolvePending(ctx, tx, invocationID, approve, actor, reason)` that approves
   or denies a held call through Atryum's own compare-and-set path, inside the
@@ -52,7 +58,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decided and run once.
 - With PostgreSQL, a held MCP call wakes as soon as any Atryum process records
   its decision (`LISTEN`/`NOTIFY` on `atryum_invocation_decided`) and polls its
-  row every two seconds only as a fallback. SQLite keeps polling every 250 ms.
+  row every two seconds only as a fallback while the listener is connected
+  (250 ms otherwise, and always on SQLite). The listener pings its connection
+  after ten quiet seconds and reconnects after errors. It needs a session-mode
+  connection: PgBouncer in transaction mode never delivers notifications.
+- An executor cancelling a call (`RecordExecution` with `cancelled`) moves the
+  row compare-and-set from the status it read, so a decision recorded in
+  between is not overwritten.
 
 ## [0.4.0] - 2026-07-27
 

@@ -17,6 +17,13 @@ database_path = "./atryum.db"
 database_url = ""
 log_level = "info"
 
+# PostgreSQL connection pool. Unset values take the defaults shown.
+# [server.database_pool]
+# max_open_conns = 20
+# max_idle_conns = 10
+# conn_max_idle_time_seconds = 300
+# conn_max_lifetime_seconds = 1800
+
 [backend]
 # Optional ValidMind backend connection check. When base_url is set, Atryum
 # verifies credentials at startup by calling:
