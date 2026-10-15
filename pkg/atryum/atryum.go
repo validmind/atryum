@@ -380,7 +380,7 @@ func runServer(args []string, o options) error {
 	if dialect == store.DialectPostgres {
 		listenCtx, stopListening := context.WithCancel(context.Background())
 		defer stopListening()
-		service.SetDecisionWake(store.ListenForDecisions(listenCtx, cfg.Server.DatabaseURL).Wait)
+		service.SetDecisionWaker(store.ListenForDecisions(listenCtx, cfg.Server.DatabaseURL))
 	}
 	if o.decider != nil {
 		service.SetDecider(o.decider)

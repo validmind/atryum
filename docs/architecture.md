@@ -127,8 +127,13 @@ Because the row is the source of truth, an approval or denial recorded by any
 process releases the held request. With PostgreSQL, the transaction that
 records the decision sends `NOTIFY atryum_invocation_decided` with the
 invocation ID, and each process keeps one connection on `LISTEN` to wake its
-held request at once; the request also re-reads its row every two seconds as
-the fallback. SQLite has no notifications, so there it re-reads every 250 ms. Decisions and the move to `executing` are
+held request at once. The listening connection is pinged after ten quiet
+seconds and reconnects after an error, re-checking every held request when it
+does. As the fallback, a held request also re-reads its row every two seconds
+while the listener is connected and every 250 ms otherwise; SQLite has no
+notifications, so there it always re-reads every 250 ms. The listener needs a
+session-mode connection: PgBouncer in transaction mode accepts `LISTEN` but
+never delivers notifications, leaving held requests on the two-second poll. Decisions and the move to `executing` are
 compare-and-set on the row's status, so a call is decided once and run once.
 What is not implemented:
 

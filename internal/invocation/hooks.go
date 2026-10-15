@@ -75,16 +75,19 @@ func (s *Service) SetTx(run TxRunner) { s.inTx = run }
 // are skipped; a decider error denies the call.
 func (s *Service) SetDecider(d Decider) { s.decider = d }
 
-// DecisionWake returns a channel that receives when the invocation may have
-// been decided by any process, and a func that stops waiting.
-type DecisionWake func(invocationID string) (<-chan struct{}, func())
-
-// SetDecisionWake makes held calls re-read their row as soon as w announces a
-// decision. Polling stays as the fallback, slowed to every two seconds.
-func (s *Service) SetDecisionWake(w DecisionWake) {
-	s.wake = w
-	s.approvalPoll = 2 * time.Second
+// DecisionWaker announces decisions recorded by any process.
+type DecisionWaker interface {
+	// Wait returns a channel that receives when the invocation may have been
+	// decided, and a func that stops waiting.
+	Wait(invocationID string) (<-chan struct{}, func())
+	// Connected reports whether announcements are arriving right now.
+	Connected() bool
 }
+
+// SetDecisionWaker makes held calls re-read their row as soon as w announces
+// a decision. Polling stays as the fallback: every two seconds while w is
+// connected, at the usual pace otherwise.
+func (s *Service) SetDecisionWaker(w DecisionWaker) { s.wake = w }
 
 // SetEventHook calls h for every invocation change, inside its transaction.
 func (s *Service) SetEventHook(h EventHook) { s.hook = h }

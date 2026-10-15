@@ -529,3 +529,45 @@ func TestResolvePendingInEmbedderTransaction(t *testing.T) {
 		t.Fatalf("second resolve: %v, want ErrNotPending", err)
 	}
 }
+
+// fakeWaker never announces anything; it only reports its connection state.
+type fakeWaker struct{ connected bool }
+
+func (fakeWaker) Wait(string) (<-chan struct{}, func()) { return nil, func() {} }
+func (w fakeWaker) Connected() bool                     { return w.connected }
+
+// A held call polls at the slow pace only while its waker is connected.
+func TestHeldCallPollPaceFollowsWaker(t *testing.T) {
+	for _, tc := range []struct {
+		connected bool
+		released  bool
+	}{{false, true}, {true, false}} {
+		upstream, _ := fakeMCP(t)
+		db := newSQLiteTestDB(t)
+		holder := newHookedService(t, db, upstream.URL)
+		holder.SetDecider(verdictDecider(invocation.VerdictPending))
+		holder.SetDecisionWaker(fakeWaker{tc.connected})
+		invocation.SetPolls(holder, 20*time.Millisecond, time.Hour)
+		other := newHookedService(t, db, upstream.URL)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		go func() {
+			for {
+				time.Sleep(20 * time.Millisecond)
+				list, err := other.List(context.Background(), invocation.InvocationListFilter{Limit: 1})
+				if err == nil && len(list.Items) == 1 && list.Items[0].Status == invocation.StatusPendingApproval {
+					_ = other.Approve(context.Background(), list.Items[0].InvocationID, "x")
+					return
+				}
+			}
+		}()
+		resp, err := holder.Invoke(ctx, invocation.CreateInvocationRequest{Server: "bank", Tool: "pay", Input: map[string]any{}})
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if released := resp.Status == invocation.StatusSucceeded; released != tc.released {
+			t.Fatalf("connected=%v: status=%s, want released=%v", tc.connected, resp.Status, tc.released)
+		}
+	}
+}

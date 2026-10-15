@@ -82,7 +82,8 @@ func TestPostgresHeldCallWakesOnAnotherReplica(t *testing.T) {
 	holder.SetDecider(verdictDecider(invocation.VerdictPending))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	holder.SetDecisionWake(store.ListenForDecisions(ctx, dsn).Wait)
+	listener := store.ListenForDecisions(ctx, dsn)
+	holder.SetDecisionWaker(listener)
 	invocation.SetApprovalPoll(holder, time.Hour) // only a notification can wake it
 
 	type result struct {
@@ -136,5 +137,22 @@ func TestPostgresHeldCallWakesOnAnotherReplica(t *testing.T) {
 	}
 	if err := other.ResolvePending(ctx, id, false, "someone", ""); !errors.Is(err, invocation.ErrNotPending) {
 		t.Fatalf("second resolve: %v, want ErrNotPending", err)
+	}
+
+	// An executor cancelling a pending submit-path call also announces it.
+	other.SetDecider(verdictDecider(invocation.VerdictPending))
+	sub, err := other.Submit(ctx, invocation.ExternalSubmitRequest{Tool: "pay", Source: "harness", Input: map[string]any{}})
+	if err != nil || sub.Status != invocation.StatusPendingApproval {
+		t.Fatalf("submit: %v %s", err, sub.Status)
+	}
+	woken, stop := listener.Wait(sub.InvocationID)
+	defer stop()
+	if _, err := other.RecordExecution(ctx, sub.InvocationID, invocation.ExternalExecutionUpdate{ExecutionStatus: "cancelled"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-woken:
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancelling a pending call sent no notification")
 	}
 }
