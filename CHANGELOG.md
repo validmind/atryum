@@ -145,6 +145,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- How the caller authenticated is recorded on each invocation (migration
+  033: `auth_issuer`, `auth_method`, `auth_key_id`) and passed to an
+  embedder's decider as `ToolCall.Auth` and event hook as
+  `Change.Invocation.Auth`: the issuer, the method (`jwt`, `api_key`, or
+  `no_auth` for a self-declared agent ID) and the API key's id.
 - The migration runner checks each recorded migration's name as well as its
   number, and refuses to start on a database whose `schema_migrations`
   records a version under another name (one migrated by a build whose

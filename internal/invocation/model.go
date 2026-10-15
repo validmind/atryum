@@ -57,14 +57,16 @@ type Invocation struct {
 	// the harness reported on the connection that issued this invocation.
 	// Captured even when auth is disabled (no agent_id) so the UI can still
 	// show "Amp 0.0.1234" for anonymous traffic.
-	ClientName    *string    `json:"client_name,omitempty"`
-	ClientVersion *string    `json:"client_version,omitempty"`
-	Input         []byte     `json:"-"`
-	Response      []byte     `json:"-"`
-	Error         []byte     `json:"-"`
-	Summary       *string    `json:"summary,omitempty"`
-	SubmittedAt   time.Time  `json:"submitted_at"`
-	CompletedAt   *time.Time `json:"completed_at,omitempty"`
+	ClientName    *string `json:"client_name,omitempty"`
+	ClientVersion *string `json:"client_version,omitempty"`
+	// Auth records how the caller authenticated; empty fields when unknown.
+	Auth        Auth       `json:"auth"`
+	Input       []byte     `json:"-"`
+	Response    []byte     `json:"-"`
+	Error       []byte     `json:"-"`
+	Summary     *string    `json:"summary,omitempty"`
+	SubmittedAt time.Time  `json:"submitted_at"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
 }
 
 type Event struct {

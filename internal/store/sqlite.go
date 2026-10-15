@@ -78,16 +78,18 @@ func NewOAuthRepoWithDialect(db *sql.DB, dialect Dialect) *OAuthRepo {
 // InitDB is now handled by migrations.go which runs embedded SQL files
 // from internal/store/migrations/ in order.
 
+// invocationColumns is every invocations column, in scanInvocation's order.
+var invocationColumns = []string{"invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at", "matched_rule_id", "plan_id", "plan_step_index", "agent_id", "session_id", "summary", "client_name", "client_version", "auth_issuer", "auth_method", "auth_key_id"}
+
 func (r *InvocationRepo) Create(ctx context.Context, inv invocation.Invocation) error {
 	var approval any
 	if inv.Approval != nil {
 		b, _ := json.Marshal(inv.Approval)
 		approval = string(b)
 	}
-	query, args, err := r.sb.Insert("invocations").Columns(
-		"invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at", "matched_rule_id", "plan_id", "plan_step_index", "agent_id", "session_id", "summary", "client_name", "client_version",
-	).Values(
+	query, args, err := r.sb.Insert("invocations").Columns(invocationColumns...).Values(
 		inv.InvocationID, inv.RequestID, inv.IdempotencyKey, inv.Tool, inv.Upstream, inv.Status, approval, string(inv.Input), nullableString(inv.Response), nullableString(inv.Error), inv.SubmittedAt, inv.CompletedAt, inv.MatchedRuleID, inv.PlanID, inv.PlanStepIndex, inv.AgentID, inv.SessionID, inv.Summary, inv.ClientName, inv.ClientVersion,
+		nullIfEmpty(inv.Auth.Issuer), nullIfEmpty(inv.Auth.Method), nullIfEmpty(inv.Auth.KeyID),
 	).ToSql()
 	if err != nil {
 		return err
@@ -162,7 +164,7 @@ func (r *InvocationRepo) UpdateSummary(ctx context.Context, id string, summary s
 }
 
 func (r *InvocationRepo) Get(ctx context.Context, id string) (invocation.Invocation, error) {
-	query, args, err := r.sb.Select("invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at", "matched_rule_id", "plan_id", "plan_step_index", "agent_id", "session_id", "summary", "client_name", "client_version").From("invocations").Where(sq.Eq{"invocation_id": id}).ToSql()
+	query, args, err := r.sb.Select(invocationColumns...).From("invocations").Where(sq.Eq{"invocation_id": id}).ToSql()
 	if err != nil {
 		return invocation.Invocation{}, err
 	}
@@ -173,7 +175,7 @@ func (r *InvocationRepo) Get(ctx context.Context, id string) (invocation.Invocat
 // GetByIdempotencyKey returns agentID's invocation with key; keys are unique
 // per agent (a NULL agent_id is the empty agent), never across agents.
 func (r *InvocationRepo) GetByIdempotencyKey(ctx context.Context, agentID, key string) (invocation.Invocation, error) {
-	query, args, err := r.sb.Select("invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at", "matched_rule_id", "plan_id", "plan_step_index", "agent_id", "session_id", "summary", "client_name", "client_version").From("invocations").Where(sq.Eq{"idempotency_key": key}).Where(sq.Expr("COALESCE(agent_id, '') = ?", agentID)).ToSql()
+	query, args, err := r.sb.Select(invocationColumns...).From("invocations").Where(sq.Eq{"idempotency_key": key}).Where(sq.Expr("COALESCE(agent_id, '') = ?", agentID)).ToSql()
 	if err != nil {
 		return invocation.Invocation{}, err
 	}
@@ -185,7 +187,7 @@ func (r *InvocationRepo) List(ctx context.Context, filter invocation.InvocationL
 	if filter.Limit == 0 {
 		filter.Limit = 50
 	}
-	builder := r.sb.Select("invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at", "matched_rule_id", "plan_id", "plan_step_index", "agent_id", "session_id", "summary", "client_name", "client_version").From("invocations")
+	builder := r.sb.Select(invocationColumns...).From("invocations")
 	countBuilder := r.sb.Select("COUNT(*)").From("invocations")
 	builder, countBuilder = applyInvocationFilter(builder, countBuilder, filter)
 	query, args, err := builder.OrderBy("submitted_at DESC").Limit(filter.Limit).Offset(filter.Offset).ToSql()
@@ -613,7 +615,8 @@ func scanInvocation(scanner interface{ Scan(dest ...any) error }) (invocation.In
 	var agentID sql.NullString
 	var sessionID sql.NullString
 	var summary, clientName, clientVersion sql.NullString
-	if err := scanner.Scan(&inv.InvocationID, &requestID, &idempotencyKey, &inv.Tool, &inv.Upstream, &inv.Status, &approval, &requestJSON, &responseJSON, &errorJSON, &inv.SubmittedAt, &completedAt, &matchedRuleID, &planID, &planStepIndex, &agentID, &sessionID, &summary, &clientName, &clientVersion); err != nil {
+	var authIssuer, authMethod, authKeyID sql.NullString
+	if err := scanner.Scan(&inv.InvocationID, &requestID, &idempotencyKey, &inv.Tool, &inv.Upstream, &inv.Status, &approval, &requestJSON, &responseJSON, &errorJSON, &inv.SubmittedAt, &completedAt, &matchedRuleID, &planID, &planStepIndex, &agentID, &sessionID, &summary, &clientName, &clientVersion, &authIssuer, &authMethod, &authKeyID); err != nil {
 		return invocation.Invocation{}, err
 	}
 	if requestID.Valid {
@@ -664,7 +667,15 @@ func scanInvocation(scanner interface{ Scan(dest ...any) error }) (invocation.In
 	if clientVersion.Valid {
 		inv.ClientVersion = &clientVersion.String
 	}
+	inv.Auth = invocation.Auth{Issuer: authIssuer.String, Method: authMethod.String, KeyID: authKeyID.String}
 	return inv, nil
+}
+
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 func scanServer(scanner interface{ Scan(dest ...any) error }) (mcp.Upstream, error) {

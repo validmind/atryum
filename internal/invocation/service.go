@@ -391,6 +391,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		Status:         StatusReceived,
 		Input:          inputJSON,
 		SubmittedAt:    now,
+		Auth:           authOf(ctx, agentID),
 	}
 	if agentID != "" {
 		inv.AgentID = &agentID
@@ -501,7 +502,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	ruleMatched := false
 	var decided *Decision
 	if s.decider != nil {
-		d := s.decide(ctx, ToolCall{InvocationID: inv.InvocationID, Path: "proxy", AgentID: agentID, Server: upstream.Name, Tool: req.Tool, Arguments: inv.Input})
+		d := s.decide(ctx, ToolCall{InvocationID: inv.InvocationID, Path: "proxy", AgentID: agentID, Server: upstream.Name, Tool: req.Tool, Arguments: inv.Input, Auth: inv.Auth})
 		decided = &d
 		decision = d.disposition()
 		ruleMatched = true // skips the default policy below
@@ -1582,6 +1583,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		Status:      StatusReceived,
 		Input:       inputJSON,
 		SubmittedAt: now,
+		Auth:        authOf(ctx, agentID),
 	}
 	// Prefer explicit ClientName/ClientVersion from the request; fall back
 	// to Source when the caller didn't tell us anything more specific.
@@ -1830,7 +1832,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 // submitDecided finishes Submit when a decider is set: the decision is
 // recorded with the received event and the resulting status in one write.
 func (s *Service) submitDecided(ctx context.Context, inv Invocation, source, agentID, sessionID string, now time.Time) (InvocationResponse, error) {
-	d := s.decide(ctx, ToolCall{InvocationID: inv.InvocationID, Path: "submit", AgentID: agentID, Server: source, Tool: inv.Tool, Arguments: inv.Input, SessionID: sessionID})
+	d := s.decide(ctx, ToolCall{InvocationID: inv.InvocationID, Path: "submit", AgentID: agentID, Server: source, Tool: inv.Tool, Arguments: inv.Input, SessionID: sessionID, Auth: inv.Auth})
 	receivedPayload := map[string]any{"tool": inv.Tool, "upstream": source, "request_id": inv.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "external": true, "decision": d}
 	if agentID != "" {
 		receivedPayload["agent_id"] = agentID

@@ -39,6 +39,35 @@ type ToolCall struct {
 	Tool         string          `json:"tool"`
 	Arguments    json.RawMessage `json:"arguments"`
 	SessionID    string          `json:"session_id,omitempty"`
+	// Auth is how the caller proved AgentID.
+	Auth Auth `json:"auth"`
+}
+
+// Auth is how a caller authenticated. Method is "jwt" (an IdP token, Issuer
+// is its iss), "api_key" (an Atryum agent API key, Issuer "atryum:api-key",
+// KeyID its api_keys.id) or "no_auth" (a self-declared agent ID, nothing
+// verified); all fields are empty for an anonymous caller.
+type Auth struct {
+	Issuer string `json:"issuer,omitempty"`
+	Method string `json:"method,omitempty"`
+	KeyID  string `json:"key_id,omitempty"`
+}
+
+// authOf is how the request in ctx authenticated agentID (the identity the
+// invocation is recorded under).
+func authOf(ctx context.Context, agentID string) Auth {
+	id, ok := auth.IdentityFromContext(ctx)
+	if !ok || id.AgentID == "" || id.AgentID != agentID {
+		if agentID != "" {
+			return Auth{Method: auth.IdentityMethodNoAuth} // declared, e.g. a submit body's agent_id
+		}
+		return Auth{}
+	}
+	a := Auth{Issuer: id.Issuer, Method: id.Method, KeyID: id.KeyID}
+	if a.Method == "" {
+		a.Method = auth.IdentityMethodNoAuth // the no-auth ?agent_id= hint
+	}
+	return a
 }
 
 // Decision is a Decider's result. It is recorded under "decision" in the

@@ -31,6 +31,9 @@ type (
 	Invocation = invocation.Invocation
 	// Approval is how an invocation was decided (Invocation.Approval).
 	Approval = invocation.Approval
+	// Auth is how the caller authenticated (ToolCall.Auth, Invocation.Auth):
+	// issuer, method ("jwt", "api_key" or "no_auth") and API key id.
+	Auth = invocation.Auth
 	// Status is an invocation status.
 	Status = invocation.Status
 )
