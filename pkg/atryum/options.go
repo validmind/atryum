@@ -51,6 +51,11 @@ type ResolvePending func(ctx context.Context, tx *sql.Tx, invocationID string, a
 // ErrNotPending is wrapped by ResolvePending when the call is no longer pending.
 var ErrNotPending = invocation.ErrNotPending
 
+// ErrIdempotencyConflict is returned (HTTP 409 on the API) when an agent
+// reuses an idempotency key for a different request. Keys are scoped per
+// agent, so another agent's key never conflicts.
+var ErrIdempotencyConflict = invocation.ErrIdempotencyConflict
+
 const (
 	VerdictAllow   = invocation.VerdictAllow
 	VerdictNotify  = invocation.VerdictNotify
