@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/validmind/atryum/internal/auth"
 	"github.com/validmind/atryum/internal/invocation"
 )
 
@@ -444,7 +445,7 @@ func (w *watcher) handleToolUse(ctx context.Context, evt RawEvent) bool {
 	source := w.cfgSource(tu)
 	eventID := tu.EventID
 	sessionContext := w.recentSessionContext()
-	resp, err := w.svc.inv.Submit(ctx, invocation.ExternalSubmitRequest{
+	resp, err := w.svc.inv.Submit(auth.WithIdentity(ctx, w.identity()), invocation.ExternalSubmitRequest{
 		Source:                 source,
 		Tool:                   tu.ToolName,
 		Description:            "Claude managed agent " + tu.Kind + " in session " + w.reg.SessionID,
@@ -476,6 +477,19 @@ func (w *watcher) handleToolUse(ctx context.Context, evt RawEvent) bool {
 	w.mu.Unlock()
 	w.log().Info("tool call submitted", "tool", tu.ToolName, "invocation_id", resp.InvocationID, "status", resp.Status)
 	return true
+}
+
+// identity is how calls from this session authenticated: through the bridge's
+// own registration of the session on a configured Anthropic account, never
+// anything the session's events claim.
+func (w *watcher) identity() auth.Identity {
+	return auth.Identity{
+		AgentID: strings.TrimSpace(w.reg.AgentID),
+		Issuer:  "anthropic:" + w.acct.cfg.Workspace,
+		Subject: w.reg.SessionID,
+		Method:  auth.IdentityMethodManagedAgent,
+		KeyID:   w.reg.SessionID,
+	}
 }
 
 func (w *watcher) recordToolUseKind(ctx context.Context, invocationID string, tu toolUse) error {

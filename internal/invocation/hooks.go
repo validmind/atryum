@@ -45,8 +45,10 @@ type ToolCall struct {
 
 // Auth is how a caller authenticated. Method is "jwt" (an IdP token, Issuer
 // is its iss), "api_key" (an Atryum agent API key, Issuer "atryum:api-key",
-// KeyID its api_keys.id) or "no_auth" (a self-declared agent ID, nothing
-// verified); all fields are empty for an anonymous caller.
+// KeyID its api_keys.id), "managed_agent" (a Claude Managed Agents session
+// the bridge registered, Issuer "anthropic:<workspace>", KeyID the session
+// ID) or "no_auth" (a self-declared agent ID, nothing verified); all fields
+// are empty for an anonymous caller.
 type Auth struct {
 	Issuer string `json:"issuer,omitempty"`
 	Method string `json:"method,omitempty"`
@@ -272,9 +274,11 @@ func (s *Service) ReportStuck(ctx context.Context, server string, args map[strin
 		SubmittedAt:  now,
 		CompletedAt:  &now,
 	}
-	if agentID := auth.AgentIDFromContext(ctx); agentID != "" {
+	agentID := auth.AgentIDFromContext(ctx)
+	if agentID != "" {
 		inv.AgentID = &agentID
 	}
+	inv.Auth = authOf(ctx, agentID)
 	inv.Response = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": "Stuck report recorded (" + inv.InvocationID + "). Stop this task; a person will follow up."}}})
 	evt := Event{
 		InvocationID: inv.InvocationID,

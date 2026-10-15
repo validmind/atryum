@@ -1144,7 +1144,8 @@ func (h *Handler) agentRuntimeHandler(next http.Handler) http.Handler {
 	// Agent API keys are off (no resolver): refuse an atr_ bearer outright,
 	// even where an unrecognised bearer would otherwise be ignored (no IdP).
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if bearer, ok := strings.CutPrefix(strings.TrimSpace(r.Header.Get("Authorization")), "Bearer "); ok && auth.IsAgentKey(bearer) {
+		header := strings.TrimSpace(r.Header.Get("Authorization"))
+		if len(header) > len("bearer ") && strings.EqualFold(header[:len("bearer ")], "bearer ") && auth.IsAgentKey(header[len("bearer "):]) {
 			writeError(w, http.StatusUnauthorized, "agent API keys are not accepted by this server")
 			return
 		}

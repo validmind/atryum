@@ -68,3 +68,25 @@ func TestAuthReachesDeciderHookAndRow(t *testing.T) {
 		})
 	}
 }
+
+// A stuck report records how the reporting caller authenticated.
+func TestStuckReportRecordsCallerAuth(t *testing.T) {
+	upstream, _ := fakeMCP(t)
+	db := newSQLiteTestDB(t)
+	svc := newHookedService(t, db, upstream.URL)
+	var hooked invocation.Auth
+	svc.SetEventHook(func(_ context.Context, _ *sql.Tx, c invocation.Change) error {
+		hooked = c.Invocation.Auth
+		return nil
+	})
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "agent-a", Issuer: "https://idp.bank", Method: auth.IdentityMethodJWT})
+	resp, err := svc.ReportStuck(ctx, "bank", map[string]any{"task": "pay INV-1", "boundary": "P-02"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, err := store.NewInvocationRepo(db).Get(context.Background(), resp.InvocationID)
+	want := invocation.Auth{Issuer: "https://idp.bank", Method: "jwt"}
+	if err != nil || hooked != want || row.Auth != want {
+		t.Fatalf("hook %+v, row %+v (%v); want %+v", hooked, row.Auth, err, want)
+	}
+}

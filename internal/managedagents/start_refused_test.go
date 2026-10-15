@@ -136,3 +136,29 @@ func TestReplayResendsAllowForRunningCall(t *testing.T) {
 		t.Fatalf("results=%v executing=%d, want one allow and running recorded once", got, executing)
 	}
 }
+
+// Calls from a registered Managed Agents session are recorded, and shown to
+// the decider, as managed_agent with the bridge's own account and session.
+func TestManagedAgentCallsCarryBridgeAuth(t *testing.T) {
+	svc := realGateway(t, nil)
+	var seen invocation.Auth
+	svc.SetDecider(func(_ context.Context, c invocation.ToolCall) (invocation.Decision, error) {
+		seen = c.Auth
+		return invocation.Decision{Verdict: invocation.VerdictAllow}, nil
+	})
+	w := newTestWatcher(svc, &fakeClient{}, newFakeAudit())
+	w.acct.cfg.Workspace = "bank-prod"
+	ctx := context.Background()
+	w.handleEvent(ctx, toolUseEvent("tool_evt_1", evtAgentToolUse, "Bash", map[string]any{"command": "ls"}))
+	w.mu.Lock()
+	invID := w.pending["tool_evt_1"].InvocationID
+	w.mu.Unlock()
+
+	want := invocation.Auth{Issuer: "anthropic:bank-prod", Method: "managed_agent", KeyID: "sess_1"}
+	if seen != want {
+		t.Fatalf("decider saw %+v, want %+v", seen, want)
+	}
+	if got, err := svc.Get(ctx, invID); err != nil || got.AgentID == nil || *got.AgentID != "agent-1" {
+		t.Fatalf("invocation agent = %v (%v), want agent-1", got.AgentID, err)
+	}
+}

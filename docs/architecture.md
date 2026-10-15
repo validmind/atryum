@@ -342,7 +342,8 @@ Inbound and upstream authentication are separate trust boundaries:
   Any other bearer is an IdP JWT whose configured agent identity claim is used. Either
   way the invocation service receives the same trusted identity for rule targeting and
   ownership checks, and records the issuer, method (`jwt`, `api_key`, or `no_auth` for a
-  self-declared agent ID) and key id on the invocation. Keys also work with no IdP
+  self-declared agent ID; `managed_agent` for the Managed Agents bridge) and key id on
+  the invocation. Keys also work with no IdP
   configured; presenting one opts the request into key authentication. An embedder can
   turn keys off (`WithAgentAPIKeys(false)`, the default under `WithDecider`).
 - Operator API auth authenticates any user from an `admin_enabled = true` provider,

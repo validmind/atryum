@@ -547,6 +547,15 @@ func TestAgentAPIKeysCanBeTurnedOff(t *testing.T) {
 				if w := call(h.Routes(), http.MethodPost, path, token, body); w.Code != tc.wantCode {
 					t.Fatalf("%s: status %d body=%s, want %d", path, w.Code, w.Body.String(), tc.wantCode)
 				}
+				// The scheme is case-insensitive (RFC 7235).
+				req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+				req.Header.Set("Authorization", "bearer "+token)
+				req.Header.Set("Content-Type", "application/json")
+				w := httptest.NewRecorder()
+				h.Routes().ServeHTTP(w, req)
+				if w.Code != tc.wantCode {
+					t.Fatalf("%s with a lower-case scheme: status %d body=%s, want %d", path, w.Code, w.Body.String(), tc.wantCode)
+				}
 			}
 			if !tc.keysOn && svc.submitReq != nil {
 				t.Fatal("a refused key reached the service")
