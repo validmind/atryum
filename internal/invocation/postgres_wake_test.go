@@ -25,51 +25,8 @@ import (
 // way an embedder makes it: ResolvePending inside the embedder's own
 // transaction, which the event hook joins and the embedder commits.
 func TestPostgresHeldCallWakesOnAnotherReplica(t *testing.T) {
-	if os.Getenv("ATRYUM_POSTGRES_TESTS") != "1" {
-		t.Skip("set ATRYUM_POSTGRES_TESTS=1 to run against local PostgreSQL")
-	}
-	dsn := os.Getenv("ATRYUM_POSTGRES_TEST_DSN")
-	if dsn == "" {
-		dsn = "postgresql://postgres:password@127.0.0.1:5432/postgres"
-	}
-	admin, err := sql.Open("pgx", dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer admin.Close()
-	schema := fmt.Sprintf("atryum_wake_%d", time.Now().UnixNano())
-	if _, err := admin.Exec(`CREATE SCHEMA ` + schema); err != nil {
-		t.Fatal(err)
-	}
-	defer admin.Exec(`DROP SCHEMA IF EXISTS ` + schema + ` CASCADE`)
-	sep := "?"
-	if strings.Contains(dsn, "?") {
-		sep = "&"
-	}
-	dsn += sep + "search_path=" + schema
-
 	upstream, calls := fakeMCP(t)
-	replica := func() (*invocation.Service, *sql.DB) {
-		db, err := sql.Open("pgx", dsn)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { db.Close() })
-		if err := store.InitDBWithDialect(db, store.DialectPostgres); err != nil {
-			t.Fatal(err)
-		}
-		resolver := mcp.NewResolver(store.NewServerRepoWithDialect(db, store.DialectPostgres), config.Config{
-			Upstreams: []config.UpstreamConfig{{Name: "bank", Mode: "http", BaseURL: upstream.URL, Enabled: true, TimeoutSeconds: 5}},
-		})
-		if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		svc := invocation.NewService(store.NewInvocationRepoWithDialect(db, store.DialectPostgres), store.NewEventRepoWithDialect(db, store.DialectPostgres), resolver, mcp.NewHTTPClient(), policy.AlwaysApproveProvider{}, 5*time.Second, nil, nil, nil, nil)
-		svc.SetTx(func(ctx context.Context, fn func(context.Context, *sql.Tx) error) error {
-			return store.InTx(ctx, db, fn)
-		})
-		return svc, db
-	}
+	dsn, replica := postgresReplicas(t, upstream.URL)
 	holder, _ := replica()
 	other, otherDB := replica()
 	var hookTx *sql.Tx
@@ -177,4 +134,66 @@ func TestPostgresHeldCallWakesOnAnotherReplica(t *testing.T) {
 	if err := other.ResolvePending(store.WithTx(ctx, slow), race.InvocationID, true, "slow", ""); !errors.Is(err, invocation.ErrNotPending) {
 		t.Fatalf("losing REPEATABLE READ resolve: %v, want ErrNotPending", err)
 	}
+}
+
+// postgresReplicas skips the test unless ATRYUM_POSTGRES_TESTS=1, creates a
+// throwaway schema, and returns its DSN and a constructor for service
+// instances ("replicas") that each open their own pool on it.
+func postgresReplicas(t *testing.T, upstreamURL string) (string, func() (*invocation.Service, *sql.DB)) {
+	t.Helper()
+	if os.Getenv("ATRYUM_POSTGRES_TESTS") != "1" {
+		t.Skip("set ATRYUM_POSTGRES_TESTS=1 to run against local PostgreSQL")
+	}
+	dsn := os.Getenv("ATRYUM_POSTGRES_TEST_DSN")
+	if dsn == "" {
+		dsn = "postgresql://postgres:password@127.0.0.1:5432/postgres"
+	}
+	admin, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := fmt.Sprintf("atryum_test_%d", time.Now().UnixNano())
+	if _, err := admin.Exec(`CREATE SCHEMA ` + schema); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		admin.Exec(`DROP SCHEMA IF EXISTS ` + schema + ` CASCADE`)
+		admin.Close()
+	})
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	dsn += sep + "search_path=" + schema
+	return dsn, func() (*invocation.Service, *sql.DB) {
+		db, err := sql.Open("pgx", dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { db.Close() })
+		if err := store.InitDBWithDialect(db, store.DialectPostgres); err != nil {
+			t.Fatal(err)
+		}
+		resolver := mcp.NewResolver(store.NewServerRepoWithDialect(db, store.DialectPostgres), config.Config{
+			Upstreams: []config.UpstreamConfig{{Name: "bank", Mode: "http", BaseURL: upstreamURL, Enabled: true, TimeoutSeconds: 5}},
+		})
+		if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		svc := invocation.NewService(store.NewInvocationRepoWithDialect(db, store.DialectPostgres), store.NewEventRepoWithDialect(db, store.DialectPostgres), resolver, mcp.NewHTTPClient(), policy.AlwaysApproveProvider{}, 5*time.Second, nil, nil, nil, nil)
+		svc.SetTx(func(ctx context.Context, fn func(context.Context, *sql.Tx) error) error {
+			return store.InTx(ctx, db, fn)
+		})
+		return svc, db
+	}
+}
+
+// Concurrent identical submits by one agent on two replicas make one
+// invocation: the losers of the insert race get the winner's.
+func TestPostgresConcurrentIdenticalSubmits(t *testing.T) {
+	upstream, _ := fakeMCP(t)
+	_, replica := postgresReplicas(t, upstream.URL)
+	a, _ := replica()
+	b, _ := replica()
+	checkConcurrentIdenticalSubmits(t, a, b)
 }
