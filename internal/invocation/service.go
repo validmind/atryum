@@ -1382,24 +1382,41 @@ func (s *Service) finishExecution(ctx context.Context, inv Invocation, upstream 
 }
 
 // Approve records a human approval on the invocation's row. A held proxy call
-// sees it when woken or on its next poll and runs the tool; a submit caller sees it when it
-// polls Get.
+// sees it when woken or on its next poll and runs the tool; a submit caller
+// sees it when it polls Get.
 func (s *Service) Approve(ctx context.Context, invocationID string, actorID string) error {
-	return s.recordExternalDecision(ctx, invocationID, true, "", actorID)
+	return s.ResolvePending(ctx, invocationID, true, actorID, "")
 }
 
 // Deny records a human denial on the invocation's row.
 func (s *Service) Deny(ctx context.Context, invocationID string, message string, actorID string) error {
-	return s.recordExternalDecision(ctx, invocationID, false, message, actorID)
+	return s.ResolvePending(ctx, invocationID, false, actorID, message)
 }
 
-func (s *Service) recordExternalDecision(ctx context.Context, invocationID string, approved bool, message string, actorID string) error {
+// ErrNotPending means the call is no longer pending approval: it was already
+// decided, its caller gave up, or it finished.
+var ErrNotPending = errors.New("invocation is not pending approval")
+
+// ResolvePending approves or denies a call held for a person, as actorID,
+// with an optional reason. The decision is compare-and-set on the row, writes
+// its event and calls the event hook in one transaction, which is the
+// caller's when ctx carries one (store.WithTx). A call that is no longer
+// pending returns an error wrapping ErrNotPending.
+func (s *Service) ResolvePending(ctx context.Context, invocationID string, approved bool, actorID, reason string) error {
+	err := s.resolvePending(ctx, invocationID, approved, actorID, reason)
+	if errors.Is(err, ErrInvalidTransition) {
+		return fmt.Errorf("%w: %w", ErrNotPending, err)
+	}
+	return err
+}
+
+func (s *Service) resolvePending(ctx context.Context, invocationID string, approved bool, actorID, message string) error {
 	inv, err := s.invocations.Get(ctx, invocationID)
 	if err != nil {
 		return err
 	}
 	if inv.Status != StatusPendingApproval {
-		return fmt.Errorf("invocation %s is not pending approval (status=%s)", invocationID, inv.Status)
+		return fmt.Errorf("%w: %s is %s", ErrNotPending, invocationID, inv.Status)
 	}
 	now := time.Now().UTC()
 	if approved {
@@ -1413,6 +1430,9 @@ func (s *Service) recordExternalDecision(ctx context.Context, invocationID strin
 		approvedPayload := map[string]any{"input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input)}
 		if actorID != "" {
 			approvedPayload["actor_id"] = actorID
+		}
+		if message != "" {
+			approvedPayload["message"] = message
 		}
 		return s.commit(ctx, inv, s.updateFrom(StatusPendingApproval), Event{InvocationID: inv.InvocationID, EventType: "invocation.approved", Payload: mustJSON(approvedPayload), CreatedAt: now})
 	}

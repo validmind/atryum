@@ -3,6 +3,7 @@ package invocation_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -20,7 +21,9 @@ import (
 
 // Two service instances on one Postgres database stand in for two replicas:
 // the one holding a call wakes on the other's decision through LISTEN/NOTIFY,
-// long before its own (hour-long) poll would notice.
+// long before its own (hour-long) poll would notice. The decision is made the
+// way an embedder makes it: ResolvePending inside the embedder's own
+// transaction, which the event hook joins and the embedder commits.
 func TestPostgresHeldCallWakesOnAnotherReplica(t *testing.T) {
 	if os.Getenv("ATRYUM_POSTGRES_TESTS") != "1" {
 		t.Skip("set ATRYUM_POSTGRES_TESTS=1 to run against local PostgreSQL")
@@ -46,7 +49,7 @@ func TestPostgresHeldCallWakesOnAnotherReplica(t *testing.T) {
 	dsn += sep + "search_path=" + schema
 
 	upstream, calls := fakeMCP(t)
-	replica := func() *invocation.Service {
+	replica := func() (*invocation.Service, *sql.DB) {
 		db, err := sql.Open("pgx", dsn)
 		if err != nil {
 			t.Fatal(err)
@@ -65,9 +68,17 @@ func TestPostgresHeldCallWakesOnAnotherReplica(t *testing.T) {
 		svc.SetTx(func(ctx context.Context, fn func(context.Context, *sql.Tx) error) error {
 			return store.InTx(ctx, db, fn)
 		})
-		return svc
+		return svc, db
 	}
-	holder, other := replica(), replica()
+	holder, _ := replica()
+	other, otherDB := replica()
+	var hookTx *sql.Tx
+	other.SetEventHook(func(_ context.Context, tx *sql.Tx, c invocation.Change) error {
+		if c.Type == "invocation.approved" {
+			hookTx = tx
+		}
+		return nil
+	})
 	holder.SetDecider(verdictDecider(invocation.VerdictPending))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -99,8 +110,18 @@ func TestPostgresHeldCallWakesOnAnotherReplica(t *testing.T) {
 		}
 	}
 	time.Sleep(500 * time.Millisecond)
+	tx, err := otherDB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := other.ResolvePending(store.WithTx(ctx, tx), id, true, "manager@bank", "looks right"); err != nil {
+		t.Fatal(err)
+	}
+	if hookTx != tx {
+		t.Fatal("the event hook did not run in the embedder's transaction")
+	}
 	decided := time.Now()
-	if err := other.Approve(ctx, id, "manager@bank"); err != nil {
+	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
 	r := <-done
@@ -112,5 +133,8 @@ func TestPostgresHeldCallWakesOnAnotherReplica(t *testing.T) {
 	}
 	if waited := time.Since(decided); waited > 3*time.Second {
 		t.Fatalf("woke %s after the decision; want a notification, not the poll", waited)
+	}
+	if err := other.ResolvePending(ctx, id, false, "someone", ""); !errors.Is(err, invocation.ErrNotPending) {
+		t.Fatalf("second resolve: %v, want ErrNotPending", err)
 	}
 }

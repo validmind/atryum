@@ -158,7 +158,7 @@ func (r *InvocationRepo) Get(ctx context.Context, id string) (invocation.Invocat
 	if err != nil {
 		return invocation.Invocation{}, err
 	}
-	row := r.db.QueryRowContext(ctx, query, args...)
+	row := conn(ctx, r.db).QueryRowContext(ctx, query, args...)
 	return scanInvocation(row)
 }
 
