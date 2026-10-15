@@ -1410,6 +1410,17 @@ var ErrNotPending = errors.New("invocation is not pending approval")
 // its event and calls the event hook in one transaction, which is the
 // caller's when ctx carries one (store.WithTx). A call that is no longer
 // pending returns an error wrapping ErrNotPending.
+//
+// With the caller's transaction:
+//   - On any error, roll the transaction back. Committing after an error can
+//     keep the status change without the event or the hook's writes.
+//   - It must be on Atryum's database and schema (the same search_path).
+//   - Under REPEATABLE READ or SERIALIZABLE, losing a race with another
+//     resolve also returns ErrNotPending (Postgres serialization failure);
+//     the transaction is then aborted and must be rolled back. Other
+//     serialization errors (40001 on a different statement, deadlocks) are
+//     returned as is: retry the whole transaction or treat the call as not
+//     pending.
 func (s *Service) ResolvePending(ctx context.Context, invocationID string, approved bool, actorID, reason string) error {
 	err := s.resolvePending(ctx, invocationID, approved, actorID, reason)
 	if errors.Is(err, ErrInvalidTransition) {

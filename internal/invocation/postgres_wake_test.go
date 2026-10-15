@@ -155,4 +155,26 @@ func TestPostgresHeldCallWakesOnAnotherReplica(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("cancelling a pending call sent no notification")
 	}
+
+	// A REPEATABLE READ resolve that loses the race to another resolve reports
+	// ErrNotPending (Postgres raises a serialization failure on the update).
+	race, err := other.Submit(ctx, invocation.ExternalSubmitRequest{Tool: "pay", Source: "harness", Input: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slow, err := otherDB.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer slow.Rollback()
+	var n int
+	if err := slow.QueryRow(`SELECT COUNT(*) FROM invocations`).Scan(&n); err != nil { // take the snapshot
+		t.Fatal(err)
+	}
+	if err := other.ResolvePending(ctx, race.InvocationID, false, "fast", "no"); err != nil {
+		t.Fatal(err)
+	}
+	if err := other.ResolvePending(store.WithTx(ctx, slow), race.InvocationID, true, "slow", ""); !errors.Is(err, invocation.ErrNotPending) {
+		t.Fatalf("losing REPEATABLE READ resolve: %v, want ErrNotPending", err)
+	}
 }

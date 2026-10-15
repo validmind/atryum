@@ -42,6 +42,11 @@ type (
 // holds it); pass nil to let Atryum commit on its own. A call that is no
 // longer pending (already decided, abandoned by its caller, or finished)
 // returns an error wrapping ErrNotPending.
+//
+// The embedder's transaction must be on Atryum's database and schema, and must
+// be rolled back after any error from ResolvePending; under REPEATABLE READ or
+// SERIALIZABLE, losing a race with another resolve returns ErrNotPending and
+// aborts the transaction. See invocation.Service.ResolvePending.
 type ResolvePending func(ctx context.Context, tx *sql.Tx, invocationID string, approve bool, actor, reason string) error
 
 // ErrNotPending is wrapped by ResolvePending when the call is no longer pending.

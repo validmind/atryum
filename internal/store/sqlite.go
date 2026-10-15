@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/validmind/atryum/internal/invocation"
 	"github.com/validmind/atryum/internal/mcp"
@@ -112,6 +114,12 @@ func (r *InvocationRepo) UpdateResultFrom(ctx context.Context, inv invocation.In
 	}
 	c := conn(ctx, r.db)
 	res, err := c.ExecContext(ctx, query, args...)
+	if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code == "40001" {
+		// A REPEATABLE READ or SERIALIZABLE transaction lost the race to
+		// another writer of this row: it is no longer in status from. The
+		// transaction is aborted, so the caller must roll back.
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}
