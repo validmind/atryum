@@ -54,6 +54,7 @@ type options struct {
 	eventHook           EventHook
 	databaseURL         string
 	requireAgentAuth    bool
+	stuckReports        bool
 }
 
 type extensionMigrations struct {
@@ -185,6 +186,15 @@ func (o options) agentAPIKeysEnabled() bool {
 		return *o.agentAPIKeys
 	}
 	return o.decider == nil
+}
+
+// WithStuckReports makes the MCP proxy offer the atryum_report_stuck tool
+// (arguments task, boundary and optional detail), which an agent calls to
+// report that it cannot finish within its authority. It authorizes nothing:
+// the call is recorded as an invocation of that tool, and the event hook sees
+// "invocation.stuck_reported", and the agent gets a short acknowledgement.
+func WithStuckReports() Option {
+	return func(o *options) { o.stuckReports = true }
 }
 
 // WithThirdPartyNotices sets the text printed by the `licenses` command.

@@ -52,6 +52,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ATRYUM_AUTH_DEBUG_SKIP_VERIFY`) set, or with an issuer or JWKS URL that
   is not HTTPS (plain HTTP is allowed only on loopback), and agent routes
   reject any request without a verified agent identity.
+- `pkg/policy`: a two-level rule engine (firm and agent rules, first match per
+  level, strictest level wins, judge rules that fall back to a person) and a
+  minimal secret-literal detector, `ContainsSecret`, for
+  `facts.contains_secret`.
+- `pkg/atryum.WithStuckReports`: the MCP proxy offers `atryum_report_stuck`
+  (`task`, `boundary`, optional `detail`). It authorizes nothing; it records an
+  invocation of that tool, which the event hook sees as
+  `invocation.stuck_reported`, and acknowledges the agent.
 
 ### Fixed
 
@@ -129,6 +137,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   channel, so an approval or denial recorded by another Atryum process releases
   it. Decisions and the move to executing are compare-and-set, so a call is
   decided and run once.
+- With PostgreSQL, a held MCP call wakes as soon as any Atryum process records
+  its decision (`LISTEN`/`NOTIFY` on `atryum_invocation_decided`) and polls its
+  row every two seconds only as a fallback. SQLite keeps polling every 250 ms.
 
 ## [0.4.0] - 2026-07-27
 

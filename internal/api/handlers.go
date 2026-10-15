@@ -54,6 +54,7 @@ type service interface {
 	CreateSession(ctx context.Context, req invocation.CreateSessionRequest, agentID string) (invocation.SessionResponse, error)
 	RecordExecution(ctx context.Context, invocationID string, update invocation.ExternalExecutionUpdate) (invocation.InvocationResponse, error)
 	SetSummary(ctx context.Context, invocationID string, summary string) (invocation.InvocationResponse, error)
+	ReportStuck(ctx context.Context, server string, args map[string]any) (invocation.InvocationResponse, error)
 	SubmitPlan(ctx context.Context, req invocation.PlanSubmitRequest) (invocation.Plan, error)
 	GetPlan(ctx context.Context, id string) (invocation.Plan, error)
 	ListPlans(ctx context.Context, filter invocation.PlanListFilter) (invocation.PlanListResponse, error)
@@ -231,6 +232,8 @@ type Handler struct {
 	externalDecider bool
 	// requireAgentIdentity: see RequireAgentIdentity.
 	requireAgentIdentity bool
+	// stuckReports: see EnableStuckReports.
+	stuckReports bool
 }
 
 // AddAuthenticatedRoutes registers a callback that may mount routes wrapped in
@@ -1019,6 +1022,17 @@ func (h *Handler) authConfig(w http.ResponseWriter, r *http.Request) {
 // plan tools, annotating tools/list with rules, and attaching rules to denials.
 func (h *Handler) UseExternalDecider() { h.externalDecider = true }
 
+// EnableStuckReports makes the MCP proxy offer atryum_report_stuck, which an
+// agent calls to report that it cannot finish within its authority. The call
+// is recorded (Service.ReportStuck) and authorizes nothing.
+func (h *Handler) EnableStuckReports() { h.stuckReports = true }
+
+var atryumReportStuckMCPTool = annotatedTool{
+	Name:        invocation.StuckReportTool,
+	Description: "Report that you cannot finish your task without crossing a boundary of your authority (a denied call, a rule you must not break, a missing approval). This only records the report for a person; it authorizes nothing. Stop the task after reporting. Arguments: task (what you were asked to do), boundary (what stops you), detail (optional: what you tried and what a person needs to do).",
+	InputSchema: json.RawMessage(`{"type":"object","required":["task","boundary"],"properties":{"task":{"type":"string"},"boundary":{"type":"string"},"detail":{"type":"string"}}}`),
+}
+
 func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", h.healthz)
@@ -1619,12 +1633,21 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			return
 		}
 		_ = h.emitTraceEvent(r.Context(), server, "mcp.tools.list", map[string]any{"tool_count": len(tools), "request_id": requestID})
+		var list []any
 		if h.externalDecider {
-			h.writeRPCResult(w, req.ID, map[string]any{"tools": tools})
-			return
+			for _, t := range tools {
+				list = append(list, t)
+			}
+		} else {
+			list = h.annotateToolsWithPolicy(r.Context(), auth.AgentIDFromContext(r.Context()), server, tools)
 		}
-		annotated := h.annotateToolsWithPolicy(r.Context(), auth.AgentIDFromContext(r.Context()), server, tools)
-		h.writeRPCResult(w, req.ID, map[string]any{"tools": annotated})
+		if h.stuckReports {
+			list = append(list, atryumReportStuckMCPTool)
+		}
+		if list == nil {
+			list = []any{}
+		}
+		h.writeRPCResult(w, req.ID, map[string]any{"tools": list})
 	case "tools/call":
 		var params struct {
 			Name      string         `json:"name"`
@@ -1632,6 +1655,15 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		}
 		if err := json.Unmarshal(req.Params, &params); err != nil {
 			h.writeRPCError(w, req.ID, -32602, "invalid params")
+			return
+		}
+		if params.Name == invocation.StuckReportTool && h.stuckReports {
+			resp, err := h.svc.ReportStuck(r.Context(), server, params.Arguments)
+			if err != nil {
+				h.writeRPCError(w, req.ID, -32602, err.Error())
+				return
+			}
+			h.writeRPCResult(w, req.ID, normalizeToolCallResult(resp.Result, false))
 			return
 		}
 		if params.Name == atryumRulesToolName && !h.externalDecider {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -419,5 +420,41 @@ func TestSubmitUsesTheVerifiedIdentity(t *testing.T) {
 	resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{Source: "hook", Tool: "Bash", AgentID: "agent-b", Input: map[string]any{}})
 	if err != nil || resp.AgentID == nil || *resp.AgentID != "agent-a" {
 		t.Fatalf("agent = %v (%v), want agent-a", resp.AgentID, err)
+	}
+}
+
+// A stuck report is recorded through the hook and authorizes nothing: the
+// decider is never asked and no upstream is called.
+func TestReportStuck(t *testing.T) {
+	upstream, calls := fakeMCP(t)
+	db := newSQLiteTestDB(t)
+	svc := newHookedService(t, db, upstream.URL)
+	svc.SetDecider(func(context.Context, invocation.ToolCall) (invocation.Decision, error) {
+		t.Error("decider was asked about a stuck report")
+		return invocation.Decision{Verdict: invocation.VerdictDeny}, nil
+	})
+	var types []string
+	var seen invocation.Change
+	svc.SetEventHook(func(_ context.Context, _ *sql.Tx, c invocation.Change) error {
+		types = append(types, c.Type)
+		seen = c
+		return nil
+	})
+
+	if _, err := svc.ReportStuck(context.Background(), "bank", map[string]any{"task": "pay INV-1"}); err == nil {
+		t.Fatal("a report without a boundary was accepted")
+	}
+	resp, err := svc.ReportStuck(context.Background(), "bank", map[string]any{"task": "pay INV-1", "boundary": "P-02 needs a person", "detail": "timed out"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(types, ","); got != "invocation.created,invocation.stuck_reported" {
+		t.Fatalf("hook saw %s", got)
+	}
+	if seen.Invocation.Tool != invocation.StuckReportTool || seen.Invocation.Upstream != "bank" || !strings.Contains(string(seen.Payload), `"boundary":"P-02 needs a person"`) {
+		t.Fatalf("hook change %+v payload %s", seen.Invocation, seen.Payload)
+	}
+	if resp.Status != invocation.StatusSucceeded || !strings.Contains(string(resp.Result), "Stuck report recorded") || calls.Load() != 0 {
+		t.Fatalf("status=%s result=%s calls=%d", resp.Status, resp.Result, calls.Load())
 	}
 }
