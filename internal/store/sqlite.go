@@ -170,8 +170,10 @@ func (r *InvocationRepo) Get(ctx context.Context, id string) (invocation.Invocat
 	return scanInvocation(row)
 }
 
-func (r *InvocationRepo) GetByIdempotencyKey(ctx context.Context, key string) (invocation.Invocation, error) {
-	query, args, err := r.sb.Select("invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at", "matched_rule_id", "plan_id", "plan_step_index", "agent_id", "session_id", "summary", "client_name", "client_version").From("invocations").Where(sq.Eq{"idempotency_key": key}).ToSql()
+// GetByIdempotencyKey returns agentID's invocation with key; keys are unique
+// per agent (a NULL agent_id is the empty agent), never across agents.
+func (r *InvocationRepo) GetByIdempotencyKey(ctx context.Context, agentID, key string) (invocation.Invocation, error) {
+	query, args, err := r.sb.Select("invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at", "matched_rule_id", "plan_id", "plan_step_index", "agent_id", "session_id", "summary", "client_name", "client_version").From("invocations").Where(sq.Eq{"idempotency_key": key}).Where(sq.Expr("COALESCE(agent_id, '') = ?", agentID)).ToSql()
 	if err != nil {
 		return invocation.Invocation{}, err
 	}

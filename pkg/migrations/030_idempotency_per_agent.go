@@ -1,0 +1,19 @@
+package migrations
+
+// migration030 makes idempotency keys unique per agent instead of globally,
+// so one agent's key can never find, or collide with, another agent's
+// invocation. A NULL agent_id counts as the empty agent.
+func migration030() Definition {
+	return Definition{
+		Version: 30,
+		Name:    "030_idempotency_per_agent",
+		Steps: []Step{
+			Raw("create per-agent idempotency index", `
+				CREATE UNIQUE INDEX IF NOT EXISTS idx_invocations_agent_idempotency_key
+					ON invocations ((COALESCE(agent_id, '')), idempotency_key)
+					WHERE idempotency_key IS NOT NULL
+			`),
+			Raw("drop global idempotency index", `DROP INDEX IF EXISTS idx_invocations_idempotency_key`),
+		},
+	}
+}

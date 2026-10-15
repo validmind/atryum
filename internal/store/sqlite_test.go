@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -45,8 +46,8 @@ func TestInitDB_FreshDatabase(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 29 {
-		t.Fatalf("expected 29 migrations, got %d", count)
+	if count != 30 {
+		t.Fatalf("expected 30 migrations, got %d", count)
 	}
 
 	// Verify all tables exist
@@ -75,8 +76,8 @@ func TestInitDB_Idempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 29 {
-		t.Fatalf("expected 29 migrations after double init, got %d", count)
+	if count != 30 {
+		t.Fatalf("expected 30 migrations after double init, got %d", count)
 	}
 }
 
@@ -169,12 +170,47 @@ func TestInvocationRepo_CRUD(t *testing.T) {
 	if err := repo.Create(ctx, inv2); err != nil {
 		t.Fatalf("Create inv2: %v", err)
 	}
-	got3, err := repo.GetByIdempotencyKey(ctx, "idem-abc")
+	got3, err := repo.GetByIdempotencyKey(ctx, "", "idem-abc")
 	if err != nil {
 		t.Fatalf("GetByIdempotencyKey: %v", err)
 	}
 	if got3.InvocationID != "inv-2" {
 		t.Errorf("idem key mismatch: %s", got3.InvocationID)
+	}
+	checkIdempotencyPerAgent(t, repo)
+}
+
+// checkIdempotencyPerAgent: keys are unique per agent, and a lookup never
+// crosses agents. Shared by the SQLite and Postgres repository tests.
+func checkIdempotencyPerAgent(t *testing.T, repo *InvocationRepo) {
+	t.Helper()
+	ctx := context.Background()
+	mk := func(id, agent string) invocation.Invocation {
+		inv := invocation.Invocation{InvocationID: id, Tool: "pay", Upstream: "bank", Status: "received", Input: []byte(`{}`), IdempotencyKey: strPtr("shared-key"), SubmittedAt: time.Now().UTC()}
+		if agent != "" {
+			inv.AgentID = &agent
+		}
+		return inv
+	}
+	for _, inv := range []invocation.Invocation{mk("inv-a", "agent-a"), mk("inv-b", "agent-b"), mk("inv-anon", "")} {
+		if err := repo.Create(ctx, inv); err != nil {
+			t.Fatalf("Create %s with a key another agent holds: %v", inv.InvocationID, err)
+		}
+	}
+	if err := repo.Create(ctx, mk("inv-a2", "agent-a")); err == nil {
+		t.Fatal("the same agent stored one key twice")
+	}
+	if err := repo.Create(ctx, mk("inv-anon2", "")); err == nil {
+		t.Fatal("anonymous callers stored one key twice")
+	}
+	for agent, want := range map[string]string{"agent-a": "inv-a", "agent-b": "inv-b", "": "inv-anon"} {
+		got, err := repo.GetByIdempotencyKey(ctx, agent, "shared-key")
+		if err != nil || got.InvocationID != want {
+			t.Fatalf("GetByIdempotencyKey(%q) = %s, %v; want %s", agent, got.InvocationID, err, want)
+		}
+	}
+	if _, err := repo.GetByIdempotencyKey(ctx, "agent-c", "shared-key"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("another agent's lookup: %v, want sql.ErrNoRows", err)
 	}
 }
 
@@ -210,7 +246,7 @@ func TestInvocationRepo_UpdateSummary(t *testing.T) {
 	if got.Summary == nil || *got.Summary != "Read /tmp/test." {
 		t.Fatalf("Get summary = %#v", got.Summary)
 	}
-	byKey, err := repo.GetByIdempotencyKey(ctx, "summary-key")
+	byKey, err := repo.GetByIdempotencyKey(ctx, "", "summary-key")
 	if err != nil {
 		t.Fatalf("GetByIdempotencyKey: %v", err)
 	}
@@ -1047,8 +1083,8 @@ func TestInitDBToleratesRenumberedMigrationStamps(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 29 {
-		t.Fatalf("expected 29 migrations recorded, got %d", count)
+	if count != 30 {
+		t.Fatalf("expected 30 migrations recorded, got %d", count)
 	}
 
 	// The columns/tables the renumbered migrations add must still be

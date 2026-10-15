@@ -643,8 +643,8 @@ func (a *managedAuditAdapter) Create(ctx context.Context, inv invocation.Invocat
 	return a.inv.Create(ctx, inv)
 }
 
-func (a *managedAuditAdapter) GetByIdempotencyKey(ctx context.Context, key string) (invocation.Invocation, error) {
-	return a.inv.GetByIdempotencyKey(ctx, key)
+func (a *managedAuditAdapter) GetByIdempotencyKey(ctx context.Context, agentID, key string) (invocation.Invocation, error) {
+	return a.inv.GetByIdempotencyKey(ctx, agentID, key)
 }
 
 func (a *managedAuditAdapter) CreateEvent(ctx context.Context, evt invocation.Event) error {
