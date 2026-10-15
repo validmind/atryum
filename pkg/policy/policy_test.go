@@ -347,27 +347,55 @@ func TestRuleJSON(t *testing.T) {
 	}
 }
 
+// F-01 denies every call with facts.contains_secret, so both misses and
+// false alarms matter.
 func TestContainsSecret(t *testing.T) {
 	for _, tc := range []struct {
+		name string
 		args any
 		want bool
 	}{
-		{map[string]any{"command": "aws s3 ls --access-key AKIAIOSFODNN7EXAMPLE"}, true},
-		{map[string]any{"body": "-----BEGIN RSA PRIVATE KEY-----\nMIIEow..."}, true},
-		{map[string]any{"body": "-----BEGIN OPENSSH PRIVATE KEY-----"}, true},
-		{map[string]any{"headers": map[string]any{"Authorization": "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc"}}, true},
-		{map[string]any{"command": "mysql -u root --password=hunter22"}, true},
-		{map[string]any{"password": "hunter22"}, true},
-		{map[string]any{"config": "api_key: sk_live_abcdef"}, true},
-		{map[string]any{"token": "ghp_" + strings.Repeat("a", 36)}, true},
-		{map[string]any{"command": "git push origin feature/PAY-2291"}, false},
-		{map[string]any{"query": "select * from users where password_reset = true"}, false},
-		{map[string]any{"text": "password reset requested for the account"}, false},
-		{map[string]any{"pwd": "/home/agent"}, false},
-		{nil, false},
+		// Secrets.
+		{"aws key id", map[string]any{"command": "aws s3 ls --access-key AKIAIOSFODNN7EXAMPLE"}, true},
+		{"rsa private key", map[string]any{"body": "-----BEGIN RSA PRIVATE KEY-----\nMIIEow..."}, true},
+		{"openssh private key", map[string]any{"body": "-----BEGIN OPENSSH PRIVATE KEY-----"}, true},
+		{"pgp private key", map[string]any{"body": "-----BEGIN PGP PRIVATE KEY BLOCK-----"}, true},
+		{"bearer header", map[string]any{"headers": map[string]any{"Authorization": "Bearer abcdefghijklmnopqrstuvwxyz012345"}}, true},
+		{"bare jwt", map[string]any{"cookie": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"}, true},
+		{"flag assignment", map[string]any{"command": "mysql -u root --password=hunter22"}, true},
+		{"json key", map[string]any{"password": "hunter22"}, true},
+		{"yaml in text", map[string]any{"config": "api_key: sk_live_abcdef12"}, true},
+		{"env var with prefix", map[string]any{"command": "DB_PASSWORD=s3cr3tP4ss ./run.sh"}, true},
+		{"openai env", map[string]any{"command": "export OPENAI_API_KEY=abcd1234efgh5678"}, true},
+		{"aws secret key name", map[string]any{"aws_secret_access_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"}, true},
+		{"github token", map[string]any{"token": "ghp_" + strings.Repeat("a", 36)}, true},
+		{"github fine-grained token", map[string]any{"t": "github_pat_" + strings.Repeat("A", 30)}, true},
+		{"anthropic key", map[string]any{"text": "use sk-ant-api03-" + strings.Repeat("x", 30)}, true},
+		{"url credentials", map[string]any{"dsn": "postgresql://app:Tr0ub4dor@db.internal:5432/ledger"}, true},
+		{"nested list", map[string]any{"steps": []any{map[string]any{"env": map[string]any{"REFRESH_TOKEN": "8f14e45fceea167a5a36dedd4bea2543"}}}}, true},
+		// Not secrets.
+		{"feature branch push", map[string]any{"command": "git push origin feature/PAY-2291"}, false},
+		{"sql on a password column", map[string]any{"query": "select * from users where password_reset = true"}, false},
+		{"prose", map[string]any{"text": "password reset requested for the account"}, false},
+		{"pwd", map[string]any{"pwd": "/home/agent"}, false},
+		{"boolean value", map[string]any{"require_password": true, "password": "true"}, false},
+		{"null value", map[string]any{"api_key": nil}, false},
+		{"mask", map[string]any{"password": "********"}, false},
+		{"partial mask", map[string]any{"command": "login --password=ab****yz"}, false},
+		{"placeholder", map[string]any{"command": "DB_PASSWORD=${DB_PASSWORD} ./run.sh"}, false},
+		{"env reference", map[string]any{"api_key": "$OPENAI_API_KEY"}, false},
+		{"template", map[string]any{"secret": "{{ vault.ledger }}"}, false},
+		{"short value", map[string]any{"password": "abc"}, false},
+		{"secret name", map[string]any{"secret_name": "ledger-db-credentials"}, false},
+		{"lower-case akia is not an aws key", map[string]any{"slug": "akiaiosfodnn7example"}, false},
+		{"url without password", map[string]any{"url": "https://user@example.com/path"}, false},
+		{"url placeholder password", map[string]any{"dsn": "postgres://app:${PGPASSWORD}@db/ledger"}, false},
+		{"nil", nil, false},
+		// Uninspectable input fails closed.
+		{"unmarshalable", map[string]any{"f": func() {}}, true},
 	} {
 		if got := ContainsSecret(tc.args); got != tc.want {
-			t.Errorf("ContainsSecret(%v) = %v, want %v", tc.args, got, tc.want)
+			t.Errorf("%s: ContainsSecret(%v) = %v, want %v", tc.name, tc.args, got, tc.want)
 		}
 	}
 }
