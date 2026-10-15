@@ -29,7 +29,9 @@ func realGateway(t *testing.T, hook invocation.EventHook) *invocation.Service {
 		t.Fatal(err)
 	}
 	svc := invocation.NewService(store.NewInvocationRepo(db), store.NewEventRepo(db), nil, nil, policy.AlwaysApproveProvider{}, time.Second, nil, nil, nil, nil)
-	svc.SetTx(func(ctx context.Context, fn func(context.Context, *sql.Tx) error) error { return store.InTx(ctx, db, fn) })
+	svc.SetTx(func(ctx context.Context, fn func(context.Context, *sql.Tx) error) error {
+		return store.InTx(ctx, db, fn)
+	})
 	svc.SetDecider(func(context.Context, invocation.ToolCall) (invocation.Decision, error) {
 		return invocation.Decision{Verdict: invocation.VerdictAllow}, nil
 	})
