@@ -2,8 +2,10 @@ package invocation_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/validmind/atryum/internal/auth"
@@ -91,4 +93,74 @@ func TestIdempotencyKeyScopedToAgentAndRequest(t *testing.T) {
 			t.Fatalf("harness-a retry: %s %v, want %s", again.InvocationID, err, anon.InvocationID)
 		}
 	})
+}
+
+// Integers beyond float64 precision stay distinct: reusing a key with one
+// that differs only past 2^53 is a conflict, not a replay of the old call.
+func TestIdempotencyComparesLargeIntegersExactly(t *testing.T) {
+	upstream, _ := fakeMCP(t)
+	svc := newHookedService(t, newSQLiteTestDB(t), upstream.URL)
+	key := "big-int"
+	submit := func(n string) (invocation.InvocationResponse, error) {
+		return svc.Submit(as("agent-a"), invocation.ExternalSubmitRequest{Source: "ledger", Tool: "post", Input: map[string]any{"account": json.Number(n)}, IdempotencyKey: &key})
+	}
+	first, err := submit("9007199254740993") // 2^53 + 1
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, err := submit("9007199254740993"); err != nil || again.InvocationID != first.InvocationID {
+		t.Fatalf("identical retry: %s %v, want %s", again.InvocationID, err, first.InvocationID)
+	}
+	if _, err := submit("9007199254740992"); !errors.Is(err, invocation.ErrIdempotencyConflict) {
+		t.Fatalf("2^53 after 2^53+1: %v, want ErrIdempotencyConflict", err)
+	}
+}
+
+// Concurrent identical submits by one agent make one invocation, whichever
+// insert wins: the losers get the winner's invocation, not an error.
+func TestConcurrentIdenticalSubmits(t *testing.T) {
+	upstream, _ := fakeMCP(t)
+	db := newSQLiteTestDB(t)
+	checkConcurrentIdenticalSubmits(t, newHookedService(t, db, upstream.URL), newHookedService(t, db, upstream.URL))
+}
+
+func checkConcurrentIdenticalSubmits(t *testing.T, replicas ...*invocation.Service) {
+	t.Helper()
+	key := "burst"
+	const n = 16
+	start := make(chan struct{})
+	ids := make(chan string, n)
+	errs := make(chan error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(svc *invocation.Service) {
+			defer wg.Done()
+			<-start
+			resp, err := svc.Submit(as("agent-a"), invocation.ExternalSubmitRequest{Source: "harness", Tool: "Bash", Input: map[string]any{"command": "make deploy"}, IdempotencyKey: &key})
+			if err != nil {
+				errs <- err
+				return
+			}
+			ids <- resp.InvocationID
+		}(replicas[i%len(replicas)])
+	}
+	close(start)
+	wg.Wait()
+	close(ids)
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent submit: %v", err)
+	}
+	seen := map[string]bool{}
+	for id := range ids {
+		seen[id] = true
+	}
+	list, err := replicas[0].List(context.Background(), invocation.InvocationListFilter{Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 1 || list.Total != 1 {
+		t.Fatalf("%d distinct invocation IDs returned and %d stored, want 1 and 1", len(seen), list.Total)
+	}
 }

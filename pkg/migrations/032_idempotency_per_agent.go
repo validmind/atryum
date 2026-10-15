@@ -3,6 +3,11 @@ package migrations
 // migration032 makes idempotency keys unique per agent instead of globally,
 // so one agent's key can never find, or collide with, another agent's
 // invocation. A NULL agent_id counts as the empty agent.
+//
+// ponytail: on Postgres the index is built without CONCURRENTLY (migrations
+// run in a transaction), so writes to invocations wait for the build: about a
+// second per million rows. Build it CONCURRENTLY by hand before upgrading if
+// the table is large; IF NOT EXISTS then skips this step.
 func migration032() Definition {
 	return Definition{
 		Version: 32,

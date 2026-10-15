@@ -1,6 +1,7 @@
 package invocation
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -320,10 +321,19 @@ func (inv *Invocation) response(s *Service) InvocationResponse {
 	return s.toResponse(*inv)
 }
 
+// sameJSON compares two JSON documents as values, ignoring key order and
+// whitespace. Numbers compare by their exact text (json.Number), so integers
+// beyond float64 precision stay distinct; equal numbers spelled differently
+// (100 and 1e2) count as different, which errs toward a conflict.
 func sameJSON(a, b []byte) bool {
-	var x, y any
-	if json.Unmarshal(a, &x) != nil || json.Unmarshal(b, &y) != nil {
-		return false
-	}
-	return reflect.DeepEqual(x, y)
+	x, errA := decodeExact(a)
+	y, errB := decodeExact(b)
+	return errA == nil && errB == nil && reflect.DeepEqual(x, y)
+}
+
+func decodeExact(b []byte) (any, error) {
+	d := json.NewDecoder(bytes.NewReader(b))
+	d.UseNumber()
+	var v any
+	return v, d.Decode(&v)
 }

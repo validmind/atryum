@@ -152,7 +152,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   got the old call. Now another agent's key never finds that invocation; the
   same agent reusing a key for a different request (path, server, tool or
   input) gets `409 Conflict` (`invocation.ErrIdempotencyConflict`); an
-  identical retry still returns the original invocation.
+  identical retry still returns the original invocation. Numbers in the
+  input compare exactly, and concurrent identical requests make one
+  invocation. On PostgreSQL migration 032 builds its index without
+  `CONCURRENTLY`, so writes to `invocations` wait during the build; on a
+  large table, create `idx_invocations_agent_idempotency_key` concurrently by
+  hand first (see the migration).
 
 - Each invocation state change and its `invocation_events` row are now written
   in one transaction, closing the gap where either could commit without the
