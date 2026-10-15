@@ -242,9 +242,17 @@ func TestEvaluate(t *testing.T) {
 		{name: "unknown verdict keeps scanning the level",
 			agent: []Rule{{ID: "J", Tool: "x", Action: ActionJudge}, {ID: "next", Tool: "x", Action: ActionNotify}},
 			call:  Call{Tool: "x"}, judge: verdict(""), want: ActionNotify, rule: "next"},
-		{name: "judge saying notify is unknown",
+		{name: "judge saying notify is unknown: a level that only deferred is human",
 			agent: []Rule{{ID: "J", Tool: "x", Action: ActionJudge}},
-			call:  Call{Tool: "x"}, judge: verdict(ActionNotify), want: ActionHuman, basisContain: "No rule matched"},
+			call:  Call{Tool: "x"}, judge: verdict(ActionNotify), want: ActionHuman, rule: "J", level: "agent", basisContain: "no verdict"},
+		{name: "a deferring firm judge does not hand the call to the agent level",
+			firm:  []Rule{{ID: "FJ", Tool: "x", Action: ActionJudge}, {ID: "F-other", Tool: "y", Action: ActionAllow}},
+			agent: []Rule{{ID: "A", Tool: "x", Action: ActionAllow}},
+			call:  Call{Tool: "x"}, judge: verdict(""), want: ActionHuman, rule: "FJ", level: "firm"},
+		{name: "a firm deny still beats a deferring agent judge",
+			firm:  []Rule{{ID: "F", Tool: "x", Action: ActionDeny}},
+			agent: []Rule{{ID: "AJ", Tool: "x", Action: ActionJudge}},
+			call:  Call{Tool: "x"}, judge: verdict(""), want: ActionDeny, rule: "F", level: "firm"},
 		{name: "unknown rule action fails safe",
 			agent: []Rule{{ID: "B", Tool: "x", Action: "maybe"}},
 			call:  Call{Tool: "x"}, want: ActionHuman, rule: "B"},
@@ -281,6 +289,51 @@ func TestEvaluate(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Numbers compare by value whatever their Go type, and their text has no
+// exponent, so a rule on 1000000 matches 1e6 decoded from JSON.
+func TestNumberCoercion(t *testing.T) {
+	type myInt int16
+	for _, tc := range []struct {
+		name string
+		cond Cond
+		arg  any
+		want bool
+	}{
+		{"eq million from JSON", c("args.v", "eq", 1000000), jsonNumber(`1000000`), true},
+		{"eq million float", c("args.v", "eq", float64(1000000)), float64(1e6), true},
+		{"eq 2.5e7", c("args.v", "eq", "25000000"), 2.5e7, true},
+		{"eq small", c("args.v", "eq", "0.00001"), 0.00001, true},
+		{"prefix on amount", c("args.v", "prefix", "1000"), float64(1000000), true},
+		{"in amounts", c("args.v", "in", []any{float64(5e6), float64(1e6)}), float64(1e6), true},
+		{"in typed slice", c("args.v", "in", []int{1, 1000000}), 1000000, true},
+		{"in typed strings", c("args.v", "in", []string{"a", "b"}), "b", true},
+		{"in not a list", c("args.v", "in", "b"), "b", false},
+		{"eq amount given as string", c("args.v", "eq", 1000000), "1000000", true},
+		{"gt amount given as string", c("args.v", "gt", 10000), "18500", true},
+		{"gt exponent string", c("args.v", "gt", 999999), "1e6", true},
+		{"gt json.Number", c("args.v", "gt", 10000), json.Number("10000.5"), true},
+		{"lt uint8", c("args.v", "lt", 300), uint8(255), true},
+		{"gt named int", c("args.v", "gt", myInt(1)), myInt(2), true},
+		{"gt int64 vs float", c("args.v", "gt", 2.5), int64(3), true},
+		{"bool is not a number", c("args.v", "gt", 0), true, false},
+		{"bool eq text", c("args.v", "eq", "true"), true, true},
+		{"word is not a number", c("args.v", "lt", 5), "five", false},
+	} {
+		got := condOK(tc.cond, Call{Args: map[string]any{"v": tc.arg}})
+		if got != tc.want {
+			t.Errorf("%s: condOK(%+v, %v) = %v, want %v", tc.name, tc.cond, tc.arg, got, tc.want)
+		}
+	}
+}
+
+func jsonNumber(s string) any {
+	var v any
+	if err := json.Unmarshal([]byte(s), &v); err != nil {
+		panic(err)
+	}
+	return v
 }
 
 func TestRuleJSON(t *testing.T) {
