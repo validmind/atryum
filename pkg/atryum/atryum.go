@@ -405,6 +405,9 @@ func runServer(args []string, o options) error {
 	if o.decider != nil {
 		handler.UseExternalDecider()
 	}
+	if o.stuckReports {
+		handler.EnableStuckReports()
+	}
 	for _, register := range o.extraRoutes {
 		handler.AddExtraRoutes(register)
 	}

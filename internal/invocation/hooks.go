@@ -6,8 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/validmind/atryum/internal/auth"
 	"github.com/validmind/atryum/internal/invocation/policy"
 )
 
@@ -184,4 +188,51 @@ func (d Decision) disposition() policy.Decision {
 		return policy.Decision{Disposition: policy.DispositionHuman, Reason: d.Reason}
 	}
 	return policy.Decision{Disposition: policy.DispositionNever, Reason: d.Reason}
+}
+
+// StuckReportTool is the MCP tool an agent calls to report that it cannot
+// finish its task within its authority. See ReportStuck.
+const StuckReportTool = "atryum_report_stuck"
+
+// ReportStuck records an agent's stuck report (task, boundary and an optional
+// detail) as an invocation of StuckReportTool on server. It authorizes
+// nothing: no decider, rule or upstream is involved. The event hook sees it as
+// "invocation.created" then "invocation.stuck_reported".
+func (s *Service) ReportStuck(ctx context.Context, server string, args map[string]any) (InvocationResponse, error) {
+	for _, k := range []string{"task", "boundary"} {
+		if v, _ := args[k].(string); strings.TrimSpace(v) == "" {
+			return InvocationResponse{}, fmt.Errorf("%s is required", k)
+		}
+	}
+	input, err := json.Marshal(args)
+	if err != nil {
+		return InvocationResponse{}, err
+	}
+	now := time.Now().UTC()
+	inv := Invocation{
+		InvocationID: "inv_" + uuid.NewString(),
+		Tool:         StuckReportTool,
+		Upstream:     server,
+		Status:       StatusReceived,
+		Input:        input,
+		SubmittedAt:  now,
+	}
+	if agentID := auth.AgentIDFromContext(ctx); agentID != "" {
+		inv.AgentID = &agentID
+	}
+	if err := s.create(ctx, inv); err != nil {
+		return InvocationResponse{}, err
+	}
+	inv.Status = StatusSucceeded
+	inv.CompletedAt = &now
+	inv.Response = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": "Stuck report recorded (" + inv.InvocationID + "). Stop this task; a person will follow up."}}})
+	if err := s.commit(ctx, inv, s.invocations.UpdateResult, Event{
+		InvocationID: inv.InvocationID,
+		EventType:    "invocation.stuck_reported",
+		Payload:      mustJSON(map[string]any{"upstream": server, "arguments": json.RawMessage(input)}),
+		CreatedAt:    now,
+	}); err != nil {
+		return InvocationResponse{}, err
+	}
+	return s.toResponse(inv), nil
 }
