@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/validmind/atryum/internal/auth"
 	"github.com/validmind/atryum/internal/config"
@@ -424,7 +425,8 @@ func TestSubmitUsesTheVerifiedIdentity(t *testing.T) {
 }
 
 // A stuck report is recorded through the hook and authorizes nothing: the
-// decider is never asked and no upstream is called.
+// decider is never asked, no upstream is called, and the hook sees one
+// distinct kind, never invocation.created.
 func TestReportStuck(t *testing.T) {
 	upstream, calls := fakeMCP(t)
 	db := newSQLiteTestDB(t)
@@ -441,21 +443,47 @@ func TestReportStuck(t *testing.T) {
 		return nil
 	})
 
-	if _, err := svc.ReportStuck(context.Background(), "bank", map[string]any{"task": "pay INV-1"}); err == nil {
-		t.Fatal("a report without a boundary was accepted")
+	for _, bad := range []struct {
+		server string
+		args   map[string]any
+	}{
+		{"bank", map[string]any{"task": "pay INV-1"}},
+		{"bank", map[string]any{"task": " ", "boundary": "x"}},
+		{"nope", map[string]any{"task": "pay INV-1", "boundary": "P-02"}},
+	} {
+		if _, err := svc.ReportStuck(context.Background(), bad.server, bad.args); !errors.Is(err, invocation.ErrInvalidStuckReport) {
+			t.Fatalf("ReportStuck(%s, %v) = %v, want ErrInvalidStuckReport", bad.server, bad.args, err)
+		}
 	}
-	resp, err := svc.ReportStuck(context.Background(), "bank", map[string]any{"task": "pay INV-1", "boundary": "P-02 needs a person", "detail": "timed out"})
+	if len(types) != 0 {
+		t.Fatalf("rejected reports reached the hook: %v", types)
+	}
+
+	resp, err := svc.ReportStuck(context.Background(), "bank", map[string]any{"task": "pay INV-1", "boundary": "P-02 needs a person", "detail": strings.Repeat("é", 3000), "extra": "dropped"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(types, ","); got != "invocation.created,invocation.stuck_reported" {
+	if got := strings.Join(types, ","); got != "invocation.stuck_reported" {
 		t.Fatalf("hook saw %s", got)
 	}
-	if seen.Invocation.Tool != invocation.StuckReportTool || seen.Invocation.Upstream != "bank" || !strings.Contains(string(seen.Payload), `"boundary":"P-02 needs a person"`) {
-		t.Fatalf("hook change %+v payload %s", seen.Invocation, seen.Payload)
+	if seen.Invocation.Tool != invocation.StuckReportTool || seen.Invocation.Upstream != "bank" || seen.Invocation.Status != invocation.StatusReported {
+		t.Fatalf("hook change %+v", seen.Invocation)
 	}
-	if resp.Status != invocation.StatusSucceeded || !strings.Contains(string(resp.Result), "Stuck report recorded") || calls.Load() != 0 {
+	var stored struct{ Arguments map[string]string }
+	if err := json.Unmarshal(seen.Payload, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if d := stored.Arguments["detail"]; len(d) > 4096+len("…") || !strings.HasSuffix(d, "…") || !utf8.ValidString(d) {
+		t.Fatalf("detail not capped cleanly: %d bytes", len(d))
+	}
+	if _, ok := stored.Arguments["extra"]; ok || stored.Arguments["boundary"] != "P-02 needs a person" {
+		t.Fatalf("stored arguments %v", stored.Arguments)
+	}
+	if resp.Status != invocation.StatusReported || !strings.Contains(string(resp.Result), "Stuck report recorded") || calls.Load() != 0 {
 		t.Fatalf("status=%s result=%s calls=%d", resp.Status, resp.Result, calls.Load())
+	}
+	if got, err := svc.Get(context.Background(), resp.InvocationID); err != nil || got.Status != invocation.StatusReported || !strings.Contains(string(got.Result), "Stuck report recorded") {
+		t.Fatalf("stored row %+v err=%v", got, err)
 	}
 }
 

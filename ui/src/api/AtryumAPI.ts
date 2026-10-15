@@ -13,7 +13,8 @@ export type InvocationStatus =
   | 'succeeded'
   | 'failed'
   | 'expired'
-  | 'cancelled';
+  | 'cancelled'
+  | 'reported';
 
 export interface InvocationApproval {
   status: string;

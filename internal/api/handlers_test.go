@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -67,6 +68,12 @@ type stubService struct {
 
 func (s *stubService) ReportStuck(_ context.Context, server string, args map[string]any) (invocation.InvocationResponse, error) {
 	s.stuckServer, s.stuckArgs = server, args
+	if server == "broken" {
+		return invocation.InvocationResponse{}, errors.New(`pq: relation "invocations" does not exist`)
+	}
+	if server == "unknown" {
+		return invocation.InvocationResponse{}, fmt.Errorf("%w: unknown server", invocation.ErrInvalidStuckReport)
+	}
 	return invocation.InvocationResponse{InvocationID: "inv_stuck", Result: json.RawMessage(`{"content":[{"type":"text","text":"Stuck report recorded"}]}`)}, nil
 }
 
@@ -1373,6 +1380,20 @@ func TestMCPReportStuckTool(t *testing.T) {
 				t.Fatalf("no acknowledgement: %s", w.Body.String())
 			}
 		})
+	}
+}
+
+// An agent sees why a stuck report was rejected, but never database text.
+func TestMCPReportStuckErrors(t *testing.T) {
+	svc := &stubService{plansDisabled: true}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	h.EnableStuckReports()
+	for server, want := range map[string]string{"unknown": "unknown server", "broken": "could not record the stuck report"} {
+		w := httptest.NewRecorder()
+		h.Routes().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/mcp/"+server, strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"atryum_report_stuck","arguments":{"task":"t","boundary":"b"}}}`)))
+		if !strings.Contains(w.Body.String(), want) || strings.Contains(w.Body.String(), "relation") {
+			t.Fatalf("%s: %s", server, w.Body.String())
+		}
 	}
 }
 

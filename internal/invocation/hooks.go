@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -197,44 +198,72 @@ func (d Decision) disposition() policy.Decision {
 // finish its task within its authority. See ReportStuck.
 const StuckReportTool = "atryum_report_stuck"
 
+// ErrInvalidStuckReport is wrapped by ReportStuck's errors that the agent can
+// fix: a missing task or boundary, or an unknown server.
+var ErrInvalidStuckReport = errors.New("invalid stuck report")
+
+// stuckReportLimits caps each stuck-report field, in bytes.
+var stuckReportLimits = map[string]int{"task": 1024, "boundary": 1024, "detail": 4096}
+
 // ReportStuck records an agent's stuck report (task, boundary and an optional
-// detail) as an invocation of StuckReportTool on server. It authorizes
-// nothing: no decider, rule or upstream is involved. The event hook sees it as
-// "invocation.created" then "invocation.stuck_reported".
+// detail, each capped; other arguments are dropped) as an invocation of
+// StuckReportTool on server, in status reported. It authorizes nothing: no
+// decider, rule or upstream is involved. The row, its event and the event
+// hook commit together, and the hook sees only "invocation.stuck_reported",
+// never "invocation.created", so an embedder does not count it as an action.
 func (s *Service) ReportStuck(ctx context.Context, server string, args map[string]any) (InvocationResponse, error) {
-	for _, k := range []string{"task", "boundary"} {
-		if v, _ := args[k].(string); strings.TrimSpace(v) == "" {
-			return InvocationResponse{}, fmt.Errorf("%s is required", k)
+	report := map[string]string{}
+	for k, limit := range stuckReportLimits {
+		v, _ := args[k].(string)
+		v = strings.TrimSpace(v)
+		if len(v) > limit {
+			v = strings.ToValidUTF8(v[:limit], "") + "…"
+		}
+		if v != "" {
+			report[k] = v
 		}
 	}
-	input, err := json.Marshal(args)
-	if err != nil {
-		return InvocationResponse{}, err
+	if report["task"] == "" || report["boundary"] == "" {
+		return InvocationResponse{}, fmt.Errorf("%w: task and boundary are required", ErrInvalidStuckReport)
 	}
+	upstream, err := s.resolver.ResolveContext(ctx, server)
+	if err != nil {
+		return InvocationResponse{}, fmt.Errorf("%w: unknown server %q", ErrInvalidStuckReport, server)
+	}
+	input := mustJSON(report)
 	now := time.Now().UTC()
 	inv := Invocation{
 		InvocationID: "inv_" + uuid.NewString(),
 		Tool:         StuckReportTool,
-		Upstream:     server,
-		Status:       StatusReceived,
+		Upstream:     upstream.Name,
+		Status:       StatusReported,
 		Input:        input,
 		SubmittedAt:  now,
+		CompletedAt:  &now,
 	}
 	if agentID := auth.AgentIDFromContext(ctx); agentID != "" {
 		inv.AgentID = &agentID
 	}
-	if err := s.create(ctx, inv); err != nil {
-		return InvocationResponse{}, err
-	}
-	inv.Status = StatusSucceeded
-	inv.CompletedAt = &now
 	inv.Response = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": "Stuck report recorded (" + inv.InvocationID + "). Stop this task; a person will follow up."}}})
-	if err := s.commit(ctx, inv, s.invocations.UpdateResult, Event{
+	evt := Event{
 		InvocationID: inv.InvocationID,
 		EventType:    "invocation.stuck_reported",
-		Payload:      mustJSON(map[string]any{"upstream": server, "arguments": json.RawMessage(input)}),
+		Payload:      mustJSON(map[string]any{"upstream": upstream.Name, "arguments": json.RawMessage(input)}),
 		CreatedAt:    now,
-	}); err != nil {
+	}
+	err = s.runTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		if err := s.invocations.Create(ctx, inv); err != nil {
+			return err
+		}
+		if err := s.events.Create(ctx, evt); err != nil {
+			return err
+		}
+		if s.hook == nil {
+			return nil
+		}
+		return s.hook(ctx, tx, Change{Type: evt.EventType, Invocation: inv, Payload: evt.Payload, At: now})
+	})
+	if err != nil {
 		return InvocationResponse{}, err
 	}
 	return s.toResponse(inv), nil

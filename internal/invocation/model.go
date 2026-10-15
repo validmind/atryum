@@ -17,6 +17,9 @@ const (
 	StatusCancelled       Status = "cancelled"
 	StatusSucceeded       Status = "succeeded"
 	StatusFailed          Status = "failed"
+	// StatusReported is an agent's stuck report (see ReportStuck): recorded,
+	// never a tool call that ran.
+	StatusReported Status = "reported"
 )
 
 type Approval struct {
