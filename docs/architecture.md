@@ -314,6 +314,11 @@ the database handle, an embedding program can set:
   retry a call that already ran.
 - `WithRequireAgentAuth`: refuse to start without an enabled `[[auth]]` issuer
   or with `skip_verify`, and reject agent requests without a verified identity.
+  Agent API keys do not count as that issuer.
+- `WithAgentAPIKeys`: accept `atr_` agent API keys on the agent routes. On by
+  default, off by default under `WithDecider` (the program keeps its own agent
+  registry); when off, an `atr_` bearer gets 401. The decider and event hook see
+  how each caller authenticated (`ToolCall.Auth`, `Invocation.Auth`).
 - `WithDatabaseURL`: the database URL, overriding the config file.
 
 ## Configuration and ownership
@@ -336,8 +341,10 @@ Inbound and upstream authentication are separate trust boundaries:
   `users.disabled_at`), and identifies the agent as the `agents.id` the key points at.
   Any other bearer is an IdP JWT whose configured agent identity claim is used. Either
   way the invocation service receives the same trusted identity for rule targeting and
-  ownership checks. Keys also work with no IdP configured; presenting one opts the
-  request into key authentication.
+  ownership checks, and records the issuer, method (`jwt`, `api_key`, or `no_auth` for a
+  self-declared agent ID) and key id on the invocation. Keys also work with no IdP
+  configured; presenting one opts the request into key authentication. An embedder can
+  turn keys off (`WithAgentAPIKeys(false)`, the default under `WithDecider`).
 - Operator API auth authenticates any user from an `admin_enabled = true` provider,
   provisions a `users` row on first sight, and attaches an `authz.Principal` (admin when
   the configured admin claim is present, member otherwise). Authorization is decided per
