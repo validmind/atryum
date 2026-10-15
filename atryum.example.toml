@@ -16,6 +16,10 @@ database_path = "./atryum.db"
 # database_url = "postgresql://postgres:password@127.0.0.1:5432/postgres"
 database_url = ""
 log_level = "info"
+# PostgreSQL only: held calls wake through LISTEN/NOTIFY. Set false behind
+# PgBouncer in transaction mode (it never delivers notifications); held calls
+# then re-read their row every 250 ms.
+# database_listen = false
 
 # PostgreSQL connection pool. Unset values take the defaults shown.
 # [server.database_pool]

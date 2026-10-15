@@ -22,7 +22,8 @@ const DecisionChannel = "atryum_invocation_decided"
 //
 // The connection must reach Postgres in session mode: PgBouncer (or another
 // pooler) in transaction mode accepts LISTEN but never delivers
-// notifications, which leaves held calls on the two-second fallback poll.
+// notifications, which leaves held calls on the two-second fallback poll
+// (server.database_listen = false turns the listener off).
 type DecisionListener struct {
 	connected atomic.Bool
 	pid       atomic.Uint32 // backend PID of the listening connection
