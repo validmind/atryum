@@ -14,8 +14,9 @@ import (
 )
 
 type InvocationRepo struct {
-	db *sql.DB
-	sb sq.StatementBuilderType
+	db       *sql.DB
+	sb       sq.StatementBuilderType
+	postgres bool // notify DecisionChannel when a pending call is decided
 }
 type EventRepo struct {
 	db *sql.DB
@@ -60,7 +61,7 @@ func NewServerRepo(db *sql.DB) *ServerRepo { return NewServerRepoWithDialect(db,
 func NewOAuthRepo(db *sql.DB) *OAuthRepo   { return NewOAuthRepoWithDialect(db, DialectSQLite) }
 
 func NewInvocationRepoWithDialect(db *sql.DB, dialect Dialect) *InvocationRepo {
-	return &InvocationRepo{db: db, sb: statementBuilderForDialect(dialect)}
+	return &InvocationRepo{db: db, sb: statementBuilderForDialect(dialect), postgres: dialect == DialectPostgres}
 }
 func NewEventRepoWithDialect(db *sql.DB, dialect Dialect) *EventRepo {
 	return &EventRepo{db: db, sb: statementBuilderForDialect(dialect)}
@@ -109,12 +110,23 @@ func (r *InvocationRepo) UpdateResultFrom(ctx context.Context, inv invocation.In
 	if err != nil {
 		return false, err
 	}
-	res, err := conn(ctx, r.db).ExecContext(ctx, query, args...)
+	c := conn(ctx, r.db)
+	res, err := c.ExecContext(ctx, query, args...)
 	if err != nil {
 		return false, err
 	}
 	n, err := res.RowsAffected()
-	return n == 1, err
+	if err != nil || n != 1 {
+		return false, err
+	}
+	if r.postgres && from == invocation.StatusPendingApproval {
+		// Delivered when the surrounding transaction commits, so a listener
+		// never wakes before the decision is readable.
+		if _, err := c.ExecContext(ctx, `SELECT pg_notify($1, $2)`, DecisionChannel, inv.InvocationID); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
 }
 
 func (r *InvocationRepo) updateResult(inv invocation.Invocation) sq.UpdateBuilder {
