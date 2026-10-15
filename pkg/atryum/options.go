@@ -1,10 +1,12 @@
 package atryum
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
 
 	"github.com/validmind/atryum/internal/invocation"
+	"github.com/validmind/atryum/internal/store"
 	"github.com/validmind/atryum/pkg/authz"
 	"github.com/validmind/atryum/pkg/migrations"
 )
@@ -29,9 +31,34 @@ type (
 	Invocation = invocation.Invocation
 	// Approval is how an invocation was decided (Invocation.Approval).
 	Approval = invocation.Approval
+	// Auth is how the caller authenticated (ToolCall.Auth, Invocation.Auth):
+	// issuer, method ("jwt", "api_key" or "no_auth") and API key id.
+	Auth = invocation.Auth
 	// Status is an invocation status.
 	Status = invocation.Status
 )
+
+// ResolvePending approves or denies a call held for a person. Pass the
+// transaction the embedder already holds to make the decision, its Atryum
+// event and the event hook commit with the embedder's own writes (the
+// embedder then commits, which releases the held call on whichever replica
+// holds it); pass nil to let Atryum commit on its own. A call that is no
+// longer pending (already decided, abandoned by its caller, or finished)
+// returns an error wrapping ErrNotPending.
+//
+// The embedder's transaction must be on Atryum's database and schema, and must
+// be rolled back after any error from ResolvePending; under REPEATABLE READ or
+// SERIALIZABLE, losing a race with another resolve returns ErrNotPending and
+// aborts the transaction. See invocation.Service.ResolvePending.
+type ResolvePending func(ctx context.Context, tx *sql.Tx, invocationID string, approve bool, actor, reason string) error
+
+// ErrNotPending is wrapped by ResolvePending when the call is no longer pending.
+var ErrNotPending = invocation.ErrNotPending
+
+// ErrIdempotencyConflict is returned (HTTP 409 on the API) when an agent
+// reuses an idempotency key for a different request. Keys are scoped per
+// agent, so another agent's key never conflicts.
+var ErrIdempotencyConflict = invocation.ErrIdempotencyConflict
 
 const (
 	VerdictAllow   = invocation.VerdictAllow
@@ -54,6 +81,9 @@ type options struct {
 	eventHook           EventHook
 	databaseURL         string
 	requireAgentAuth    bool
+	stuckReports        bool
+	resolveHooks        []func(ResolvePending)
+	dbPool              DBPool
 }
 
 type extensionMigrations struct {
@@ -185,6 +215,38 @@ func (o options) agentAPIKeysEnabled() bool {
 		return *o.agentAPIKeys
 	}
 	return o.decider == nil
+}
+
+// WithStuckReports makes the MCP proxy offer the atryum_report_stuck tool
+// (arguments task and boundary, up to 1 KB each, and an optional detail up to
+// 4 KB), which an agent calls to report that it cannot finish within its
+// authority. It authorizes nothing: the report is recorded as an invocation of
+// that tool in status "reported", the event hook sees only
+// "invocation.stuck_reported" (no "invocation.created"), and the agent gets a
+// short acknowledgement. The server in the MCP path must be a configured one.
+func WithStuckReports() Option {
+	return func(o *options) { o.stuckReports = true }
+}
+
+// DBPool sizes the PostgreSQL connection pool; see WithDBPool.
+type DBPool = store.DBPool
+
+// WithDBPool sizes the PostgreSQL connection pool. Each set (non-zero) field
+// overrides server.database_pool in the config file, which overrides the
+// defaults: 20 open and 10 idle connections, idle ones closed after 5
+// minutes, every one replaced after 30. SQLite always uses one connection.
+func WithDBPool(p DBPool) Option {
+	return func(o *options) { o.dbPool = p }
+}
+
+// WithResolvePending hands the embedding program a ResolvePending once the
+// invocation service is built, before the server accepts requests.
+func WithResolvePending(receive func(ResolvePending)) Option {
+	return func(o *options) {
+		if receive != nil {
+			o.resolveHooks = append(o.resolveHooks, receive)
+		}
+	}
 }
 
 // WithThirdPartyNotices sets the text printed by the `licenses` command.

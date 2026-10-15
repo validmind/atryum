@@ -1,13 +1,20 @@
 package invocation
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/validmind/atryum/internal/auth"
 	"github.com/validmind/atryum/internal/invocation/policy"
 )
 
@@ -32,6 +39,37 @@ type ToolCall struct {
 	Tool         string          `json:"tool"`
 	Arguments    json.RawMessage `json:"arguments"`
 	SessionID    string          `json:"session_id,omitempty"`
+	// Auth is how the caller proved AgentID.
+	Auth Auth `json:"auth"`
+}
+
+// Auth is how a caller authenticated. Method is "jwt" (an IdP token, Issuer
+// is its iss), "api_key" (an Atryum agent API key, Issuer "atryum:api-key",
+// KeyID its api_keys.id), "managed_agent" (a Claude Managed Agents session
+// the bridge registered, Issuer "anthropic:<workspace>", KeyID the session
+// ID) or "no_auth" (a self-declared agent ID, nothing verified); all fields
+// are empty for an anonymous caller.
+type Auth struct {
+	Issuer string `json:"issuer,omitempty"`
+	Method string `json:"method,omitempty"`
+	KeyID  string `json:"key_id,omitempty"`
+}
+
+// authOf is how the request in ctx authenticated agentID (the identity the
+// invocation is recorded under).
+func authOf(ctx context.Context, agentID string) Auth {
+	id, ok := auth.IdentityFromContext(ctx)
+	if !ok || id.AgentID == "" || id.AgentID != agentID {
+		if agentID != "" {
+			return Auth{Method: auth.IdentityMethodNoAuth} // declared, e.g. a submit body's agent_id
+		}
+		return Auth{}
+	}
+	a := Auth{Issuer: id.Issuer, Method: id.Method, KeyID: id.KeyID}
+	if a.Method == "" {
+		a.Method = auth.IdentityMethodNoAuth // the no-auth ?agent_id= hint
+	}
+	return a
 }
 
 // Decision is a Decider's result. It is recorded under "decision" in the
@@ -70,6 +108,20 @@ func (s *Service) SetTx(run TxRunner) { s.inTx = run }
 // SetDecider hands every decision to d. Rules, plans and the default policy
 // are skipped; a decider error denies the call.
 func (s *Service) SetDecider(d Decider) { s.decider = d }
+
+// DecisionWaker announces decisions recorded by any process.
+type DecisionWaker interface {
+	// Wait returns a channel that receives when the invocation may have been
+	// decided, and a func that stops waiting.
+	Wait(invocationID string) (<-chan struct{}, func())
+	// Connected reports whether announcements are arriving right now.
+	Connected() bool
+}
+
+// SetDecisionWaker makes held calls re-read their row as soon as w announces
+// a decision. Polling stays as the fallback: every two seconds while w is
+// connected, at the usual pace otherwise.
+func (s *Service) SetDecisionWaker(w DecisionWaker) { s.wake = w }
 
 // SetEventHook calls h for every invocation change, inside its transaction.
 func (s *Service) SetEventHook(h EventHook) { s.hook = h }
@@ -173,4 +225,148 @@ func (d Decision) disposition() policy.Decision {
 		return policy.Decision{Disposition: policy.DispositionHuman, Reason: d.Reason}
 	}
 	return policy.Decision{Disposition: policy.DispositionNever, Reason: d.Reason}
+}
+
+// StuckReportTool is the MCP tool an agent calls to report that it cannot
+// finish its task within its authority. See ReportStuck.
+const StuckReportTool = "atryum_report_stuck"
+
+// ErrInvalidStuckReport is wrapped by ReportStuck's errors that the agent can
+// fix: a missing task or boundary, or an unknown server.
+var ErrInvalidStuckReport = errors.New("invalid stuck report")
+
+// stuckReportLimits caps each stuck-report field, in bytes.
+var stuckReportLimits = map[string]int{"task": 1024, "boundary": 1024, "detail": 4096}
+
+// ReportStuck records an agent's stuck report (task, boundary and an optional
+// detail, each capped; other arguments are dropped) as an invocation of
+// StuckReportTool on server, in status reported. It authorizes nothing: no
+// decider, rule or upstream is involved. The row, its event and the event
+// hook commit together, and the hook sees only "invocation.stuck_reported",
+// never "invocation.created", so an embedder does not count it as an action.
+func (s *Service) ReportStuck(ctx context.Context, server string, args map[string]any) (InvocationResponse, error) {
+	report := map[string]string{}
+	for k, limit := range stuckReportLimits {
+		v, _ := args[k].(string)
+		v = strings.TrimSpace(v)
+		if len(v) > limit {
+			v = strings.ToValidUTF8(v[:limit], "") + "…"
+		}
+		if v != "" {
+			report[k] = v
+		}
+	}
+	if report["task"] == "" || report["boundary"] == "" {
+		return InvocationResponse{}, fmt.Errorf("%w: task and boundary are required", ErrInvalidStuckReport)
+	}
+	upstream, err := s.resolver.ResolveContext(ctx, server)
+	if err != nil {
+		return InvocationResponse{}, fmt.Errorf("%w: unknown server %q", ErrInvalidStuckReport, server)
+	}
+	input := mustJSON(report)
+	now := time.Now().UTC()
+	inv := Invocation{
+		InvocationID: "inv_" + uuid.NewString(),
+		Tool:         StuckReportTool,
+		Upstream:     upstream.Name,
+		Status:       StatusReported,
+		Input:        input,
+		SubmittedAt:  now,
+		CompletedAt:  &now,
+	}
+	agentID := auth.AgentIDFromContext(ctx)
+	if agentID != "" {
+		inv.AgentID = &agentID
+	}
+	inv.Auth = authOf(ctx, agentID)
+	inv.Response = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": "Stuck report recorded (" + inv.InvocationID + "). Stop this task; a person will follow up."}}})
+	evt := Event{
+		InvocationID: inv.InvocationID,
+		EventType:    "invocation.stuck_reported",
+		Payload:      mustJSON(map[string]any{"upstream": upstream.Name, "arguments": json.RawMessage(input)}),
+		CreatedAt:    now,
+	}
+	err = s.runTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
+		if err := s.invocations.Create(ctx, inv); err != nil {
+			return err
+		}
+		if err := s.events.Create(ctx, evt); err != nil {
+			return err
+		}
+		if s.hook == nil {
+			return nil
+		}
+		return s.hook(ctx, tx, Change{Type: evt.EventType, Invocation: inv, Payload: evt.Payload, At: now})
+	})
+	if err != nil {
+		return InvocationResponse{}, err
+	}
+	return s.toResponse(inv), nil
+}
+
+// ErrIdempotencyConflict means the caller reused an idempotency key for a
+// different request (another tool, server or input, or the other submit
+// path). The earlier invocation is not returned or described.
+var ErrIdempotencyConflict = errors.New("idempotency key was already used for a different request")
+
+// priorRequest returns the invocation an earlier request from agentID created
+// with key, when the request was the same: same upstream (empty on the submit
+// path), tool and input (compared as JSON values). A different request
+// returns ErrIdempotencyConflict; no key or no earlier request returns nil.
+//
+// Keys are scoped to agentID, the identity the invocation is recorded under:
+// the verified agent when auth is on (always with WithRequireAgentAuth), else
+// on the submit path the agent_id the caller declares, else "" (anonymous
+// callers share one scope). Without verified identity a key is only as
+// private as the agent ID a caller claims, which is how standalone Atryum
+// without auth trusts its callers anyway.
+func (s *Service) priorRequest(ctx context.Context, agentID string, key *string, upstream, tool string, input []byte) (*Invocation, error) {
+	if key == nil || *key == "" {
+		return nil, nil
+	}
+	prior, err := s.invocations.GetByIdempotencyKey(ctx, agentID, *key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if prior.Upstream != upstream || prior.Tool != tool || !sameJSON(prior.Input, input) {
+		return nil, ErrIdempotencyConflict
+	}
+	return &prior, nil
+}
+
+// lostCreateRace handles a failed insert: when a concurrent request with the
+// same key won, it answers like priorRequest; otherwise it returns createErr.
+func (s *Service) lostCreateRace(ctx context.Context, agentID string, key *string, upstream, tool string, input []byte, createErr error) (InvocationResponse, error) {
+	prior, err := s.priorRequest(ctx, agentID, key, upstream, tool, input)
+	if err != nil || prior != nil {
+		return prior.response(s), err
+	}
+	return InvocationResponse{}, createErr
+}
+
+func (inv *Invocation) response(s *Service) InvocationResponse {
+	if inv == nil {
+		return InvocationResponse{}
+	}
+	return s.toResponse(*inv)
+}
+
+// sameJSON compares two JSON documents as values, ignoring key order and
+// whitespace. Numbers compare by their exact text (json.Number), so integers
+// beyond float64 precision stay distinct; equal numbers spelled differently
+// (100 and 1e2) count as different, which errs toward a conflict.
+func sameJSON(a, b []byte) bool {
+	x, errA := decodeExact(a)
+	y, errB := decodeExact(b)
+	return errA == nil && errB == nil && reflect.DeepEqual(x, y)
+}
+
+func decodeExact(b []byte) (any, error) {
+	d := json.NewDecoder(bytes.NewReader(b))
+	d.UseNumber()
+	var v any
+	return v, d.Decode(&v)
 }

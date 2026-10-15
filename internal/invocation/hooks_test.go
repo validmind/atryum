@@ -7,9 +7,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/validmind/atryum/internal/auth"
 	"github.com/validmind/atryum/internal/config"
@@ -419,5 +421,181 @@ func TestSubmitUsesTheVerifiedIdentity(t *testing.T) {
 	resp, err := svc.Submit(ctx, invocation.ExternalSubmitRequest{Source: "hook", Tool: "Bash", AgentID: "agent-b", Input: map[string]any{}})
 	if err != nil || resp.AgentID == nil || *resp.AgentID != "agent-a" {
 		t.Fatalf("agent = %v (%v), want agent-a", resp.AgentID, err)
+	}
+}
+
+// A stuck report is recorded through the hook and authorizes nothing: the
+// decider is never asked, no upstream is called, and the hook sees one
+// distinct kind, never invocation.created.
+func TestReportStuck(t *testing.T) {
+	upstream, calls := fakeMCP(t)
+	db := newSQLiteTestDB(t)
+	svc := newHookedService(t, db, upstream.URL)
+	svc.SetDecider(func(context.Context, invocation.ToolCall) (invocation.Decision, error) {
+		t.Error("decider was asked about a stuck report")
+		return invocation.Decision{Verdict: invocation.VerdictDeny}, nil
+	})
+	var types []string
+	var seen invocation.Change
+	svc.SetEventHook(func(_ context.Context, _ *sql.Tx, c invocation.Change) error {
+		types = append(types, c.Type)
+		seen = c
+		return nil
+	})
+
+	for _, bad := range []struct {
+		server string
+		args   map[string]any
+	}{
+		{"bank", map[string]any{"task": "pay INV-1"}},
+		{"bank", map[string]any{"task": " ", "boundary": "x"}},
+		{"nope", map[string]any{"task": "pay INV-1", "boundary": "P-02"}},
+	} {
+		if _, err := svc.ReportStuck(context.Background(), bad.server, bad.args); !errors.Is(err, invocation.ErrInvalidStuckReport) {
+			t.Fatalf("ReportStuck(%s, %v) = %v, want ErrInvalidStuckReport", bad.server, bad.args, err)
+		}
+	}
+	if len(types) != 0 {
+		t.Fatalf("rejected reports reached the hook: %v", types)
+	}
+
+	resp, err := svc.ReportStuck(context.Background(), "bank", map[string]any{"task": "pay INV-1", "boundary": "P-02 needs a person", "detail": strings.Repeat("é", 3000), "extra": "dropped"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(types, ","); got != "invocation.stuck_reported" {
+		t.Fatalf("hook saw %s", got)
+	}
+	if seen.Invocation.Tool != invocation.StuckReportTool || seen.Invocation.Upstream != "bank" || seen.Invocation.Status != invocation.StatusReported {
+		t.Fatalf("hook change %+v", seen.Invocation)
+	}
+	var stored struct{ Arguments map[string]string }
+	if err := json.Unmarshal(seen.Payload, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if d := stored.Arguments["detail"]; len(d) > 4096+len("…") || !strings.HasSuffix(d, "…") || !utf8.ValidString(d) {
+		t.Fatalf("detail not capped cleanly: %d bytes", len(d))
+	}
+	if _, ok := stored.Arguments["extra"]; ok || stored.Arguments["boundary"] != "P-02 needs a person" {
+		t.Fatalf("stored arguments %v", stored.Arguments)
+	}
+	if resp.Status != invocation.StatusReported || !strings.Contains(string(resp.Result), "Stuck report recorded") || calls.Load() != 0 {
+		t.Fatalf("status=%s result=%s calls=%d", resp.Status, resp.Result, calls.Load())
+	}
+	if got, err := svc.Get(context.Background(), resp.InvocationID); err != nil || got.Status != invocation.StatusReported || !strings.Contains(string(got.Result), "Stuck report recorded") {
+		t.Fatalf("stored row %+v err=%v", got, err)
+	}
+}
+
+// ResolvePending joins the embedder's transaction: rolled back, the call stays
+// held; committed, it is released; resolved again, it reports ErrNotPending.
+func TestResolvePendingInEmbedderTransaction(t *testing.T) {
+	upstream, calls := fakeMCP(t)
+	db := newSQLiteTestDB(t)
+	svc := newHookedService(t, db, upstream.URL)
+	svc.SetDecider(verdictDecider(invocation.VerdictPending))
+	invocation.SetApprovalPoll(svc, 10*time.Millisecond)
+	if _, err := db.Exec(`CREATE TABLE review_log (decision TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	svc.SetEventHook(func(ctx context.Context, tx *sql.Tx, c invocation.Change) error {
+		if c.Type == "invocation.approved" {
+			_, err := tx.ExecContext(ctx, `INSERT INTO review_log (decision) VALUES ('approved')`)
+			return err
+		}
+		return nil
+	})
+
+	done := make(chan invocation.InvocationResponse, 1)
+	go func() {
+		resp, err := svc.Invoke(context.Background(), invocation.CreateInvocationRequest{Server: "bank", Tool: "pay", Input: map[string]any{}})
+		if err != nil {
+			t.Error(err)
+		}
+		done <- resp
+	}()
+	var id string
+	for id == "" {
+		time.Sleep(10 * time.Millisecond)
+		list, err := svc.List(context.Background(), invocation.InvocationListFilter{Limit: 1})
+		if err == nil && len(list.Items) == 1 && list.Items[0].Status == invocation.StatusPendingApproval {
+			id = list.Items[0].InvocationID
+		}
+	}
+
+	resolve := func(commit bool) {
+		tx, err := db.BeginTx(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.ResolvePending(store.WithTx(context.Background(), tx), id, true, "manager@bank", "ok"); err != nil {
+			t.Fatal(err)
+		}
+		if commit {
+			err = tx.Commit()
+		} else {
+			err = tx.Rollback()
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	resolve(false)
+	time.Sleep(50 * time.Millisecond)
+	if got, _ := svc.Get(context.Background(), id); got.Status != invocation.StatusPendingApproval {
+		t.Fatalf("after rollback status=%s, want pending_approval", got.Status)
+	}
+	resolve(true)
+	if resp := <-done; resp.Status != invocation.StatusSucceeded || calls.Load() != 1 {
+		t.Fatalf("status=%s calls=%d, want succeeded and 1", resp.Status, calls.Load())
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM review_log`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("review_log rows=%d err=%v, want 1 (the rolled-back write must not stick)", n, err)
+	}
+	if err := svc.ResolvePending(context.Background(), id, false, "x", "late"); !errors.Is(err, invocation.ErrNotPending) {
+		t.Fatalf("second resolve: %v, want ErrNotPending", err)
+	}
+}
+
+// fakeWaker never announces anything; it only reports its connection state.
+type fakeWaker struct{ connected bool }
+
+func (fakeWaker) Wait(string) (<-chan struct{}, func()) { return nil, func() {} }
+func (w fakeWaker) Connected() bool                     { return w.connected }
+
+// A held call polls at the slow pace only while its waker is connected.
+func TestHeldCallPollPaceFollowsWaker(t *testing.T) {
+	for _, tc := range []struct {
+		connected bool
+		released  bool
+	}{{false, true}, {true, false}} {
+		upstream, _ := fakeMCP(t)
+		db := newSQLiteTestDB(t)
+		holder := newHookedService(t, db, upstream.URL)
+		holder.SetDecider(verdictDecider(invocation.VerdictPending))
+		holder.SetDecisionWaker(fakeWaker{tc.connected})
+		invocation.SetPolls(holder, 20*time.Millisecond, time.Hour)
+		other := newHookedService(t, db, upstream.URL)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		go func() {
+			for {
+				time.Sleep(20 * time.Millisecond)
+				list, err := other.List(context.Background(), invocation.InvocationListFilter{Limit: 1})
+				if err == nil && len(list.Items) == 1 && list.Items[0].Status == invocation.StatusPendingApproval {
+					_ = other.Approve(context.Background(), list.Items[0].InvocationID, "x")
+					return
+				}
+			}
+		}()
+		resp, err := holder.Invoke(ctx, invocation.CreateInvocationRequest{Server: "bank", Tool: "pay", Input: map[string]any{}})
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if released := resp.Status == invocation.StatusSucceeded; released != tc.released {
+			t.Fatalf("connected=%v: status=%s, want released=%v", tc.connected, resp.Status, tc.released)
+		}
 	}
 }
