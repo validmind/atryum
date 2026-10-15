@@ -90,3 +90,31 @@ func TestPostgresOptional_InitAndInvocationCRUD(t *testing.T) {
 		t.Fatalf("status after rollback = %s, want approved", got.Status)
 	}
 }
+
+func TestPostgresOptional_RefusesRenumberedMigrationNames(t *testing.T) {
+	if os.Getenv("ATRYUM_POSTGRES_TESTS") != "1" {
+		t.Skip("set ATRYUM_POSTGRES_TESTS=1 to run against local PostgreSQL")
+	}
+	dsn := os.Getenv("ATRYUM_POSTGRES_TEST_DSN")
+	if dsn == "" {
+		dsn = localPostgresTestDSN
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+	schema := fmt.Sprintf("atryum_test_%d", time.Now().UnixNano())
+	if _, err := db.Exec(`CREATE SCHEMA ` + schema); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	defer db.Exec(`DROP SCHEMA IF EXISTS ` + schema + ` CASCADE`)
+	if _, err := db.Exec(`SET search_path TO ` + schema); err != nil {
+		t.Fatalf("set search_path: %v", err)
+	}
+	if err := InitDBWithDialect(db, DialectPostgres); err != nil {
+		t.Fatalf("InitDBWithDialect: %v", err)
+	}
+	checkRefusesOldPin(t, db, DialectPostgres)
+}

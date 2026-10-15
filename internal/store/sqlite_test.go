@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -1137,4 +1138,43 @@ func sqliteTableHasColumn(t *testing.T, db *sql.DB, table, column string) bool {
 		t.Fatalf("rows.Err table_info(%s): %v", table, err)
 	}
 	return false
+}
+
+// stampAsOldPin rewrites schema_migrations the way AA's old Atryum pin left
+// it: version 30 recorded as the idempotency migration, nothing after it.
+func stampAsOldPin(t *testing.T, db *sql.DB) {
+	t.Helper()
+	for _, q := range []string{
+		`DELETE FROM schema_migrations WHERE version >= 30`,
+		`INSERT INTO schema_migrations (version, name) VALUES (30, '030_idempotency_per_agent')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+}
+
+// checkRefusesOldPin: a database stamped by a build with differently
+// numbered migrations is refused with an error that says to recreate it,
+// and nothing more is migrated.
+func checkRefusesOldPin(t *testing.T, db *sql.DB, dialect Dialect) {
+	t.Helper()
+	stampAsOldPin(t, db)
+	err := InitDBWithDialect(db, dialect)
+	if err == nil || !strings.Contains(err.Error(), `records migration 30 as "030_idempotency_per_agent"`) || !strings.Contains(err.Error(), "Recreate the database") {
+		t.Fatalf("InitDB on an old-pin database: %v, want a recreate error naming 030_idempotency_per_agent", err)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version > 30`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("migrations recorded after the refusal: %d (%v)", n, err)
+	}
+}
+
+func TestInitDBRefusesRenumberedMigrationNames(t *testing.T) {
+	db, cleanup := openTestDB(t)
+	defer cleanup()
+	if err := InitDB(db); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	checkRefusesOldPin(t, db, DialectSQLite)
 }

@@ -145,6 +145,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The migration runner checks each recorded migration's name as well as its
+  number, and refuses to start on a database whose `schema_migrations`
+  records a version under another name (one migrated by a build whose
+  migrations were numbered differently, such as a development branch
+  rebased onto new migrations), with an error that says to recreate it.
+  Every released version kept its name, so released databases are
+  unaffected.
 - **Security:** idempotency keys are now unique per agent (migration 032) and
   bound to the request. Before, a key returned whatever invocation held it,
   so another agent sending the same key received that invocation's status,
