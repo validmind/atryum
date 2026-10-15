@@ -3,15 +3,19 @@
 //
 // Within a level the first matching rule decides; across levels the stricter
 // result wins (deny, then human, then notify, then allow); a call no rule
-// matches goes to a person.
+// matches goes to a person. A level whose matching rules are all judge rules
+// that gave no verdict also goes to a person: it matched, so it never defers
+// to the other level.
 package policy
 
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Action is what a rule does with a matching call: "allow", "notify" (allow,
@@ -33,9 +37,15 @@ const (
 //   - eq: the field's text equals Value's text
 //   - prefix, contains: the field's text starts with or contains Value's text
 //   - gt, lt: the field and Value compared as numbers
-//   - in: Value is a list and the field's text equals one item's text
+//   - in: Value is a list (any slice or array) and the field's text equals one
+//     item's text
 //
-// A missing field satisfies no condition.
+// Text is a string as is, a number in plain decimal without exponent or
+// trailing zeros (1000000, 2.5, 0.00001), a boolean as "true" or "false", and
+// anything else as fmt prints it. As numbers, Go integer and float types count,
+// and so do strings (and json.Number) holding a decimal number such as
+// "18500" or "1e6"; booleans and other strings never compare. A missing or
+// null field satisfies no condition.
 type Cond struct {
 	Field string `json:"field"`
 	Op    string `json:"op"`
@@ -65,12 +75,13 @@ type Call struct {
 
 // Judge is called for a matching "judge" rule. It returns allow, deny or
 // human, or "" for an unknown verdict, which moves on to the level's next
-// matching rule. An error sends the call to a person.
+// matching rule; if no later rule in that level matches, the level's result
+// is human. An error sends the call to a person.
 type Judge func(ctx context.Context, r Rule) (Action, error)
 
 // Result is the decision. Rule and Level ("firm" or "agent") name the rule
-// that decided, and are empty when no rule matched. Basis is a short reason
-// naming that rule.
+// that decided, and are empty when no rule matched; Rule points into the
+// slice passed to Evaluate. Basis is a short reason naming that rule.
 type Result struct {
 	Action Action
 	Rule   *Rule
@@ -101,8 +112,10 @@ func Evaluate(ctx context.Context, firm, agent []Rule, c Call, judge Judge) Resu
 	return best
 }
 
-// firstMatch returns the first rule in rules that matches c and decides it.
+// firstMatch returns the first rule in rules that matches c and decides it,
+// or human on the last judge rule that matched if every one deferred.
 func firstMatch(ctx context.Context, rules []Rule, c Call, judge Judge) (Result, bool) {
+	var deferred *Rule
 	for i := range rules {
 		r := &rules[i]
 		if !matches(r, c) {
@@ -132,7 +145,10 @@ func firstMatch(ctx context.Context, rules []Rule, c Call, judge Judge) (Result,
 		case ActionAllow, ActionDeny, ActionHuman:
 			return Result{Action: v, Rule: r, Basis: fmt.Sprintf("%s → judge said %s", basis, v)}, true
 		}
-		// Unknown verdict: keep scanning this level.
+		deferred = r // unknown verdict: keep scanning this level
+	}
+	if deferred != nil {
+		return Result{Action: ActionHuman, Rule: deferred, Basis: strings.TrimSpace(deferred.ID+" "+deferred.Note) + " → judge gave no verdict and no later rule matched, a person decides"}, true
 	}
 	return Result{}, false
 }
@@ -149,14 +165,22 @@ func matches(r *Rule, c Call) bool {
 	return true
 }
 
+// globs caches compiled patterns by their text.
+// ponytail: never evicted; rule sets are small and change rarely. Use an LRU
+// if patterns ever come from unbounded input.
+var globs sync.Map
+
 // glob reports whether s matches one of the "|"-separated patterns in g.
-// ponytail: compiles per call; cache compiled rules if evaluation shows up in profiles.
 func glob(g, s string) bool {
-	alts := strings.Split(g, "|")
-	for i, p := range alts {
-		alts[i] = strings.ReplaceAll(regexp.QuoteMeta(p), `\*`, `.*`)
+	re, ok := globs.Load(g)
+	if !ok {
+		alts := strings.Split(g, "|")
+		for i, p := range alts {
+			alts[i] = strings.ReplaceAll(regexp.QuoteMeta(p), `\*`, `.*`)
+		}
+		re, _ = globs.LoadOrStore(g, regexp.MustCompile(`^(?s:`+strings.Join(alts, "|")+`)$`))
 	}
-	return regexp.MustCompile(`^(?s:` + strings.Join(alts, "|") + `)$`).MatchString(s)
+	return re.(*regexp.Regexp).MatchString(s)
 }
 
 func condOK(c Cond, call Call) bool {
@@ -182,14 +206,12 @@ func condOK(c Cond, call Call) bool {
 		}
 		return a < b
 	case "in":
-		items, _ := c.Value.([]any)
-		if ss, ok := c.Value.([]string); ok {
-			for _, s := range ss {
-				items = append(items, s)
-			}
+		list := reflect.ValueOf(c.Value)
+		if list.Kind() != reflect.Slice && list.Kind() != reflect.Array {
+			return false
 		}
-		for _, it := range items {
-			if text(v) == text(it) {
+		for i := 0; i < list.Len(); i++ {
+			if text(v) == text(list.Index(i).Interface()) {
 				return true
 			}
 		}
@@ -225,27 +247,29 @@ func lookup(field string, c Call) (any, bool) {
 }
 
 func text(v any) string {
-	if s, ok := v.(string); ok {
-		return s
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.String:
+		return rv.String()
+	case reflect.Float32:
+		return strconv.FormatFloat(rv.Float(), 'f', -1, 32)
+	case reflect.Float64:
+		return strconv.FormatFloat(rv.Float(), 'f', -1, 64)
 	}
 	return fmt.Sprint(v)
 }
 
 func number(v any) (float64, bool) {
-	switch n := v.(type) {
-	case float64:
-		return n, true
-	case float32:
-		return float64(n), true
-	case int:
-		return float64(n), true
-	case int64:
-		return float64(n), true
-	case interface{ Float64() (float64, error) }: // json.Number
-		f, err := n.Float64()
-		return f, err == nil
-	case string:
-		f, err := strconv.ParseFloat(strings.TrimSpace(n), 64)
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return float64(rv.Int()), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return float64(rv.Uint()), true
+	case reflect.Float32, reflect.Float64:
+		return rv.Float(), true
+	case reflect.String: // includes json.Number
+		f, err := strconv.ParseFloat(strings.TrimSpace(rv.String()), 64)
 		return f, err == nil
 	}
 	return 0, false
