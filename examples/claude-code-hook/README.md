@@ -68,6 +68,7 @@ Restart Claude Code after changing settings.
 | `ATRYUM_URL`                      | `http://localhost:8080`      | base URL of the Atryum server                                                                                              |
 | `ATRYUM_SOURCE`                   | `claude-code` in the example | source label in Atryum                                                                                                     |
 | `ATRYUM_POLL_MS`                  | `2000`                       | approval polling interval                                                                                                  |
+| `ATRYUM_HOLD_WAIT_MS`             | `540000`                     | how long a held call waits for a decision before it is denied (hosts kill a hook at 600 s and let the call through)        |
 | `ATRYUM_AGENT_ID`                 | _(empty)_                    | self-declared agent identifier; matched against Agent Record `agent_ids`                                                   |
 | `ATRYUM_ACCESS_TOKEN`             | _(empty)_                    | optional OAuth bearer token for Atryum agent runtime APIs                                                                  |
 | `ATRYUM_TOKEN_COMMAND`            | _(empty)_                    | optional command run to mint each new token; prints a raw token with no whitespace or OAuth token JSON with `access_token` |

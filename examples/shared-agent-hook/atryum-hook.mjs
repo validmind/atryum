@@ -129,6 +129,11 @@ const TOKEN_COMMAND_TIMEOUT_MS = envMs(
   "ATRYUM_TOKEN_COMMAND_TIMEOUT_MS",
   10000,
 );
+// How long a PreToolUse waits for a held call, from the hook's start, before
+// denying it. Claude Code and Codex kill a hook after 600 s by default and
+// then let the call through, so this must end first.
+const HOLD_WAIT_MS = envMs("ATRYUM_HOLD_WAIT_MS", 540000);
+const STARTED_AT = Date.now();
 const PLAN_SUPPORT_CACHE_TTL_MS = 30000;
 const TOKEN_CACHE_FILE = TOKEN_COMMAND
   ? path.join(STATE_DIR, "token-cache.json")
@@ -689,6 +694,11 @@ async function poll(invocationId) {
       inv.status !== "executing"
     ) {
       return inv;
+    }
+    if (Date.now() + POLL_INTERVAL - STARTED_AT > HOLD_WAIT_MS) {
+      throw new Error(
+        `still pending approval after ${Math.round(HOLD_WAIT_MS / 1000)}s, so it was not run (invocation ${invocationId})`,
+      );
     }
     await sleep(POLL_INTERVAL);
   }
