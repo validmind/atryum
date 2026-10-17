@@ -146,7 +146,7 @@ const Header: React.FC<TextProps> = ({ children, ...props }) => (
     fontSize="sm"
     fontWeight="semibold"
     textTransform="uppercase"
-    color="neutral.600"
+    color="text.subtle"
     letterSpacing="wide"
     {...props}>
     {children}
@@ -479,6 +479,15 @@ const Invocations: React.FC = () => {
   const handleCloseDetail = () => {
     setDetailClosed(true);
     setSelectedId(null);
+    // Drop the deep-link hash so a refresh doesn't reopen the invocation and
+    // clicking the same notification again still fires `hashchange`.
+    if (window.location.hash) {
+      window.history.replaceState(
+        null,
+        "",
+        window.location.pathname + window.location.search,
+      );
+    }
   };
 
   const selectInvocation = (inv: Invocation) => {
@@ -498,6 +507,12 @@ const Invocations: React.FC = () => {
   );
   const hasPrev = selectedIndex > 0;
   const hasNext = selectedIndex >= 0 && selectedIndex < items.length - 1;
+
+  // Fall back to the list row while the detail query loads so the modal header
+  // stays mounted. Unmounting it would drop keyboard focus from the prev/next
+  // button that was just clicked, breaking repeated stepping through the list.
+  const headerInvocation =
+    detail ?? (selectedIndex >= 0 ? items[selectedIndex] : undefined);
 
   const handleNavigate = (direction: -1 | 1) => {
     if (selectedIndex === -1) return;
@@ -991,52 +1006,51 @@ const Invocations: React.FC = () => {
         isCentered>
         <ModalOverlay />
         <ModalContent maxH="85vh" data-testid="invocation-detail-modal">
-          {detail && (
-            <ModalHeader pr={12}>
-              <HStack justify="space-between" gap={3} align="center">
-                <Text fontFamily="mono" noOfLines={1} flex={1} minW={0}>
-                  {detail.server_name || "none"} · {detail.tool_name || "—"}
-                </Text>
-                <HStack gap={1} mr={4}>
-                  {selectedIndex >= 0 && (
-                    <Text
-                      fontSize="sm"
-                      fontWeight="normal"
-                      fontFamily="body"
-                      color="text.subtle"
-                      whiteSpace="nowrap"
-                      data-testid="invocation-detail-position">
-                      {selectedIndex + 1} of {items.length}
-                    </Text>
-                  )}
-                  <ButtonGroup>
-                    <IconButton
-                      size="sm"
-                      variant="ghost"
-                      aria-label="Previous invocation"
-                      title="Previous invocation"
-                      icon={<Icon as={ChevronUpIcon} boxSize={5} />}
-                      isDisabled={!hasPrev}
-                      onClick={() => handleNavigate(-1)}
-                      data-testid="invocation-detail-prev-button"
-                    />
-                    <IconButton
-                      size="sm"
-                      variant="ghost"
-                      aria-label="Next invocation"
-                      title="Next invocation"
-                      icon={<Icon as={ChevronDownIcon} boxSize={5} />}
-                      isDisabled={!hasNext}
-                      onClick={() => handleNavigate(1)}
-                      data-testid="invocation-detail-next-button"
-                    />
-                  </ButtonGroup>
-                </HStack>
+          <ModalHeader pr={12}>
+            <HStack justify="space-between" gap={3} align="center">
+              <Text fontFamily="mono" noOfLines={1} flex={1} minW={0}>
+                {headerInvocation
+                  ? `${headerInvocation.server_name || "none"} · ${headerInvocation.tool_name || "—"}`
+                  : ""}
+              </Text>
+              <HStack gap={1} mr={4}>
+                {selectedIndex >= 0 && (
+                  <Text
+                    fontSize="sm"
+                    fontWeight="normal"
+                    fontFamily="body"
+                    color="text.subtle"
+                    whiteSpace="nowrap"
+                    data-testid="invocation-detail-position">
+                    {selectedIndex + 1} of {items.length}
+                  </Text>
+                )}
+                <ButtonGroup>
+                  <IconButton
+                    size="sm"
+                    variant="ghost"
+                    aria-label="Previous invocation"
+                    title="Previous invocation"
+                    icon={<Icon as={ChevronUpIcon} boxSize={5} />}
+                    isDisabled={!hasPrev}
+                    onClick={() => handleNavigate(-1)}
+                    data-testid="invocation-detail-prev-button"
+                  />
+                  <IconButton
+                    size="sm"
+                    variant="ghost"
+                    aria-label="Next invocation"
+                    title="Next invocation"
+                    icon={<Icon as={ChevronDownIcon} boxSize={5} />}
+                    isDisabled={!hasNext}
+                    onClick={() => handleNavigate(1)}
+                    data-testid="invocation-detail-next-button"
+                  />
+                </ButtonGroup>
               </HStack>
-            </ModalHeader>
-          )}
+            </HStack>
+          </ModalHeader>
           <ModalCloseButton
-            onClick={handleCloseDetail}
             data-testid="invocation-detail-close-button"
             mt={2}
           />
