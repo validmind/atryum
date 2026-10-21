@@ -6,6 +6,11 @@
 // matches goes to a person. A level whose matching rules are all judge rules
 // that gave no verdict also goes to a person: it matched, so it never defers
 // to the other level.
+//
+// Conditions compare text literally, so Evaluate also decides a cleaned-up
+// copy of every call and keeps the stricter answer: a deny rule on
+// "/etc/" then also holds against "//etc/passwd" and "/ETC/passwd". See
+// normalize.go and Evaluate.
 package policy
 
 import (
@@ -47,6 +52,11 @@ const (
 // and so do strings (and json.Number) holding a decimal number such as
 // "18500" or "1e6"; booleans and other strings never compare. A missing or
 // null field satisfies no condition.
+//
+// Text conditions (eq, prefix, contains, in) are written for the text as the
+// agent sent it. Evaluate also tries them against cleaned-up text: lower
+// case, single spaces, decoded %XX escapes, no invisible characters, tidied
+// paths. A rule's values and field names are cleaned the same way.
 type Cond struct {
 	Field string `json:"field"`
 	Op    string `json:"op"`
@@ -94,13 +104,64 @@ var strictness = map[Action]int{ActionAllow: 1, ActionNotify: 2, ActionHuman: 3,
 
 // Evaluate decides c against the firm and agent rules. A nil judge behaves as
 // one that always errors.
+//
+// It decides the call twice (see normalize.go): as sent, and with the
+// arguments and the rules' values cleaned up (case, spaces, %XX escapes,
+// invisible characters, path detours). The cleaned answer replaces the first
+// only when it is stricter and comes from a different rule.
+//
+// The judge is asked at most once per rule. The cleaned pass reuses the real
+// verdict for every judge rule the first pass asked, and sends a judge rule
+// that only the cleaned call reaches to a person.
 func Evaluate(ctx context.Context, firm, agent []Rule, c Call, judge Judge) Result {
+	type asked struct {
+		rule   Rule
+		action Action
+		err    error
+	}
+	var verdicts []asked
+	recording := judge
+	if judge != nil {
+		recording = func(ctx context.Context, r Rule) (Action, error) {
+			a, err := judge(ctx, r)
+			verdicts = append(verdicts, asked{r, a, err})
+			return a, err
+		}
+	}
+	first := evaluate(ctx, firm, agent, c, recording, false)
+
+	replay := func(_ context.Context, r Rule) (Action, error) {
+		for _, v := range verdicts {
+			if reflect.DeepEqual(v.rule, r) {
+				return v.action, v.err
+			}
+		}
+		return ActionHuman, nil // reached only after cleaning: a person decides
+	}
+	cleaned := c
+	cleaned.Args = canonicalArgs(c.Args)
+	second := evaluate(ctx, firm, agent, cleaned, replay, true)
+	if second.Rule != nil && !sameRule(first, second) && strictness[second.Action] > strictness[first.Action] {
+		second.Basis += " (matched after cleaning up the arguments' case, spaces, escapes and path detours)"
+		return second
+	}
+	return first
+}
+
+// sameRule reports whether two results come from the same rule of the same level.
+func sameRule(a, b Result) bool {
+	return a.Rule != nil && b.Rule != nil && a.Level == b.Level && a.Rule.ID == b.Rule.ID
+}
+
+// evaluate is one pass over both levels. With clean set, conditions compare
+// cleaned text: the caller has already cleaned c's arguments.
+func evaluate(ctx context.Context, firm, agent []Rule, c Call, judge Judge, clean bool) Result {
 	var best Result
 	for _, lv := range []struct {
 		name  string
 		rules []Rule
 	}{{"firm", firm}, {"agent", agent}} {
-		r, ok := firstMatch(ctx, lv.rules, c, judge)
+		r, ok := firstMatch(ctx, lv.rules, c, judge, clean)
 		// On a tie the firm result stands.
 		if ok && strictness[r.Action] > strictness[best.Action] {
 			r.Level = lv.name
@@ -115,11 +176,11 @@ func Evaluate(ctx context.Context, firm, agent []Rule, c Call, judge Judge) Resu
 
 // firstMatch returns the first rule in rules that matches c and decides it,
 // or human on the last judge rule that matched if every one deferred.
-func firstMatch(ctx context.Context, rules []Rule, c Call, judge Judge) (Result, bool) {
+func firstMatch(ctx context.Context, rules []Rule, c Call, judge Judge, clean bool) (Result, bool) {
 	var deferred *Rule
 	for i := range rules {
 		r := &rules[i]
-		if !matches(r, c) {
+		if !matches(r, c, clean) {
 			continue
 		}
 		basis := strings.TrimSpace(r.ID + " " + r.Note)
@@ -154,12 +215,12 @@ func firstMatch(ctx context.Context, rules []Rule, c Call, judge Judge) (Result,
 	return Result{}, false
 }
 
-func matches(r *Rule, c Call) bool {
+func matches(r *Rule, c Call, clean bool) bool {
 	if !glob(r.Tool, c.Tool) || (r.Server != "" && !glob(r.Server, c.Server)) {
 		return false
 	}
 	for _, cond := range r.When {
-		if !condOK(cond, c) {
+		if !condMatches(cond, c, clean) {
 			return false
 		}
 	}
@@ -195,18 +256,29 @@ func glob(g, s string) bool {
 	return re.(*regexp.Regexp).MatchString(s)
 }
 
-func condOK(c Cond, call Call) bool {
-	v, ok := lookup(c.Field, call)
+func condOK(c Cond, call Call) bool { return condMatches(c, call, false) }
+
+// condMatches reports whether one condition holds. With clean set, the rule's
+// field name and values are cleaned the same way as the call's arguments
+// (which the caller cleaned), so "args.Path prefix /ETC/" lines up with a
+// cleaned "/etc/passwd".
+func condMatches(c Cond, call Call, clean bool) bool {
+	field, want := c.Field, text
+	if clean {
+		field = canonicalField(field)
+		want = func(v any) string { return canonicalText(text(v)) }
+	}
+	v, ok := lookup(field, call)
 	if !ok {
 		return false
 	}
 	switch c.Op {
 	case "eq":
-		return text(v) == text(c.Value)
+		return text(v) == want(c.Value)
 	case "prefix":
-		return strings.HasPrefix(text(v), text(c.Value))
+		return strings.HasPrefix(text(v), want(c.Value))
 	case "contains":
-		return strings.Contains(text(v), text(c.Value))
+		return strings.Contains(text(v), want(c.Value))
 	case "gt", "lt":
 		a, okA := number(v)
 		b, okB := number(c.Value)
@@ -223,7 +295,7 @@ func condOK(c Cond, call Call) bool {
 			return false
 		}
 		for i := 0; i < list.Len(); i++ {
-			if text(v) == text(list.Index(i).Interface()) {
+			if text(v) == want(list.Index(i).Interface()) {
 				return true
 			}
 		}

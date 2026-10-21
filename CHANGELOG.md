@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `policy.Evaluate` now also decides a cleaned-up copy of each call and keeps
+  the stricter answer, so a deny or hold rule on an argument is no longer
+  evaded by another spelling of the same value: `//etc/passwd`,
+  `/tmp/../etc/passwd`, `/ETC/passwd`, `%2Fetc%2Fpasswd`, extra spaces,
+  zero-width characters or full-width letters. Cleaning can only make a
+  decision stricter, never more permissive; the call that runs is the one the
+  agent sent, and a judge is asked at most once per rule.
+
 ### Added
 
 - Per-user access views in the Users UI: clicking a user (or the new
