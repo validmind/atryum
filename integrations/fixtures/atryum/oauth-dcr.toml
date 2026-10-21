@@ -21,4 +21,8 @@ agent_id_claim = "client_id"
 [auth_debug]
 skip_verify = false
 
+# Integration targets include stdio-mode servers, which need an explicit opt-in.
+[mcp]
+allow_stdio = true
+
 __UPSTREAMS_BLOCK__

@@ -144,6 +144,17 @@ secret = ""
 [auth_debug]
 skip_verify = false
 
+# MCP transport policy. stdio-mode upstreams make Atryum spawn local
+# subprocesses (npx, python, arbitrary commands) and are DISABLED by default.
+# Opting in requires this config file — there is no env or API override.
+# Without allow_stdio = true, enabled stdio upstreams below are rejected at
+# startup, stdio servers cannot be created via the admin UI/API, and existing
+# stdio server rows fail with a clear error when invoked.
+# Note: the published validmind/atryum image is minimal (no node/python); use
+# the validmind/atryum:<version>-node image to host npx-based stdio servers.
+[mcp]
+allow_stdio = true
+
 # Bootstrap-only upstream definitions.
 # On startup, Atryum seeds mcp_servers from these entries only when the DB is empty.
 # After bootstrap, runtime resolution uses SQLite as the source of truth.

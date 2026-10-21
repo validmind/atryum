@@ -16,4 +16,8 @@ request_timeout_seconds = 30
 [auth_debug]
 skip_verify = false
 
+# Integration targets include stdio-mode servers, which need an explicit opt-in.
+[mcp]
+allow_stdio = true
+
 __UPSTREAMS_BLOCK__

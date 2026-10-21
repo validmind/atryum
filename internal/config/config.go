@@ -30,6 +30,9 @@ type Config struct {
 	// repeated `[[managed_agents]]` table. An entry with an empty api_key is
 	// skipped.
 	ManagedAgents []ManagedAgentsConfig `toml:"managed_agents"`
+	// MCP holds MCP transport policy switches, e.g. whether stdio-mode
+	// upstreams (local subprocesses) may be used at all.
+	MCP MCPConfig `toml:"mcp"`
 	// OTEL configures OpenTelemetry trace export. Disabled by default.
 	OTEL OTELConfig `toml:"otel"`
 	// Plans bounds the lifetime of approved agent preapproval plans.
@@ -72,6 +75,16 @@ type OTLPExporterConfig struct {
 	// An explicit Authorization header in Headers wins over these.
 	PublicKey string `toml:"public_key"`
 	SecretKey string `toml:"secret_key"`
+}
+
+// MCPConfig holds MCP transport policy switches.
+type MCPConfig struct {
+	// AllowStdio permits stdio-mode MCP upstreams, which make Atryum spawn
+	// local subprocesses (npx, python, arbitrary commands). Disabled by
+	// default: enabling stdio servers requires a deliberate
+	// `allow_stdio = true` under [mcp] in atryum.toml. There is no env
+	// override — only the config file can grant this.
+	AllowStdio bool `toml:"allow_stdio"`
 }
 
 // PlansConfig bounds how long an approved plan keeps granting its pass.
@@ -234,6 +247,13 @@ func Load(path string) (Config, error) {
 	cfg.applyManagedAgentsEnv()
 	if err := cfg.Plans.normalize(); err != nil {
 		return cfg, err
+	}
+	if !cfg.MCP.AllowStdio {
+		for _, u := range cfg.Upstreams {
+			if u.Mode == "stdio" && u.Enabled {
+				return cfg, fmt.Errorf("upstream %q uses stdio mode, but stdio MCP servers are disabled by default; set allow_stdio = true under [mcp] in %s to enable them", u.Name, path)
+			}
+		}
 	}
 	return cfg, nil
 }

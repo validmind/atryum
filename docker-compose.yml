@@ -114,6 +114,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.prod
+      target: minimal
     ports:
       - "8080:8080"
     volumes:

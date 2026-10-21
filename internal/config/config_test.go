@@ -167,3 +167,61 @@ func TestLoadPlansTTLBounds(t *testing.T) {
 		t.Fatal("negative ttl must fail to load")
 	}
 }
+
+func TestLoadRejectsEnabledStdioUpstreamWithoutOptIn(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "atryum.toml")
+	if err := os.WriteFile(path, []byte(`[[upstreams]]
+name = "calc"
+mode = "stdio"
+command = "npx"
+enabled = true
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected error for enabled stdio upstream without [mcp] allow_stdio")
+	}
+}
+
+func TestLoadAllowsStdioUpstreamWithOptIn(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "atryum.toml")
+	if err := os.WriteFile(path, []byte(`[mcp]
+allow_stdio = true
+
+[[upstreams]]
+name = "calc"
+mode = "stdio"
+command = "npx"
+enabled = true
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.MCP.AllowStdio {
+		t.Fatal("expected MCP.AllowStdio = true")
+	}
+}
+
+func TestLoadAllowsDisabledStdioUpstreamWithoutOptIn(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "atryum.toml")
+	if err := os.WriteFile(path, []byte(`[[upstreams]]
+name = "calc"
+mode = "stdio"
+command = "npx"
+enabled = false
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if _, err := Load(path); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+}
