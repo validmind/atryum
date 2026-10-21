@@ -1,6 +1,5 @@
 /* eslint-disable react/jsx-no-bind */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import ResizablePanels from "../components/ResizablePanels";
 import {
   Badge,
   Box,
@@ -13,7 +12,6 @@ import {
   Flex,
   FormControl,
   FormLabel,
-  Heading,
   HStack,
   Icon,
   IconButton,
@@ -23,6 +21,12 @@ import {
   MenuButton,
   MenuItem,
   MenuList,
+  Modal,
+  ModalBody,
+  ModalCloseButton,
+  ModalContent,
+  ModalHeader,
+  ModalOverlay,
   Spinner,
   Stack,
   Table,
@@ -30,6 +34,7 @@ import {
   Tbody,
   Td,
   Text,
+  type TextProps,
   Textarea,
   Th,
   Thead,
@@ -70,6 +75,7 @@ import { useAgents } from "../hooks/useAgents";
 import { useInvocationStream } from "../hooks/useInvocationStream";
 import {
   invocationsApi,
+  type Invocation,
   type InvocationEvent,
   type InvocationStatus,
   type Rule,
@@ -134,6 +140,18 @@ const buildRuleDescription = (
   if (target) parts.push(target);
   return parts.join(" ");
 };
+
+const Header: React.FC<TextProps> = ({ children, ...props }) => (
+  <Text
+    fontSize="sm"
+    fontWeight="semibold"
+    textTransform="uppercase"
+    color="text.subtle"
+    letterSpacing="wide"
+    {...props}>
+    {children}
+  </Text>
+);
 
 const AuditEntryRow: React.FC<{ entry: AuditEntry }> = ({ entry }) => {
   const [isOpen, setIsOpen] = useState(false);
@@ -388,15 +406,14 @@ const Invocations: React.FC = () => {
     return map;
   }, [agentsData?.items]);
 
+  // The detail modal is open exactly when an invocation is selected, so nothing
+  // is auto-selected on load. The id is kept even when the invocation is not on
+  // the current page: hash deep links (desktop approval notifications) can point
+  // at an invocation the list has not loaded, and the detail query fetches by id.
   const resolvedSelectedId = useMemo(() => {
     if (detailClosed) return null;
-    if (items.length === 0) return null;
-    if (!selectedId) return items[0].invocation_id;
-    const stillSelected = items.some(
-      (item) => item.invocation_id === selectedId,
-    );
-    return stillSelected ? selectedId : items[0].invocation_id;
-  }, [detailClosed, items, selectedId]);
+    return selectedId;
+  }, [detailClosed, selectedId]);
 
   const { data: detail, isLoading: detailLoading } =
     useInvocationDetail(resolvedSelectedId);
@@ -462,6 +479,64 @@ const Invocations: React.FC = () => {
   const handleCloseDetail = () => {
     setDetailClosed(true);
     setSelectedId(null);
+    // Drop the deep-link hash so a refresh doesn't reopen the invocation and
+    // clicking the same notification again still fires `hashchange`.
+    if (window.location.hash) {
+      window.history.replaceState(
+        null,
+        "",
+        window.location.pathname + window.location.search,
+      );
+    }
+  };
+
+  const selectInvocation = (inv: Invocation) => {
+    setDetailClosed(false);
+    setSelectedId(inv.invocation_id);
+    if (resolvedSelectedId !== inv.invocation_id) {
+      setShowDenyInput(false);
+      setShowArgsJson(false);
+      setDenyMessage("");
+    }
+  };
+
+  // -1 when the open invocation is not on the current page (deep link), which
+  // disables navigation and hides the position indicator.
+  const selectedIndex = items.findIndex(
+    (item) => item.invocation_id === resolvedSelectedId,
+  );
+  const hasPrev = selectedIndex > 0;
+  const hasNext = selectedIndex >= 0 && selectedIndex < items.length - 1;
+
+  // Fall back to the list row while the detail query loads so the modal header
+  // stays mounted. Unmounting it would drop keyboard focus from the prev/next
+  // button that was just clicked, breaking repeated stepping through the list.
+  const headerInvocation =
+    detail ?? (selectedIndex >= 0 ? items[selectedIndex] : undefined);
+
+  const handleNavigate = (direction: -1 | 1) => {
+    if (selectedIndex === -1) return;
+    const nextInvocation = items[selectedIndex + direction];
+    if (nextInvocation) selectInvocation(nextInvocation);
+  };
+
+  const handleCreateRuleFromInvocation = () => {
+    if (!detail) return;
+    const agentEntry = detail.agent_id
+      ? agentByAgentID.get(detail.agent_id)
+      : undefined;
+    setRuleModalInitial({
+      server_patterns: detail.server_name ? [detail.server_name] : [],
+      tool_patterns: detail.tool_name ? [detail.tool_name] : [],
+      agent_cuids: agentEntry?.cuid ? [agentEntry.cuid] : [],
+      description: buildRuleDescription(
+        undefined,
+        detail.server_name,
+        detail.tool_name,
+      ),
+    });
+    ruleModalOnSuccessRef.current = undefined;
+    openRuleModal();
   };
 
   const handleClearInvocations = () => {
@@ -571,970 +646,878 @@ const Invocations: React.FC = () => {
         borderRadius="md"
         overflow="hidden"
         minH={0}>
-        <ResizablePanels
-          initialSplit={0.7}
-          minLeft={260}
-          minRight={320}
-          left={
-            <Box
-              display="flex"
-              flexDirection="column"
-              overflow="hidden"
-              h="full">
-              <Box p={3} borderBottomWidth={1} borderColor="border.base">
-                <Flex justify="flex-end" gap={2}>
+        <Box display="flex" flexDirection="column" overflow="hidden" h="full">
+          <Box p={3} borderBottomWidth={1} borderColor="border.base">
+            <Flex justify="flex-end" gap={2}>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleClearInvocations}
+                isDisabled={items.length === 0}
+                data-testid="invocations-clear-button">
+                Clear
+              </Button>
+              {showFilters ? (
+                <CloseButton
+                  size="sm"
+                  onClick={() => setShowFilters(false)}
+                  aria-label="Close filters"
+                  title="Close filters"
+                  data-testid="invocations-filter-toggle"
+                />
+              ) : (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setShowFilters(true)}
+                  data-testid="invocations-filter-toggle">
+                  Filter
+                </Button>
+              )}
+            </Flex>
+            <Collapse in={showFilters} animateOpacity>
+              <VStack gap={2} align="stretch" mt={3}>
+                <HStack gap={2} align="end">
+                  <FormControl size="sm">
+                    <FormLabel fontSize="xs" mb={1}>
+                      Server
+                    </FormLabel>
+                    <Input
+                      size="sm"
+                      placeholder="Any"
+                      value={draftFilters.server}
+                      onChange={(e) =>
+                        setDraftFilters((f) => ({
+                          ...f,
+                          server: e.target.value,
+                        }))
+                      }
+                    />
+                  </FormControl>
+                  <FormControl size="sm">
+                    <FormLabel fontSize="xs" mb={1}>
+                      Tool
+                    </FormLabel>
+                    <Input
+                      size="sm"
+                      placeholder="Any"
+                      value={draftFilters.tool}
+                      onChange={(e) =>
+                        setDraftFilters((f) => ({
+                          ...f,
+                          tool: e.target.value,
+                        }))
+                      }
+                    />
+                  </FormControl>
+                  <FormControl size="sm">
+                    <FormLabel fontSize="xs" mb={1}>
+                      Agent
+                    </FormLabel>
+                    <Input
+                      size="sm"
+                      placeholder="e.g. claude-code"
+                      value={draftFilters.client_name}
+                      onChange={(e) =>
+                        setDraftFilters((f) => ({
+                          ...f,
+                          client_name: e.target.value,
+                        }))
+                      }
+                    />
+                  </FormControl>
+                </HStack>
+                <HStack gap={2} align="end">
+                  <FormControl size="sm" flex={1}>
+                    <FormLabel fontSize="xs" mb={1}>
+                      Status
+                    </FormLabel>
+                    <Select
+                      isClearable
+                      options={STATUS_OPTIONS}
+                      placeholder="Any"
+                      size="sm"
+                      menuPortalTarget={document.body}
+                      menuPosition="fixed"
+                      value={
+                        STATUS_OPTIONS.find(
+                          (o) => o.value === draftFilters.status,
+                        ) ?? null
+                      }
+                      onChange={(option) =>
+                        setDraftFilters((f) => ({
+                          ...f,
+                          status: option?.value ?? "",
+                        }))
+                      }
+                    />
+                  </FormControl>
                   <Button
                     size="sm"
-                    variant="outline"
-                    onClick={handleClearInvocations}
-                    isDisabled={items.length === 0}
-                    data-testid="invocations-clear-button">
-                    Clear
+                    variant="primary"
+                    onClick={handleApply}
+                    data-testid="invocations-apply-filter-button">
+                    Apply Filter
                   </Button>
-                  {showFilters ? (
-                    <CloseButton
-                      size="sm"
-                      onClick={() => setShowFilters(false)}
-                      aria-label="Close filters"
-                      title="Close filters"
-                      data-testid="invocations-filter-toggle"
-                    />
-                  ) : (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => setShowFilters(true)}
-                      data-testid="invocations-filter-toggle">
-                      Filter
-                    </Button>
-                  )}
-                </Flex>
-                <Collapse in={showFilters} animateOpacity>
-                  <VStack gap={2} align="stretch" mt={3}>
-                    <HStack gap={2} align="end">
-                      <FormControl size="sm">
-                        <FormLabel fontSize="xs" mb={1}>
-                          Server
-                        </FormLabel>
-                        <Input
-                          size="sm"
-                          placeholder="Any"
-                          value={draftFilters.server}
-                          onChange={(e) =>
-                            setDraftFilters((f) => ({
-                              ...f,
-                              server: e.target.value,
-                            }))
-                          }
-                        />
-                      </FormControl>
-                      <FormControl size="sm">
-                        <FormLabel fontSize="xs" mb={1}>
-                          Tool
-                        </FormLabel>
-                        <Input
-                          size="sm"
-                          placeholder="Any"
-                          value={draftFilters.tool}
-                          onChange={(e) =>
-                            setDraftFilters((f) => ({
-                              ...f,
-                              tool: e.target.value,
-                            }))
-                          }
-                        />
-                      </FormControl>
-                      <FormControl size="sm">
-                        <FormLabel fontSize="xs" mb={1}>
-                          Agent
-                        </FormLabel>
-                        <Input
-                          size="sm"
-                          placeholder="e.g. claude-code"
-                          value={draftFilters.client_name}
-                          onChange={(e) =>
-                            setDraftFilters((f) => ({
-                              ...f,
-                              client_name: e.target.value,
-                            }))
-                          }
-                        />
-                      </FormControl>
-                    </HStack>
-                    <HStack gap={2} align="end">
-                      <FormControl size="sm" flex={1}>
-                        <FormLabel fontSize="xs" mb={1}>
-                          Status
-                        </FormLabel>
-                        <Select
-                          isClearable
-                          options={STATUS_OPTIONS}
-                          placeholder="Any"
-                          size="sm"
-                          menuPortalTarget={document.body}
-                          menuPosition="fixed"
-                          value={
-                            STATUS_OPTIONS.find(
-                              (o) => o.value === draftFilters.status,
-                            ) ?? null
-                          }
-                          onChange={(option) =>
-                            setDraftFilters((f) => ({
-                              ...f,
-                              status: option?.value ?? "",
-                            }))
-                          }
-                        />
-                      </FormControl>
-                      <Button
-                        size="sm"
-                        variant="primary"
-                        onClick={handleApply}
-                        data-testid="invocations-apply-filter-button">
-                        Apply Filter
-                      </Button>
-                    </HStack>
-                  </VStack>
-                </Collapse>
-              </Box>
+                </HStack>
+              </VStack>
+            </Collapse>
+          </Box>
 
-              <Box flex={1} overflow="auto">
-                {isLoading ? (
-                  <HStack justify="center" py={8}>
-                    <Spinner size="sm" color="brand.base" />
-                  </HStack>
-                ) : isError ? (
-                  <Text p={4} color="text.error" fontSize="sm">
-                    Failed to load invocations.
-                  </Text>
-                ) : items.length === 0 ? (
-                  <Text p={4} color="text.subtle" fontSize="sm">
-                    {hasClearedLoadedInvocations
-                      ? "Cleared. New invocations will appear here."
-                      : "No invocations match the current filters."}
-                  </Text>
-                ) : (
-                  <Table size="sm" variant="simple">
-                    <Thead
-                      position="sticky"
-                      top={0}
-                      bg="background.table.header"
-                      zIndex={1}>
-                      <Tr>
-                        <Th>Agent</Th>
-                        <Th>Server</Th>
-                        <Th>Tool</Th>
-                        <Th>Agent Record</Th>
-                        <Th>Status</Th>
-                        <Th>Decided By</Th>
-                        <Th>Submitted</Th>
-                      </Tr>
-                    </Thead>
-                    <Tbody>
-                      {items.map((inv) => (
-                        <Tr
-                          key={inv.invocation_id}
-                          cursor="pointer"
-                          sx={{
-                            "&, &:nth-of-type(odd), &:nth-of-type(even)": {
-                              bg:
-                                resolvedSelectedId === inv.invocation_id
-                                  ? "background.table.row.selected"
-                                  : undefined,
-                            },
-                            "&:hover, &:nth-of-type(odd):hover, &:nth-of-type(even):hover":
-                              {
-                                bg:
-                                  resolvedSelectedId === inv.invocation_id
-                                    ? "background.table.row.selected"
-                                    : "background.table.row.hover",
-                              },
-                          }}
-                          onClick={() => {
-                            setDetailClosed(false);
-                            setSelectedId(inv.invocation_id);
-                            if (resolvedSelectedId !== inv.invocation_id) {
-                              setShowDenyInput(false);
-                              setShowArgsJson(false);
-                              setDenyMessage("");
-                            }
-                          }}>
-                          <Td
-                            borderLeft="4px solid"
-                            borderLeftColor={
+          <Box flex={1} overflow="auto">
+            {isLoading ? (
+              <HStack justify="center" py={8}>
+                <Spinner size="sm" color="brand.base" />
+              </HStack>
+            ) : isError ? (
+              <Text p={4} color="text.error" fontSize="sm">
+                Failed to load invocations.
+              </Text>
+            ) : items.length === 0 ? (
+              <Text p={4} color="text.subtle" fontSize="sm">
+                {hasClearedLoadedInvocations
+                  ? "Cleared. New invocations will appear here."
+                  : "No invocations match the current filters."}
+              </Text>
+            ) : (
+              <Table size="sm" variant="simple">
+                <Thead
+                  position="sticky"
+                  top={0}
+                  bg="background.table.header"
+                  zIndex={1}>
+                  <Tr>
+                    <Th>Agent</Th>
+                    <Th>Server</Th>
+                    <Th>Tool</Th>
+                    <Th>Agent Record</Th>
+                    <Th>Status</Th>
+                    <Th>Decided By</Th>
+                    <Th>Submitted</Th>
+                  </Tr>
+                </Thead>
+                <Tbody>
+                  {items.map((inv) => (
+                    <Tr
+                      key={inv.invocation_id}
+                      cursor="pointer"
+                      sx={{
+                        "&, &:nth-of-type(odd), &:nth-of-type(even)": {
+                          bg:
+                            resolvedSelectedId === inv.invocation_id
+                              ? "background.table.row.selected"
+                              : undefined,
+                        },
+                        "&:hover, &:nth-of-type(odd):hover, &:nth-of-type(even):hover":
+                          {
+                            bg:
                               resolvedSelectedId === inv.invocation_id
-                                ? "brand.base"
-                                : "transparent"
-                            }
-                            pl={
-                              resolvedSelectedId === inv.invocation_id ? 2 : 3
-                            }>
-                            {(() => {
-                              const name = inv.agent_client_name ?? "";
-                              const version = inv.agent_client_version ?? "";
-                              const agentID = inv.agent_id ?? "";
-                              const tooltipLines = [
-                                version ? `version ${version}` : null,
-                                agentID ? `agent_id ${agentID}` : null,
-                              ].filter(Boolean);
-                              const label = name
-                                ? name
-                                : detectAgentKind(name) === "unknown"
-                                  ? "Unknown"
-                                  : "—";
-                              return (
-                                <Tooltip
-                                  hasArrow
-                                  isDisabled={tooltipLines.length === 0}
-                                  label={tooltipLines.join("\n")}
-                                  whiteSpace="pre-line"
-                                  placement="top-start"
-                                  openDelay={300}>
-                                  <HStack gap={2} align="center">
-                                    <AgentIcon name={name} size={20} />
-                                    <Text fontSize="xs" color="text.base">
-                                      {label}
-                                    </Text>
-                                  </HStack>
-                                </Tooltip>
-                              );
-                            })()}
-                          </Td>
-                          <Td>
-                            <Text fontSize="xs" color="text.subtle">
-                              {inv.server_name || "none"}
-                            </Text>
-                          </Td>
-                          <Td>
-                            <Text fontSize="xs" color="text.subtle">
-                              {inv.tool_name || "—"}
-                            </Text>
-                          </Td>
-                          <Td>
-                            {(() => {
-                              const agentID = inv.agent_id ?? "";
-                              if (!agentID) {
-                                return (
-                                  <Text fontSize="xs" color="text.subtle">
-                                    —
-                                  </Text>
-                                );
-                              }
-                              const record = agentByAgentID.get(agentID);
-                              if (record) {
-                                return (
-                                  <Badge
-                                    colorScheme="gray"
-                                    fontSize="2xs"
-                                    title={`agent_id: ${agentID}`}>
-                                    {record.name}
-                                  </Badge>
-                                );
-                              }
-                              return (
-                                <Badge
-                                  colorScheme="gray"
-                                  fontSize="2xs"
-                                  title={`agent_id: ${agentID} (no matching agent record)`}>
-                                  Unassociated
-                                </Badge>
-                              );
-                            })()}
-                          </Td>
-                          <Td>
-                            {(() => {
-                              const statusColor =
-                                STATUS_COLOR[inv.status] ?? "gray";
-                              return (
-                                <Tag
-                                  colorScheme={statusColor}
-                                  size="sm"
-                                  textTransform="capitalize">
-                                  <Box
-                                    as="span"
-                                    boxSize="8px"
-                                    borderRadius="full"
-                                    bg={`${statusColor}.500`}
-                                    mr={1.5}
-                                  />
-                                  <Box as="span" mb="1px">
-                                    {STATUS_LABEL[inv.status] ?? inv.status}
-                                  </Box>
-                                </Tag>
-                              );
-                            })()}
-                          </Td>
-                          <Td>
-                            <HStack gap={1}>
-                              {getDisposition(inv).map((d) =>
-                                d.label !== "—" ? (
-                                  <Badge
-                                    key={d.label}
-                                    colorScheme={d.color}
-                                    fontSize="2xs"
-                                    title={inv.approval?.reason ?? undefined}>
-                                    {d.label}
-                                  </Badge>
-                                ) : null,
-                              )}
-                              {isAIEvaluated(inv) &&
-                                inv.approval?.confidence_score != null && (
-                                  <Badge
-                                    colorScheme={getConfidenceColor(
-                                      inv.approval.confidence_score,
-                                    )}
-                                    fontSize="2xs"
-                                    title={`Confidence: ${formatConfidence(inv.approval.confidence_score)}`}>
-                                    {formatConfidence(
-                                      inv.approval.confidence_score,
-                                    )}
-                                  </Badge>
-                                )}
-                            </HStack>
-                          </Td>
-                          <Td>
-                            <Text fontSize="xs" color="text.subtle">
-                              {formatDate(inv.submitted_at)}
-                            </Text>
-                          </Td>
-                        </Tr>
-                      ))}
-                    </Tbody>
-                  </Table>
-                )}
-              </Box>
-              {totalPages > 1 && (
-                <Box
-                  px={3}
-                  py={2}
-                  borderTopWidth={1}
-                  borderColor="border.base"
-                  flexShrink={0}>
-                  <HStack justify="space-between" align="center">
-                    <Text fontSize="xs" color="text.subtle">
-                      Showing {(page - 1) * PAGE_SIZE + 1}–
-                      {Math.min(page * PAGE_SIZE, total)} of {total}
-                    </Text>
-                    <HStack gap={1}>
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        isDisabled={page <= 1 || isLoading}
-                        onClick={() => setPage((p) => p - 1)}>
-                        Prev
-                      </Button>
-                      <Text fontSize="xs" color="text.subtle">
-                        {page} / {totalPages}
-                      </Text>
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        isDisabled={page >= totalPages || isLoading}
-                        onClick={() => setPage((p) => p + 1)}>
-                        Next
-                      </Button>
-                    </HStack>
-                  </HStack>
-                </Box>
-              )}
-            </Box>
-          }
-          right={
-            !resolvedSelectedId ? null : (
-              <Box overflow="auto" p={4} h="full">
-                {detailLoading ? (
-                  <HStack justify="center" py={8}>
-                    <Spinner size="md" color="brand.base" />
-                  </HStack>
-                ) : !detail ? (
-                  <Alert status="error" borderRadius="md">
-                    <AlertIcon />
-                    <AlertDescription>
-                      Could not load invocation detail.
-                    </AlertDescription>
-                  </Alert>
-                ) : (
-                  <VStack align="stretch" gap={4}>
-                    <Flex
-                      justify="space-between"
-                      align="start"
-                      wrap="nowrap"
-                      gap={2}>
-                      <VStack align="start" gap={4} flex={1} minW={0}>
-                        <VStack align="start" gap={1}>
-                          <Heading size="md" fontFamily="mono">
-                            {detail.server_name || "none"} ·{" "}
-                            {detail.tool_name || "—"}
-                          </Heading>
-                          <Text fontSize="sm">
-                            {formatDate(detail.submitted_at)}
-                          </Text>
-                          <Text
-                            fontSize="xs"
-                            fontFamily="mono"
-                            color="text.subtle">
-                            {detail.invocation_id}
-                          </Text>
-                        </VStack>
-                        <VStack align="start" gap={1}>
-                          <HStack gap={2}>
-                            {(() => {
-                              const statusColor =
-                                STATUS_COLOR[detail.status] ?? "gray";
-                              return (
-                                <Tag
-                                  colorScheme={statusColor}
-                                  size="md"
-                                  textTransform="capitalize">
-                                  <Box
-                                    as="span"
-                                    boxSize="8px"
-                                    borderRadius="full"
-                                    bg={`${statusColor}.500`}
-                                    mr={1.5}
-                                  />
-                                  <Box as="span" mb="1px">
-									{STATUS_LABEL[detail.status] ??
-										detail.status}
-                                  </Box>
-                                </Tag>
-                              );
-                            })()}
-                            {getDisposition(detail).map((d) =>
-                              d.label !== "—" ? (
-                                <Badge
-                                  key={d.label}
-                                  colorScheme={d.color}
-                                  fontSize="sm">
-                                  {d.label}
-                                </Badge>
-                              ) : null,
-                            )}
-                            {isAIEvaluated(detail) &&
-                              detail.approval?.confidence_score != null && (
-                                <Badge
-                                  colorScheme={getConfidenceColor(
-                                    detail.approval.confidence_score,
-                                  )}
-                                  fontSize="xs">
-                                  Confidence:{" "}
-                                  {formatConfidence(
-                                    detail.approval.confidence_score,
-                                  )}
-                                </Badge>
-                              )}
-                          </HStack>
-                          {detail.approval?.reason && (
-                            <Text
-                              fontSize="xs"
-                              fontFamily="mono"
-                              color="text.subtle">
-                              {detail.approval.reason}
-                            </Text>
-                          )}
-                        </VStack>
-                        {detail.matched_rule_id && (
-                          <Text fontSize="xs" color="text.subtle">
-                            Matched rule:{" "}
-                            <Code fontSize="xs">{detail.matched_rule_id}</Code>
-                          </Text>
-                        )}
-                        {detail.plan_id && (
-                          <Text fontSize="xs" color="text.subtle">
-                            Approved plan:{" "}
-                            <Link
-                              as={RouterLink}
-                              to={`/plans?focus=${encodeURIComponent(detail.plan_id)}`}
-                              color="blue.500">
-                              <Code fontSize="xs">{detail.plan_id}</Code>
-                            </Link>
-                          </Text>
-                        )}
-
-                        {(detail.agent_id ||
-                          detail.agent_client_name ||
-                          detail.user_id) && (
-                          <VStack
-                            align="start"
-                            gap={0}
-                            mt={1}
-                            pt={1}
-                            borderTopWidth={1}
-                            borderColor="border.base"
-                            w="full">
-                            {detail.agent_client_name && (
+                                ? "background.table.row.selected"
+                                : "background.table.row.hover",
+                          },
+                      }}
+                      onClick={() => selectInvocation(inv)}>
+                      <Td
+                        borderLeft="4px solid"
+                        borderLeftColor={
+                          resolvedSelectedId === inv.invocation_id
+                            ? "brand.base"
+                            : "transparent"
+                        }
+                        pl={
+                          resolvedSelectedId === inv.invocation_id ? 2 : 3
+                        }>
+                        {(() => {
+                          const name = inv.agent_client_name ?? "";
+                          const version = inv.agent_client_version ?? "";
+                          const agentID = inv.agent_id ?? "";
+                          const tooltipLines = [
+                            version ? `version ${version}` : null,
+                            agentID ? `agent_id ${agentID}` : null,
+                          ].filter(Boolean);
+                          const label = name
+                            ? name
+                            : detectAgentKind(name) === "unknown"
+                              ? "Unknown"
+                              : "—";
+                          return (
+                            <Tooltip
+                              hasArrow
+                              isDisabled={tooltipLines.length === 0}
+                              label={tooltipLines.join("\n")}
+                              whiteSpace="pre-line"
+                              placement="top-start"
+                              openDelay={300}>
                               <HStack gap={2} align="center">
-                                <AgentIcon
-                                  name={detail.agent_client_name}
-                                  size={18}
-                                />
+                                <AgentIcon name={name} size={20} />
                                 <Text fontSize="xs" color="text.base">
-                                  <Text as="span" color="text.subtle">
-                                    Agent type:{" "}
-                                  </Text>
-                                  {detail.agent_client_name}
-                                  {detail.agent_client_version
-                                    ? ` ${detail.agent_client_version}`
-                                    : ""}
+                                  {label}
                                 </Text>
                               </HStack>
-                            )}
-                            {detail.agent_id && (
-                              <Text
-                                fontSize="xs"
-                                fontFamily="mono"
-                                color="text.subtle">
-                                <Text
-                                  as="span"
-                                  fontFamily="body"
-                                  color="text.subtle">
-                                  Agent ID:{" "}
-                                </Text>
-                                {detail.agent_id}
-                              </Text>
-                            )}
-                            {detail.user_id && (
-                              <Text
-                                fontSize="xs"
-                                fontFamily="mono"
-                                color="text.subtle">
-                                <Text
-                                  as="span"
-                                  fontFamily="body"
-                                  color="text.subtle">
-                                  User:{" "}
-                                </Text>
-                                {detail.user_id}
-                              </Text>
-                            )}
-                          </VStack>
-                        )}
-                      </VStack>
-                      <CloseButton
-                        size="sm"
-                        flexShrink={0}
-                        onClick={handleCloseDetail}
-                        aria-label="Close details"
-                        title="Close details"
-                        data-testid="invocation-detail-close-button"
-                      />
-                    </Flex>
-
-                    {auditEntries.length > 0 && (
-                      <>
-                        <InvocationAuditSection entries={auditEntries} />
-                        <Divider />
-                      </>
-                    )}
-
-                    <Box
-                      p={3}
-                      borderWidth={1}
-                      borderColor="border.base"
-                      borderRadius="md"
-                      bg="background.container.subtle">
-                      <Flex
-                        justify="space-between"
-                        align="center"
-                        mb={detail.summary ? 2 : 0}
-                        gap={2}
-                        wrap="wrap">
-                        <Text
-                          fontSize="xs"
-                          fontWeight="semibold"
-                          textTransform="uppercase"
-                          color="text.subtle"
-                          letterSpacing="wide">
-                          Summary
-                        </Text>
-                        <Button
-                          variant="outline"
-                          size="xs"
-                          isLoading={isCurrentInvocationSummarizing}
-                          isDisabled={
-                            !hasSummaryModel || isCurrentInvocationSummarizing
-                          }
-                          title={
-                            !hasSummaryModel
-                              ? "Set an Invocation Summary Model in Settings to enable"
-                              : undefined
-                          }
-                          onClick={handleSummarize}>
-                          {detail.summary ? "Re-summarize" : "Summarize"}
-                        </Button>
-                      </Flex>
-                      {detail.summary ? (
-                        <Text fontSize="sm" whiteSpace="pre-wrap">
-                          {detail.summary}
-                        </Text>
-                      ) : (
-                        <Text fontSize="xs" color="text.subtle">
-                          {hasSummaryModel
-                            ? "No summary yet. Click Summarize to generate one."
-                            : "No summary model configured. Set one in Settings to enable summarization."}
-                        </Text>
-                      )}
-                      {didCurrentInvocationSummaryFail && (
-                        <Text fontSize="xs" color="text.error" mt={2}>
-                          Failed to summarize invocation.
-                        </Text>
-                      )}
-                    </Box>
-
-                    {detail.input != null &&
-                      !(
-                        typeof detail.input === "object" &&
-                        detail.input !== null &&
-                        Object.keys(detail.input as object).length === 0
-                      ) && (
-                        <Box>
-                          <Text
-                            fontSize="xs"
-                            fontWeight="semibold"
-                            textTransform="uppercase"
-                            color="text.subtle"
-                            letterSpacing="wide"
-                            mb={2}>
-                            Arguments
-                          </Text>
-                          {(() => {
-                            const d = extractDiff(detail.input);
-                            if (d)
-                              return (
-                                <DiffViewer diff={d.diff} filePath={d.path} />
-                              );
-
-                            const input = detail.input;
-                            const isPlainObject =
-                              typeof input === "object" &&
-                              input !== null &&
-                              !Array.isArray(input);
-
-                            const renderArgValue = (value: unknown) => {
-                              if (value === null) return "null";
-                              if (value === undefined) return "undefined";
-                              if (typeof value === "string") return value;
-                              if (
-                                typeof value === "number" ||
-                                typeof value === "boolean"
-                              ) {
-                                return String(value);
-                              }
-                              return JSON.stringify(value, null, 2);
-                            };
-
-                            const jsonBlock = (
-                              <Code
-                                display="block"
-                                whiteSpace="pre-wrap"
-                                fontSize="xs"
-                                p={3}
-                                borderRadius="md"
-                                bg="background.container.subtle"
-                                w="full"
-                                data-testid="invocation-arguments-json">
-                                {JSON.stringify(input, null, 2)}
-                              </Code>
-                            );
-
-                            if (!isPlainObject) return jsonBlock;
-
-                            return (
-                              <VStack align="stretch" gap={2}>
-                                <Box
-                                  borderWidth={1}
-                                  borderColor="border.base"
-                                  borderRadius="md"
-                                  overflow="hidden">
-                                  <Table
-                                    size="sm"
-                                    variant="simple"
-                                    data-testid="invocation-arguments-table">
-                                    <Thead bg="background.table.header">
-                                      <Tr>
-                                        <Th>Key</Th>
-                                        <Th>Value</Th>
-                                      </Tr>
-                                    </Thead>
-                                    <Tbody>
-                                      {Object.entries(
-                                        input as Record<string, unknown>,
-                                      ).map(([key, value]) => (
-                                        <Tr
-                                          key={key}
-                                          data-testid="invocation-arguments-row"
-                                          data-testid-id={key}>
-                                          <Td
-                                            fontFamily="mono"
-                                            fontSize="xs"
-                                            fontWeight="medium"
-                                            verticalAlign="top"
-                                            whiteSpace="nowrap">
-                                            {key}
-                                          </Td>
-                                          <Td fontSize="xs" verticalAlign="top">
-                                            <Box
-                                              as="pre"
-                                              m={0}
-                                              whiteSpace="pre-wrap"
-                                              wordBreak="break-word"
-                                              fontFamily={
-                                                typeof value === "object" &&
-                                                value !== null
-                                                  ? "mono"
-                                                  : "body"
-                                              }>
-                                              {renderArgValue(value)}
-                                            </Box>
-                                          </Td>
-                                        </Tr>
-                                      ))}
-                                    </Tbody>
-                                  </Table>
-                                </Box>
-                                <Box alignSelf="flex-start">
-                                  <Button
-                                    variant="link"
-                                    size="xs"
-                                    leftIcon={
-                                      <Icon
-                                        as={
-                                          showArgsJson
-                                            ? ChevronUpIcon
-                                            : ChevronDownIcon
-                                        }
-                                        boxSize={4}
-                                      />
-                                    }
-                                    onClick={() => setShowArgsJson((v) => !v)}
-                                    data-testid="invocation-arguments-json-toggle">
-                                    {showArgsJson
-                                      ? "Hide raw JSON"
-                                      : "Show raw JSON"}
-                                  </Button>
-                                </Box>
-                                <Collapse in={showArgsJson} animateOpacity>
-                                  {jsonBlock}
-                                </Collapse>
-                              </VStack>
-                            );
-                          })()}
-                        </Box>
-                      )}
-
-                    {isPending && (
-                      <Box
-                        p={4}
-                        borderWidth={1}
-                        borderColor="border.base"
-                        borderRadius="md"
-                        bg="background.container.subtle">
-                        <Text fontWeight="medium" mb={3}>
-                          Approval Required
-                        </Text>
-
-                        {!showDenyInput ? (
-                          <HStack
-                            gap={2}
-                            w="full"
-                            data-testid="invocation-approval-actions">
-                            <ButtonGroup
-                              isAttached
-                              colorScheme="green"
-                              w="full"
-                              size="sm">
-                              <Button
-                                w="full"
-                                isLoading={approve.isLoading}
-                                onClick={handleApproveOnce}
-                                data-testid="invocation-approve-button">
-                                Approve
-                              </Button>
-                              <Menu placement="bottom-end">
-                                <MenuButton
-                                  as={IconButton}
-                                  aria-label="More approve options"
-                                  icon={
-                                    <Icon as={ChevronDownIcon} boxSize={4} />
-                                  }
-                                  isDisabled={approve.isLoading}
-                                  borderLeftWidth="1px"
-                                  borderLeftColor="whiteAlpha.400"
-                                  data-testid="invocation-approve-menu-button"
-                                />
-                                <MenuList>
-                                  <MenuItem
-                                    onClick={handleAlwaysApprove}
-                                    data-testid="invocation-always-approve-menu-item">
-                                    Always approve
-                                  </MenuItem>
-                                </MenuList>
-                              </Menu>
-                            </ButtonGroup>
-                            <ButtonGroup
-                              isAttached
-                              colorScheme="red"
-                              size="sm"
-                              w="full">
-                              <Button
-                                w="full"
-                                onClick={() => {
-                                  setDenyMode("once");
-                                  setShowDenyInput(true);
-                                }}
-                                data-testid="invocation-deny-button">
-                                Deny
-                              </Button>
-                              <Menu placement="bottom-end">
-                                <MenuButton
-                                  as={IconButton}
-                                  aria-label="More deny options"
-                                  icon={
-                                    <Icon as={ChevronDownIcon} boxSize={4} />
-                                  }
-                                  borderLeftWidth="1px"
-                                  borderLeftColor="red.200"
-                                  data-testid="invocation-deny-menu-button"
-                                />
-                                <MenuList>
-                                  <MenuItem
-                                    onClick={handleAlwaysDeny}
-                                    data-testid="invocation-always-deny-menu-item">
-                                    Always deny
-                                  </MenuItem>
-                                </MenuList>
-                              </Menu>
-                            </ButtonGroup>
-                          </HStack>
-                        ) : (
-                          <VStack
-                            align="stretch"
-                            gap={2}
-                            data-testid="invocation-deny-form">
-                            <Textarea
-                              size="sm"
-                              placeholder="Reason for denial (optional)"
-                              value={denyMessage}
-                              onChange={(e) => setDenyMessage(e.target.value)}
-                              rows={3}
-                              data-testid="invocation-deny-reason-input"
-                            />
-                            <HStack gap={2}>
-                              <Button
-                                variant="outlineDanger"
-                                size="sm"
-                                isLoading={deny.isLoading}
-                                onClick={
-                                  denyMode === "always"
-                                    ? handleAlwaysDeny
-                                    : handleDenyOnce
-                                }
-                                data-testid="invocation-deny-confirm-button">
-                                {denyMode === "always" ? "Always deny" : "Deny"}
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => {
-                                  setShowDenyInput(false);
-                                  setDenyMessage("");
-                                  setDenyMode("once");
-                                }}
-                                data-testid="invocation-deny-cancel-button">
-                                Cancel
-                              </Button>
-                            </HStack>
-                          </VStack>
-                        )}
-
-                      </Box>
-                    )}
-
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      alignSelf="flex-start"
-                      leftIcon={<Icon as={ShieldCheckIcon} boxSize={4} />}
-                      onClick={() => {
-                        const agentEntry = detail.agent_id
-                          ? agentByAgentID.get(detail.agent_id)
-                          : undefined;
-                        setRuleModalInitial({
-                          server_patterns: detail.server_name
-                            ? [detail.server_name]
-                            : [],
-                          tool_patterns: detail.tool_name
-                            ? [detail.tool_name]
-                            : [],
-                          agent_cuids: agentEntry?.cuid
-                            ? [agentEntry.cuid]
-                            : [],
-                          description: buildRuleDescription(
-                            undefined,
-                            detail.server_name,
-                            detail.tool_name,
-                          ),
-                        });
-                        ruleModalOnSuccessRef.current = undefined;
-                        openRuleModal();
-                      }}
-                      data-testid="invocation-create-rule-button">
-                      Create Rule From This
-                    </Button>
-
-                    <CreateRuleModal
-                      isOpen={isRuleModalOpen}
-                      onClose={closeRuleModal}
-                      onSuccess={ruleModalOnSuccessRef.current}
-                      {...(ruleModalInitial
-                        ? { initialValues: ruleModalInitial }
-                        : {})}
-                    />
-
-                    {detail.result != null && (
-                      <Box>
-                        <Text
-                          fontSize="xs"
-                          fontWeight="semibold"
-                          textTransform="uppercase"
-                          color="text.subtle"
-                          letterSpacing="wide"
-                          mb={2}>
-                          Result
-                        </Text>
-                        {(() => {
-                          const d = extractDiff(detail.result);
-                          if (d)
-                            return (
-                              <DiffViewer diff={d.diff} filePath={d.path} />
-                            );
-                          return (
-                            <Code
-                              display="block"
-                              whiteSpace="pre-wrap"
-                              fontSize="xs"
-                              p={3}
-                              borderRadius="md"
-                              bg="background.container.subtle"
-                              w="full">
-                              {JSON.stringify(detail.result, null, 2)}
-                            </Code>
+                            </Tooltip>
                           );
                         })()}
-                      </Box>
+                      </Td>
+                      <Td>
+                        <Text fontSize="xs" color="text.subtle">
+                          {inv.server_name || "none"}
+                        </Text>
+                      </Td>
+                      <Td>
+                        <Text fontSize="xs" color="text.subtle">
+                          {inv.tool_name || "—"}
+                        </Text>
+                      </Td>
+                      <Td>
+                        {(() => {
+                          const agentID = inv.agent_id ?? "";
+                          if (!agentID) {
+                            return (
+                              <Text fontSize="xs" color="text.subtle">
+                                —
+                              </Text>
+                            );
+                          }
+                          const record = agentByAgentID.get(agentID);
+                          if (record) {
+                            return (
+                              <Badge
+                                colorScheme="gray"
+                                fontSize="2xs"
+                                title={`agent_id: ${agentID}`}>
+                                {record.name}
+                              </Badge>
+                            );
+                          }
+                          return (
+                            <Badge
+                              colorScheme="gray"
+                              fontSize="2xs"
+                              title={`agent_id: ${agentID} (no matching agent record)`}>
+                              Unassociated
+                            </Badge>
+                          );
+                        })()}
+                      </Td>
+                      <Td>
+                        {(() => {
+                          const statusColor =
+                            STATUS_COLOR[inv.status] ?? "gray";
+                          return (
+                            <Tag
+                              colorScheme={statusColor}
+                              size="sm"
+                              textTransform="capitalize">
+                              <Box
+                                as="span"
+                                boxSize="8px"
+                                borderRadius="full"
+                                bg={`${statusColor}.500`}
+                                mr={1.5}
+                              />
+                              <Box as="span" mb="1px">
+                                {STATUS_LABEL[inv.status] ?? inv.status}
+                              </Box>
+                            </Tag>
+                          );
+                        })()}
+                      </Td>
+                      <Td>
+                        <HStack gap={1}>
+                          {getDisposition(inv).map((d) =>
+                            d.label !== "—" ? (
+                              <Badge
+                                key={d.label}
+                                colorScheme={d.color}
+                                fontSize="2xs"
+                                title={inv.approval?.reason ?? undefined}>
+                                {d.label}
+                              </Badge>
+                            ) : null,
+                          )}
+                          {isAIEvaluated(inv) &&
+                            inv.approval?.confidence_score != null && (
+                              <Badge
+                                colorScheme={getConfidenceColor(
+                                  inv.approval.confidence_score,
+                                )}
+                                fontSize="2xs"
+                                title={`Confidence: ${formatConfidence(inv.approval.confidence_score)}`}>
+                                {formatConfidence(
+                                  inv.approval.confidence_score,
+                                )}
+                              </Badge>
+                            )}
+                        </HStack>
+                      </Td>
+                      <Td>
+                        <Text fontSize="xs" color="text.subtle">
+                          {formatDate(inv.submitted_at)}
+                        </Text>
+                      </Td>
+                    </Tr>
+                  ))}
+                </Tbody>
+              </Table>
+            )}
+          </Box>
+          {totalPages > 1 && (
+            <Box
+              px={3}
+              py={2}
+              borderTopWidth={1}
+              borderColor="border.base"
+              flexShrink={0}>
+              <HStack justify="space-between" align="center">
+                <Text fontSize="xs" color="text.subtle">
+                  Showing {(page - 1) * PAGE_SIZE + 1}–
+                  {Math.min(page * PAGE_SIZE, total)} of {total}
+                </Text>
+                <HStack gap={1}>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    isDisabled={page <= 1 || isLoading}
+                    onClick={() => setPage((p) => p - 1)}>
+                    Prev
+                  </Button>
+                  <Text fontSize="xs" color="text.subtle">
+                    {page} / {totalPages}
+                  </Text>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    isDisabled={page >= totalPages || isLoading}
+                    onClick={() => setPage((p) => p + 1)}>
+                    Next
+                  </Button>
+                </HStack>
+              </HStack>
+            </Box>
+          )}
+        </Box>
+      </Box>
+
+      <Modal
+        isOpen={resolvedSelectedId !== null}
+        onClose={handleCloseDetail}
+        size="6xl"
+        scrollBehavior="inside"
+        isCentered>
+        <ModalOverlay />
+        <ModalContent maxH="85vh" data-testid="invocation-detail-modal">
+          <ModalHeader pr={12}>
+            <HStack justify="space-between" gap={3} align="center">
+              <Text fontFamily="mono" noOfLines={1} flex={1} minW={0}>
+                {headerInvocation
+                  ? `${headerInvocation.server_name || "none"} · ${headerInvocation.tool_name || "—"}`
+                  : ""}
+              </Text>
+              <HStack gap={1} mr={4}>
+                {selectedIndex >= 0 && (
+                  <Text
+                    fontSize="sm"
+                    fontWeight="normal"
+                    fontFamily="body"
+                    color="text.subtle"
+                    whiteSpace="nowrap"
+                    data-testid="invocation-detail-position">
+                    {selectedIndex + 1} of {items.length}
+                  </Text>
+                )}
+                <ButtonGroup>
+                  <IconButton
+                    size="sm"
+                    variant="ghost"
+                    aria-label="Previous invocation"
+                    title="Previous invocation"
+                    icon={<Icon as={ChevronUpIcon} boxSize={5} />}
+                    isDisabled={!hasPrev}
+                    onClick={() => handleNavigate(-1)}
+                    data-testid="invocation-detail-prev-button"
+                  />
+                  <IconButton
+                    size="sm"
+                    variant="ghost"
+                    aria-label="Next invocation"
+                    title="Next invocation"
+                    icon={<Icon as={ChevronDownIcon} boxSize={5} />}
+                    isDisabled={!hasNext}
+                    onClick={() => handleNavigate(1)}
+                    data-testid="invocation-detail-next-button"
+                  />
+                </ButtonGroup>
+              </HStack>
+            </HStack>
+          </ModalHeader>
+          <ModalCloseButton
+            data-testid="invocation-detail-close-button"
+            mt={2}
+          />
+          <ModalBody pb={6}>
+            {detailLoading ? (
+              <HStack justify="center" py={8}>
+                <Spinner size="md" color="brand.base" />
+              </HStack>
+            ) : !detail ? (
+              <Alert status="error" borderRadius="md">
+                <AlertIcon />
+                <AlertDescription>
+                  Could not load invocation detail.
+                </AlertDescription>
+              </Alert>
+            ) : (
+              <VStack align="stretch" gap={8}>
+                <VStack align="start" gap={4} w="full">
+                  <HStack justify="space-between" align="start" w="full">
+                    <HStack gap={2}>
+                      {(() => {
+                        const statusColor =
+                          STATUS_COLOR[detail.status] ?? "gray";
+                        return (
+                          <Tag
+                            colorScheme={statusColor}
+                            size="md"
+                            textTransform="capitalize">
+                            <Box
+                              as="span"
+                              boxSize="8px"
+                              borderRadius="full"
+                              bg={`${statusColor}.500`}
+                              mr={1.5}
+                            />
+                            <Box as="span" mb="1px">
+                              {STATUS_LABEL[detail.status] ??
+                                detail.status}
+                            </Box>
+                          </Tag>
+                        );
+                      })()}
+                      <Text>{formatDate(detail.submitted_at)}</Text>
+                    </HStack>
+                    <Text
+                      fontSize="xs"
+                      fontFamily="mono"
+                      color="text.subtle">
+                      {detail.invocation_id}
+                    </Text>
+                  </HStack>
+                  <VStack align="start" gap={1} w="full">
+                    <HStack w="full" justify="space-between" gap={2}>
+                      {getDisposition(detail).map((d) =>
+                        d.label !== "—" ? (
+                          <Badge
+                            key={d.label}
+                            colorScheme={d.color}
+                            fontSize="sm">
+                            {d.label}
+                          </Badge>
+                        ) : null,
+                      )}
+                      {isAIEvaluated(detail) &&
+                        detail.approval?.confidence_score != null && (
+                          <Badge
+                            colorScheme={getConfidenceColor(
+                              detail.approval.confidence_score,
+                            )}
+                            fontSize="xs">
+                            Confidence:{" "}
+                            {formatConfidence(
+                              detail.approval.confidence_score,
+                            )}
+                          </Badge>
+                        )}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        flexShrink={0}
+                        ml="auto"
+                        leftIcon={<Icon as={ShieldCheckIcon} boxSize={4} />}
+                        onClick={handleCreateRuleFromInvocation}
+                        data-testid="invocation-create-rule-button">
+                        Create Rule From This
+                      </Button>
+                    </HStack>
+                    {detail.approval?.reason && (
+                      <Stack gap={1}>
+                        <Header>Reason:</Header>
+                        <Text>{detail.approval.reason}</Text>
+                      </Stack>
+                    )}
+                  </VStack>
+                  {detail.matched_rule_id && (
+                    <Stack gap={1}>
+                      <Header>Matched Rule:</Header>
+                      <Code fontSize="xs">{detail.matched_rule_id}</Code>
+                    </Stack>
+                  )}
+                  {detail.plan_id && (
+                    <Stack gap={1}>
+                      <Header>Approved Plan:</Header>
+                      <Link
+                        as={RouterLink}
+                        to={`/plans?focus=${encodeURIComponent(detail.plan_id)}`}
+                        color="blue.500">
+                        <Code fontSize="xs">{detail.plan_id}</Code>
+                      </Link>
+                    </Stack>
+                  )}
+
+                  {(detail.agent_id ||
+                    detail.agent_client_name ||
+                    detail.user_id) && (
+                    <>
+                      <Divider />
+                      <HStack gap={12} align="start" w="full">
+                        {detail.agent_client_name && (
+                          <Stack gap={1}>
+                            <Header>Agent Type:</Header>
+                            <HStack>
+                              <AgentIcon
+                                name={detail.agent_client_name}
+                                size={24}
+                              />
+                              <Text>
+                                {detail.agent_client_name}
+                                {detail.agent_client_version
+                                  ? ` ${detail.agent_client_version}`
+                                  : ""}
+                              </Text>
+                            </HStack>
+                          </Stack>
+                        )}
+                        {detail.agent_id && (
+                          <Stack gap={1}>
+                            <Header>Agent ID:</Header>
+                            <Text fontFamily="mono">
+                              {detail.agent_id}
+                            </Text>
+                          </Stack>
+                        )}
+                        {detail.user_id && (
+                          <Stack gap={1}>
+                            <Header>User:</Header>
+                            <Text fontFamily="mono">
+                              {detail.user_id}
+                            </Text>
+                          </Stack>
+                        )}
+                      </HStack>
+                    </>
+                  )}
+                </VStack>
+
+                {auditEntries.length > 0 && (
+                  <>
+                    <InvocationAuditSection entries={auditEntries} />
+                    <Divider />
+                  </>
+                )}
+
+                <Stack gap={1} align="start">
+                  <Header>Summary</Header>
+                  {detail.summary ? (
+                    <Text whiteSpace="pre-wrap">{detail.summary}</Text>
+                  ) : (
+                    <Text color="text.subtle" fontStyle="italic">
+                      {hasSummaryModel
+                        ? "No summary yet. Click Summarize to generate one."
+                        : "No summary model configured. Set one in Settings to enable summarization."}
+                    </Text>
+                  )}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    isLoading={isCurrentInvocationSummarizing}
+                    isDisabled={
+                      !hasSummaryModel || isCurrentInvocationSummarizing
+                    }
+                    title={
+                      !hasSummaryModel
+                        ? "Set an Invocation Summary Model in Settings to enable"
+                        : undefined
+                    }
+                    onClick={handleSummarize}>
+                    {detail.summary ? "Re-summarize" : "Summarize"}
+                  </Button>
+                  {didCurrentInvocationSummaryFail && (
+                    <Text fontSize="sm" color="text.error">
+                      Failed to summarize invocation.
+                    </Text>
+                  )}
+                </Stack>
+
+                {detail.input != null &&
+                  !(
+                    typeof detail.input === "object" &&
+                    detail.input !== null &&
+                    Object.keys(detail.input as object).length === 0
+                  ) && (
+                    <Box>
+                      <Header mb={2}>Arguments</Header>
+                      {(() => {
+                        const d = extractDiff(detail.input);
+                        if (d)
+                          return (
+                            <DiffViewer diff={d.diff} filePath={d.path} />
+                          );
+
+                        const input = detail.input;
+                        const isPlainObject =
+                          typeof input === "object" &&
+                          input !== null &&
+                          !Array.isArray(input);
+
+                        const renderArgValue = (value: unknown) => {
+                          if (value === null) return "null";
+                          if (value === undefined) return "undefined";
+                          if (typeof value === "string") return value;
+                          if (
+                            typeof value === "number" ||
+                            typeof value === "boolean"
+                          ) {
+                            return String(value);
+                          }
+                          return JSON.stringify(value, null, 2);
+                        };
+
+                        const jsonBlock = (
+                          <Code
+                            display="block"
+                            whiteSpace="pre-wrap"
+                            fontSize="xs"
+                            p={3}
+                            borderRadius="md"
+                            bg="background.container.subtle"
+                            w="full"
+                            data-testid="invocation-arguments-json">
+                            {JSON.stringify(input, null, 2)}
+                          </Code>
+                        );
+
+                        if (!isPlainObject) return jsonBlock;
+
+                        return (
+                          <VStack align="stretch" gap={2}>
+                            <Box
+                              borderWidth={1}
+                              borderColor="border.base"
+                              borderRadius="md"
+                              overflow="hidden">
+                              <Table
+                                size="sm"
+                                variant="simple"
+                                data-testid="invocation-arguments-table">
+                                <Thead bg="background.table.header">
+                                  <Tr>
+                                    <Th>Key</Th>
+                                    <Th>Value</Th>
+                                  </Tr>
+                                </Thead>
+                                <Tbody>
+                                  {Object.entries(
+                                    input as Record<string, unknown>,
+                                  ).map(([key, value]) => (
+                                    <Tr
+                                      key={key}
+                                      data-testid="invocation-arguments-row"
+                                      data-testid-id={key}>
+                                      <Td
+                                        fontFamily="mono"
+                                        fontSize="xs"
+                                        fontWeight="medium"
+                                        verticalAlign="top"
+                                        whiteSpace="nowrap">
+                                        {key}
+                                      </Td>
+                                      <Td fontSize="xs" verticalAlign="top">
+                                        <Box
+                                          as="pre"
+                                          m={0}
+                                          whiteSpace="pre-wrap"
+                                          wordBreak="break-word"
+                                          fontFamily={
+                                            typeof value === "object" &&
+                                            value !== null
+                                              ? "mono"
+                                              : "body"
+                                          }>
+                                          {renderArgValue(value)}
+                                        </Box>
+                                      </Td>
+                                    </Tr>
+                                  ))}
+                                </Tbody>
+                              </Table>
+                            </Box>
+                            <Box alignSelf="flex-start">
+                              <Button
+                                variant="link"
+                                size="xs"
+                                leftIcon={
+                                  <Icon
+                                    as={
+                                      showArgsJson
+                                        ? ChevronUpIcon
+                                        : ChevronDownIcon
+                                    }
+                                    boxSize={4}
+                                  />
+                                }
+                                onClick={() => setShowArgsJson((v) => !v)}
+                                data-testid="invocation-arguments-json-toggle">
+                                {showArgsJson
+                                  ? "Hide raw JSON"
+                                  : "Show raw JSON"}
+                              </Button>
+                            </Box>
+                            <Collapse in={showArgsJson} animateOpacity>
+                              {jsonBlock}
+                            </Collapse>
+                          </VStack>
+                        );
+                      })()}
+                    </Box>
+                  )}
+
+                {isPending && (
+                  <Box
+                    p={4}
+                    borderWidth={1}
+                    borderColor="border.base"
+                    borderRadius="md"
+                    bg="background.container.subtle">
+                    <Text fontWeight="medium" mb={3}>
+                      Approval Required
+                    </Text>
+
+                    {!showDenyInput ? (
+                      <HStack
+                        gap={2}
+                        w="full"
+                        data-testid="invocation-approval-actions">
+                        <ButtonGroup
+                          isAttached
+                          colorScheme="green"
+                          w="full"
+                          size="sm">
+                          <Button
+                            w="full"
+                            isLoading={approve.isLoading}
+                            onClick={handleApproveOnce}
+                            data-testid="invocation-approve-button">
+                            Approve
+                          </Button>
+                          <Menu placement="bottom-end">
+                            <MenuButton
+                              as={IconButton}
+                              aria-label="More approve options"
+                              icon={
+                                <Icon as={ChevronDownIcon} boxSize={4} />
+                              }
+                              isDisabled={approve.isLoading}
+                              borderLeftWidth="1px"
+                              borderLeftColor="whiteAlpha.400"
+                              data-testid="invocation-approve-menu-button"
+                            />
+                            <MenuList>
+                              <MenuItem
+                                onClick={handleAlwaysApprove}
+                                data-testid="invocation-always-approve-menu-item">
+                                Always approve
+                              </MenuItem>
+                            </MenuList>
+                          </Menu>
+                        </ButtonGroup>
+                        <ButtonGroup
+                          isAttached
+                          colorScheme="red"
+                          size="sm"
+                          w="full">
+                          <Button
+                            w="full"
+                            onClick={() => {
+                              setDenyMode("once");
+                              setShowDenyInput(true);
+                            }}
+                            data-testid="invocation-deny-button">
+                            Deny
+                          </Button>
+                          <Menu placement="bottom-end">
+                            <MenuButton
+                              as={IconButton}
+                              aria-label="More deny options"
+                              icon={
+                                <Icon as={ChevronDownIcon} boxSize={4} />
+                              }
+                              borderLeftWidth="1px"
+                              borderLeftColor="red.200"
+                              data-testid="invocation-deny-menu-button"
+                            />
+                            <MenuList>
+                              <MenuItem
+                                onClick={handleAlwaysDeny}
+                                data-testid="invocation-always-deny-menu-item">
+                                Always deny
+                              </MenuItem>
+                            </MenuList>
+                          </Menu>
+                        </ButtonGroup>
+                      </HStack>
+                    ) : (
+                      <VStack
+                        align="stretch"
+                        gap={2}
+                        data-testid="invocation-deny-form">
+                        <Textarea
+                          size="sm"
+                          placeholder="Reason for denial (optional)"
+                          value={denyMessage}
+                          onChange={(e) => setDenyMessage(e.target.value)}
+                          rows={3}
+                          data-testid="invocation-deny-reason-input"
+                        />
+                        <HStack gap={2}>
+                          <Button
+                            variant="outlineDanger"
+                            size="sm"
+                            isLoading={deny.isLoading}
+                            onClick={
+                              denyMode === "always"
+                                ? handleAlwaysDeny
+                                : handleDenyOnce
+                            }
+                            data-testid="invocation-deny-confirm-button">
+                            {denyMode === "always" ? "Always deny" : "Deny"}
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setShowDenyInput(false);
+                              setDenyMessage("");
+                              setDenyMode("once");
+                            }}
+                            data-testid="invocation-deny-cancel-button">
+                            Cancel
+                          </Button>
+                        </HStack>
+                      </VStack>
                     )}
 
-                    {detail.error != null && (
-                      <Box>
-                        <Text
-                          fontSize="xs"
-                          fontWeight="semibold"
-                          textTransform="uppercase"
-                          color="text.subtle"
-                          letterSpacing="wide"
-                          mb={2}>
-                          Error
-                        </Text>
+                  </Box>
+                )}
+
+                {detail.result != null && (
+                  <Box>
+                    <Header mb={2}>Result</Header>
+                    {(() => {
+                      const d = extractDiff(detail.result);
+                      if (d)
+                        return (
+                          <DiffViewer diff={d.diff} filePath={d.path} />
+                        );
+                      return (
                         <Code
                           display="block"
                           whiteSpace="pre-wrap"
@@ -1543,60 +1526,75 @@ const Invocations: React.FC = () => {
                           borderRadius="md"
                           bg="background.container.subtle"
                           w="full">
-                          {JSON.stringify(detail.error, null, 2)}
+                          {JSON.stringify(detail.result, null, 2)}
                         </Code>
-                      </Box>
-                    )}
-
-                    <Box>
-                      <Text
-                        fontSize="xs"
-                        fontWeight="semibold"
-                        textTransform="uppercase"
-                        color="text.subtle"
-                        letterSpacing="wide"
-                        mb={2}>
-                        Events
-                      </Text>
-                      {eventsLoading ? (
-                        <Spinner size="sm" color="brand.base" />
-                      ) : (eventsData?.items ?? []).length === 0 ? (
-                        <Text fontSize="sm" color="text.subtle">
-                          No events recorded.
-                        </Text>
-                      ) : (
-                        <Box
-                          borderWidth={1}
-                          borderColor="border.base"
-                          borderRadius="md"
-                          overflow="hidden">
-                          <Table size="sm" variant="simple">
-                            <Thead bg="background.table.header">
-                              <Tr>
-                                <Th />
-                                <Th>Event</Th>
-                                <Th>Date</Th>
-                              </Tr>
-                            </Thead>
-                            <Tbody>
-                              {(eventsData?.items ?? []).map((evt, i) => (
-                                <EventRow
-                                  key={`${evt.timestamp}-${evt.type}-${String(i)}`}
-                                  event={evt}
-                                />
-                              ))}
-                            </Tbody>
-                          </Table>
-                        </Box>
-                      )}
-                    </Box>
-                  </VStack>
+                      );
+                    })()}
+                  </Box>
                 )}
-              </Box>
-            )
-          }
-        />
-      </Box>
+
+                {detail.error != null && (
+                  <Box>
+                    <Header mb={2}>Error</Header>
+                    <Code
+                      display="block"
+                      whiteSpace="pre-wrap"
+                      fontSize="xs"
+                      p={3}
+                      borderRadius="md"
+                      bg="background.container.subtle"
+                      w="full">
+                      {JSON.stringify(detail.error, null, 2)}
+                    </Code>
+                  </Box>
+                )}
+
+                <Box>
+                  <Header mb={2}>Events</Header>
+                  {eventsLoading ? (
+                    <Spinner size="sm" color="brand.base" />
+                  ) : (eventsData?.items ?? []).length === 0 ? (
+                    <Text fontSize="sm" color="text.subtle">
+                      No events recorded.
+                    </Text>
+                  ) : (
+                    <Box
+                      borderWidth={1}
+                      borderColor="border.base"
+                      borderRadius="md"
+                      overflow="hidden">
+                      <Table size="sm" variant="simple">
+                        <Thead bg="background.table.header">
+                          <Tr>
+                            <Th />
+                            <Th>Event</Th>
+                            <Th>Date</Th>
+                          </Tr>
+                        </Thead>
+                        <Tbody>
+                          {(eventsData?.items ?? []).map((evt, i) => (
+                            <EventRow
+                              key={`${evt.timestamp}-${evt.type}-${String(i)}`}
+                              event={evt}
+                            />
+                          ))}
+                        </Tbody>
+                      </Table>
+                    </Box>
+                  )}
+                </Box>
+              </VStack>
+            )}
+          </ModalBody>
+        </ModalContent>
+      </Modal>
+
+      <CreateRuleModal
+        isOpen={isRuleModalOpen}
+        onClose={closeRuleModal}
+        onSuccess={ruleModalOnSuccessRef.current}
+        {...(ruleModalInitial ? { initialValues: ruleModalInitial } : {})}
+      />
     </Box>
   );
 };
