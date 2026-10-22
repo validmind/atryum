@@ -17,7 +17,7 @@ var (
 	// PROGRA~1, MICROS~2.TXT: a Windows 8.3 short name
 	shortName = regexp.MustCompile(`^[^~ ]{1,6}~[0-9]+(\.[^.]*)?$`)
 	// \\?\C:\ and \\.\C:\ are only another spelling of C:\ (cleanPath drops them)
-	driveDevice = regexp.MustCompile(`^(//[?.]/|/\?\?/)[a-z]:/`)
+	driveDevice = regexp.MustCompile(`^(//[?.]/|/\?\?/)([a-z]:/)`)
 	// C:foo is relative to C:'s own working directory
 	driveRelative = regexp.MustCompile(`^[a-z]:([^/ ]|$)`)
 	// /proc/self/root/etc/passwd is /etc/passwd; /dev/fd/3 is whatever is open
@@ -72,13 +72,14 @@ func ambiguousPath(s string) bool {
 		return false // free text, not a path
 	}
 	s = strings.ReplaceAll(plainText(s), `\`, "/")
+	s = driveDevice.ReplaceAllString(s, "$2") // "\\?\C:\" is only another spelling of "C:\"
 	switch {
 	case s == "":
 		return false
 	case pathVariable.MatchString(s), strings.HasPrefix(s, "~"):
 		return true
 	case strings.HasPrefix(s, "//") || strings.HasPrefix(s, "/??/"):
-		return !driveDevice.MatchString(s) // a share, a device or a pipe
+		return true // a share, a device or a pipe
 	case driveRelative.MatchString(s):
 		return true
 	}

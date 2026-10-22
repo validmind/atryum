@@ -9,15 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `policy.Evaluate` now also decides a cleaned-up copy of each call and keeps
-  the stricter answer, so a deny or hold rule on an argument is no longer
-  evaded by another spelling of the same value: `//etc/passwd`,
-  `/tmp/../etc/passwd`, `/ETC/passwd`, `%2Fetc%2Fpasswd`, extra spaces,
+- `policy.Evaluate` now also decides two cleaned-up copies of each call (one
+  with spelling settled, one with paths cleaned too) and keeps the strictest
+  answer, so a deny or hold rule on an argument is no longer evaded by
+  another spelling of the same value: `//etc/passwd`, `/tmp/../etc/passwd`,
+  `/ETC/passwd`, `%2Fetc%2Fpasswd`, `file:///etc/passwd`, extra spaces,
   zero-width characters or full-width letters. Windows paths are cleaned the
-  way Windows opens them: `C:\..\Windows`, `\\?\C:\Windows`, `C:\Windows.\`
-  and `SAM::$DATA` all match a rule on `C:\Windows\`. A second key that only
-  differs in case (`"PATH"` beside `"path"`) can't hide the argument, and
-  facts are compared as the embedder set them. Cleaning can only make a
+  way Windows opens them: `C:\..\Windows`, `\\?\C:\Windows`, `C:\Windows.\`,
+  `SAM::$DATA` and `SAM:stream` all match a rule on `C:\Windows\`. A shell
+  command is never only read as a path, so `rm  -rf ../x` still matches a
+  rule on `rm -rf`. A second key that only differs in case (`"PATH"` beside
+  `"path"`) can't hide the argument, two rules with the same ID are still
+  two rules, and facts are compared as the embedder set them. Cleaning can only make a
   decision stricter, never more permissive; the call that runs is the one the
   agent sent, and a judge is asked at most once per rule. Short names
   (`PROGRA~1`), shares, environment variables and links still name a file

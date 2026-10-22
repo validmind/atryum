@@ -2,7 +2,6 @@ package policy
 
 import (
 	"context"
-	"encoding/json"
 	"reflect"
 	"sort"
 	"strings"
@@ -23,6 +22,14 @@ func TestCanonicalText(t *testing.T) {
 		{"percent escapes", "%2Fetc%2Fpasswd", "/etc/passwd"},
 		{"double percent escapes", "%252Fetc%252Fpasswd", "/etc/passwd"},
 		{"invalid percent escape is left", "100%", "100%"},
+		{"valid escapes are decoded around an invalid one", "%2Fetc%2Fpasswd%", "/etc/passwd%"},
+		{"valid escapes are decoded after an invalid one", "%zz%2Fetc%2Fpasswd", "%zz/etc/passwd"},
+		{"file URL naming localhost", "file://localhost/etc/passwd", "/etc/passwd"},
+		{"file URL with one slash", "file:/etc/passwd", "/etc/passwd"},
+		{"file URL of a drive", "file:///C:/Windows/x", "c:/windows/x"},
+		{"a slash before a drive", "/C:/Windows/x", "c:/windows/x"},
+		{"a stream without a dollar", `C:\Windows\System32\config\SAM:evil`, "c:/windows/system32/config/sam"},
+		{"a UNC path keeps its two slashes", `\\Server\Share\x`, "//server/share/x"},
 		{"zero-width space", "for​bidden", "forbidden"},
 		{"NUL", "for\x00bidden", "forbidden"},
 		{"escaped NUL", "for%00bidden", "forbidden"},
@@ -37,8 +44,7 @@ func TestCanonicalText(t *testing.T) {
 		{"long-path prefix", `\\?\C:\Windows\System32`, "c:/windows/system32"},
 		{"device prefix", `\\.\C:\Windows\System32`, "c:/windows/system32"},
 		{"NT prefix", `\??\C:\Windows`, "c:/windows"},
-		{"long-path UNC prefix", `\\?\UNC\Server\Share\x`, "/server/share/x"},
-		{"UNC path", `\\Server\Share\x`, "/server/share/x"},
+		{"long-path UNC prefix", `\\?\UNC\Server\Share\x`, "//server/share/x"},
 		{"trailing dot", `C:\Windows.\System32`, "c:/windows/system32"},
 		{"trailing space", `C:\Windows \System32`, "c:/windows/system32"},
 		{"trailing dots and spaces", `C:\Windows. .\System32`, "c:/windows/system32"},
@@ -56,38 +62,20 @@ func TestCanonicalText(t *testing.T) {
 	}
 }
 
-func TestCleanValue(t *testing.T) {
-	args := map[string]any{
-		"Path":    "//ETC/passwd",
-		"count":   float64(3),
-		"dry":     true,
-		"nothing": nil,
-		"nested":  map[string]any{"File": " /Tmp/../etc/x "},
-		"list":    []any{"A  B", float64(1)},
-	}
-	before, _ := json.Marshal(args)
-	want := map[string]any{
-		"path":    "/etc/passwd",
-		"count":   float64(3),
-		"dry":     true,
-		"nothing": nil,
-		"nested":  map[string]any{"file": "/etc/x"},
-		"list":    []any{"a b", float64(1)},
-	}
-	if got := newCleaner().value(args); !reflect.DeepEqual(got, want) {
-		t.Errorf("got %v\nwant %v", got, want)
-	}
-	if after, _ := json.Marshal(args); string(after) != string(before) {
-		t.Errorf("the original arguments were changed: %s", after)
-	}
-}
-
-// Two keys of a map value that clean to one name keep the first in sorted order, on every run.
-func TestCleanValueKeyCollisionIsDeterministic(t *testing.T) {
-	args := map[string]any{"Path": "/b", "path": "/a"}
-	for i := 0; i < 50; i++ {
-		if got := newCleaner().value(args).(map[string]any)["path"]; got != "/b" { // "Path" sorts before "path"
-			t.Fatalf("run %d: got %v", i, got)
+func TestCleanerText(t *testing.T) {
+	plain, paths := newCleaner(false), newCleaner(true)
+	for in, want := range map[string][2]string{
+		"/etc/passwd":           {"/etc/passwd", "/etc/passwd"},
+		"//ETC/passwd":          {"//etc/passwd", "/etc/passwd"},
+		"rm  -rf ../../x; cd /": {"rm -rf ../../x; cd /", "x; cd /"},
+		"Needs-Approval":        {"needs-approval", "needs-approval"},
+		"":                      {"", ""},
+	} {
+		if got := plain.text(in); got != want[0] {
+			t.Errorf("plain text(%q) = %q, want %q", in, got, want[0])
+		}
+		if got := paths.text(in); got != want[1] {
+			t.Errorf("paths text(%q) = %q, want %q", in, got, want[1])
 		}
 	}
 }
@@ -97,16 +85,16 @@ func TestCleanArgsFindsEveryKey(t *testing.T) {
 		"Path": "/A", "path": "/b", "PATH": nil,
 		"Payment": map[string]any{"Amount": float64(5)},
 	}
-	got := newCleaner().args("args.path", args)
+	got := newCleaner(true).args("args.path", args)
 	sort.Slice(got, func(i, j int) bool { return got[i].(string) < got[j].(string) })
-	if want := []any{"/a", "/b"}; !reflect.DeepEqual(got, want) {
+	if want := []any{"/A", "/b"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("args.path: got %v, want %v", got, want)
 	}
-	if got := newCleaner().args("args.payment.AMOUNT", args); !reflect.DeepEqual(got, []any{float64(5)}) {
+	if got := newCleaner(true).args("args.payment.AMOUNT", args); !reflect.DeepEqual(got, []any{float64(5)}) {
 		t.Errorf("args.payment.AMOUNT: got %v", got)
 	}
 	for _, field := range []string{"args.", "args.missing", "facts.path", "args.path.deeper"} {
-		if got := newCleaner().args(field, args); len(got) != 0 {
+		if got := newCleaner(true).args(field, args); len(got) != 0 {
 			t.Errorf("%s: got %v, want nothing", field, got)
 		}
 	}
@@ -373,5 +361,52 @@ func TestFactsAreComparedAsTheyAre(t *testing.T) {
 	}
 	if res := call("//etc/passwd", "untrusted"); res.Action != ActionAllow {
 		t.Errorf("a fact's value is not cleaned: got %s by %v, want allow", res.Action, res.Rule)
+	}
+}
+
+// Two rules of one level with the same ID (or none) are still two rules: a
+// stricter answer from the second is not mistaken for the first's own.
+func TestRulesWithTheSameIDAreTwoRules(t *testing.T) {
+	rules := []Rule{
+		{Tool: "read_file", When: []Cond{{Field: "args.path", Op: "prefix", Value: "/etc/"}}, Action: ActionDeny},
+		{Tool: "read_file", When: []Cond{{Field: "args.path", Op: "eq", Value: "//etc/passwd"}}, Action: ActionAllow},
+	}
+	if res := decide(nil, rules, "read_file", map[string]any{"path": "//etc/passwd"}, nil); res.Action != ActionDeny || res.Rule != &rules[0] {
+		t.Errorf("got %s by %v, want deny by the first rule", res.Action, res.Rule)
+	}
+}
+
+// A shell command holds slashes, and cleaning it as a path can take away
+// the words a rule looks for; the plain spelling is tried as well.
+func TestCleaningACommandAsAPathHidesNothing(t *testing.T) {
+	rules := []Rule{{ID: "RM", Tool: "shell", When: []Cond{{Field: "args.command", Op: "contains", Value: "rm -rf"}}, Action: ActionDeny}}
+	allow := []Rule{{ID: "A", Tool: "shell", Action: ActionAllow}}
+	for _, cmd := range []string{
+		"rm -rf x",
+		"rm  -rf x",
+		"rm  -rf ../../x; cd /", // cleaned as a path this is "x; cd /"
+		"RM\t-RF /tmp/../",
+		"rm%20-rf /",
+	} {
+		if res := decide(rules, allow, "shell", map[string]any{"command": cmd}, nil); res.Action != ActionDeny {
+			t.Errorf("%q: got %s by %v, want deny", cmd, res.Action, res.Rule)
+		}
+	}
+	dots := []Rule{{ID: "DD", Tool: "shell", When: []Cond{{Field: "args.command", Op: "contains", Value: ".."}}, Action: ActionDeny}}
+	if res := decide(dots, allow, "shell", map[string]any{"command": "cat ..%2F..%2Fetc/passwd"}, nil); res.Action != ActionDeny {
+		t.Errorf("escaped dot-dot: got %s, want deny", res.Action)
+	}
+}
+
+// A rule written as a file URL, or a call sent as one, lines up with the path.
+func TestFileURLsNameThePath(t *testing.T) {
+	for _, path := range []string{"file:///etc/passwd", "file://localhost/etc/passwd", "file:/etc/passwd", "FILE:///ETC/passwd"} {
+		if res := decide(readOnly, denyEtc, "read_file", map[string]any{"path": path}, nil); res.Action != ActionDeny {
+			t.Errorf("%q: got %s, want deny", path, res.Action)
+		}
+	}
+	win := []Rule{{ID: "W", Tool: "read_file", When: []Cond{{Field: "args.path", Op: "prefix", Value: `C:\Windows\`}}, Action: ActionDeny}}
+	if res := decide(readOnly, win, "read_file", map[string]any{"path": "file:///C:/Windows/System32"}, nil); res.Action != ActionDeny {
+		t.Errorf("a drive file URL: got %s, want deny", res.Action)
 	}
 }

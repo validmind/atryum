@@ -7,8 +7,8 @@
 // that gave no verdict also goes to a person: it matched, so it never defers
 // to the other level.
 //
-// Conditions compare text literally, so Evaluate also decides a cleaned-up
-// copy of every call and keeps the stricter answer: a deny rule on
+// Conditions compare text literally, so Evaluate also decides two cleaned-up
+// copies of every call and keeps the strictest answer: a deny rule on
 // "/etc/" then also holds against "//etc/passwd" and "/ETC/passwd". See
 // normalize.go and Evaluate.
 //
@@ -73,8 +73,9 @@ const (
 // Text conditions (eq, prefix, contains, in) are written for the text as the
 // agent sent it. Evaluate also tries those on args against cleaned-up text:
 // lower case, single spaces, decoded %XX escapes, no invisible characters,
-// tidied paths (Windows ones too). A rule's values and field names are
-// cleaned the same way. Facts are the embedder's own and are never cleaned.
+// file URLs as paths; and then once more with paths tidied (Windows ones
+// too). A rule's values and field names are cleaned the same way. Facts are
+// the embedder's own and are never cleaned.
 type Cond struct {
 	Field string `json:"field"`
 	Op    string `json:"op"`
@@ -123,14 +124,15 @@ var strictness = map[Action]int{ActionAllow: 1, ActionNotify: 2, ActionHuman: 3,
 // Evaluate decides c against the firm and agent rules. A nil judge behaves as
 // one that always errors.
 //
-// It decides the call twice (see normalize.go): as sent, and with the
+// It decides the call three times (see normalize.go): as sent, with the
 // arguments and the rules' values cleaned up (case, spaces, %XX escapes,
-// invisible characters, path detours). The cleaned answer replaces the first
-// only when it is stricter and comes from a different rule.
+// invisible characters), and with paths cleaned too (detours, Windows
+// spellings). A later answer replaces the one so far only when it is
+// stricter and comes from a different rule.
 //
-// The judge is asked at most once per rule. The cleaned pass reuses the real
-// verdict for every judge rule the first pass asked, and sends a judge rule
-// that only the cleaned call reaches to a person.
+// The judge is asked at most once per rule. The cleaned passes reuse the real
+// verdict for every judge rule the first pass asked, and send a judge rule
+// that only a cleaned call reaches to a person.
 func Evaluate(ctx context.Context, firm, agent []Rule, c Call, judge Judge) Result {
 	type asked struct {
 		rule   Rule
@@ -146,7 +148,7 @@ func Evaluate(ctx context.Context, firm, agent []Rule, c Call, judge Judge) Resu
 			return a, err
 		}
 	}
-	first := evaluate(ctx, firm, agent, c, recording, nil)
+	best := evaluate(ctx, firm, agent, c, recording, nil)
 
 	replay := func(_ context.Context, r Rule) (Action, error) {
 		for _, v := range verdicts {
@@ -156,17 +158,14 @@ func Evaluate(ctx context.Context, firm, agent []Rule, c Call, judge Judge) Resu
 		}
 		return ActionHuman, nil // reached only after cleaning: a person decides
 	}
-	second := evaluate(ctx, firm, agent, c, replay, newCleaner())
-	if second.Rule != nil && !sameRule(first, second) && strictness[second.Action] > strictness[first.Action] {
-		second.Basis += " (matched after cleaning up the arguments' case, spaces, escapes and path detours)"
-		return second
+	for _, paths := range []bool{false, true} {
+		res := evaluate(ctx, firm, agent, c, replay, newCleaner(paths))
+		if res.Rule != nil && res.Rule != best.Rule && strictness[res.Action] > strictness[best.Action] {
+			res.Basis += " (matched after cleaning up the arguments' case, spaces, escapes and path detours)"
+			best = res
+		}
 	}
-	return first
-}
-
-// sameRule reports whether two results come from the same rule of the same level.
-func sameRule(a, b Result) bool {
-	return a.Rule != nil && b.Rule != nil && a.Level == b.Level && a.Rule.ID == b.Rule.ID
+	return best
 }
 
 // evaluate is one pass over both levels. With a cleaner, conditions on args
@@ -276,33 +275,33 @@ func condOK(c Cond, call Call) bool { return condMatches(c, call, nil) }
 
 // condMatches reports whether one condition holds. With a cleaner, a
 // condition on args is tried against every argument its field names once
-// keys are cleaned, with the rule's values cleaned the same way, so
-// "args.Path prefix /ETC/" lines up with "path": "//etc/passwd". Facts are
-// compared as they are in either pass.
+// keys are cleaned, with the argument and the rule's values cleaned the same
+// way, so "args.Path prefix /ETC/" lines up with "path": "//etc/passwd".
+// Facts are compared as they are in every pass.
 func condMatches(c Cond, call Call, clean *cleaner) bool {
-	if clean != nil && strings.HasPrefix(c.Field, "args.") {
-		want := func(v any) string { return clean.text(text(v)) }
-		for _, v := range clean.args(c.Field, call.Args) {
-			if compare(c, v, want) {
-				return true
-			}
-		}
-		return false
+	if clean == nil || !strings.HasPrefix(c.Field, "args.") {
+		v, ok := lookup(c.Field, call)
+		return ok && compare(c, v, text)
 	}
-	v, ok := lookup(c.Field, call)
-	return ok && compare(c, v, text)
+	cleaned := func(v any) string { return clean.text(text(v)) }
+	for _, v := range clean.args(c.Field, call.Args) {
+		if compare(c, v, cleaned) {
+			return true
+		}
+	}
+	return false
 }
 
-// compare applies c's operator to a field's value v, taking the text of c's
-// values with want.
-func compare(c Cond, v any, want func(any) string) bool {
+// compare applies c's operator to a field's value v, taking the text of v
+// and of c's values with spell.
+func compare(c Cond, v any, spell func(any) string) bool {
 	switch c.Op {
 	case "eq":
-		return text(v) == want(c.Value)
+		return spell(v) == spell(c.Value)
 	case "prefix":
-		return strings.HasPrefix(text(v), want(c.Value))
+		return strings.HasPrefix(spell(v), spell(c.Value))
 	case "contains":
-		return strings.Contains(text(v), want(c.Value))
+		return strings.Contains(spell(v), spell(c.Value))
 	case "gt", "lt":
 		a, okA := number(v)
 		b, okB := number(c.Value)
@@ -319,7 +318,7 @@ func compare(c Cond, v any, want func(any) string) bool {
 			return false
 		}
 		for i := 0; i < list.Len(); i++ {
-			if text(v) == want(list.Index(i).Interface()) {
+			if spell(v) == spell(list.Index(i).Interface()) {
 				return true
 			}
 		}

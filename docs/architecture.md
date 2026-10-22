@@ -325,8 +325,8 @@ the database handle, an embedding program can set:
 
 A rule decides from the text of a call; the file is opened by an upstream MCP
 server, often on another machine. `pkg/policy` cleans a path's spelling before
-matching (case, escapes, `//`, `..`, and Windows prefixes, drives, trailing dots
-and streams), but text alone cannot say where a Windows short name
+matching (case, escapes, file URLs, `//`, `..`, and Windows prefixes, drives,
+trailing dots and streams), but text alone cannot say where a Windows short name
 (`PROGRA~1`), a share (`\\host\C$`), a variable (`%SystemRoot%`, `$HOME`), a
 relative path or a link leads. Three layers cover that, each catching what the
 one before cannot:

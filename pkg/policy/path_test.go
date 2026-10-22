@@ -36,6 +36,8 @@ func TestAmbiguousPath(t *testing.T) {
 		{"home directory", "~/.ssh/id_rsa", true},
 		{"another user's home", "~root/.ssh", true},
 		{"short name", `C:\PROGRA~1\App`, true},
+		{"short name behind a long-path prefix", `\\?\C:\PROGRA~1\App`, true},
+		{"climb behind a device prefix", `\\.\C:\..\x`, false},
 		{"short name with an extension", `C:\Docs\SECRET~1.TXT`, true},
 		{"admin share", `\\localhost\C$\Windows`, true},
 		{"UNC share", `\\fileserver\share\x`, true},
