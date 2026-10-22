@@ -11,6 +11,23 @@
 // copy of every call and keeps the stricter answer: a deny rule on
 // "/etc/" then also holds against "//etc/passwd" and "/ETC/passwd". See
 // normalize.go and Evaluate.
+//
+// # Rules on paths
+//
+// Cleaning settles how a path is spelled, not where it leads: a short name
+// (PROGRA~1), a share, a variable or a link is resolved only by the machine
+// that opens the file. So write path rules as allow rules for the folders a
+// tool may use, with a later rule sending the tool's other calls to a person:
+//
+//	read_file when args.path prefix "/workspace/"  ->  allow
+//	read_file                                      ->  human
+//
+// A spelling the allow rule doesn't name reaches a person instead of slipping
+// past a deny rule; cleaning never loosens, so even "/WORKSPACE/x" does. Add a
+// firm rule on facts.ambiguous_path (see AmbiguousPath) so that a short name
+// or variable inside an allowed folder reaches a person too. Links remain:
+// the server that opens the file must check the real path against its roots
+// (see "Path arguments" in docs/architecture.md).
 package policy
 
 import (

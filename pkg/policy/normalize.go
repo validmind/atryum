@@ -38,6 +38,16 @@ import (
 //  7. If it looks like a path, it is cleaned by cleanPath: "//a", "/a/./b"
 //     and "/x/../a/b" lose their detours, and so do Windows spellings.
 func canonicalText(s string) string {
+	s = plainText(s)
+	if strings.ContainsAny(s, `/\`) {
+		s = cleanPath(s)
+	}
+	return s
+}
+
+// plainText is steps 1 to 6 of canonicalText: the text with its spelling
+// settled but a path's detours still in it.
+func plainText(s string) string {
 	s = norm.NFKC.String(s)
 	for i := 0; i < 3 && strings.Contains(s, "%"); i++ {
 		decoded, err := url.PathUnescape(s)
@@ -49,11 +59,7 @@ func canonicalText(s string) string {
 	s = strings.Map(dropInvisible, s)
 	s = strings.ToLower(s)
 	s = strings.Join(strings.Fields(s), " ")
-	s = strings.TrimPrefix(s, "file://")
-	if strings.ContainsAny(s, `/\`) {
-		s = cleanPath(s)
-	}
-	return s
+	return strings.TrimPrefix(s, "file://")
 }
 
 // dropInvisible is a strings.Map function: it returns -1 (drop) for
