@@ -18,7 +18,7 @@ RUN mkdir -p /third_party_notices/licenses/npm \
 COPY ui/ ./
 RUN npm run build
 
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26-alpine AS builder
 ARG GO_LICENSES
 ARG ALLOWED_GO_LICENSES
 WORKDIR /src
