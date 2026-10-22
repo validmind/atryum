@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -29,6 +30,23 @@ func TestCanonicalText(t *testing.T) {
 		{"trailing slash is kept", "/etc/", "/etc/"},
 		{"a name that only starts like it", "/etcetera/x", "/etcetera/x"},
 		{"empty", "", ""},
+		{"escaped full-width slash", "%EF%BC%8Fetc%EF%BC%8Fpasswd", "/etc/passwd"},
+		{"Windows path", `C:\Windows\System32\config\SAM`, "c:/windows/system32/config/sam"},
+		{"a drive is a root", `C:\..\Windows\System32\`, "c:/windows/system32/"},
+		{"a drive alone", `C:\`, "c:/"},
+		{"long-path prefix", `\\?\C:\Windows\System32`, "c:/windows/system32"},
+		{"device prefix", `\\.\C:\Windows\System32`, "c:/windows/system32"},
+		{"NT prefix", `\??\C:\Windows`, "c:/windows"},
+		{"long-path UNC prefix", `\\?\UNC\Server\Share\x`, "/server/share/x"},
+		{"UNC path", `\\Server\Share\x`, "/server/share/x"},
+		{"trailing dot", `C:\Windows.\System32`, "c:/windows/system32"},
+		{"trailing space", `C:\Windows \System32`, "c:/windows/system32"},
+		{"trailing dots and spaces", `C:\Windows. .\System32`, "c:/windows/system32"},
+		{"dot-dot with a trailing space", `C:\Temp\.. \Windows`, "c:/windows"},
+		{"data stream", `C:\Windows\System32\config\SAM::$DATA`, "c:/windows/system32/config/sam"},
+		{"directory stream", `C:\Windows:$I30:$INDEX_ALLOCATION\System32`, "c:/windows/system32"},
+		{"forward-slash drive path", "C:/Windows./System32", "c:/windows/system32"},
+		{"Unix names keep their dots", "/etc./passwd", "/etc./passwd"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := canonicalText(tc.in); got != tc.want {
@@ -38,7 +56,7 @@ func TestCanonicalText(t *testing.T) {
 	}
 }
 
-func TestCanonicalArgs(t *testing.T) {
+func TestCleanValue(t *testing.T) {
 	args := map[string]any{
 		"Path":    "//ETC/passwd",
 		"count":   float64(3),
@@ -56,35 +74,40 @@ func TestCanonicalArgs(t *testing.T) {
 		"nested":  map[string]any{"file": "/etc/x"},
 		"list":    []any{"a b", float64(1)},
 	}
-	if got := canonicalArgs(args); !reflect.DeepEqual(got, want) {
+	if got := newCleaner().value(args); !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v\nwant %v", got, want)
 	}
 	if after, _ := json.Marshal(args); string(after) != string(before) {
 		t.Errorf("the original arguments were changed: %s", after)
 	}
-	if canonicalArgs(nil) != nil {
-		t.Error("nil arguments should stay nil")
-	}
 }
 
-// Two keys that clean to one name keep the first in sorted order, on every run.
-func TestCanonicalArgsKeyCollisionIsDeterministic(t *testing.T) {
+// Two keys of a map value that clean to one name keep the first in sorted order, on every run.
+func TestCleanValueKeyCollisionIsDeterministic(t *testing.T) {
 	args := map[string]any{"Path": "/b", "path": "/a"}
 	for i := 0; i < 50; i++ {
-		if got := canonicalArgs(args)["path"]; got != "/b" { // "Path" sorts before "path"
+		if got := newCleaner().value(args).(map[string]any)["path"]; got != "/b" { // "Path" sorts before "path"
 			t.Fatalf("run %d: got %v", i, got)
 		}
 	}
 }
 
-func TestCanonicalField(t *testing.T) {
-	for in, want := range map[string]string{
-		"args.Path":             "args.path",
-		"args.Payment.Amount":   "args.payment.amount",
-		"facts.contains_secret": "facts.contains_secret",
-	} {
-		if got := canonicalField(in); got != want {
-			t.Errorf("canonicalField(%q) = %q, want %q", in, got, want)
+func TestCleanArgsFindsEveryKey(t *testing.T) {
+	args := map[string]any{
+		"Path": "/A", "path": "/b", "PATH": nil,
+		"Payment": map[string]any{"Amount": float64(5)},
+	}
+	got := newCleaner().args("args.path", args)
+	sort.Slice(got, func(i, j int) bool { return got[i].(string) < got[j].(string) })
+	if want := []any{"/a", "/b"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("args.path: got %v, want %v", got, want)
+	}
+	if got := newCleaner().args("args.payment.AMOUNT", args); !reflect.DeepEqual(got, []any{float64(5)}) {
+		t.Errorf("args.payment.AMOUNT: got %v", got)
+	}
+	for _, field := range []string{"args.", "args.missing", "facts.path", "args.path.deeper"} {
+		if got := newCleaner().args(field, args); len(got) != 0 {
+			t.Errorf("%s: got %v, want nothing", field, got)
 		}
 	}
 }
@@ -291,5 +314,64 @@ func TestNilJudgeStillSendsAMatchedJudgeRuleToAPerson(t *testing.T) {
 	res := decide(nil, []Rule{judgeRule("J-1", refund)}, "label", map[string]any{"text": "please refund me"}, nil)
 	if res.Action != ActionHuman || res.Rule == nil || res.Rule.ID != "J-1" {
 		t.Errorf("got %s by %v, want human by J-1", res.Action, res.Rule)
+	}
+}
+
+// The Windows spellings of a path a deny rule names, written either way in the rule.
+func TestDenyRuleOnAWindowsPathHoldsAgainstOtherSpellings(t *testing.T) {
+	for _, rulePath := range []string{`C:\Windows\`, "c:/windows/"} {
+		deny := []Rule{{ID: "R-W", Tool: "read_file", When: []Cond{{Field: "args.path", Op: "prefix", Value: rulePath}}, Action: ActionDeny}}
+		for _, path := range []string{
+			`C:\Windows\System32\config\SAM`,
+			`c:/windows/system32`,
+			`C:\..\Windows\System32`,
+			`C:\Temp\..\..\Windows\System32`,
+			`\\?\C:\Windows\System32`,
+			`\\.\C:\Windows\System32`,
+			`C:\Windows.\System32`,
+			`C:\Windows \System32`,
+			`C:\Windows::$INDEX_ALLOCATION\System32`,
+		} {
+			if res := decide(readOnly, deny, "read_file", map[string]any{"path": path}, nil); res.Action != ActionDeny || res.Rule.ID != "R-W" {
+				t.Errorf("rule %q, path %q: got %s by %v, want deny by R-W", rulePath, path, res.Action, res.Rule)
+			}
+		}
+		for _, path := range []string{`C:\Users\me\notes.txt`, `D:\Windows\x`, `C:\WindowsApps\x`} {
+			if res := decide(readOnly, deny, "read_file", map[string]any{"path": path}, nil); res.Action != ActionAllow {
+				t.Errorf("rule %q, path %q: got %s by %v, want allow", rulePath, path, res.Action, res.Rule)
+			}
+		}
+	}
+	eq := []Rule{{ID: "R-S", Tool: "read_file", When: []Cond{{Field: "args.path", Op: "eq", Value: `C:\Windows\System32\config\SAM`}}, Action: ActionDeny}}
+	if res := decide(readOnly, eq, "read_file", map[string]any{"path": `C:\Windows\System32\config\SAM::$DATA`}, nil); res.Action != ActionDeny {
+		t.Errorf("a stream suffix: got %s, want deny", res.Action)
+	}
+}
+
+// A second key that cleans to the same name must not hide the one the tool reads.
+func TestAnotherSpellingOfTheKeyDoesNotHideTheArgument(t *testing.T) {
+	for _, decoy := range []string{"PATH", "Path", " path"} {
+		args := map[string]any{"path": "//etc/passwd", decoy: "/tmp/x"}
+		if res := decide(readOnly, denyEtc, "read_file", args, nil); res.Action != ActionDeny {
+			t.Errorf("decoy key %q: got %s by %v, want deny", decoy, res.Action, res.Rule)
+		}
+	}
+}
+
+// Facts are the embedder's own: the cleaned pass leaves their names and
+// values alone, so a rule that mixes args and facts still holds.
+func TestFactsAreComparedAsTheyAre(t *testing.T) {
+	rules := []Rule{{ID: "R-F", Tool: "read_file", When: []Cond{
+		{Field: "args.path", Op: "prefix", Value: "/etc/"},
+		{Field: "facts.agentTier", Op: "eq", Value: "Untrusted"},
+	}, Action: ActionDeny}}
+	call := func(path, tier string) Result {
+		return Evaluate(context.Background(), readOnly, rules, Call{Tool: "read_file", Args: map[string]any{"path": path}, Facts: map[string]any{"agentTier": tier}}, nil)
+	}
+	if res := call("//etc/passwd", "Untrusted"); res.Action != ActionDeny || res.Rule.ID != "R-F" {
+		t.Errorf("got %s by %v, want deny by R-F", res.Action, res.Rule)
+	}
+	if res := call("//etc/passwd", "untrusted"); res.Action != ActionAllow {
+		t.Errorf("a fact's value is not cleaned: got %s by %v, want allow", res.Action, res.Rule)
 	}
 }
