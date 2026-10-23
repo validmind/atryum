@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in ways text alone can't tell: prefer allow rules on paths, and see
   `policy.AmbiguousPath` below.
 
+## [0.5.0] - 2026-10-23
+
 ### Added
 
 - `policy.AmbiguousPath`, for `facts.ambiguous_path`: true when a call's
@@ -105,6 +107,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pending returns an error wrapping `atryum.ErrNotPending`.
 
 ### Fixed
+
+- The shared agent hook (Claude Code, Codex, Cursor) no longer waits
+  without limit for a held call. Claude Code and Codex kill a hook after
+  600 seconds by default and then let the call run, so a call left
+  pending past that ran unapproved. The hook now denies it after
+  `ATRYUM_HOLD_WAIT_MS` (default 540000, nine minutes), counted from its
+  start.
 
 - `GET /api/v1/agent/rules` and the MCP `tools/list` policy annotations
   now resolve API-key-authenticated agents by their `agents.id`, the same
@@ -396,7 +405,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.0.3] - 2026-06-05
 
-[Unreleased]: https://github.com/validmind/atryum/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/validmind/atryum/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/validmind/atryum/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/validmind/atryum/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/validmind/atryum/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/validmind/atryum/compare/v0.1.0...v0.2.0
