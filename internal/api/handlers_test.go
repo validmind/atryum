@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -61,6 +62,19 @@ type stubService struct {
 	planFeedback         string
 	planExpireID         string
 	planCancelID         string
+	stuckServer          string
+	stuckArgs            map[string]any
+}
+
+func (s *stubService) ReportStuck(_ context.Context, server string, args map[string]any) (invocation.InvocationResponse, error) {
+	s.stuckServer, s.stuckArgs = server, args
+	if server == "broken" {
+		return invocation.InvocationResponse{}, errors.New(`pq: relation "invocations" does not exist`)
+	}
+	if server == "unknown" {
+		return invocation.InvocationResponse{}, fmt.Errorf("%w: unknown server", invocation.ErrInvalidStuckReport)
+	}
+	return invocation.InvocationResponse{InvocationID: "inv_stuck", Result: json.RawMessage(`{"content":[{"type":"text","text":"Stuck report recorded"}]}`)}, nil
 }
 
 func (s *stubService) Invoke(ctx context.Context, req invocation.CreateInvocationRequest) (invocation.InvocationResponse, error) {
@@ -686,6 +700,26 @@ func TestExternalSessionMintRejectionReturns400(t *testing.T) {
 // server-side get-or-create resolves the session), and that the resolved
 // internal session id is surfaced in the response. This is the field that
 // replaces the old mint-then-echo session_id flow for harnesses.
+// A reused idempotency key for a different request is a 409 on both paths.
+func TestIdempotencyConflictIs409(t *testing.T) {
+	for path, body := range map[string]string{
+		"/api/v1/external/invocations": `{"source":"amp","tool":"bash","input":{}}`,
+		"/api/v1/invocations":          `{"server":"demo","tool":"bash","input":{}}`,
+	} {
+		svc := &stubService{invErr: fmt.Errorf("submit: %w", invocation.ErrIdempotencyConflict)}
+		h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		req.Header.Set("content-type", "application/json")
+		req.Header.Set("Idempotency-Key", "k1")
+		req = req.WithContext(auth.WithIdentity(req.Context(), auth.Identity{AgentID: "amp-1"}))
+		w := httptest.NewRecorder()
+		h.Routes().ServeHTTP(w, req)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("%s: status %d body=%s, want 409", path, w.Code, w.Body.String())
+		}
+	}
+}
+
 func TestExternalSubmitForwardsClientSessionID(t *testing.T) {
 	resolved := "ses_resolved"
 	svc := &stubService{invoke: invocation.InvocationResponse{
@@ -1323,6 +1357,64 @@ func TestMCPRulesToolSchemaIncludesRequestIDFallback(t *testing.T) {
 		return
 	}
 	t.Fatalf("expected %s in tools/list, got %#v", atryumRulesToolName, rpcResp.Result.Tools)
+}
+
+// atryum_report_stuck is offered only when enabled, under Atryum's own rules
+// or an external decider, and a call to it is recorded, never invoked.
+func TestMCPReportStuckTool(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		enabled, decider bool
+	}{
+		{"disabled", false, false},
+		{"enabled", true, false},
+		{"enabled with external decider", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &stubService{tools: []mcp.Tool{{Name: "demo_tool"}}, plansDisabled: true}
+			h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+			if tc.decider {
+				h.UseExternalDecider()
+			}
+			if tc.enabled {
+				h.EnableStuckReports()
+			}
+			w := httptest.NewRecorder()
+			h.Routes().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)))
+			if listed := strings.Contains(w.Body.String(), `"name":"atryum_report_stuck"`); listed != tc.enabled {
+				t.Fatalf("listed=%v, want %v: %s", listed, tc.enabled, w.Body.String())
+			}
+
+			w = httptest.NewRecorder()
+			h.Routes().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"atryum_report_stuck","arguments":{"task":"pay INV-1","boundary":"P-02 needs a person"}}}`)))
+			if !tc.enabled {
+				if svc.stuckArgs != nil || svc.invokedReq == nil {
+					t.Fatal("a disabled stuck tool should be proxied like any other tool")
+				}
+				return
+			}
+			if svc.invokedReq != nil || svc.stuckServer != "demo" || svc.stuckArgs["boundary"] != "P-02 needs a person" {
+				t.Fatalf("invoked=%v server=%q args=%v", svc.invokedReq, svc.stuckServer, svc.stuckArgs)
+			}
+			if !strings.Contains(w.Body.String(), "Stuck report recorded") {
+				t.Fatalf("no acknowledgement: %s", w.Body.String())
+			}
+		})
+	}
+}
+
+// An agent sees why a stuck report was rejected, but never database text.
+func TestMCPReportStuckErrors(t *testing.T) {
+	svc := &stubService{plansDisabled: true}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	h.EnableStuckReports()
+	for server, want := range map[string]string{"unknown": "unknown server", "broken": "could not record the stuck report"} {
+		w := httptest.NewRecorder()
+		h.Routes().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/mcp/"+server, strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"atryum_report_stuck","arguments":{"task":"t","boundary":"b"}}}`)))
+		if !strings.Contains(w.Body.String(), want) || strings.Contains(w.Body.String(), "relation") {
+			t.Fatalf("%s: %s", server, w.Body.String())
+		}
+	}
 }
 
 func TestMCPToolsCallInterceptsInvocation(t *testing.T) {

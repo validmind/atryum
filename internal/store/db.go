@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	sq "github.com/Masterminds/squirrel"
 )
@@ -88,4 +89,44 @@ func sqliteDSNFromURL(u *url.URL) string {
 		return u.Host
 	}
 	return u.Path
+}
+
+// DBPool sizes a PostgreSQL connection pool. A zero field means "unset".
+type DBPool struct {
+	MaxOpenConns    int
+	MaxIdleConns    int
+	ConnMaxIdleTime time.Duration
+	ConnMaxLifetime time.Duration
+}
+
+// DefaultDBPool keeps one process well inside a stock Postgres
+// max_connections (100) with a few replicas, and recycles idle and old
+// connections so failovers and pooler restarts are picked up. The decision
+// listener holds one more connection outside the pool.
+var DefaultDBPool = DBPool{MaxOpenConns: 20, MaxIdleConns: 10, ConnMaxIdleTime: 5 * time.Minute, ConnMaxLifetime: 30 * time.Minute}
+
+// Over returns p with every set field of over replacing p's.
+func (p DBPool) Over(over DBPool) DBPool {
+	if over.MaxOpenConns != 0 {
+		p.MaxOpenConns = over.MaxOpenConns
+	}
+	if over.MaxIdleConns != 0 {
+		p.MaxIdleConns = over.MaxIdleConns
+	}
+	if over.ConnMaxIdleTime != 0 {
+		p.ConnMaxIdleTime = over.ConnMaxIdleTime
+	}
+	if over.ConnMaxLifetime != 0 {
+		p.ConnMaxLifetime = over.ConnMaxLifetime
+	}
+	return p
+}
+
+// ConfigurePool applies DefaultDBPool overlaid with p to db.
+func ConfigurePool(db *sql.DB, p DBPool) {
+	p = DefaultDBPool.Over(p)
+	db.SetMaxOpenConns(p.MaxOpenConns)
+	db.SetMaxIdleConns(p.MaxIdleConns)
+	db.SetConnMaxIdleTime(p.ConnMaxIdleTime)
+	db.SetConnMaxLifetime(p.ConnMaxLifetime)
 }

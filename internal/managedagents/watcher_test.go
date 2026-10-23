@@ -190,7 +190,9 @@ func (a *fakeAudit) Create(ctx context.Context, inv invocation.Invocation) error
 	}
 	return nil
 }
-func (a *fakeAudit) GetByIdempotencyKey(ctx context.Context, key string) (invocation.Invocation, error) {
+
+// GetByIdempotencyKey ignores agentID: these tests use one agent.
+func (a *fakeAudit) GetByIdempotencyKey(ctx context.Context, _, key string) (invocation.Invocation, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if inv, ok := a.byKey[key]; ok {

@@ -184,6 +184,20 @@ type ServerConfig struct {
 	DatabasePath   string `toml:"database_path"`
 	DatabaseURL    string `toml:"database_url"`
 	LogLevel       string `toml:"log_level"`
+	// DatabaseListen (default true) keeps a PostgreSQL LISTEN connection to
+	// wake held calls; set false behind a transaction-mode pooler such as
+	// PgBouncer, which never delivers notifications.
+	DatabaseListen *bool `toml:"database_listen"`
+	// DatabasePool sizes the PostgreSQL connection pool; unset fields take
+	// store.DefaultDBPool.
+	DatabasePool DatabasePoolConfig `toml:"database_pool"`
+}
+
+type DatabasePoolConfig struct {
+	MaxOpenConns           int `toml:"max_open_conns"`
+	MaxIdleConns           int `toml:"max_idle_conns"`
+	ConnMaxIdleTimeSeconds int `toml:"conn_max_idle_time_seconds"`
+	ConnMaxLifetimeSeconds int `toml:"conn_max_lifetime_seconds"`
 }
 
 type DefaultsConfig struct {

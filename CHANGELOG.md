@@ -30,6 +30,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   then launch Claude Code with the same two variables. The shared hook also
   falls back to `$ATRYUM_HOME/agent-hook-state` when only `ATRYUM_HOME` is
   set. Default installs are unchanged.
+- `pkg/atryum.WithDecider`: an embedding program decides every tool call on
+  every path (MCP proxy, direct invocation, harness hook, Managed Agents
+  bridge) as allow, notify, deny, or pending with a review ID. Atryum's rules,
+  plans, default policy, operator API and UI are then not used; a decider error
+  denies the call.
+- `pkg/atryum.WithAgentAPIKeys(enabled)`: turns agent API keys (`atr_…`) on
+  or off for the agent routes. They stay on by default, and are off by
+  default under `WithDecider`, whose embedder keeps its own agent registry;
+  when off, an `atr_` bearer gets 401 on `/mcp/`, `/api/v1/invocations` and
+  `/api/v1/external/*`.
+- `pkg/atryum.WithEventHook`: called inside the transaction that changes an
+  invocation, with that transaction, so an embedding program can append its
+  own records atomically.
+- `pkg/atryum.Migrate` applies the built-in and extension migrations without
+  starting the server.
+- `pkg/atryum.WithDatabaseURL` sets the database URL for an embedding
+  program, overriding `server.database_url`.
+- `pkg/atryum.WithRequireAgentAuth`: the server refuses to start without an
+  enabled `[[auth]]` issuer or with `auth_debug.skip_verify` (or
+  `ATRYUM_AUTH_DEBUG_SKIP_VERIFY`) set, or with an issuer or JWKS URL that
+  is not HTTPS (plain HTTP is allowed only on loopback), and agent routes
+  reject any request without a verified agent identity.
+- `pkg/policy`: a two-level rule engine (firm and agent rules, first match per
+  level, strictest level wins, judge rules that fall back to a person; a level
+  whose matching rules are all judges with no verdict is `human`, never a
+  pass to the other level) and a secret-literal detector, `ContainsSecret`,
+  for `facts.contains_secret`.
+- `pkg/atryum.WithStuckReports`: the MCP proxy offers `atryum_report_stuck`
+  (`task`, `boundary`, optional `detail`, capped at 1, 1 and 4 KB). It
+  authorizes nothing; it records an invocation of that tool in the new status
+  `reported`, which the event hook sees once, as `invocation.stuck_reported`,
+  and acknowledges the agent. The server in the MCP path must be configured.
+- `pkg/atryum.WithDBPool` and `[server.database_pool]` size the PostgreSQL
+  connection pool, which now defaults to 20 open and 10 idle connections,
+  idle ones closed after 5 minutes and each replaced after 30 (it was
+  unbounded).
+- `server.database_listen = false` turns off the PostgreSQL decision listener
+  (for PgBouncer in transaction mode, which never delivers notifications);
+  held calls then re-read their row every 250 ms.
+- `pkg/atryum.WithResolvePending` hands an embedding program a
+  `ResolvePending(ctx, tx, invocationID, approve, actor, reason)` that approves
+  or denies a held call through Atryum's own compare-and-set path, inside the
+  embedder's transaction (or Atryum's own when `tx` is nil): the event row,
+  the event hook and the Postgres wake-up all commit with it. A call no longer
+  pending returns an error wrapping `atryum.ErrNotPending`.
 
 ### Fixed
 
@@ -104,6 +149,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for local development; pass `--allow-insecure-http` to `setup claude`
   (which bakes `ATRYUM_ALLOW_INSECURE_HTTP=1` into the hook commands) or set
   that variable yourself to accept a trusted private network.
+
+### Changed
+
+- How the caller authenticated is recorded on each invocation (migration
+  033: `auth_issuer`, `auth_method`, `auth_key_id`) and passed to an
+  embedder's decider as `ToolCall.Auth` and event hook as
+  `Change.Invocation.Auth`: the issuer, the method (`jwt`, `api_key`,
+  `managed_agent` for a session the Managed Agents bridge registered, or
+  `no_auth` for a self-declared agent ID) and the API key's or session's id.
+  Stuck reports record the reporting caller's.
+- The migration runner checks each recorded migration's name as well as its
+  number, and refuses to start on a database whose `schema_migrations`
+  records a version under another name (one migrated by a build whose
+  migrations were numbered differently, such as a development branch
+  rebased onto new migrations), with an error that says to recreate it.
+  Every released version kept its name, so released databases are
+  unaffected.
+- **Security:** idempotency keys are now unique per agent (migration 032) and
+  bound to the request. Before, a key returned whatever invocation held it,
+  so another agent sending the same key received that invocation's status,
+  approval and result, and a retry with a different tool or input silently
+  got the old call. Now another agent's key never finds that invocation; the
+  same agent reusing a key for a different request (path, server, tool or
+  input) gets `409 Conflict` (`invocation.ErrIdempotencyConflict`); an
+  identical retry still returns the original invocation. Numbers in the
+  input compare exactly, and concurrent identical requests make one
+  invocation. On PostgreSQL migration 032 builds its index without
+  `CONCURRENTLY`, so writes to `invocations` wait during the build; on a
+  large table, create `idx_invocations_agent_idempotency_key` concurrently by
+  hand first (see the migration).
+
+- Each invocation state change and its `invocation_events` row are now written
+  in one transaction, closing the gap where either could commit without the
+  other.
+- A human-gated MCP call now waits on its database row instead of an in-process
+  channel, so an approval or denial recorded by another Atryum process releases
+  it. Decisions and the move to executing are compare-and-set, so a call is
+  decided and run once.
+- With PostgreSQL, a held MCP call wakes as soon as any Atryum process records
+  its decision (`LISTEN`/`NOTIFY` on `atryum_invocation_decided`) and polls its
+  row every two seconds only as a fallback while the listener is connected
+  (250 ms otherwise, and always on SQLite). The listener pings its connection
+  after ten quiet seconds and reconnects after errors. It needs a session-mode
+  connection: PgBouncer in transaction mode never delivers notifications.
+- An executor cancelling a call (`RecordExecution` with `cancelled`) moves the
+  row compare-and-set from the status it read, so a decision recorded in
+  between is not overwritten.
+- The Managed Agents bridge records an approved call as running before it
+  tells Claude to run it. If recording is refused (for example by an
+  embedder's event hook) or fails, Claude gets a deny with the reason, the
+  call is recorded as cancelled, and a warning is logged; before, Claude was
+  allowed first and the refusal only debug-logged, so the call ran anyway.
 
 ## [0.4.0] - 2026-07-27
 

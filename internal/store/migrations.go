@@ -75,9 +75,16 @@ func InitDBWithDialect(db *sql.DB, dialect Dialect) error {
 		return fmt.Errorf("ensure migrations table: %w", err)
 	}
 
-	applied, err := getAppliedMigrations(db, dialect)
+	recorded, err := getAppliedMigrations(db, dialect)
 	if err != nil {
 		return fmt.Errorf("get applied migrations: %w", err)
+	}
+	if err := checkRecordedNames(recorded); err != nil {
+		return err
+	}
+	applied := make(map[int]bool, len(recorded))
+	for v := range recorded {
+		applied[v] = true
 	}
 
 	pending := getPendingMigrations(applied)
@@ -92,6 +99,9 @@ func InitDBWithDialect(db *sql.DB, dialect Dialect) error {
 }
 
 func ensureMigrationsTable(db *sql.DB) error {
+	if tableReadable(db, "schema_migrations") {
+		return nil
+	}
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version INTEGER PRIMARY KEY,
@@ -102,8 +112,38 @@ func ensureMigrationsTable(db *sql.DB) error {
 	return err
 }
 
-func getAppliedMigrations(db *sql.DB, dialect Dialect) (map[int]bool, error) {
-	query, args, err := statementBuilderForDialect(dialect).Select("version").From("schema_migrations").ToSql()
+// tableReadable reports whether table exists and can be read. Checking first
+// lets a role without CREATE on the schema (an embedding program's service
+// role) start once the schema is in place: Postgres checks that privilege even
+// for CREATE TABLE IF NOT EXISTS on an existing table. table is a constant.
+func tableReadable(db *sql.DB, table string) bool {
+	rows, err := db.Query("SELECT 1 FROM " + table + " LIMIT 1")
+	if err != nil {
+		return false
+	}
+	_ = rows.Close()
+	return true
+}
+
+// checkRecordedNames refuses a database whose schema_migrations records a
+// version under a different name than this build defines: it was migrated by
+// another build whose migrations were numbered differently (typically a
+// development branch renumbered by a rebase), so trusting the version alone
+// would skip this build's migration of that number. Every released version
+// has kept its name, so only such databases are refused. Versions this build
+// does not define (a newer build's) are left alone.
+func checkRecordedNames(recorded map[int]string) error {
+	for _, m := range migrations {
+		name, ok := recorded[m.Version]
+		if ok && name != m.Name {
+			return fmt.Errorf("schema_migrations records migration %d as %q, but this build defines %d as %q: the database was migrated by a build with differently numbered migrations, so its schema cannot be trusted. Recreate the database (or, if you know both migrations are safe to rerun, delete that schema_migrations row and start again)", m.Version, name, m.Version, m.Name)
+		}
+	}
+	return nil
+}
+
+func getAppliedMigrations(db *sql.DB, dialect Dialect) (map[int]string, error) {
+	query, args, err := statementBuilderForDialect(dialect).Select("version", "name").From("schema_migrations").ToSql()
 	if err != nil {
 		return nil, err
 	}
@@ -113,15 +153,16 @@ func getAppliedMigrations(db *sql.DB, dialect Dialect) (map[int]bool, error) {
 	}
 	defer rows.Close()
 
-	applied := make(map[int]bool)
+	recorded := make(map[int]string)
 	for rows.Next() {
 		var v int
-		if err := rows.Scan(&v); err != nil {
+		var name string
+		if err := rows.Scan(&v, &name); err != nil {
 			return nil, err
 		}
-		applied[v] = true
+		recorded[v] = name
 	}
-	return applied, rows.Err()
+	return recorded, rows.Err()
 }
 
 func getPendingMigrations(applied map[int]bool) []migration {
@@ -225,6 +266,9 @@ func RunExtensionMigrationsWithDialect(db *sql.DB, dialect Dialect, namespace st
 }
 
 func ensureExtensionMigrationsTable(db *sql.DB) error {
+	if tableReadable(db, "extension_schema_migrations") {
+		return nil
+	}
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS extension_schema_migrations (
 			namespace  TEXT NOT NULL,

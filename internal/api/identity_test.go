@@ -477,3 +477,92 @@ func TestAgentMembersDoesNotRevealAgentExistenceToNonMembers(t *testing.T) {
 		t.Fatalf("admin on unknown agent: want 404, got %d %s", w.Code, w.Body.String())
 	}
 }
+
+// With agent API keys off (no resolver, as under an external decider by
+// default), an atr_ bearer gets 401 on the agent routes, with or without an
+// IdP; with them on, the same key reaches the service.
+func TestAgentAPIKeysCanBeTurnedOff(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "keys-off.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := store.InitDB(db); err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	keys := store.NewAPIKeysRepo(db)
+	agents := store.NewAgentsRepo(db)
+
+	// Issue a real key through a standalone (no-auth) handler.
+	issuer := NewHandler(&stubService{}, stubServerService{}, nil, &stubRulesRepo{}, agents, nil, nil, nil, nil, nil)
+	issuer.SetIdentityStores(store.NewUsersRepo(db), store.NewAgentMembersRepo(db), keys)
+	issuer.SetAgentKeyResolver(NewAgentKeyResolver(keys, agents))
+	call := func(h http.Handler, method, path, bearer, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		return w
+	}
+	w := call(issuer.Routes(), http.MethodPost, "/api/v1/agents", "", `{"name":"Solo","enabled":true}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create agent: %d %s", w.Code, w.Body.String())
+	}
+	agentID := decode[OperatorAgent](t, w).CUID
+	w = call(issuer.Routes(), http.MethodPost, "/api/v1/agents/"+agentID+"/keys", "", `{"name":"solo"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create key: %d %s", w.Code, w.Body.String())
+	}
+	token := decode[OperatorAPIKey](t, w).Token
+
+	rig := newAuthTestRig(t)
+	for _, tc := range []struct {
+		name     string
+		keysOn   bool
+		withIdP  bool
+		wantCode int
+	}{
+		{"decider, keys off, no IdP", false, false, http.StatusUnauthorized},
+		{"decider, keys off, IdP", false, true, http.StatusUnauthorized},
+		{"decider, keys on, IdP", true, true, http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &stubService{}
+			h := NewHandler(svc, stubServerService{}, nil, &stubRulesRepo{}, agents, nil, nil, nil, nil, nil)
+			h.UseExternalDecider()
+			if tc.withIdP {
+				h.SetAuthValidator(rig.v)
+			}
+			if tc.keysOn {
+				h.SetAgentKeyResolver(NewAgentKeyResolver(keys, agents))
+			}
+			for _, path := range []string{"/api/v1/external/invocations", "/mcp/demo"} {
+				body := `{"source":"amp","tool":"bash","input":{}}`
+				if path == "/mcp/demo" {
+					body = `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
+				}
+				if w := call(h.Routes(), http.MethodPost, path, token, body); w.Code != tc.wantCode {
+					t.Fatalf("%s: status %d body=%s, want %d", path, w.Code, w.Body.String(), tc.wantCode)
+				}
+				// The scheme is case-insensitive (RFC 7235).
+				req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+				req.Header.Set("Authorization", "bearer "+token)
+				req.Header.Set("Content-Type", "application/json")
+				w := httptest.NewRecorder()
+				h.Routes().ServeHTTP(w, req)
+				if w.Code != tc.wantCode {
+					t.Fatalf("%s with a lower-case scheme: status %d body=%s, want %d", path, w.Code, w.Body.String(), tc.wantCode)
+				}
+			}
+			if !tc.keysOn && svc.submitReq != nil {
+				t.Fatal("a refused key reached the service")
+			}
+			if tc.keysOn && (svc.submitCtx == nil || auth.AgentIDFromContext(svc.submitCtx) != agentID) {
+				t.Fatal("the accepted key did not identify its agent")
+			}
+		})
+	}
+}

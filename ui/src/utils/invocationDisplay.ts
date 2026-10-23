@@ -17,6 +17,7 @@ export const STATUS_COLOR: Record<string, string> = {
   received: 'neutral',
   expired: 'neutral',
   cancelled: 'neutral',
+  reported: 'neutral',
 };
 
 export const STATUS_LABEL: Record<string, string> = {
@@ -31,6 +32,7 @@ export const STATUS_LABEL: Record<string, string> = {
   received: 'Received',
   expired: 'Expired',
   cancelled: 'Cancelled',
+  reported: 'Stuck Report',
 };
 
 export type DispositionInfo = { label: string; color: string };
@@ -495,6 +497,9 @@ function resolveDecisionSteps(
 function undecidedSteps(inv: InvocationAuditInput): AuditStep[] {
   if (inv.status === 'failed') {
     return [];
+  }
+  if (inv.status === 'reported') {
+    return [{ text: 'Agent reported it is stuck', variant: 'info' }];
   }
   if (inv.status === 'expired') {
     return [{ text: 'Expired without decision', variant: 'info' }];

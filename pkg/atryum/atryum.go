@@ -6,6 +6,7 @@ package atryum
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -15,6 +16,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -81,6 +83,73 @@ func Main(opts ...Option) {
 	}
 }
 
+// checkAgentAuth is WithRequireAgentAuth's startup check.
+func checkAgentAuth(cfg config.Config) error {
+	if cfg.AuthDebug.SkipVerify || truthyEnv("ATRYUM_AUTH_DEBUG_SKIP_VERIFY") {
+		return errors.New("agent auth is required: auth_debug.skip_verify and ATRYUM_AUTH_DEBUG_SKIP_VERIFY are not allowed")
+	}
+	enabled := false
+	for _, a := range cfg.Auth {
+		if !a.Enabled {
+			continue
+		}
+		enabled = true
+		// Keys fetched over plain HTTP could be swapped in transit, letting
+		// anyone mint agent tokens. Loopback is allowed for local development.
+		for _, u := range []string{a.Issuer, a.JWKSURL} {
+			if u != "" && !secureOrLoopback(u) {
+				return fmt.Errorf("agent auth is required: %q must be an https URL (plain http only on loopback)", u)
+			}
+		}
+	}
+	if !enabled {
+		return errors.New("agent auth is required: configure at least one [[auth]] issuer with enabled = true")
+	}
+	return nil
+}
+
+func secureOrLoopback(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	if u.Scheme == "https" {
+		return true
+	}
+	if u.Scheme != "http" {
+		return false
+	}
+	if u.Hostname() == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(u.Hostname())
+	return ip != nil && ip.IsLoopback()
+}
+
+// Migrate applies atryum's migrations, then every WithMigrations set, to the
+// database at databaseURL without starting the server. Embedding programs use
+// it for a separate migrate step (for example a pre-upgrade job).
+func Migrate(databaseURL string, opts ...Option) error {
+	db, dialect, err := store.OpenDatabase(databaseURL, "")
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer db.Close()
+	return migrate(db, dialect, buildOptions(opts))
+}
+
+func migrate(db *sql.DB, dialect store.Dialect, o options) error {
+	if err := store.InitDBWithDialect(db, dialect); err != nil {
+		return fmt.Errorf("init db: %w", err)
+	}
+	for _, em := range o.extensionMigrations {
+		if err := store.RunExtensionMigrationsWithDialect(db, dialect, em.namespace, em.definitions); err != nil {
+			return fmt.Errorf("apply extension migrations: %w", err)
+		}
+	}
+	return nil
+}
+
 // resolveInstanceIdentity returns atryum's stable per-deployment identity: the
 // configured atryum_instance, falling back to public_base_url. It is the shared
 // source for the managed-agents ownership tag and the OTEL deployment.environment
@@ -117,6 +186,14 @@ func runServer(args []string, o options) error {
 	cfg, err := config.Load(resolvedConfigPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+	if o.databaseURL != "" {
+		cfg.Server.DatabaseURL = o.databaseURL
+	}
+	if o.requireAgentAuth {
+		if err := checkAgentAuth(cfg); err != nil {
+			return err
+		}
 	}
 	if err := configureLogging(cfg.Server.LogLevel); err != nil {
 		return err
@@ -165,15 +242,18 @@ func runServer(args []string, o options) error {
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer db.Close()
-
-	if err := store.InitDBWithDialect(db, dialect); err != nil {
-		return fmt.Errorf("init db: %w", err)
+	if dialect == store.DialectPostgres {
+		p := cfg.Server.DatabasePool
+		store.ConfigurePool(db, store.DBPool{
+			MaxOpenConns:    p.MaxOpenConns,
+			MaxIdleConns:    p.MaxIdleConns,
+			ConnMaxIdleTime: time.Duration(p.ConnMaxIdleTimeSeconds) * time.Second,
+			ConnMaxLifetime: time.Duration(p.ConnMaxLifetimeSeconds) * time.Second,
+		}.Over(o.dbPool))
 	}
 
-	for _, em := range o.extensionMigrations {
-		if err := store.RunExtensionMigrationsWithDialect(db, dialect, em.namespace, em.definitions); err != nil {
-			return fmt.Errorf("apply extension migrations: %w", err)
-		}
+	if err := migrate(db, dialect, o); err != nil {
+		return err
 	}
 	for _, hook := range o.databaseHooks {
 		hook(db, dialect == store.DialectPostgres)
@@ -315,6 +395,28 @@ func runServer(args []string, o options) error {
 		service.SetInvocationSummarizer(&summaryAdapter{client: backendClient})
 	}
 	service.SetSessionStore(store.NewExternalSessionRepoWithDialect(db, dialect))
+	service.SetTx(func(ctx context.Context, fn func(context.Context, *sql.Tx) error) error {
+		return store.InTx(ctx, db, fn)
+	})
+	if dialect == store.DialectPostgres && (cfg.Server.DatabaseListen == nil || *cfg.Server.DatabaseListen) {
+		listenCtx, stopListening := context.WithCancel(context.Background())
+		defer stopListening()
+		service.SetDecisionWaker(store.ListenForDecisions(listenCtx, cfg.Server.DatabaseURL))
+	}
+	if o.decider != nil {
+		service.SetDecider(o.decider)
+	}
+	if o.eventHook != nil {
+		service.SetEventHook(o.eventHook)
+	}
+	for _, receive := range o.resolveHooks {
+		receive(func(ctx context.Context, tx *sql.Tx, invocationID string, approve bool, actor, reason string) error {
+			if tx != nil {
+				ctx = store.WithTx(ctx, tx)
+			}
+			return service.ResolvePending(ctx, invocationID, approve, actor, reason)
+		})
+	}
 	serverOperator := api.NewServerOperatorService(serverRepo, oauthRepo, client, 5*time.Second, cfg.Server.PublicBaseURL)
 	if *initServers {
 		if err := initEnabledServerStatuses(context.Background(), serverRepo, serverOperator); err != nil {
@@ -330,13 +432,23 @@ func runServer(args []string, o options) error {
 	handler := api.NewHandler(service, serverOperator, policyRegistry, rulesRepo, agentsRepo, agentSyncSettingsRepo, llmConfigsRepo, syncAgentsFn, backendClient, localEvaluator)
 	handler.SetManagedAgentBindings(managedAgentBindingRepo)
 	handler.SetIdentityStores(usersRepo, agentMembersRepo, apiKeysRepo)
-	handler.SetAgentKeyResolver(api.NewAgentKeyResolver(apiKeysRepo, agentsRepo))
+	if o.agentAPIKeysEnabled() {
+		handler.SetAgentKeyResolver(api.NewAgentKeyResolver(apiKeysRepo, agentsRepo))
+	} else {
+		log.Printf("agent API keys disabled on agent routes")
+	}
 	var authorizer authz.Authorizer = authz.Default{Members: agentMembersRepo}
 	if o.authorizer != nil {
 		authorizer = o.authorizer
 	}
 	userProvisioner := api.NewUserProvisioner(usersRepo)
 	handler.SetAuthz(authorizer, userProvisioner)
+	if o.decider != nil {
+		handler.UseExternalDecider()
+	}
+	if o.stuckReports {
+		handler.EnableStuckReports()
+	}
 	for _, register := range o.extraRoutes {
 		handler.AddExtraRoutes(register)
 	}
@@ -360,6 +472,9 @@ func runServer(args []string, o options) error {
 		log.Printf("api key auth enabled for /invocations/{agent_id} and /agent_ids")
 	} else {
 		log.Printf("api key auth NOT configured: /invocations/{agent_id} and /agent_ids will refuse all requests")
+	}
+	if o.requireAgentAuth {
+		handler.RequireAgentIdentity()
 	}
 	authDebugSkipVerify := cfg.AuthDebug.SkipVerify || truthyEnv("ATRYUM_AUTH_DEBUG_SKIP_VERIFY")
 	if authDebugSkipVerify {
@@ -544,6 +659,9 @@ func (a *managedBindingStoreAdapter) List(ctx context.Context) ([]managedagents.
 
 // managedAuditAdapter bridges the invocation/event repos →
 // managedagents.InvocationAuditStore for the synthetic per-session audit row.
+// ponytail: these session audit rows bypass WithEventHook; they record session
+// lifecycle, not tool calls (those go through Submit). Route them through the
+// service if an embedder needs them in its record.
 type managedAuditAdapter struct {
 	inv    *store.InvocationRepo
 	events *store.EventRepo
@@ -553,8 +671,8 @@ func (a *managedAuditAdapter) Create(ctx context.Context, inv invocation.Invocat
 	return a.inv.Create(ctx, inv)
 }
 
-func (a *managedAuditAdapter) GetByIdempotencyKey(ctx context.Context, key string) (invocation.Invocation, error) {
-	return a.inv.GetByIdempotencyKey(ctx, key)
+func (a *managedAuditAdapter) GetByIdempotencyKey(ctx context.Context, agentID, key string) (invocation.Invocation, error) {
+	return a.inv.GetByIdempotencyKey(ctx, agentID, key)
 }
 
 func (a *managedAuditAdapter) CreateEvent(ctx context.Context, evt invocation.Event) error {

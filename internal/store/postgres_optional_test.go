@@ -63,4 +63,58 @@ func TestPostgresOptional_InitAndInvocationCRUD(t *testing.T) {
 	if got.InvocationID != inv.InvocationID || got.Tool != inv.Tool || string(got.Input) != string(inv.Input) {
 		t.Fatalf("unexpected invocation: %+v", got)
 	}
+
+	checkIdempotencyPerAgent(t, repo)
+
+	// UpdateResultFrom only moves a row that is still in the expected status.
+	inv.Status = invocation.StatusApproved
+	if ok, err := repo.UpdateResultFrom(context.Background(), inv, invocation.StatusPendingApproval); err != nil || ok {
+		t.Fatalf("UpdateResultFrom(wrong status) = %v, %v; want false", ok, err)
+	}
+	if ok, err := repo.UpdateResultFrom(context.Background(), inv, "pending"); err != nil || !ok {
+		t.Fatalf("UpdateResultFrom(pending) = %v, %v; want true", ok, err)
+	}
+
+	// Writes made with InTx's ctx roll back together.
+	err = InTx(context.Background(), db, func(ctx context.Context, _ *sql.Tx) error {
+		inv.Status = invocation.StatusDenied
+		if err := repo.UpdateResult(ctx, inv); err != nil {
+			return err
+		}
+		return fmt.Errorf("abort")
+	})
+	if err == nil {
+		t.Fatal("InTx swallowed the error")
+	}
+	if got, _ := repo.Get(context.Background(), inv.InvocationID); got.Status != invocation.StatusApproved {
+		t.Fatalf("status after rollback = %s, want approved", got.Status)
+	}
+}
+
+func TestPostgresOptional_RefusesRenumberedMigrationNames(t *testing.T) {
+	if os.Getenv("ATRYUM_POSTGRES_TESTS") != "1" {
+		t.Skip("set ATRYUM_POSTGRES_TESTS=1 to run against local PostgreSQL")
+	}
+	dsn := os.Getenv("ATRYUM_POSTGRES_TEST_DSN")
+	if dsn == "" {
+		dsn = localPostgresTestDSN
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	defer db.Close()
+	schema := fmt.Sprintf("atryum_test_%d", time.Now().UnixNano())
+	if _, err := db.Exec(`CREATE SCHEMA ` + schema); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	defer db.Exec(`DROP SCHEMA IF EXISTS ` + schema + ` CASCADE`)
+	if _, err := db.Exec(`SET search_path TO ` + schema); err != nil {
+		t.Fatalf("set search_path: %v", err)
+	}
+	if err := InitDBWithDialect(db, DialectPostgres); err != nil {
+		t.Fatalf("InitDBWithDialect: %v", err)
+	}
+	checkRefusesOldPin(t, db, DialectPostgres)
 }
