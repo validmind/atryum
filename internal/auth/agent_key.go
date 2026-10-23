@@ -66,6 +66,10 @@ const (
 	IdentityMethodJWT    = "jwt"
 	IdentityMethodAPIKey = "api_key"
 	IdentityMethodNoAuth = "no_auth"
+	// IdentityMethodManagedAgent is a call from a Claude Managed Agents
+	// session Atryum's bridge registered: Issuer is "anthropic:<workspace>",
+	// KeyID the session ID. Only the bridge sets it, never a request.
+	IdentityMethodManagedAgent = "managed_agent"
 )
 
 // APIKeyIssuer is the Identity.Issuer used for key-authenticated agents.

@@ -195,7 +195,7 @@ type invocationRepo interface {
 	UpdateResultFrom(ctx context.Context, inv Invocation, from Status) (bool, error)
 	UpdateSummary(ctx context.Context, id string, summary string) error
 	Get(ctx context.Context, id string) (Invocation, error)
-	GetByIdempotencyKey(ctx context.Context, key string) (Invocation, error)
+	GetByIdempotencyKey(ctx context.Context, agentID, key string) (Invocation, error)
 	List(ctx context.Context, filter InvocationListFilter) ([]Invocation, int, error)
 	ListAgentIDs(ctx context.Context) ([]string, error)
 }
@@ -252,6 +252,8 @@ type Service struct {
 	planMaxTTL      int           // seconds; 0 = built-in ceiling
 	defaultTimeout  time.Duration
 	approvalPoll    time.Duration // how often a held call re-reads its row
+	wakePoll        time.Duration // approvalPoll while wake is connected
+	wake            DecisionWaker // nil = held calls only poll
 	inTx            TxRunner      // nil = each write commits on its own
 	decider         Decider       // nil = rules, plans and policy decide
 	hook            EventHook     // nil = no hook
@@ -284,6 +286,7 @@ func NewService(
 		syncSettings:   syncSettings,
 		defaultTimeout: defaultTimeout,
 		approvalPoll:   250 * time.Millisecond,
+		wakePoll:       2 * time.Second,
 		toolCatalog:    make(map[string]toolCatalogEntry),
 	}
 }
@@ -360,15 +363,6 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		attribute.String("atryum.tool", req.Tool),
 	))
 	defer span.End()
-	if req.IdempotencyKey != nil && *req.IdempotencyKey != "" {
-		existing, err := s.invocations.GetByIdempotencyKey(ctx, *req.IdempotencyKey)
-		if err == nil {
-			return s.toResponse(existing), nil
-		}
-		if err != nil && err != sql.ErrNoRows {
-			return InvocationResponse{}, err
-		}
-	}
 	upstream, err := s.resolver.ResolveContext(ctx, req.Server)
 	if err != nil {
 		return InvocationResponse{}, err
@@ -382,6 +376,9 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	// is disabled the field is empty and we fall back to request_id for rule
 	// matching to preserve pre-auth behavior.
 	agentID := auth.AgentIDFromContext(ctx)
+	if prior, err := s.priorRequest(ctx, agentID, req.IdempotencyKey, upstream.Name, req.Tool, inputJSON); err != nil || prior != nil {
+		return prior.response(s), err
+	}
 	agentRec := s.resolveAgentRecord(ctx, agentID)
 
 	now := time.Now().UTC()
@@ -394,6 +391,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		Status:         StatusReceived,
 		Input:          inputJSON,
 		SubmittedAt:    now,
+		Auth:           authOf(ctx, agentID),
 	}
 	if agentID != "" {
 		inv.AgentID = &agentID
@@ -407,7 +405,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		inv.ClientVersion = &v
 	}
 	if err := s.create(ctx, inv); err != nil {
-		return InvocationResponse{}, err
+		return s.lostCreateRace(ctx, agentID, req.IdempotencyKey, upstream.Name, req.Tool, inputJSON, err)
 	}
 	span.SetAttributes(attribute.String("atryum.invocation.id", inv.InvocationID))
 	if agentID != "" {
@@ -504,7 +502,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	ruleMatched := false
 	var decided *Decision
 	if s.decider != nil {
-		d := s.decide(ctx, ToolCall{InvocationID: inv.InvocationID, Path: "proxy", AgentID: agentID, Server: upstream.Name, Tool: req.Tool, Arguments: inv.Input})
+		d := s.decide(ctx, ToolCall{InvocationID: inv.InvocationID, Path: "proxy", AgentID: agentID, Server: upstream.Name, Tool: req.Tool, Arguments: inv.Input, Auth: inv.Auth})
 		decided = &d
 		decision = d.disposition()
 		ruleMatched = true // skips the default policy below
@@ -1233,10 +1231,19 @@ func (s *Service) executeNow(ctx context.Context, inv Invocation, upstream mcp.U
 // waitForHumanApproval holds the request until the invocation's row leaves
 // pending_approval — an approval or denial recorded by any process — or the
 // context ends. The row, not process memory, is the source of truth, so the
-// decision can be made on another replica.
-// ponytail: polls the row every approvalPoll; a Postgres LISTEN/NOTIFY wake-up
-// (and resuming a held call on another replica after a crash) is the upgrade.
+// decision can be made on another replica. A DecisionWaker re-reads the row as
+// soon as a decision is announced; polling is the fallback, every wakePoll
+// while the waker is connected and every approvalPoll otherwise.
+// ponytail: a held call is lost if its process dies; resuming it on another
+// replica is the upgrade.
 func (s *Service) waitForHumanApproval(ctx context.Context, inv Invocation, upstream mcp.Upstream, req CreateInvocationRequest) (InvocationResponse, error) {
+	// Before the row is pending, so no decision can be announced unheard.
+	var woken <-chan struct{}
+	if s.wake != nil {
+		var stop func()
+		woken, stop = s.wake.Wait(inv.InvocationID)
+		defer stop()
+	}
 	inv.Status = StatusPendingApproval
 	if err := s.commit(ctx, inv, s.invocations.UpdateResult, Event{
 		InvocationID: inv.InvocationID,
@@ -1252,13 +1259,19 @@ func (s *Service) waitForHumanApproval(ctx context.Context, inv Invocation, upst
 	}
 	s.summarizePendingApproval(inv.InvocationID)
 
-	tick := time.NewTicker(s.approvalPoll)
-	defer tick.Stop()
 	for {
+		poll := s.approvalPoll
+		if s.wake != nil && s.wake.Connected() {
+			poll = s.wakePoll
+		}
+		timer := time.NewTimer(poll)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return s.abandonHeld(context.WithoutCancel(ctx), inv), nil
-		case <-tick.C:
+		case <-timer.C:
+		case <-woken:
+			timer.Stop()
 		}
 		cur, err := s.invocations.Get(ctx, inv.InvocationID)
 		if err != nil || cur.Status == StatusPendingApproval {
@@ -1372,24 +1385,52 @@ func (s *Service) finishExecution(ctx context.Context, inv Invocation, upstream 
 }
 
 // Approve records a human approval on the invocation's row. A held proxy call
-// sees it on its next poll and runs the tool; a submit caller sees it when it
-// polls Get.
+// sees it when woken or on its next poll and runs the tool; a submit caller
+// sees it when it polls Get.
 func (s *Service) Approve(ctx context.Context, invocationID string, actorID string) error {
-	return s.recordExternalDecision(ctx, invocationID, true, "", actorID)
+	return s.ResolvePending(ctx, invocationID, true, actorID, "")
 }
 
 // Deny records a human denial on the invocation's row.
 func (s *Service) Deny(ctx context.Context, invocationID string, message string, actorID string) error {
-	return s.recordExternalDecision(ctx, invocationID, false, message, actorID)
+	return s.ResolvePending(ctx, invocationID, false, actorID, message)
 }
 
-func (s *Service) recordExternalDecision(ctx context.Context, invocationID string, approved bool, message string, actorID string) error {
+// ErrNotPending means the call is no longer pending approval: it was already
+// decided, its caller gave up, or it finished.
+var ErrNotPending = errors.New("invocation is not pending approval")
+
+// ResolvePending approves or denies a call held for a person, as actorID,
+// with an optional reason. The decision is compare-and-set on the row, writes
+// its event and calls the event hook in one transaction, which is the
+// caller's when ctx carries one (store.WithTx). A call that is no longer
+// pending returns an error wrapping ErrNotPending.
+//
+// With the caller's transaction:
+//   - On any error, roll the transaction back. Committing after an error can
+//     keep the status change without the event or the hook's writes.
+//   - It must be on Atryum's database and schema (the same search_path).
+//   - Under REPEATABLE READ or SERIALIZABLE, losing a race with another
+//     resolve also returns ErrNotPending (Postgres serialization failure);
+//     the transaction is then aborted and must be rolled back. Other
+//     serialization errors (40001 on a different statement, deadlocks) are
+//     returned as is: retry the whole transaction or treat the call as not
+//     pending.
+func (s *Service) ResolvePending(ctx context.Context, invocationID string, approved bool, actorID, reason string) error {
+	err := s.resolvePending(ctx, invocationID, approved, actorID, reason)
+	if errors.Is(err, ErrInvalidTransition) {
+		return fmt.Errorf("%w: %w", ErrNotPending, err)
+	}
+	return err
+}
+
+func (s *Service) resolvePending(ctx context.Context, invocationID string, approved bool, actorID, message string) error {
 	inv, err := s.invocations.Get(ctx, invocationID)
 	if err != nil {
 		return err
 	}
 	if inv.Status != StatusPendingApproval {
-		return fmt.Errorf("invocation %s is not pending approval (status=%s)", invocationID, inv.Status)
+		return fmt.Errorf("%w: %s is %s", ErrNotPending, invocationID, inv.Status)
 	}
 	now := time.Now().UTC()
 	if approved {
@@ -1403,6 +1444,9 @@ func (s *Service) recordExternalDecision(ctx context.Context, invocationID strin
 		approvedPayload := map[string]any{"input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input)}
 		if actorID != "" {
 			approvedPayload["actor_id"] = actorID
+		}
+		if message != "" {
+			approvedPayload["message"] = message
 		}
 		return s.commit(ctx, inv, s.updateFrom(StatusPendingApproval), Event{InvocationID: inv.InvocationID, EventType: "invocation.approved", Payload: mustJSON(approvedPayload), CreatedAt: now})
 	}
@@ -1467,15 +1511,6 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		attribute.Bool("atryum.external", true),
 	))
 	defer span.End()
-	if req.IdempotencyKey != nil && *req.IdempotencyKey != "" {
-		existing, err := s.invocations.GetByIdempotencyKey(ctx, *req.IdempotencyKey)
-		if err == nil {
-			return s.toResponse(existing), nil
-		}
-		if err != nil && err != sql.ErrNoRows {
-			return InvocationResponse{}, err
-		}
-	}
 	inputJSON, err := json.Marshal(req.Input)
 	if err != nil {
 		return InvocationResponse{}, err
@@ -1492,6 +1527,11 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	}
 	if len([]rune(agentID)) > maxExternalSessionAgentIDChars {
 		return InvocationResponse{}, fmt.Errorf("agent_id is too long")
+	}
+	// Upstream is always empty on this path (see below), which also keeps a
+	// key used for an Invoke from matching a Submit.
+	if prior, err := s.priorRequest(ctx, agentID, req.IdempotencyKey, "", req.Tool, inputJSON); err != nil || prior != nil {
+		return prior.response(s), err
 	}
 	agentRec := s.resolveAgentRecord(ctx, agentID)
 
@@ -1543,6 +1583,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		Status:      StatusReceived,
 		Input:       inputJSON,
 		SubmittedAt: now,
+		Auth:        authOf(ctx, agentID),
 	}
 	// Prefer explicit ClientName/ClientVersion from the request; fall back
 	// to Source when the caller didn't tell us anything more specific.
@@ -1564,7 +1605,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		inv.SessionID = &sessionID
 	}
 	if err := s.create(ctx, inv); err != nil {
-		return InvocationResponse{}, err
+		return s.lostCreateRace(ctx, agentID, req.IdempotencyKey, "", req.Tool, inputJSON, err)
 	}
 	span.SetAttributes(attribute.String("atryum.invocation.id", inv.InvocationID))
 	if agentID != "" {
@@ -1791,7 +1832,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 // submitDecided finishes Submit when a decider is set: the decision is
 // recorded with the received event and the resulting status in one write.
 func (s *Service) submitDecided(ctx context.Context, inv Invocation, source, agentID, sessionID string, now time.Time) (InvocationResponse, error) {
-	d := s.decide(ctx, ToolCall{InvocationID: inv.InvocationID, Path: "submit", AgentID: agentID, Server: source, Tool: inv.Tool, Arguments: inv.Input, SessionID: sessionID})
+	d := s.decide(ctx, ToolCall{InvocationID: inv.InvocationID, Path: "submit", AgentID: agentID, Server: source, Tool: inv.Tool, Arguments: inv.Input, SessionID: sessionID, Auth: inv.Auth})
 	receivedPayload := map[string]any{"tool": inv.Tool, "upstream": source, "request_id": inv.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "external": true, "decision": d}
 	if agentID != "" {
 		receivedPayload["agent_id"] = agentID
@@ -1998,6 +2039,7 @@ func (s *Service) RecordExecution(ctx context.Context, invocationID string, upda
 		if err := requireStatus(inv, "cancelled", StatusApproved, StatusExecuting, StatusPendingApproval); err != nil {
 			return InvocationResponse{}, err
 		}
+		from := inv.Status
 		inv.Status = StatusCancelled
 		inv.CompletedAt = &now
 		if len(update.Error) > 0 {
@@ -2009,7 +2051,9 @@ func (s *Service) RecordExecution(ctx context.Context, invocationID string, upda
 			}
 			inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": msg}}, "isError": true})
 		}
-		if err := s.commit(ctx, inv, s.invocations.UpdateResult, Event{InvocationID: inv.InvocationID, EventType: "invocation.cancelled", Payload: mustJSON(map[string]any{"upstream": inv.Upstream, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "body": json.RawMessage(inv.Error), "external": true}), CreatedAt: now}); err != nil {
+		// From the status read, so a decision landing in between is not
+		// overwritten (and leaving pending_approval wakes its waiters).
+		if err := s.commit(ctx, inv, s.updateFrom(from), Event{InvocationID: inv.InvocationID, EventType: "invocation.cancelled", Payload: mustJSON(map[string]any{"upstream": inv.Upstream, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "body": json.RawMessage(inv.Error), "external": true}), CreatedAt: now}); err != nil {
 			return InvocationResponse{}, err
 		}
 	default:

@@ -242,6 +242,15 @@ func runServer(args []string, o options) error {
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer db.Close()
+	if dialect == store.DialectPostgres {
+		p := cfg.Server.DatabasePool
+		store.ConfigurePool(db, store.DBPool{
+			MaxOpenConns:    p.MaxOpenConns,
+			MaxIdleConns:    p.MaxIdleConns,
+			ConnMaxIdleTime: time.Duration(p.ConnMaxIdleTimeSeconds) * time.Second,
+			ConnMaxLifetime: time.Duration(p.ConnMaxLifetimeSeconds) * time.Second,
+		}.Over(o.dbPool))
+	}
 
 	if err := migrate(db, dialect, o); err != nil {
 		return err
@@ -389,11 +398,24 @@ func runServer(args []string, o options) error {
 	service.SetTx(func(ctx context.Context, fn func(context.Context, *sql.Tx) error) error {
 		return store.InTx(ctx, db, fn)
 	})
+	if dialect == store.DialectPostgres && (cfg.Server.DatabaseListen == nil || *cfg.Server.DatabaseListen) {
+		listenCtx, stopListening := context.WithCancel(context.Background())
+		defer stopListening()
+		service.SetDecisionWaker(store.ListenForDecisions(listenCtx, cfg.Server.DatabaseURL))
+	}
 	if o.decider != nil {
 		service.SetDecider(o.decider)
 	}
 	if o.eventHook != nil {
 		service.SetEventHook(o.eventHook)
+	}
+	for _, receive := range o.resolveHooks {
+		receive(func(ctx context.Context, tx *sql.Tx, invocationID string, approve bool, actor, reason string) error {
+			if tx != nil {
+				ctx = store.WithTx(ctx, tx)
+			}
+			return service.ResolvePending(ctx, invocationID, approve, actor, reason)
+		})
 	}
 	serverOperator := api.NewServerOperatorService(serverRepo, oauthRepo, client, 5*time.Second, cfg.Server.PublicBaseURL)
 	if *initServers {
@@ -423,6 +445,9 @@ func runServer(args []string, o options) error {
 	handler.SetAuthz(authorizer, userProvisioner)
 	if o.decider != nil {
 		handler.UseExternalDecider()
+	}
+	if o.stuckReports {
+		handler.EnableStuckReports()
 	}
 	for _, register := range o.extraRoutes {
 		handler.AddExtraRoutes(register)
@@ -646,8 +671,8 @@ func (a *managedAuditAdapter) Create(ctx context.Context, inv invocation.Invocat
 	return a.inv.Create(ctx, inv)
 }
 
-func (a *managedAuditAdapter) GetByIdempotencyKey(ctx context.Context, key string) (invocation.Invocation, error) {
-	return a.inv.GetByIdempotencyKey(ctx, key)
+func (a *managedAuditAdapter) GetByIdempotencyKey(ctx context.Context, agentID, key string) (invocation.Invocation, error) {
+	return a.inv.GetByIdempotencyKey(ctx, agentID, key)
 }
 
 func (a *managedAuditAdapter) CreateEvent(ctx context.Context, evt invocation.Event) error {

@@ -18,7 +18,8 @@ const sessionAuditTool = "_managed_agent_session"
 // synthetic per-session audit invocation and append raw session events to it.
 type InvocationAuditStore interface {
 	Create(ctx context.Context, inv invocation.Invocation) error
-	GetByIdempotencyKey(ctx context.Context, key string) (invocation.Invocation, error)
+	// GetByIdempotencyKey looks key up among agentID's invocations.
+	GetByIdempotencyKey(ctx context.Context, agentID, key string) (invocation.Invocation, error)
 	CreateEvent(ctx context.Context, evt invocation.Event) error
 	ListEvents(ctx context.Context, invocationID string, filter invocation.EventListFilter) ([]invocation.Event, int, error)
 }
@@ -32,7 +33,7 @@ func sessionAuditKey(sessionID string) string {
 // session-scoped idempotency key.
 func (s *Service) ensureSessionAuditInvocation(ctx context.Context, reg SessionRegistration, cfg Config) (string, error) {
 	key := sessionAuditKey(reg.SessionID)
-	if existing, err := s.audit.GetByIdempotencyKey(ctx, key); err == nil && existing.InvocationID != "" {
+	if existing, err := s.audit.GetByIdempotencyKey(ctx, reg.AgentID, key); err == nil && existing.InvocationID != "" {
 		return existing.InvocationID, nil
 	}
 	now := time.Now().UTC()
@@ -57,7 +58,7 @@ func (s *Service) ensureSessionAuditInvocation(ctx context.Context, reg SessionR
 	}
 	if err := s.audit.Create(ctx, inv); err != nil {
 		// A concurrent watcher may have created it first; fall back to lookup.
-		if existing, gerr := s.audit.GetByIdempotencyKey(ctx, key); gerr == nil && existing.InvocationID != "" {
+		if existing, gerr := s.audit.GetByIdempotencyKey(ctx, reg.AgentID, key); gerr == nil && existing.InvocationID != "" {
 			return existing.InvocationID, nil
 		}
 		return "", err
