@@ -20,7 +20,7 @@ COPY ui/ .
 RUN npm run build
 
 # ── Stage 2: Build Go binary with embedded UI ─────────────────────────
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26-alpine AS builder
 ARG GO_LICENSES
 ARG ALLOWED_GO_LICENSES
 WORKDIR /src
@@ -56,8 +56,9 @@ RUN mkdir -p /third_party_notices/licenses/go \
 RUN CGO_ENABLED=0 go build -tags release_notices -o /atryum ./cmd/atryum
 
 # ── Stage 3: Minimal runtime ─────────────────────────────────────────
-FROM alpine:3.20
-RUN apk add --no-cache ca-certificates
+# alpine 3.20 is EOL and never got the eMudhra distrust (ca-certificates 20261020-r0).
+FROM alpine:3.24
+RUN apk add --no-cache 'ca-certificates>=20261020-r0'
 COPY LICENSE NOTICE /usr/share/doc/atryum/
 COPY --from=builder /third_party_notices/ /usr/share/doc/atryum/third_party/
 COPY --from=ui /third_party_notices/ /usr/share/doc/atryum/third_party/
