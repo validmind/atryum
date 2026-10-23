@@ -227,6 +227,10 @@ type Handler struct {
 	// middleware so embedding programs can mount routes that require a
 	// logged-in principal (see pkg/atryum WithAuthenticatedRoutes).
 	authenticatedRoutes []func(mux *http.ServeMux, authenticate func(http.Handler) http.Handler)
+	// externalDecider: see UseExternalDecider.
+	externalDecider bool
+	// requireAgentIdentity: see RequireAgentIdentity.
+	requireAgentIdentity bool
 }
 
 // AddAuthenticatedRoutes registers a callback that may mount routes wrapped in
@@ -907,6 +911,7 @@ func (h *Handler) SetIdentityStores(users usersRepo, members agentMembersRepo, k
 
 // SetAgentKeyResolver enables first-party API keys (Bearer atr_...) on the
 // agent runtime routes (/mcp/, /api/v1/external/*, /api/v1/agent/*).
+// Without a resolver those routes refuse any atr_ bearer with 401.
 func (h *Handler) SetAgentKeyResolver(r auth.AgentKeyResolver) {
 	h.keyResolver = r
 }
@@ -1008,6 +1013,12 @@ func (h *Handler) authConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// UseExternalDecider is for an embedding program whose decider replaces
+// Atryum's rules, plans, operator API and UI. Routes mounts only the
+// agent-facing endpoints, and the MCP proxy stops offering Atryum's rules and
+// plan tools, annotating tools/list with rules, and attaching rules to denials.
+func (h *Handler) UseExternalDecider() { h.externalDecider = true }
+
 func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", h.healthz)
@@ -1015,6 +1026,18 @@ func (h *Handler) Routes() http.Handler {
 		mux.Handle("/.well-known/oauth-protected-resource", h.protectedResourceMetadata())
 	}
 	mcpHandler := h.agentRuntimeHandler(http.HandlerFunc(h.invokeUpstream))
+	if h.externalDecider {
+		mux.HandleFunc("/mcp", h.mcpRootNotFound)
+		mux.Handle("/mcp/", mcpHandler)
+		mux.Handle("/api/v1/invocations", h.agentRuntimeHandler(http.HandlerFunc(h.invocations)))
+		mux.Handle("/api/v1/external/invocations", h.agentRuntimeHandler(http.HandlerFunc(h.externalInvocations)))
+		mux.Handle("/api/v1/external/invocations/", h.agentRuntimeHandler(http.HandlerFunc(h.externalInvocationDetail)))
+		mux.Handle("/api/v1/external/sessions", h.agentRuntimeHandler(http.HandlerFunc(h.externalSessions)))
+		for _, register := range h.extraRoutes {
+			register(mux)
+		}
+		return mux
+	}
 	operatorAuthMW := auth.OperatorMiddleware(h.authValidator, h.apiKeyAuth, auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug}, h.userProvisioner)
 	// operator: authenticated + admin role (the historical operator API).
 	operator := func(fn http.HandlerFunc) http.Handler {
@@ -1079,17 +1102,44 @@ func (h *Handler) Routes() http.Handler {
 	return mux
 }
 
+// RequireAgentIdentity makes every agent route reject a request without a
+// verified agent identity, whatever the auth configuration. Caller-supplied
+// agent IDs (the ?agent_id= hint, a body agent_id) then never stand in for one.
+func (h *Handler) RequireAgentIdentity() { h.requireAgentIdentity = true }
+
 func (h *Handler) agentRuntimeHandler(next http.Handler) http.Handler {
+	if h.requireAgentIdentity {
+		inner := next
+		next = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if auth.AgentIDFromContext(r.Context()) == "" {
+				writeError(w, http.StatusUnauthorized, "a verified agent identity is required")
+				return
+			}
+			inner.ServeHTTP(w, r)
+		})
+	}
 	handler := auth.MiddlewareWithOptions(
 		h.authValidator,
 		"/.well-known/oauth-protected-resource",
 		auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug, KeyResolver: h.keyResolver},
 	)(next)
-	return h.noAuthAgentIDHint(handler)
+	handler = h.noAuthAgentIDHint(handler)
+	if h.keyResolver != nil {
+		return handler
+	}
+	// Agent API keys are off (no resolver): refuse an atr_ bearer outright,
+	// even where an unrecognised bearer would otherwise be ignored (no IdP).
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if bearer, ok := strings.CutPrefix(strings.TrimSpace(r.Header.Get("Authorization")), "Bearer "); ok && auth.IsAgentKey(bearer) {
+			writeError(w, http.StatusUnauthorized, "agent API keys are not accepted by this server")
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
 }
 
 func (h *Handler) noAuthAgentIDHint(next http.Handler) http.Handler {
-	if h.authValidator != nil {
+	if h.authValidator != nil || h.requireAgentIdentity {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1556,6 +1606,9 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			},
 			"instructions": atryumInitializeInstructions,
 		}
+		if h.externalDecider {
+			delete(result, "instructions") // they describe Atryum's own rules tools
+		}
 		h.writeRPCResult(w, req.ID, result)
 	case "notifications/initialized":
 		w.WriteHeader(http.StatusAccepted)
@@ -1566,6 +1619,10 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			return
 		}
 		_ = h.emitTraceEvent(r.Context(), server, "mcp.tools.list", map[string]any{"tool_count": len(tools), "request_id": requestID})
+		if h.externalDecider {
+			h.writeRPCResult(w, req.ID, map[string]any{"tools": tools})
+			return
+		}
 		annotated := h.annotateToolsWithPolicy(r.Context(), auth.AgentIDFromContext(r.Context()), server, tools)
 		h.writeRPCResult(w, req.ID, map[string]any{"tools": annotated})
 	case "tools/call":
@@ -1577,15 +1634,15 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			h.writeRPCError(w, req.ID, -32602, "invalid params")
 			return
 		}
-		if params.Name == atryumRulesToolName {
+		if params.Name == atryumRulesToolName && !h.externalDecider {
 			h.handleAtryumRulesToolCall(w, r, req.ID, server, params.Arguments)
 			return
 		}
-		if params.Name == atryumPlanSubmitTool {
+		if params.Name == atryumPlanSubmitTool && !h.externalDecider {
 			h.handleMCPPlanSubmit(w, r, req.ID, server, params.Arguments)
 			return
 		}
-		if params.Name == atryumPlanGetTool {
+		if params.Name == atryumPlanGetTool && !h.externalDecider {
 			h.handleMCPPlanGet(w, r, req.ID, params.Arguments)
 			return
 		}
@@ -1609,7 +1666,7 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		_ = h.emitTraceEvent(r.Context(), server, "mcp.tools.call", tracePayload)
 		if len(resp.Error) > 0 {
 			result := normalizeToolCallResult(resp.Error, true)
-			if resp.Status == invocation.StatusDenied {
+			if resp.Status == invocation.StatusDenied && !h.externalDecider {
 				result = h.appendRulesContextToToolResult(r.Context(), result, auth.AgentIDFromContext(r.Context()), server, params.Name)
 			}
 			h.writeRPCResult(w, req.ID, result)
