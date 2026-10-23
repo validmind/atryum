@@ -321,6 +321,36 @@ the database handle, an embedding program can set:
   how each caller authenticated (`ToolCall.Auth`, `Invocation.Auth`).
 - `WithDatabaseURL`: the database URL, overriding the config file.
 
+## Path arguments
+
+A rule decides from the text of a call; the file is opened by an upstream MCP
+server, often on another machine. `pkg/policy` cleans a path's spelling before
+matching (case, escapes, file URLs, `//`, `..`, and Windows prefixes, drives,
+trailing dots and streams), but text alone cannot say where a Windows short name
+(`PROGRA~1`), a share (`\\host\C$`), a variable (`%SystemRoot%`, `$HOME`), a
+relative path or a link leads. Three layers cover that, each catching what the
+one before cannot:
+
+| Layer | Owner | Catches |
+| --- | --- | --- |
+| Allow rules on paths, everything else to a person | Rule author | Any spelling the allow rule doesn't name, including `..` out of the folder |
+| A firm rule on `facts.ambiguous_path`, set from `policy.AmbiguousPath` | Embedder | Short names, shares, devices, variables, `~`, drive-relative and climbing relative paths, `/proc` links, even inside an allowed folder |
+| Confinement in the upstream server | Operator | Symlinks, junctions, hard links and mounts |
+
+Deployment requirements for upstream servers whose tools take paths or run
+commands:
+
+- **Check the real path.** Resolve it after opening (`realpath`, or `openat2`
+  with `RESOLVE_BENEATH`, on Linux; `GetFinalPathNameByHandle` on Windows) and
+  refuse anything outside the server's configured roots. A check on the text
+  before opening is not enough: a link swapped in between check and open wins.
+- **Run with least privilege.** A container or VM with only the workspace
+  mounted, or a dedicated account (an AppContainer or restricted ACLs on
+  Windows) that cannot read what a policy miss would expose.
+- **Don't rule on shell text.** `cat $(echo L2V0Yy9wYXNzd2Q= | base64 -d)`
+  names no path a rule can see. Route shell tools to a judge or a person, or
+  allow only specific commands.
+
 ## Configuration and ownership
 
 `atryum.toml` owns process bootstrap concerns: listening, database selection, inbound

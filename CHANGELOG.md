@@ -7,10 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `policy.Evaluate` now also decides two cleaned-up copies of each call (one
+  with spelling settled, one with paths cleaned too) and keeps the strictest
+  answer, so a deny or hold rule on an argument is no longer evaded by
+  another spelling of the same value: `//etc/passwd`, `/tmp/../etc/passwd`,
+  `/ETC/passwd`, `%2Fetc%2Fpasswd`, `file:///etc/passwd`, extra spaces,
+  zero-width characters or full-width letters. Windows paths are cleaned the
+  way Windows opens them: `C:\..\Windows`, `\\?\C:\Windows`, `C:\Windows.\`,
+  `SAM::$DATA` and `SAM:stream` all match a rule on `C:\Windows\`. A shell
+  command is never only read as a path, so `rm  -rf ../x` still matches a
+  rule on `rm -rf`. A second key that only differs in case (`"PATH"` beside
+  `"path"`) can't hide the argument, two rules with the same ID are still
+  two rules, and facts are compared as the embedder set them. Cleaning can only make a
+  decision stricter, never more permissive; the call that runs is the one the
+  agent sent, and a judge is asked at most once per rule. Short names
+  (`PROGRA~1`), shares, environment variables and links still name a file
+  in ways text alone can't tell: prefer allow rules on paths, and see
+  `policy.AmbiguousPath` below.
+
 ## [0.5.0] - 2026-10-23
 
 ### Added
 
+- `policy.AmbiguousPath`, for `facts.ambiguous_path`: true when a call's
+  arguments hold a path only the machine running the tool can resolve: a
+  variable (`%SystemRoot%`, `$HOME`), a leading `~`, a Windows short name
+  (`PROGRA~1`), a share or device (`\\host\C$`, `\\.\pipe`), a drive-relative
+  path, a relative path that climbs out (`../../etc`) or a `/proc` link. A firm
+  rule on it sends such calls to a person. The `pkg/policy` package doc and
+  the new "Path arguments" section of `docs/architecture.md` describe allow
+  rules on paths and what upstream servers must check themselves.
 - Per-user access views in the Users UI: clicking a user (or the new
   **Agents** / **Keys** links on their row) opens `/ui/users/{id}/agents`
   and `/ui/users/{id}/keys`, listing the agents that user is a member of

@@ -6,6 +6,28 @@
 // matches goes to a person. A level whose matching rules are all judge rules
 // that gave no verdict also goes to a person: it matched, so it never defers
 // to the other level.
+//
+// Conditions compare text literally, so Evaluate also decides two cleaned-up
+// copies of every call and keeps the strictest answer: a deny rule on
+// "/etc/" then also holds against "//etc/passwd" and "/ETC/passwd". See
+// normalize.go and Evaluate.
+//
+// # Rules on paths
+//
+// Cleaning settles how a path is spelled, not where it leads: a short name
+// (PROGRA~1), a share, a variable or a link is resolved only by the machine
+// that opens the file. So write path rules as allow rules for the folders a
+// tool may use, with a later rule sending the tool's other calls to a person:
+//
+//	read_file when args.path prefix "/workspace/"  ->  allow
+//	read_file                                      ->  human
+//
+// A spelling the allow rule doesn't name reaches a person instead of slipping
+// past a deny rule; cleaning never loosens, so even "/WORKSPACE/x" does. Add a
+// firm rule on facts.ambiguous_path (see AmbiguousPath) so that a short name
+// or variable inside an allowed folder reaches a person too. Links remain:
+// the server that opens the file must check the real path against its roots
+// (see "Path arguments" in docs/architecture.md).
 package policy
 
 import (
@@ -47,6 +69,13 @@ const (
 // and so do strings (and json.Number) holding a decimal number such as
 // "18500" or "1e6"; booleans and other strings never compare. A missing or
 // null field satisfies no condition.
+//
+// Text conditions (eq, prefix, contains, in) are written for the text as the
+// agent sent it. Evaluate also tries those on args against cleaned-up text:
+// lower case, single spaces, decoded %XX escapes, no invisible characters,
+// file URLs as paths; and then once more with paths tidied (Windows ones
+// too). A rule's values and field names are cleaned the same way. Facts are
+// the embedder's own and are never cleaned.
 type Cond struct {
 	Field string `json:"field"`
 	Op    string `json:"op"`
@@ -94,13 +123,60 @@ var strictness = map[Action]int{ActionAllow: 1, ActionNotify: 2, ActionHuman: 3,
 
 // Evaluate decides c against the firm and agent rules. A nil judge behaves as
 // one that always errors.
+//
+// It decides the call three times (see normalize.go): as sent, with the
+// arguments and the rules' values cleaned up (case, spaces, %XX escapes,
+// invisible characters), and with paths cleaned too (detours, Windows
+// spellings). A later answer replaces the one so far only when it is
+// stricter and comes from a different rule.
+//
+// The judge is asked at most once per rule. The cleaned passes reuse the real
+// verdict for every judge rule the first pass asked, and send a judge rule
+// that only a cleaned call reaches to a person.
 func Evaluate(ctx context.Context, firm, agent []Rule, c Call, judge Judge) Result {
+	type asked struct {
+		rule   Rule
+		action Action
+		err    error
+	}
+	var verdicts []asked
+	recording := judge
+	if judge != nil {
+		recording = func(ctx context.Context, r Rule) (Action, error) {
+			a, err := judge(ctx, r)
+			verdicts = append(verdicts, asked{r, a, err})
+			return a, err
+		}
+	}
+	best := evaluate(ctx, firm, agent, c, recording, nil)
+
+	replay := func(_ context.Context, r Rule) (Action, error) {
+		for _, v := range verdicts {
+			if reflect.DeepEqual(v.rule, r) {
+				return v.action, v.err
+			}
+		}
+		return ActionHuman, nil // reached only after cleaning: a person decides
+	}
+	for _, paths := range []bool{false, true} {
+		res := evaluate(ctx, firm, agent, c, replay, newCleaner(paths))
+		if res.Rule != nil && res.Rule != best.Rule && strictness[res.Action] > strictness[best.Action] {
+			res.Basis += " (matched after cleaning up the arguments' case, spaces, escapes and path detours)"
+			best = res
+		}
+	}
+	return best
+}
+
+// evaluate is one pass over both levels. With a cleaner, conditions on args
+// compare cleaned text; without one, the text as sent.
+func evaluate(ctx context.Context, firm, agent []Rule, c Call, judge Judge, clean *cleaner) Result {
 	var best Result
 	for _, lv := range []struct {
 		name  string
 		rules []Rule
 	}{{"firm", firm}, {"agent", agent}} {
-		r, ok := firstMatch(ctx, lv.rules, c, judge)
+		r, ok := firstMatch(ctx, lv.rules, c, judge, clean)
 		// On a tie the firm result stands.
 		if ok && strictness[r.Action] > strictness[best.Action] {
 			r.Level = lv.name
@@ -115,11 +191,11 @@ func Evaluate(ctx context.Context, firm, agent []Rule, c Call, judge Judge) Resu
 
 // firstMatch returns the first rule in rules that matches c and decides it,
 // or human on the last judge rule that matched if every one deferred.
-func firstMatch(ctx context.Context, rules []Rule, c Call, judge Judge) (Result, bool) {
+func firstMatch(ctx context.Context, rules []Rule, c Call, judge Judge, clean *cleaner) (Result, bool) {
 	var deferred *Rule
 	for i := range rules {
 		r := &rules[i]
-		if !matches(r, c) {
+		if !matches(r, c, clean) {
 			continue
 		}
 		basis := strings.TrimSpace(r.ID + " " + r.Note)
@@ -154,12 +230,12 @@ func firstMatch(ctx context.Context, rules []Rule, c Call, judge Judge) (Result,
 	return Result{}, false
 }
 
-func matches(r *Rule, c Call) bool {
+func matches(r *Rule, c Call, clean *cleaner) bool {
 	if !glob(r.Tool, c.Tool) || (r.Server != "" && !glob(r.Server, c.Server)) {
 		return false
 	}
 	for _, cond := range r.When {
-		if !condOK(cond, c) {
+		if !condMatches(cond, c, clean) {
 			return false
 		}
 	}
@@ -195,18 +271,37 @@ func glob(g, s string) bool {
 	return re.(*regexp.Regexp).MatchString(s)
 }
 
-func condOK(c Cond, call Call) bool {
-	v, ok := lookup(c.Field, call)
-	if !ok {
-		return false
+func condOK(c Cond, call Call) bool { return condMatches(c, call, nil) }
+
+// condMatches reports whether one condition holds. With a cleaner, a
+// condition on args is tried against every argument its field names once
+// keys are cleaned, with the argument and the rule's values cleaned the same
+// way, so "args.Path prefix /ETC/" lines up with "path": "//etc/passwd".
+// Facts are compared as they are in every pass.
+func condMatches(c Cond, call Call, clean *cleaner) bool {
+	if clean == nil || !strings.HasPrefix(c.Field, "args.") {
+		v, ok := lookup(c.Field, call)
+		return ok && compare(c, v, text)
 	}
+	cleaned := func(v any) string { return clean.text(text(v)) }
+	for _, v := range clean.args(c.Field, call.Args) {
+		if compare(c, v, cleaned) {
+			return true
+		}
+	}
+	return false
+}
+
+// compare applies c's operator to a field's value v, taking the text of v
+// and of c's values with spell.
+func compare(c Cond, v any, spell func(any) string) bool {
 	switch c.Op {
 	case "eq":
-		return text(v) == text(c.Value)
+		return spell(v) == spell(c.Value)
 	case "prefix":
-		return strings.HasPrefix(text(v), text(c.Value))
+		return strings.HasPrefix(spell(v), spell(c.Value))
 	case "contains":
-		return strings.Contains(text(v), text(c.Value))
+		return strings.Contains(spell(v), spell(c.Value))
 	case "gt", "lt":
 		a, okA := number(v)
 		b, okB := number(c.Value)
@@ -223,7 +318,7 @@ func condOK(c Cond, call Call) bool {
 			return false
 		}
 		for i := 0; i < list.Len(); i++ {
-			if text(v) == text(list.Index(i).Interface()) {
+			if spell(v) == spell(list.Index(i).Interface()) {
 				return true
 			}
 		}
