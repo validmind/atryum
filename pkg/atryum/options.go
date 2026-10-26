@@ -20,6 +20,12 @@ type (
 	ToolCall = invocation.ToolCall
 	// Decision is a Decider's result.
 	Decision = invocation.Decision
+	// Explanation is a Decider's account of a decision (Decision.Explanation,
+	// Approval.Explanation), rendered for the agent whose call it was.
+	// Everything in it reaches that agent.
+	Explanation = invocation.Explanation
+	// Evidence is a part of a call the decider quoted, and why.
+	Evidence = invocation.Evidence
 	// Verdict is allow, notify, deny or pending.
 	Verdict = invocation.Verdict
 	// EventHook receives every invocation change inside its transaction.

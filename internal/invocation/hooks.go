@@ -78,6 +78,9 @@ type Decision struct {
 	Verdict  Verdict `json:"verdict"`
 	Reason   string  `json:"reason,omitempty"`
 	ReviewID string  `json:"review_id,omitempty"`
+	// Explanation is the decider's account of this decision, rendered for
+	// the agent whose call it was. Optional.
+	Explanation *Explanation `json:"explanation,omitempty"`
 }
 
 // Decider replaces Atryum's rules, plans and default policy for every call.
@@ -215,6 +218,15 @@ func (s *Service) decide(ctx context.Context, call ToolCall) (d Decision) {
 		return d
 	}
 	return Decision{Verdict: VerdictDeny, Reason: fmt.Sprintf("decider returned unknown verdict %q", d.Verdict)}
+}
+
+// explanation is d's account of itself, or nil. Safe on a nil Decision, so
+// callers that may not have consulted a decider can ask unconditionally.
+func (d *Decision) explanation() *Explanation {
+	if d == nil {
+		return nil
+	}
+	return d.Explanation
 }
 
 func (d Decision) disposition() policy.Decision {

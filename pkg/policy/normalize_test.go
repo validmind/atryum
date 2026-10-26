@@ -246,7 +246,7 @@ var refund = Cond{Field: "args.text", Op: "contains", Value: "refund"}
 // A judge rule the call only matches after cleaning goes to a person, and the judge is not asked.
 func TestJudgeRuleReachedOnlyAfterCleaningGoesToAPerson(t *testing.T) {
 	asked := 0
-	judge := func(context.Context, Rule) (Action, error) { asked++; return ActionAllow, nil }
+	judge := func(context.Context, Rule) (Verdict, error) { asked++; return Verdict{Action: ActionAllow}, nil }
 	res := decide(nil, []Rule{judgeRule("J-1", refund)}, "label", map[string]any{"text": "Please REFUND me"}, judge)
 	// "REFUND" doesn't match as typed (no rule matched: a person decides) and
 	// matches J-1 once cleaned, which is no stricter. Either way a person decides.
@@ -268,7 +268,7 @@ func TestJudgeRuleReachedOnlyAfterCleaningGoesToAPerson(t *testing.T) {
 func TestJudgeIsAskedOnceAndItsVerdictStands(t *testing.T) {
 	for _, verdict := range []Action{ActionAllow, ActionDeny, ActionHuman} {
 		asked := 0
-		judge := func(context.Context, Rule) (Action, error) { asked++; return verdict, nil }
+		judge := func(context.Context, Rule) (Verdict, error) { asked++; return Verdict{Action: verdict}, nil }
 		res := decide(nil, []Rule{judgeRule("J-1", refund)}, "label", map[string]any{"text": "please refund me"}, judge)
 		if asked != 1 || res.Action != verdict {
 			t.Errorf("verdict %s: judge asked %d times, result %s; want 1 and %s", verdict, asked, res.Action, verdict)
@@ -280,7 +280,7 @@ func TestJudgeIsAskedOnceAndItsVerdictStands(t *testing.T) {
 // cleaned pass must not turn that into "a person decides".
 func TestAJudgeWithNoOpinionStillLetsTheNextRuleDecide(t *testing.T) {
 	asked := 0
-	judge := func(context.Context, Rule) (Action, error) { asked++; return "", nil }
+	judge := func(context.Context, Rule) (Verdict, error) { asked++; return Verdict{}, nil }
 	rules := []Rule{judgeRule("J-1", refund), {ID: "N-1", Tool: "label", Action: ActionNotify}}
 	res := decide(nil, rules, "label", map[string]any{"text": "please refund me"}, judge)
 	if asked != 1 || res.Action != ActionNotify || res.Rule.ID != "N-1" {
@@ -291,7 +291,7 @@ func TestAJudgeWithNoOpinionStillLetsTheNextRuleDecide(t *testing.T) {
 // A judge that failed sends the call to a person once, not twice.
 func TestAJudgeThatFailedIsNotRetriedOnTheCleanedCall(t *testing.T) {
 	asked := 0
-	judge := func(context.Context, Rule) (Action, error) { asked++; return "", context.DeadlineExceeded }
+	judge := func(context.Context, Rule) (Verdict, error) { asked++; return Verdict{}, context.DeadlineExceeded }
 	res := decide(nil, []Rule{judgeRule("J-1", refund)}, "label", map[string]any{"text": "please refund me"}, judge)
 	if asked != 1 || res.Action != ActionHuman {
 		t.Errorf("judge asked %d times, result %s; want 1 and human", asked, res.Action)

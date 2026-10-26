@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A denied agent is told why. `policy.Verdict` carries the judge's account of
+  its decision — its reasoning, the charter clauses it relied on, up to three
+  parts of the call it quoted with what each does, and the change that would
+  make the call allowed — and `policy.Result` carries it to the caller as
+  `Judge`, with `JudgeErr` set instead when the judge was asked and could not
+  answer. `invocation.Explanation` puts the same account on a `Decision` and
+  on an invocation's `Approval` (`explanation` on the API), and a `Decider`
+  that fills it in has it rendered for the agent whose call it was.
+  Everything in it reaches that agent, so a decider puts nothing in it the
+  agent may not see.
+
+### Changed
+
+- **Breaking:** `policy.Judge` returns `(Verdict, error)` in place of
+  `(Action, error)`. A judge that only decides becomes
+  `return policy.Verdict{Action: a}, nil`; one that explains itself fills in
+  the rest. `policy.Result.Basis` is unchanged, so anything reading the basis
+  text keeps working.
+- Every path that denies a tool call renders its message through
+  `invocation.DeniedText`, so an agent denied through the MCP proxy and one
+  denied through a harness hook are told the same things in the same order.
+  A call denied by an `auto_deny` approval rule now carries the reason it
+  already recorded but previously kept to itself.
+
 ## [0.6.0] - 2026-10-23
 
 ### Fixed

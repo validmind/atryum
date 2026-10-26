@@ -30,6 +30,9 @@ type Approval struct {
 	ActorID         *string  `json:"actor_id,omitempty"`
 	DecisionAt      *string  `json:"decision_at,omitempty"`
 	ConfidenceScore *float64 `json:"confidence_score,omitempty"`
+	// Explanation is why the call was decided this way, for the agent that
+	// made it to read. Nil when the decider gave no account.
+	Explanation *Explanation `json:"explanation,omitempty"`
 }
 
 type Invocation struct {
