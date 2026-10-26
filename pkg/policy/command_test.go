@@ -108,6 +108,8 @@ func TestCommandMatches(t *testing.T) {
 		{"brace expansion", "touch *", "touch {a,b}", false},
 		{"process substitution", "diff *", "diff <(cat a) b", false},
 		{"bang", "gh pr merge *", "! gh pr merge 1", false},
+		{"escaped bang", "'!' *", "\\! gh pr merge 1", false},
+		{"quoted bang as the command", "echo *", "'!' echo hi", false},
 		{"keyword", "rm *", "if true; then rm -rf ~; fi", false},
 		{"nul", "echo *", "echo a\x00b", false},
 		{"quoted nul", "echo *", "echo '\x00'", false},

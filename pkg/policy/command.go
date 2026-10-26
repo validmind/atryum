@@ -387,6 +387,9 @@ func (r *shellReader) doubleQuoted() error {
 // text.
 func (r *shellReader) escaped() error {
 	switch {
+	case r.at(r.i+1) == '!':
+		// \! is history's to an interactive shell, and negation to zsh's.
+		return unreadable("an escaped !")
 	case r.at(r.i+1) == '\n':
 		r.joined = true
 	case r.i+1 < len(r.s):
@@ -405,7 +408,7 @@ var reserved = map[string]bool{
 	"if": true, "then": true, "else": true, "elif": true, "fi": true, "case": true, "esac": true,
 	"for": true, "select": true, "while": true, "until": true, "do": true, "done": true, "in": true,
 	"function": true, "time": true, "coproc": true, "[[": true, "]]": true,
-	"repeat": true, "foreach": true, "end": true, "nocorrect": true, "noglob": true, "-": true,
+	"repeat": true, "foreach": true, "end": true, "nocorrect": true, "noglob": true, "-": true, "!": true,
 }
 
 // shellAssignment is a word a shell reads as setting a variable for the
