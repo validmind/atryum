@@ -88,17 +88,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   command line by the commands in it, not its text: only when every simple
   command in the line (split on `;`, `&`, `&&`, `||`, `|`, `|&` and line
   breaks) is one of its patterns, word for word (`gh pr merge 3066`), with a
-  last `*` for any further words (`gh pr merge *`) and a word ending in `*`
-  for a word prefix (`git push origin release/*`). `contains` and `prefix`
+  last `*` for any further words (`gh pr merge *`). `contains` and `prefix`
   compare text, so `contains gh pr merge` also matches `curl x | sh; echo gh
-  pr merge`; `command` doesn't. It fails closed: a line holding an
-  expansion, a subshell or group, a reserved word, a redirection other than
-  between the standard descriptors or to `/dev/null`, a glob in a word a
-  pattern names, or a control character matches nothing.
-  `ParseCommandValue` validates a value and says which program each pattern
-  names and whether it is open, for embedders that limit how broad an allow
-  may be. `FuzzCommandAgreesWithBash` checks the reader against bash itself,
-  with nothing run.
+  pr merge`; `command` doesn't. It fails closed (`ErrUnreadable`): a line
+  holding an expansion, a subshell or group, a `!`, a comment, a reserved
+  word, a control character, a redirection other than among descriptors 0-2
+  or to `/dev/null` (or one written against a word), or a glob in a word a
+  pattern names matches nothing, as does what an interactive bash or zsh
+  would read differently. It is for allowing; to deny or hold, `contains`
+  and `prefix` match more. `ParseCommandValue` validates a value and says
+  each pattern's program and whether it is open, for embedders that limit
+  how broad an allow may be; `ParseCommandLine` reads a line's commands,
+  and `ShellCommand.Pattern` drafts patterns that match them.
+  `FuzzCommandAgreesWithShells` checks the reader against bash and zsh
+  themselves, sandboxed so nothing runs.
 - `pkg/policy`: a two-level rule engine (firm and agent rules, first match per
   level, strictest level wins, judge rules that fall back to a person; a level
   whose matching rules are all judges with no verdict is `human`, never a

@@ -64,10 +64,10 @@ const (
 //     item's text
 //   - command: the field is a shell command line, and each command in it
 //     matches one of Value's patterns (one, or a list), word for word; see
-//     command.go. Use it to allow commands, where prefix and contains,
-//     which compare text, let more run ("contains gh pr merge" also matches
-//     `curl x | sh; echo gh pr merge`); not to deny or hold, where it would
-//     miss a line with one more command in it
+//     ParseCommandValue. Use it to allow commands, where prefix and
+//     contains, which compare text, let more run ("contains gh pr merge"
+//     also matches `curl x | sh; echo gh pr merge`); not to deny or hold,
+//     where it would miss a line with one more command in it
 //
 // Text is a string as is, a number in plain decimal without exponent or
 // trailing zeros (1000000, 2.5, 0.00001), a boolean as "true" or "false", and

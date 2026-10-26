@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 )
@@ -43,8 +44,23 @@ func TestCommandMatches(t *testing.T) {
 		{"list of strings", []string{"git status", "git diff"}, "git status; git diff", true},
 		{"same pattern twice", "git status", "git status\ngit status\n", true},
 		{"line continuation", "gh pr merge *", "gh pr merge \\\n 3066", true},
-		{"comment", "gh pr merge *", "gh pr merge 1 # then; rm -rf ~", true},
+		// A comment to bash -c is words to an interactive zsh: `a x # y; b` runs b.
+		{"comment", "gh pr merge *", "gh pr merge 1 # then; rm -rf ~", false},
 		{"comment, then a line", "gh pr merge *", "gh pr merge 1 # note\nrm -rf ~", false},
+		// A ! in double quotes is history to an interactive shell, unless a quote, blank or = follows.
+		{"history in quotes", "echo *", `echo "x!-2"`, false},
+		{"history event in quotes", "echo *", `echo "!!"`, false},
+		{"escaped ! in quotes", "echo *", `echo "\!x"`, false},
+		{"! before the closing quote", "git commit *", `git commit -m "Done!"`, true},
+		{"! before a blank or =", "echo *", `echo "a ! b != c"`, true},
+		{"! in single quotes", "echo *", `echo 'x!-2'`, true},
+		// {} as an argument, and a lone =, are text to both shells.
+		{"{} as an argument", "find . -name x -exec rm {} +", "find . -name x -exec rm {} +", true},
+		{"{} as a command", "echo *", "{} x", false},
+		{"lone =", "test a = b", "test a = b", true},
+		{"non-ASCII", "echo é ü", "echo é ü", true},
+		{"= starting a word", "echo *", "echo =ls", true},
+		{"= starting a word, named", "echo =ls", "echo =ls", false},
 
 		// Quotes are removed, as the shell removes them.
 		{"quoted word", "git commit -m 'fix the build'", `git commit -m "fix the build"`, true},
@@ -93,6 +109,8 @@ func TestCommandMatches(t *testing.T) {
 		{"carriage return", "git status", "git status\r", false},
 		{"time", "make *", "time make", false},
 		{"job", "fg *", "%1", false},
+		{"job after an assignment", "A= *", "A= %0", false},
+		{"keyword after an assignment", "A=1 *", "A=1 if true", false},
 		{"keyword as an argument", "echo *", "echo if then fi %1", true},
 		{"unterminated quote", "echo *", "echo 'a", false},
 		{"unterminated double quote", "echo *", `echo "a`, false},
@@ -144,6 +162,14 @@ func TestCommandMatches(t *testing.T) {
 		{"lone star", "*", "rm -rf ~", false},
 		{"only an assignment", "FOO=1 *", "FOO=1 rm -rf ~", false},
 		{"only a positional assignment", "1=x *", "1=x rm -rf ~", false},
+		{"a positional assignment", "echo *", "1=x echo hi", false},
+		{"a digit-led name", "0A=000", "0A=000", true},
+		{"a quoted assignment is a name", "'A=1' make", "A''=1 make", true},
+		{"a name is not an assignment", "A=1 make", "'A=1' make", false},
+		{"an assignment is not a name", "'A=1' make", "A=1 make", false},
+		{"an assignment", "A=1 make", "A=1 make", true},
+		{"a quoted value", "A=1 make", "A='1' make", true},
+		{"only a quoted name", "A=1 *", "A''=1 rm -rf ~", false},
 		{"program by prefix", "gi* push", "git push", false},
 		{"assignment by prefix", "FOO=* make", "FOO=1 make", false},
 
@@ -223,13 +249,75 @@ func TestParseCommandValueWords(t *testing.T) {
 }
 
 func TestParseCommandLine(t *testing.T) {
-	got, err := ParseCommandLine(`cd web && gh pr merge 3066 --squash 2>&1 | tail -3 # done`)
-	want := [][]string{{"cd", "web"}, {"gh", "pr", "merge", "3066", "--squash"}, {"tail", "-3"}}
-	if err != nil || !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %q %v, want %q", got, err, want)
+	cmds, err := ParseCommandLine(`cd web && gh pr merge 3066 --squash 2>&1 | tail -3`)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := ParseCommandLine("gh pr merge $(x)"); err == nil {
-		t.Fatal("read a command substitution")
+	var got [][]string
+	for _, c := range cmds {
+		got = append(got, c.Words())
+	}
+	want := [][]string{{"cd", "web"}, {"gh", "pr", "merge", "3066", "--squash"}, {"tail", "-3"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	if _, err := ParseCommandLine("gh pr merge $(x)"); !errors.Is(err, ErrUnreadable) {
+		t.Fatalf("a command substitution: %v", err)
+	}
+}
+
+// Pattern writes a pattern that reads back as the command's words, quoting
+// what needs it, or says there is none.
+func TestShellCommandPattern(t *testing.T) {
+	for _, tc := range []struct {
+		line  string
+		n     int
+		open  bool
+		want  string
+		match string // a line the pattern must match
+	}{
+		{"gh pr merge 3066 --squash", 5, false, "gh pr merge 3066 --squash", "gh pr merge 3066 --squash"},
+		{"gh pr merge 3066 --squash", 3, true, "gh pr merge *", "gh pr merge 1"},
+		{`git commit -m "fix it" 'it'"'"'s'`, 5, false, `git commit -m 'fix it' 'it'\''s'`, `git commit -m 'fix it' "it's"`},
+		{"rm -rf ~/build", 3, false, "rm -rf ~/build", "rm -rf ~/build"},
+		{"rm -rf '~'", 3, false, "rm -rf '~'", `rm -rf "~"`},
+		{"find . -exec rm {} +", 6, false, "find . -exec rm '{}' +", "find . -exec rm {} +"},
+		{"test a = b", 4, false, "test a = b", "test a = b"},
+		{"echo ''", 2, false, "echo ''", `echo ""`},
+		{"FOO=1 make test", 2, true, "FOO=1 make *", "FOO=1 make lint"},
+		{"'FOO=1' make", 2, false, "'FOO=1' make", "FOO''=1 make"},
+	} {
+		cmds, err := ParseCommandLine(tc.line)
+		if err != nil {
+			t.Fatalf("%q: %v", tc.line, err)
+		}
+		got, ok := cmds[0].Pattern(tc.n, tc.open)
+		if !ok || got != tc.want {
+			t.Errorf("%q, %d words, open %v: %q %v, want %q", tc.line, tc.n, tc.open, got, ok, tc.want)
+			continue
+		}
+		if !matchCommand(tc.match, got) {
+			t.Errorf("%q doesn't match %q", got, tc.match)
+		}
+	}
+	for _, tc := range []struct {
+		line string
+		n    int
+		open bool
+	}{
+		{"rm *.log", 2, false},       // a glob, which no pattern names
+		{"git show HEAD^", 3, false}, // ^ is a glob to zsh
+		{"ls ~'/a b'", 2, false},     // a ~ that must stay unquoted, beside a space that must not
+		{"FOO=1 make", 1, true},      // * after no program
+		{"make", 2, false},           // more words than it has
+	} {
+		cmds, err := ParseCommandLine(tc.line)
+		if err != nil {
+			t.Fatalf("%q: %v", tc.line, err)
+		}
+		if got, ok := cmds[0].Pattern(tc.n, tc.open); ok {
+			t.Errorf("%q: %q, want none", tc.line, got)
+		}
 	}
 }
 

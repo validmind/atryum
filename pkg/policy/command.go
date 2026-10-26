@@ -9,243 +9,280 @@ import (
 	"strings"
 )
 
-// The "command" condition matches a shell command line by the commands in
-// it, not by its text. contains and prefix compare text, so a condition
-// "contains gh pr merge" also matches `curl x | sh; echo gh pr merge`, and
-// "contains sh" matches `bash`, `ssh` and `curl x | sh`. command reads the
-// line as a shell would split it and matches only when every simple command
-// in it is one the condition names.
-//
-// Value is one pattern or a list of them. A pattern is a command's words as
-// a shell would write them, `gh pr merge 3066` or `git commit -m 'fix the
-// build'`, matched word for word and in full; a last word * (unquoted,
-// after the program) matches any further words, so `gh pr merge *` matches
-// every `gh pr merge`, flags included. A line matches when each of its
-// simple commands, split on ; & && || | |& and line breaks, matches one of
-// the patterns, in any order and any number of times.
-//
-// It is for allowing: a rule that denies or holds with it would miss a line
-// that holds one more command (`rm -rf ~; true`) or anything it can't read.
-// To deny or hold, use contains or prefix, which match more.
-//
-// The line is read conservatively: anything whose effect can't be known
-// from its text alone makes it match nothing, so a rule that allows by
-// command never allows more than its patterns say. That is any expansion
-// ($VAR, $(…), `…`, ${…}, $'…'), a subshell or group ( ) { }, a ! , a
-// reserved word or job (if, while, time, %1) where a command's name goes, a
-// redirection other than between descriptors (2>&1) or to and from
-// /dev/null, a here-document, an unterminated quote, and an unquoted glob
-// in a word a pattern names: bash's * ? [ and zsh's ^, # inside a word and =
-// starting one. The line is read as bash and zsh read it; an unquoted ~ is
-// kept as written, and only matches a pattern's unquoted ~. Assignments
-// (FOO=1 git push) and wrappers (env, sudo, xargs, sh -c) are words like
-// any other: a pattern has to name them to match them.
+// ErrUnreadable is why a command condition matches a line, or reads a
+// pattern, as nothing: it holds shell syntax whose effect its text alone
+// doesn't show. The error that wraps it says which.
+var ErrUnreadable = errors.New("the command line holds shell syntax whose effect its text alone doesn't show")
 
-// shellWord is one word of a simple command, quotes removed. globs are
-// where it holds an unquoted glob character, which a shell would expand;
-// tildes are where it holds an unquoted ~, which a shell may expand to a
-// home directory, so `~` and `'~'` are different words.
+func unreadable(what string) error { return fmt.Errorf("%w: %s", ErrUnreadable, what) }
+
+// shellWord is one word of a simple command, quotes removed. glob is whether
+// it holds an unquoted glob character, which a shell would expand; tildes
+// are where it holds an unquoted ~, which a shell may expand to a home
+// directory, so `~` and `'~'` are different words; quoted is where its
+// first quoted or escaped character is, or -1.
 type shellWord struct {
 	text   string
-	globs  []int
+	glob   bool
 	tildes []int
+	quoted int
 }
 
-func (w shellWord) glob() bool { return len(w.globs) > 0 }
+// assigns reports whether a shell reads w, before a command's name, as
+// setting a variable for it (FOO=1, PATH+=:x): a name and = written
+// unquoted, so A”=1 is a command's name.
+func (w shellWord) assigns() bool {
+	m := shellAssignment.FindStringIndex(w.text)
+	return m != nil && (w.quoted < 0 || w.quoted >= m[1])
+}
 
-var errUnreadable = errors.New("it holds an expansion, a redirection, a subshell or other shell syntax whose effect the text alone doesn't show")
+// positional reports whether zsh reads w, before a command's name, as
+// setting a positional parameter (1=x), which bash reads as the name.
+func (w shellWord) positional() bool {
+	m := positional.FindStringIndex(w.text)
+	return m != nil && (w.quoted < 0 || w.quoted >= m[1])
+}
 
-// parseShell splits a command line into its simple commands. With
-// redirects false, any redirection is refused (a pattern names commands,
-// not where their output goes); with it true, the harmless ones are
-// dropped and every other one is refused.
-func parseShell(s string, redirects bool) ([][]shellWord, error) {
-	// Control characters other than tab and line break: some runners cut a
-	// line short at a NUL, and bash uses \x01 and \x7f to mark quoting,
-	// so it doesn't read them back as written.
-	if strings.IndexFunc(s, func(r rune) bool { return (r < 0x20 && r != '\t' && r != '\n') || r == 0x7f }) >= 0 {
-		return nil, errUnreadable
-	}
-	var (
-		cmds    [][]shellWord
-		cmd     []shellWord
-		word    strings.Builder
-		inWord  bool // a word is open, even an empty quoted one ('')
-		globs   []int
-		tildes  []int
-		digits  bool // the word so far is only unquoted digits: a descriptor before < or >
-		joined  bool // a line continuation since the last blank or separator
-		redir   bool // the command so far has a redirection
-		needCmd bool // after && || | |&: a command must follow
-	)
-	endWord := func() {
-		if inWord {
-			cmd = append(cmd, shellWord{text: word.String(), globs: globs, tildes: tildes})
-			needCmd = false
-		}
-		word.Reset()
-		inWord, globs, tildes, digits = false, nil, nil, false
-	}
-	// endCmd ends a simple command at a separator. empty is whether the
-	// separator may follow no command: only a line break may.
-	endCmd := func(empty bool) error {
-		endWord()
-		joined = false
-		if len(cmd) == 0 {
-			// zsh runs cat for a redirection alone (>/dev/null, <x).
-			if empty && !redir {
-				return nil
-			}
-			return fmt.Errorf("a command separator or redirection with no command")
-		}
-		redir = false
-		if name := cmd[0].text; reserved[name] || strings.HasPrefix(name, "%") {
-			return errUnreadable
-		}
-		cmds = append(cmds, cmd)
-		cmd = nil
-		return nil
-	}
-	for i := 0; i < len(s); {
-		ch := s[i]
-		next := byte(0)
-		if i+1 < len(s) {
-			next = s[i+1]
-		}
-		switch {
-		case ch == ' ' || ch == '\t':
-			endWord()
-			joined = false
-			i++
-		case ch == '\n':
-			if err := endCmd(true); err != nil {
-				return nil, err
-			}
-			i++
-		case ch == ';':
-			endWord()
-			if needCmd || next == ';' {
-				return nil, errUnreadable
-			}
-			if err := endCmd(false); err != nil {
-				return nil, err
-			}
-			i++
-		case ch == '&' && next == '>':
-			// zsh reads 7&> as descriptor 7's: never right after a word.
-			if inWord || joined {
-				return nil, errUnreadable
-			}
-			redir = true
-			n, err := redirection(s, i, redirects)
-			if err != nil {
-				return nil, err
-			}
-			i = n
-		case ch == '&' || ch == '|':
-			endWord()
-			joined = false
-			if needCmd {
-				return nil, errUnreadable
-			}
-			if err := endCmd(false); err != nil {
-				return nil, err
-			}
-			i++
-			if next == ch || (ch == '|' && next == '&') {
-				i++
-				needCmd = true
-			} else if ch == '|' {
-				needCmd = true
-			}
-		case ch == '<' || ch == '>':
-			// Shells differ on what a word right before it is: bash takes any
-			// number as a descriptor (3066>), zsh only one digit, and a line
-			// continuation joins whatever is around it. So a redirection
-			// follows a blank or separator, or a lone 0, 1 or 2 (2>).
-			if joined || (inWord && !(digits && word.Len() == 1 && word.String() <= "2")) {
-				return nil, errUnreadable
-			}
-			word.Reset()
-			inWord, digits, redir = false, false, true
-			n, err := redirection(s, i, redirects)
-			if err != nil {
-				return nil, err
-			}
-			i = n
-		case ch == '\'':
-			end := strings.IndexByte(s[i+1:], '\'')
-			if end < 0 {
-				return nil, errUnreadable
-			}
-			word.WriteString(s[i+1 : i+1+end])
-			inWord, digits = true, false
-			i += end + 2
-		case ch == '"':
-			n, err := doubleQuoted(s, i+1, &word)
-			if err != nil {
-				return nil, err
-			}
-			inWord, digits = true, false
-			i = n
-		case ch == '\\':
-			switch {
-			case next == '\n': // a line continuation
-				joined = true
-				i += 2
-			case i+1 < len(s):
-				word.WriteByte(next)
-				inWord, digits = true, false
-				i += 2
-			default:
-				return nil, errUnreadable
-			}
-		case ch == '#' && !inWord:
-			for i < len(s) && s[i] != '\n' {
-				i++
-			}
-		case strings.IndexByte("$`(){}!", ch) >= 0:
-			return nil, errUnreadable
-		case ch == '*' || ch == '?' || ch == '[' || ch == '^' || (ch == '#' && inWord) || (ch == '=' && !inWord):
-			// zsh also expands ^x, x# and =cmd, with the options that turn them on.
-			globs = append(globs, word.Len())
-			word.WriteByte(ch)
-			inWord, digits = true, false
-			i++
-		case ch == '~':
-			tildes = append(tildes, word.Len())
-			word.WriteByte(ch)
-			inWord, digits = true, false
-			i++
-		default:
-			digits = ch >= '0' && ch <= '9' && (!inWord || digits)
-			word.WriteByte(ch)
-			inWord = true
-			i++
-		}
-	}
-	endWord()
-	if needCmd {
-		return nil, errUnreadable
-	}
-	if err := endCmd(true); err != nil {
+// readLine reads a command line into its simple commands, dropping the
+// harmless redirections (2>&1, >/dev/null).
+func readLine(s string) ([][]shellWord, error) { return readShell(s, true) }
+
+// readPatternWords reads a pattern, which names commands, not where their
+// output goes: any redirection is refused.
+func readPatternWords(s string) ([][]shellWord, error) { return readShell(s, false) }
+
+func readShell(s string, redirects bool) ([][]shellWord, error) {
+	r := shellReader{s: s, redirects: redirects}
+	if err := r.read(); err != nil {
 		return nil, err
 	}
-	if len(cmds) == 0 {
-		return nil, fmt.Errorf("no command")
-	}
-	return cmds, nil
+	return r.cmds, nil
 }
 
-// redirection reads the redirection at s[i] (its operator and target) and
-// returns where it ends. Only these are harmless: making a descriptor a
-// copy of stdin, stdout or stderr (2>&1, >&2), and output to or input
-// from /dev/null. Closing one (>&-) isn't: the next file the program opens
-// would take its place.
-func redirection(s string, i int, allowed bool) (int, error) {
-	if !allowed {
-		return 0, errUnreadable
+// shellReader reads a command line as bash and zsh split it, run with -c,
+// and refuses whatever an interactive one would read differently.
+type shellReader struct {
+	s         string
+	i         int
+	redirects bool // drop the harmless redirections rather than refuse every one
+
+	cmds [][]shellWord
+	cmd  []shellWord // the simple command being read
+
+	word   strings.Builder
+	inWord bool  // a word is open, even an empty quoted one ('')
+	glob   bool  // the open word holds an unquoted glob character
+	tildes []int // where the open word holds an unquoted ~
+	quoted int   // where the open word's first quoted or escaped character is, or -1
+	digits bool  // the open word is only unquoted digits: a descriptor before < or >
+
+	joined  bool // a line continuation since the last blank or separator
+	redir   bool // the command being read has a redirection
+	needCmd bool // after && || | |&: a command must follow
+}
+
+func (r *shellReader) read() error {
+	// Control characters other than tab and line break: some runners cut a
+	// line short at a NUL, and bash marks quoting with \x01 and \x7f, so it
+	// doesn't read them back as written.
+	if strings.IndexFunc(r.s, func(c rune) bool { return (c < 0x20 && c != '\t' && c != '\n') || c == 0x7f }) >= 0 {
+		return unreadable("a control character")
 	}
+	for r.i < len(r.s) {
+		if err := r.step(); err != nil {
+			return err
+		}
+	}
+	r.endWord()
+	if r.needCmd {
+		return unreadable("an operator with no command after it")
+	}
+	if err := r.endCmd(true); err != nil {
+		return err
+	}
+	if len(r.cmds) == 0 {
+		return unreadable("no command")
+	}
+	return nil
+}
+
+// step reads what starts at r.i.
+func (r *shellReader) step() error {
+	ch, next := r.s[r.i], r.at(r.i+1)
+	switch {
+	case ch == ' ' || ch == '\t':
+		r.endWord()
+		r.joined = false
+		r.i++
+	case ch == '\n':
+		r.i++
+		return r.endCmd(true)
+	case ch == ';' || ch == '|' || (ch == '&' && next != '>'):
+		return r.operator()
+	case ch == '<' || ch == '>' || ch == '&':
+		return r.redirection()
+	case ch == '\'':
+		return r.singleQuoted()
+	case ch == '"':
+		return r.doubleQuoted()
+	case ch == '\\':
+		return r.escaped()
+	case ch == '#' && !r.inWord:
+		// A comment to a shell run with -c, but a word to an interactive zsh.
+		return unreadable("a comment")
+	case ch == '$' || ch == '`':
+		return unreadable("an expansion")
+	case ch == '!':
+		return unreadable("a ! (negation, or history in an interactive shell)")
+	case ch == '{' && !r.inWord && next == '}' && r.wordEnds(r.i+2) && len(r.cmd) > 0:
+		// {} as an argument (find -exec rm {} +) is the text {} to both shells.
+		r.add("{}")
+		r.i += 2
+	case strings.IndexByte("(){}", ch) >= 0:
+		return unreadable("a subshell or group")
+	case ch == '*' || ch == '?' || ch == '[' || ch == '^' || ch == '#' || (ch == '=' && !r.inWord && !r.wordEnds(r.i+1)):
+		// bash's globs, and zsh's ^x, x# and =cmd (with the options that turn
+		// them on, which a user's shell may).
+		r.add(r.s[r.i : r.i+1])
+		r.glob = true
+		r.i++
+	case ch == '~':
+		r.tildes = append(r.tildes, r.word.Len())
+		r.add("~")
+		r.i++
+	default:
+		digits := ch >= '0' && ch <= '9' && (!r.inWord || r.digits)
+		r.add(r.s[r.i : r.i+1]) // a byte: a multi-byte character is added a byte at a time
+		r.digits = digits
+		r.i++
+	}
+	return nil
+}
+
+// at is the byte at i, or 0 past the end.
+func (r *shellReader) at(i int) byte {
+	if i < len(r.s) {
+		return r.s[i]
+	}
+	return 0
+}
+
+// wordEnds reports whether a word ends before r.s[i]: a blank, a separator,
+// a redirection or the end.
+func (r *shellReader) wordEnds(i int) bool {
+	return i >= len(r.s) || strings.IndexByte(" \t\n;&|<>", r.s[i]) >= 0
+}
+
+// add adds text to the open word, opening it if need be.
+func (r *shellReader) add(text string) {
+	if !r.inWord {
+		r.quoted = -1
+	}
+	r.word.WriteString(text)
+	r.inWord, r.digits = true, false
+}
+
+// addQuoted adds quoted or escaped text, which a shell reads as text alone.
+func (r *shellReader) addQuoted(text string) {
+	r.add(text)
+	if r.quoted < 0 {
+		r.quoted = r.word.Len() - len(text)
+	}
+}
+
+func (r *shellReader) endWord() {
+	if r.inWord {
+		r.cmd = append(r.cmd, shellWord{text: r.word.String(), glob: r.glob, tildes: r.tildes, quoted: r.quoted})
+		r.needCmd = false
+	}
+	r.word.Reset()
+	r.inWord, r.glob, r.tildes, r.digits = false, false, nil, false
+}
+
+// endCmd ends the simple command at a separator. Only a line break may end
+// none (allowEmpty), and not after a redirection: zsh runs cat for a
+// redirection alone (>/dev/null).
+func (r *shellReader) endCmd(allowEmpty bool) error {
+	r.endWord()
+	r.joined = false
+	if len(r.cmd) == 0 {
+		if allowEmpty && !r.redir {
+			return nil
+		}
+		return unreadable("a separator or redirection with no command")
+	}
+	r.redir = false
+	// The command's name, after any variables set for it: zsh reads 1=x
+	// there as setting $1, bash as the name.
+	for _, w := range r.cmd {
+		if w.positional() {
+			return unreadable(fmt.Sprintf("%s, which bash and zsh read differently", w.text))
+		}
+		if w.assigns() {
+			continue
+		}
+		if reserved[w.text] || strings.HasPrefix(w.text, "%") {
+			return unreadable(fmt.Sprintf("%s where a command's name goes", w.text))
+		}
+		break
+	}
+	r.cmds = append(r.cmds, r.cmd)
+	r.cmd = nil
+	return nil
+}
+
+// operator reads ; & && || | or |&.
+func (r *shellReader) operator() error {
+	ch, next := r.s[r.i], r.at(r.i+1)
+	r.endWord()
+	if r.needCmd || (ch == ';' && next == ';') {
+		return unreadable("an operator with no command before it")
+	}
+	if err := r.endCmd(false); err != nil {
+		return err
+	}
+	r.i++
+	switch {
+	case ch == ';':
+	case next == ch || (ch == '|' && next == '&'):
+		r.i++
+		r.needCmd = true
+	case ch == '|':
+		r.needCmd = true
+	}
+	return nil
+}
+
+// redirection reads one that starts at r.i: < > or &>, its operator and
+// target. Shells differ on a word right before one: bash takes any number
+// as a descriptor (3066>), zsh only one digit, and reads 7&> as descriptor
+// 7's; a line continuation joins whatever is around it. So a redirection
+// follows a blank or separator, or a lone 0, 1 or 2 (2>); &> only a blank
+// or separator.
+func (r *shellReader) redirection() error {
+	lone := r.digits && r.word.Len() == 1 && r.word.String() <= "2"
+	if r.joined || (r.inWord && (r.s[r.i] == '&' || !lone)) {
+		return unreadable("a redirection against a word")
+	}
+	if !r.redirects {
+		return unreadable("a redirection")
+	}
+	r.word.Reset()
+	r.inWord, r.digits, r.redir = false, false, true
+	end, err := harmlessRedirection(r.s, r.i)
+	if err != nil {
+		return err
+	}
+	r.i = end
+	return nil
+}
+
+// harmlessRedirection reads the redirection at s[i] and returns where it
+// ends. Only these are harmless: making a descriptor a copy of stdin,
+// stdout or stderr (2>&1, >&2), and output to or input from /dev/null.
+// Closing one (>&-) isn't: the next file the program opens would take its
+// place.
+func harmlessRedirection(s string, i int) (int, error) {
 	op := ""
 	for _, o := range []string{"&>>", "&>", ">>", ">|", ">&", "<&", "<<", "<>", ">", "<"} {
 		if strings.HasPrefix(s[i:], o) {
@@ -254,7 +291,7 @@ func redirection(s string, i int, allowed bool) (int, error) {
 		}
 	}
 	if op == "<<" || op == "<>" {
-		return 0, errUnreadable // here-documents and here-strings; read-write opens
+		return 0, unreadable("a here-document, here-string or read-write redirection")
 	}
 	j := i + len(op)
 	for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
@@ -263,7 +300,7 @@ func redirection(s string, i int, allowed bool) (int, error) {
 	start := j
 	for j < len(s) && strings.IndexByte(" \t\n;&|<>()", s[j]) < 0 {
 		if strings.IndexByte("'\"\\$`*?[{}!", s[j]) >= 0 {
-			return 0, errUnreadable
+			return 0, unreadable("a redirection to a quoted or expanded target")
 		}
 		j++
 	}
@@ -278,76 +315,67 @@ func redirection(s string, i int, allowed bool) (int, error) {
 	case target == "/dev/null":
 		return j, nil
 	}
-	return 0, errUnreadable
+	return 0, unreadable("a redirection other than 2>&1 or to /dev/null")
 }
 
-// doubleQuoted reads a double-quoted string from s[i], just past its
-// opening quote, into w and returns where it ends. An expansion in it ($,
-// `) makes the line unreadable.
-func doubleQuoted(s string, i int, w *strings.Builder) (int, error) {
-	for i < len(s) {
-		switch ch := s[i]; ch {
-		case '"':
-			return i + 1, nil
-		case '$', '`':
-			return 0, errUnreadable
-		case '\\':
-			if i+1 >= len(s) {
-				return 0, errUnreadable
-			}
-			switch next := s[i+1]; next {
+func (r *shellReader) singleQuoted() error {
+	end := strings.IndexByte(r.s[r.i+1:], '\'')
+	if end < 0 {
+		return unreadable("an unterminated quote")
+	}
+	r.addQuoted(r.s[r.i+1 : r.i+1+end])
+	r.i += end + 2
+	return nil
+}
+
+// doubleQuoted reads a double-quoted string. An expansion in it ($, `)
+// makes the line unreadable, as does a ! an interactive shell would read as
+// history (!-2, !!): one before a quote, blank or = is the text !.
+func (r *shellReader) doubleQuoted() error {
+	var b strings.Builder
+	for i := r.i + 1; i < len(r.s); {
+		switch ch, next := r.s[i], r.at(i+1); {
+		case ch == '"':
+			r.addQuoted(b.String())
+			r.i = i + 1
+			return nil
+		case ch == '$' || ch == '`':
+			return unreadable("an expansion")
+		case ch == '!' && strings.IndexByte("\" \t=", next) < 0:
+			return unreadable("a ! an interactive shell reads as history")
+		case ch == '\\' && next == '!':
+			return unreadable("a ! an interactive shell reads as history")
+		case ch == '\\' && i+1 < len(r.s):
+			switch next {
 			case '\n':
 			case '$', '`', '"', '\\':
-				w.WriteByte(next)
+				b.WriteByte(next)
 			default:
-				w.WriteByte('\\')
-				w.WriteByte(next)
+				b.WriteByte('\\')
+				b.WriteByte(next)
 			}
 			i += 2
 		default:
-			w.WriteByte(ch)
+			b.WriteByte(ch)
 			i++
 		}
 	}
-	return 0, errUnreadable
+	return unreadable("an unterminated quote")
 }
 
-// commandPattern is a parsed pattern: the words it names, the index of its
-// program among them, and whether a last * lets further words follow.
-type commandPattern struct {
-	words   []shellWord
-	program int
-	open    bool
-}
-
-func parsePattern(p string) (commandPattern, error) {
-	cmds, err := parseShell(p, false)
-	if err != nil {
-		return commandPattern{}, fmt.Errorf("pattern %q: %w", p, err)
+// escaped reads a backslash: a line continuation, or the next character as
+// text.
+func (r *shellReader) escaped() error {
+	switch {
+	case r.at(r.i+1) == '\n':
+		r.joined = true
+	case r.i+1 < len(r.s):
+		r.addQuoted(r.s[r.i+1 : r.i+2])
+	default:
+		return unreadable("a backslash at the end")
 	}
-	if len(cmds) != 1 {
-		return commandPattern{}, fmt.Errorf("pattern %q: one command per pattern; give several as a list", p)
-	}
-	words := cmds[0]
-	out := commandPattern{program: -1}
-	for i, w := range words {
-		switch {
-		case !w.glob():
-			out.words = append(out.words, w)
-			if out.program < 0 && !shellAssignment.MatchString(w.text) {
-				out.program = i
-			}
-		case w.text == "*" && i == len(words)-1 && out.program >= 0:
-			out.open = true
-		default:
-			return commandPattern{}, fmt.Errorf("pattern %q: only a last word * may stand for other words, after the program; quote %q to match it as written", p, w.text)
-		}
-	}
-	// A pattern names its program: `FOO=1 *` would match every command.
-	if out.program < 0 {
-		return commandPattern{}, fmt.Errorf("pattern %q: name the command's program, not only variables for it", p)
-	}
-	return out, nil
+	r.i += 2
+	return nil
 }
 
 // reserved are the words that, as a command's first word, make it something
@@ -360,17 +388,61 @@ var reserved = map[string]bool{
 	"repeat": true, "foreach": true, "end": true, "nocorrect": true, "noglob": true, "-": true,
 }
 
-// shellAssignment is a word a shell may read as setting a variable for the
-// command after it: FOO=1, PATH+=:x, and in zsh a positional one, 1=x.
-var shellAssignment = regexp.MustCompile(`^[A-Za-z0-9_]+\+?=`)
+// shellAssignment is a word a shell reads as setting a variable for the
+// command after it: FOO=1, PATH+=:x. positional is one zsh reads as setting
+// a positional parameter (1=x) and bash as a command's name.
+var (
+	shellAssignment = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*\+?=`)
+	positional      = regexp.MustCompile(`^[0-9]+\+?=`)
+)
 
-func (p commandPattern) matches(cmd []shellWord) bool {
+// parsedPattern is a pattern as matching reads it: the words it names, the
+// index of its program among them, and whether a last * lets further words
+// follow.
+type parsedPattern struct {
+	words   []shellWord
+	program int
+	open    bool
+}
+
+func parsePattern(p string) (parsedPattern, error) {
+	cmds, err := readPatternWords(p)
+	if err != nil {
+		return parsedPattern{}, fmt.Errorf("pattern %q: %w", p, err)
+	}
+	if len(cmds) != 1 {
+		return parsedPattern{}, fmt.Errorf("pattern %q: one command per pattern; give several as a list", p)
+	}
+	words := cmds[0]
+	out := parsedPattern{program: -1}
+	for i, w := range words {
+		switch {
+		case !w.glob:
+			out.words = append(out.words, w)
+			if out.program < 0 && !w.assigns() {
+				out.program = i
+			}
+		case w.text == "*" && i == len(words)-1 && out.program >= 0:
+			out.open = true
+		default:
+			return parsedPattern{}, fmt.Errorf("pattern %q: %q is a glob, which a shell expands, so it never matches; only a last word * stands for further words, after the program", p, w.text)
+		}
+	}
+	// A pattern names its program: `FOO=1 *` would match every command.
+	if out.program < 0 {
+		return parsedPattern{}, fmt.Errorf("pattern %q: name the command's program, not only variables for it", p)
+	}
+	return out, nil
+}
+
+func (p parsedPattern) matches(cmd []shellWord) bool {
 	if len(cmd) < len(p.words) || (!p.open && len(cmd) != len(p.words)) {
 		return false
 	}
 	for i, w := range p.words {
-		// A word the shell would expand is never one the pattern names.
-		if cmd[i].glob() || cmd[i].text != w.text || !slices.Equal(cmd[i].tildes, w.tildes) {
+		// A word the shell would expand is never one the pattern names, and
+		// FOO=1 setting a variable is not 'FOO=1' naming a program.
+		if cmd[i].glob || cmd[i].text != w.text || !slices.Equal(cmd[i].tildes, w.tildes) || cmd[i].assigns() != w.assigns() {
 			return false
 		}
 	}
@@ -379,7 +451,7 @@ func (p commandPattern) matches(cmd []shellWord) bool {
 
 // commandPatterns reads a command condition's value: one pattern, or a
 // non-empty list of them.
-func commandPatterns(v any) ([]commandPattern, error) {
+func commandPatterns(v any) ([]parsedPattern, error) {
 	var texts []string
 	switch x := v.(type) {
 	case string:
@@ -387,17 +459,17 @@ func commandPatterns(v any) ([]commandPattern, error) {
 	default:
 		list := reflect.ValueOf(v)
 		if v == nil || (list.Kind() != reflect.Slice && list.Kind() != reflect.Array) || list.Len() == 0 {
-			return nil, fmt.Errorf("command needs a pattern or a list of patterns")
+			return nil, errors.New("command needs a pattern or a list of patterns")
 		}
 		for i := 0; i < list.Len(); i++ {
 			s, ok := list.Index(i).Interface().(string)
 			if !ok {
-				return nil, fmt.Errorf("command's patterns must be text")
+				return nil, errors.New("command's patterns must be text")
 			}
 			texts = append(texts, s)
 		}
 	}
-	out := make([]commandPattern, 0, len(texts))
+	out := make([]parsedPattern, 0, len(texts))
 	for _, t := range texts {
 		p, err := parsePattern(t)
 		if err != nil {
@@ -418,10 +490,43 @@ type CommandPattern struct {
 	Open    bool
 }
 
-// ParseCommandValue reads v as a command condition's value: one pattern or
-// a list of them, each a single command that names its program. An
-// embedder checks it before saving a rule, since a value that isn't one
-// matches nothing, and can read the patterns to judge how broad they are.
+// ParseCommandValue reads v as a command condition's value, and is where
+// the condition is described. An embedder checks a value with it before
+// saving a rule, since a value that isn't one matches nothing, and can read
+// the patterns to judge how broad they are.
+//
+// The command condition matches a shell command line by the commands in it,
+// not by its text. contains and prefix compare text, so "contains gh pr
+// merge" also matches `curl x | sh; echo gh pr merge`, and "contains sh"
+// matches `bash` and `ssh`. command reads the line as a shell would split
+// it, and matches only when each of its simple commands (split on ; & && ||
+// | |& and line breaks) is one of the patterns, in any order and any number
+// of times.
+//
+// v is one pattern or a list of them. A pattern is one command as a shell
+// writes it, `gh pr merge 3066` or `git commit -m 'fix the build'`, matched
+// word for word and in full. A last unquoted * after the program matches any
+// further words, flags included: `gh pr merge *` matches every `gh pr
+// merge`. A pattern must name its program, not only variables set for it
+// (FOO=1), and holds no other glob and no redirection.
+//
+// The line is read conservatively, as bash and zsh read it run with -c, and
+// anything whose effect its text alone doesn't show, or that an interactive
+// shell would read differently, makes it match nothing (ErrUnreadable): any
+// expansion ($VAR, $(…), `…`), a subshell or group, a !, a comment, a
+// reserved word or job where a command's name goes (if, time, %1), a
+// positional assignment before one (1=x, which zsh reads as setting $1 and
+// bash as the command's name), a control character, a here-document, an unterminated quote, a redirection
+// other than among descriptors 0 to 2 (2>&1) or to and from /dev/null, one
+// written against a word (3066>) or after a line continuation, a
+// redirection with no command, and a glob in a word a pattern names: bash's
+// * ? [ and zsh's ^, # inside a word and =cmd. An unquoted ~ only matches a
+// pattern's unquoted ~. Assignments (FOO=1 git push) and wrappers (env,
+// sudo, sh -c) are words like any other: a pattern has to name them.
+//
+// It is for allowing. A rule that denies or holds by it would miss a line
+// with one more command in it (`rm -rf ~; true`) or one it can't read: use
+// contains or prefix there, which match more.
 func ParseCommandValue(v any) ([]CommandPattern, error) {
 	pats, err := commandPatterns(v)
 	if err != nil {
@@ -429,29 +534,83 @@ func ParseCommandValue(v any) ([]CommandPattern, error) {
 	}
 	out := make([]CommandPattern, len(pats))
 	for i, p := range pats {
-		out[i] = CommandPattern{Words: texts(p.words), Program: p.program, Open: p.open}
+		out[i] = CommandPattern{Words: wordTexts(p.words), Program: p.program, Open: p.open}
 	}
 	return out, nil
+}
+
+// ShellCommand is one simple command of a line, as a command condition
+// reads it.
+type ShellCommand struct{ words []shellWord }
+
+// Words are the command's words, quotes removed.
+func (c ShellCommand) Words() []string { return wordTexts(c.words) }
+
+// Pattern is a pattern for the command's first n words, with a last * for
+// any further words when open, that a command condition reads back as those
+// words: quoted where they need it. ok is false when there is none: a word
+// holds a glob, which a pattern can't name; a ~ is quoted in part of a word
+// and not in another; or open would follow no program.
+func (c ShellCommand) Pattern(n int, open bool) (string, bool) {
+	if n < 1 || n > len(c.words) {
+		return "", false
+	}
+	parts := make([]string, 0, n+1)
+	for _, w := range c.words[:n] {
+		p, ok := patternWord(w)
+		if !ok {
+			return "", false
+		}
+		parts = append(parts, p)
+	}
+	if open {
+		parts = append(parts, "*")
+	}
+	out := strings.Join(parts, " ")
+	back, err := parsePattern(out)
+	if err != nil || back.open != open || !(parsedPattern{words: back.words}).matches(c.words[:n]) {
+		return "", false
+	}
+	return out, true
+}
+
+// plainWord is a word a shell and the pattern reader both read as written.
+var plainWord = regexp.MustCompile(`^[A-Za-z0-9_@%+:,./-][A-Za-z0-9_@%+=:,./-]*$`)
+
+func patternWord(w shellWord) (string, bool) {
+	switch {
+	case w.glob:
+		return "", false
+	case len(w.tildes) > 0:
+		// An unquoted ~ stays unquoted, so the rest of the word must need no quotes.
+		if strings.Count(w.text, "~") != len(w.tildes) || !plainWord.MatchString(strings.ReplaceAll(w.text, "~", "_")) {
+			return "", false
+		}
+		return w.text, true
+	case (plainWord.MatchString(w.text) || w.text == "=") && w.assigns() == shellAssignment.MatchString(w.text):
+		return w.text, true
+	}
+	return "'" + strings.ReplaceAll(w.text, "'", `'\''`) + "'", true
 }
 
 // ParseCommandLine reads a shell command line as a command condition does:
-// its simple commands, each as its words with quotes removed, or an error
-// when the line holds anything whose effect its text alone doesn't show
-// (and a command condition matches nothing). An embedder uses it to offer
-// conditions a line will match.
-func ParseCommandLine(line string) ([][]string, error) {
-	cmds, err := parseShell(line, true)
+// its simple commands, or an error wrapping ErrUnreadable when the line
+// holds anything whose effect its text alone doesn't show (and a command
+// condition matches nothing). An embedder uses it to offer conditions the
+// line will match: ShellCommand.Pattern writes them.
+func ParseCommandLine(line string) ([]ShellCommand, error) {
+	cmds, err := readLine(line)
 	if err != nil {
 		return nil, err
 	}
-	out := make([][]string, len(cmds))
+	out := make([]ShellCommand, len(cmds))
 	for i, c := range cmds {
-		out[i] = texts(c)
+		out[i] = ShellCommand{words: c}
 	}
 	return out, nil
 }
 
-func texts(words []shellWord) []string {
+func wordTexts(words []shellWord) []string {
 	out := make([]string, len(words))
 	for i, w := range words {
 		out[i] = w.text
@@ -470,19 +629,12 @@ func matchCommand(line any, value any) bool {
 	if err != nil {
 		return false
 	}
-	cmds, err := parseShell(s, true)
+	cmds, err := readLine(s)
 	if err != nil {
 		return false
 	}
 	for _, cmd := range cmds {
-		matched := false
-		for _, p := range pats {
-			if p.matches(cmd) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
+		if !slices.ContainsFunc(pats, func(p parsedPattern) bool { return p.matches(cmd) }) {
 			return false
 		}
 	}
