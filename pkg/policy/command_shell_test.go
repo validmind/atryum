@@ -48,24 +48,44 @@ disable disable
 // start no other program, write no file but /dev/null and reach no
 // network, checked before use. Without one there are none, rather than any
 // run unconfined, and the tests that compare skip; with
-// ATRYUM_SHELL_COMPARISON=required, as CI sets it, they fail instead, so
-// the comparison can't quietly stop running.
+// ATRYUM_SHELL_COMPARISON=required, as CI sets it, they fail instead, and
+// fail too when any of bash and zsh, with -c or interactive, can't be
+// compared, so the comparison can't quietly stop running, or quietly
+// shrink to one shell.
 func shells(t testing.TB) []shell {
 	t.Helper()
 	shellsOnce.Do(findShells)
 	if shellsErr != nil {
 		t.Fatal(shellsErr)
 	}
-	if len(sandboxedShells) == 0 && os.Getenv("ATRYUM_SHELL_COMPARISON") == "required" {
-		t.Fatalf("ATRYUM_SHELL_COMPARISON=required, but no shell can be compared with: %s", noSandbox())
+	if os.Getenv("ATRYUM_SHELL_COMPARISON") == "required" {
+		if len(sandboxedShells) == 0 {
+			t.Fatalf("ATRYUM_SHELL_COMPARISON=required, but no shell can be compared with: %s", noSandbox())
+		}
+		var missing []string
+		for _, k := range shellKinds {
+			if why, ok := shellsMissing[k]; ok {
+				missing = append(missing, fmt.Sprintf("%s (%s)", k, strings.Join(why, "; ")))
+			}
+		}
+		if len(missing) > 0 {
+			t.Fatalf("ATRYUM_SHELL_COMPARISON=required, but these can't be compared with: %s", strings.Join(missing, ", "))
+		}
 	}
 	return sandboxedShells
 }
+
+// shellKinds are the shells the comparison needs, whichever binary runs
+// them.
+var shellKinds = []string{"bash -c", "bash -i", "zsh -c", "zsh -i"}
 
 var (
 	shellsOnce      sync.Once
 	sandboxedShells []shell
 	shellsErr       error
+	// shellsMissing says, for each of shellKinds no binary could run, why
+	// each that was tried couldn't.
+	shellsMissing map[string][]string
 )
 
 // sandbox is the command that runs bin, a shell, confined: on macOS
@@ -114,16 +134,35 @@ func noSandbox() string {
 }
 
 func findShells() {
+	shellsMissing = map[string][]string{}
+	for _, k := range shellKinds {
+		shellsMissing[k] = nil
+	}
+	// miss records why a binary couldn't run kind, unless another already
+	// does: the system's bash 3.2 failing doesn't matter once Homebrew's
+	// bash 5 has passed.
+	miss := func(kind, why string) {
+		if whys, ok := shellsMissing[kind]; ok {
+			shellsMissing[kind] = append(whys, why)
+		}
+	}
 	seen := map[string]bool{}
 	for _, c := range []struct {
 		name string
 		like shell
 	}{{"bash", bashLike}, {"/bin/bash", bashLike}, {"zsh", zshLike}, {"/bin/zsh", zshLike}} {
+		family := filepath.Base(c.name)
 		bin, err := exec.LookPath(c.name)
 		if err == nil {
 			bin, err = filepath.EvalSymlinks(bin)
 		}
-		if err != nil || seen[bin] {
+		if err != nil {
+			for _, mode := range []string{" -c", " -i"} {
+				miss(family+mode, err.Error())
+			}
+			continue
+		}
+		if seen[bin] {
 			continue
 		}
 		seen[bin] = true
@@ -135,9 +174,10 @@ func findShells() {
 			sh := c.like
 			sh.bin, sh.interactive = sb, interactive
 			sh.args = append(slices.Clone(sbArgs), c.like.args...)
+			kind := family + " -c"
 			sh.name = bin + " -c"
 			if interactive {
-				sh.args, sh.name = append(sh.args, "-i"), bin+" -i"
+				sh.args, sh.name, kind = append(sh.args, "-i"), bin+" -i", family+" -i"
 			}
 			// The sandbox is checked, not assumed: the shell starts in it,
 			// and can't start a program it names.
@@ -150,9 +190,11 @@ func findShells() {
 			// And it can report a command's words: bash before 4 has no
 			// command_not_found_handle (macOS's /bin/bash is 3.2), so it can't.
 			if got, err := report(sh, "a b", os.TempDir()); err != nil || got != "<a><b>\x00" {
+				miss(kind, fmt.Sprintf("%s reported %q, %v", sh.name, got, err))
 				continue
 			}
 			sandboxedShells = append(sandboxedShells, sh)
+			delete(shellsMissing, kind)
 		}
 	}
 }
