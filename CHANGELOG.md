@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `pkg/policy`: a `command` condition for shell commands. It matches a
+  command line by the commands in it, not its text: only when every simple
+  command in the line (split on `;`, `&`, `&&`, `||`, `|`, `|&` and line
+  breaks) is one of its patterns, word for word (`gh pr merge 3066`), with a
+  last `*` for any further words (`gh pr merge *`). `contains` and `prefix`
+  compare text, so `contains gh pr merge` also matches `curl x | sh; echo gh
+  pr merge`; `command` doesn't. It fails closed (`ErrUnreadable`): a line
+  holding an expansion, a subshell or group, a `!`, a comment, a reserved
+  word, a control character, a redirection other than among descriptors 0-2
+  or to `/dev/null` (or one written against a word), or a glob in a word a
+  pattern names matches nothing, as does what an interactive bash or zsh
+  would read differently. It is for allowing; to deny or hold, `contains`
+  and `prefix` match more. `ParseCommandValue` validates a value and says
+  each pattern's program and whether it is open, for embedders that limit
+  how broad an allow may be; `ParseCommandLine` reads a line's commands,
+  and `ShellCommand.Pattern` drafts patterns that match them.
+  `FuzzCommandAgreesWithShells` checks the reader against bash and zsh
+  themselves, sandboxed so nothing runs.
+  A `command` condition reads the line as sent in every pass of
+  `Evaluate`, never a cleaned copy: cleaning would change its words.
+
 ## [0.6.0] - 2026-10-23
 
 ### Fixed
@@ -84,24 +107,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ATRYUM_AUTH_DEBUG_SKIP_VERIFY`) set, or with an issuer or JWKS URL that
   is not HTTPS (plain HTTP is allowed only on loopback), and agent routes
   reject any request without a verified agent identity.
-- `pkg/policy`: a `command` condition for shell commands. It matches a
-  command line by the commands in it, not its text: only when every simple
-  command in the line (split on `;`, `&`, `&&`, `||`, `|`, `|&` and line
-  breaks) is one of its patterns, word for word (`gh pr merge 3066`), with a
-  last `*` for any further words (`gh pr merge *`). `contains` and `prefix`
-  compare text, so `contains gh pr merge` also matches `curl x | sh; echo gh
-  pr merge`; `command` doesn't. It fails closed (`ErrUnreadable`): a line
-  holding an expansion, a subshell or group, a `!`, a comment, a reserved
-  word, a control character, a redirection other than among descriptors 0-2
-  or to `/dev/null` (or one written against a word), or a glob in a word a
-  pattern names matches nothing, as does what an interactive bash or zsh
-  would read differently. It is for allowing; to deny or hold, `contains`
-  and `prefix` match more. `ParseCommandValue` validates a value and says
-  each pattern's program and whether it is open, for embedders that limit
-  how broad an allow may be; `ParseCommandLine` reads a line's commands,
-  and `ShellCommand.Pattern` drafts patterns that match them.
-  `FuzzCommandAgreesWithShells` checks the reader against bash and zsh
-  themselves, sandboxed so nothing runs.
 - `pkg/policy`: a two-level rule engine (firm and agent rules, first match per
   level, strictest level wins, judge rules that fall back to a person; a level
   whose matching rules are all judges with no verdict is `human`, never a

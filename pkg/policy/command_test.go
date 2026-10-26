@@ -339,3 +339,28 @@ func TestCommandRuleInEvaluate(t *testing.T) {
 		}
 	}
 }
+
+// Evaluate's cleaned passes don't widen a command condition: it reads the
+// line as sent in each, so a respelling of an allowed command isn't allowed,
+// while a deny by text still catches respellings.
+func TestCommandInCleanedPasses(t *testing.T) {
+	agent := []Rule{
+		{ID: "S-01", Tool: "Bash", When: []Cond{c("args.command", "contains", "rm -rf")}, Action: ActionDeny},
+		{ID: "S-02", Tool: "Bash", When: []Cond{c("args.command", "command", "git status")}, Action: ActionAllow},
+		{ID: "S-03", Tool: "Bash", Action: ActionHuman},
+	}
+	for _, tc := range []struct {
+		args map[string]any
+		want Action
+	}{
+		{map[string]any{"command": "git status"}, ActionAllow},
+		{map[string]any{"command": "GIT STATUS"}, ActionHuman},                 // another program to a case-sensitive file system
+		{map[string]any{"COMMAND": "git status"}, ActionHuman},                 // not the argument the rule names
+		{map[string]any{"command": "git status; RM  -RF ~"}, ActionDeny},       // the deny catches the respelling
+		{map[string]any{"command": "git status", "Command": "x"}, ActionAllow}, // the named argument decides
+	} {
+		if got := Evaluate(context.Background(), nil, agent, Call{Tool: "Bash", Args: tc.args}, nil); got.Action != tc.want {
+			t.Errorf("%v: %s (%s), want %s", tc.args, got.Action, got.Basis, tc.want)
+		}
+	}
+}
