@@ -26,7 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   how broad an allow may be; `ParseCommandLine` reads a line's commands,
   and `ShellCommand.Pattern` drafts patterns that match them.
   `FuzzCommandAgreesWithShells` checks the reader against bash and zsh
-  themselves, sandboxed so nothing runs.
+  themselves, sandboxed so nothing runs (macOS's sandbox-exec, Linux's
+  bubblewrap); CI requires the comparison.
   A `command` condition reads the line as sent in every pass of
   `Evaluate`, never a cleaned copy: cleaning would change its words.
 

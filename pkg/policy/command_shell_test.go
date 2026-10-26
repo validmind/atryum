@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -43,15 +44,20 @@ disable disable
 
 // shells are every bash and zsh on this machine the comparison can run, each
 // run with -c and interactively: the ones on PATH and the system's own
-// (macOS's /bin/bash is 3.2), each in a sandbox that lets it start no other
-// program, write no file but /dev/null and reach no network: macOS's
-// sandbox-exec, checked before use. Elsewhere there are none, rather than
-// any run unconfined.
+// (macOS's /bin/bash is 3.2), each in a sandbox (sandbox) that lets it
+// start no other program, write no file but /dev/null and reach no
+// network, checked before use. Without one there are none, rather than any
+// run unconfined, and the tests that compare skip; with
+// ATRYUM_SHELL_COMPARISON=required, as CI sets it, they fail instead, so
+// the comparison can't quietly stop running.
 func shells(t testing.TB) []shell {
 	t.Helper()
 	shellsOnce.Do(findShells)
 	if shellsErr != nil {
 		t.Fatal(shellsErr)
+	}
+	if len(sandboxedShells) == 0 && os.Getenv("ATRYUM_SHELL_COMPARISON") == "required" {
+		t.Fatalf("ATRYUM_SHELL_COMPARISON=required, but no shell can be compared with: %s", noSandbox())
 	}
 	return sandboxedShells
 }
@@ -62,11 +68,52 @@ var (
 	shellsErr       error
 )
 
-func findShells() {
-	sb, err := exec.LookPath("sandbox-exec")
-	if err != nil {
-		return
+// sandbox is the command that runs bin, a shell, confined: on macOS
+// sandbox-exec with a profile that denies starting any other program,
+// writing any file but /dev/null and the network; on Linux bubblewrap
+// (bwrap), in a mount namespace where /usr/bin holds only the shell (so a
+// program named by its path doesn't exist), /usr and the temporary
+// directory are read-only, /dev holds only the device files, and no
+// network, PID or IPC namespace is shared. Neither needs root. ok is false
+// when this machine has neither.
+func sandbox(bin string) (name string, args []string, ok bool) {
+	switch runtime.GOOS {
+	case "darwin":
+		sb, err := exec.LookPath("sandbox-exec")
+		if err != nil {
+			return "", nil, false
+		}
+		profile := fmt.Sprintf(`(version 1)(allow default)(deny network*)(deny process-exec)(allow process-exec (literal %q))(deny file-write*)(allow file-write* (literal "/dev/null"))`, bin)
+		return sb, []string{"-p", profile, bin}, true
+	case "linux":
+		bw, err := exec.LookPath("bwrap")
+		if err != nil {
+			return "", nil, false
+		}
+		// /usr first, then /usr/bin and the other program directories
+		// emptied over it, then the shell alone bound back in: bwrap applies
+		// these in order. The test's temporary directory is where a line
+		// runs (report's dir), read-only.
+		args := []string{"--ro-bind", "/usr", "/usr", "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64", "--symlink", "usr/bin", "/bin",
+			"--tmpfs", "/usr/bin", "--tmpfs", "/usr/sbin", "--tmpfs", "/usr/libexec", "--tmpfs", "/usr/local", "--ro-bind", bin, bin,
+			"--ro-bind", os.TempDir(), os.TempDir(), "--dev", "/dev", "--unshare-all", "--die-with-parent", bin}
+		return bw, args, true
 	}
+	return "", nil, false
+}
+
+// noSandbox says what's missing for the comparison on this machine.
+func noSandbox() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "macOS's sandbox-exec wasn't found"
+	case "linux":
+		return "bubblewrap (bwrap) isn't installed, or bash and zsh aren't; on Ubuntu 24.04 bwrap also needs kernel.apparmor_restrict_unprivileged_userns=0"
+	}
+	return "the comparison runs on macOS (sandbox-exec) and Linux (bwrap) only"
+}
+
+func findShells() {
 	seen := map[string]bool{}
 	for _, c := range []struct {
 		name string
@@ -80,11 +127,14 @@ func findShells() {
 			continue
 		}
 		seen[bin] = true
-		profile := fmt.Sprintf(`(version 1)(allow default)(deny network*)(deny process-exec)(allow process-exec (literal %q))(deny file-write*)(allow file-write* (literal "/dev/null"))`, bin)
+		sb, sbArgs, ok := sandbox(bin)
+		if !ok {
+			return
+		}
 		for _, interactive := range []bool{false, true} {
 			sh := c.like
 			sh.bin, sh.interactive = sb, interactive
-			sh.args = append([]string{"-p", profile, bin}, c.like.args...)
+			sh.args = append(slices.Clone(sbArgs), c.like.args...)
 			sh.name = bin + " -c"
 			if interactive {
 				sh.args, sh.name = append(sh.args, "-i"), bin+" -i"
@@ -170,7 +220,11 @@ func report(sh shell, line, dir string) (string, error) {
 	cmd.Env = []string{"PATH=/nonexistent", "HOME=~", "LC_ALL=C"}
 	if sh.interactive {
 		// A terminal's: in the C locale, readline drops bytes past ASCII.
+		// glibc has C.UTF-8 built in; macOS has en_US.UTF-8.
 		cmd.Env[2] = "LC_ALL=en_US.UTF-8"
+		if runtime.GOOS == "linux" {
+			cmd.Env[2] = "LC_ALL=C.UTF-8"
+		}
 	}
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -282,7 +336,7 @@ func FuzzCommandAgreesWithShells(f *testing.F) {
 // the test, so a shell that printed nothing can't pass the fuzz target.
 func TestShellHarness(t *testing.T) {
 	if len(shells(t)) == 0 {
-		t.Skip("comparing with a shell needs macOS's sandbox-exec, so that nothing a line names can run")
+		t.Skip("comparing with a shell needs a sandbox, so that nothing a line names can run: " + noSandbox())
 	}
 	for _, sh := range shells(t) {
 		t.Logf("comparing with %s", sh.name)

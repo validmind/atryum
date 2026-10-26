@@ -53,5 +53,18 @@ jobs:
             exit 1
           fi
 
+      # pkg/policy's command condition is checked against bash and zsh
+      # themselves, each in a bubblewrap sandbox (command_shell_test.go).
+      # Ubuntu 24.04 restricts unprivileged user namespaces, which bwrap
+      # needs, behind this sysctl. The comparison is required here, so a
+      # runner change can't quietly turn it into a skip.
+      - name: Shells and a sandbox for the command condition's comparison
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap zsh
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
       - name: Run unit tests
+        env:
+          ATRYUM_SHELL_COMPARISON: required
         run: go test ./...

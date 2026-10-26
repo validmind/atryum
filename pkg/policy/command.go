@@ -69,6 +69,21 @@ func readShell(s string, redirects bool) ([][]shellWord, error) {
 
 // shellReader reads a command line as bash and zsh split it, run with -c,
 // and refuses whatever an interactive one would read differently.
+//
+// Why a reader of our own and not a shell parser (mvdan.cc/sh, say): this
+// isn't a parser. It recognizes the small subset of a line whose every
+// effect its text shows (simple commands of literal words, the operators
+// between them, a few harmless redirections) and refuses everything else,
+// so it never has to interpret an expansion, a compound command or a
+// redirection it would get wrong. A full parser would read every line into
+// a tree we'd then have to judge, for one dialect as run with -c; this
+// reader also refuses what an interactive bash or zsh reads differently
+// (history's !, zsh's =cmd and ^x globs, a # that interactive zsh reads as
+// a word), since a rule can't know which shell a harness hands the line
+// to. What keeps it honest is FuzzCommandAgreesWithShells, which checks
+// every line it reads against bash and zsh themselves, run both ways, in a
+// sandbox: a shell may run fewer of the commands it read, never another.
+// Adding syntax here means adding it there too.
 type shellReader struct {
 	s         string
 	i         int
