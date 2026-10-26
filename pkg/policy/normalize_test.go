@@ -213,11 +213,12 @@ func TestNumbersAreUnchanged(t *testing.T) {
 
 // The safety property: cleaning can make an answer stricter, never looser.
 func TestCleaningNeverLoosensADecision(t *testing.T) {
-	// As typed, R-1 denies. Cleaned, both rules match, and R-1, listed
-	// first, still decides. The answer must stay deny by R-1.
+	// As typed, R-0 doesn't match ("/etc/secret" isn't "/Etc/Secret"), so
+	// R-1 denies. Cleaned, both read "/etc/secret", so R-0, listed first,
+	// allows. That answer is looser, so it's ignored: deny by R-1 stands.
 	rules := []Rule{
-		{ID: "R-1", Tool: "read_file", When: []Cond{{Field: "args.path", Op: "eq", Value: "/Etc/Secret"}}, Action: ActionDeny},
 		{ID: "R-0", Tool: "read_file", When: []Cond{{Field: "args.path", Op: "eq", Value: "/etc/secret"}}, Action: ActionAllow},
+		{ID: "R-1", Tool: "read_file", When: []Cond{{Field: "args.path", Op: "eq", Value: "/Etc/Secret"}}, Action: ActionDeny},
 	}
 	if res := decide(nil, rules, "read_file", map[string]any{"path": "/Etc/Secret"}, nil); res.Action != ActionDeny || res.Rule.ID != "R-1" {
 		t.Errorf("got %s by %v, want deny by R-1", res.Action, res.Rule)
