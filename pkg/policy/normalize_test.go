@@ -100,12 +100,16 @@ func TestCleanArgsFindsEveryKey(t *testing.T) {
 	}
 }
 
-// evaluate is a shorthand for one call against an agent level (and optional firm level).
+// decide is a shorthand for one call against an agent level (and an
+// optional firm level).
 func decide(firm, agent []Rule, tool string, args map[string]any, judge Judge) Result {
 	return Evaluate(context.Background(), firm, agent, Call{Tool: tool, Args: args}, judge)
 }
 
-// The case from the bug report: a deny rule on a path, with a broad allow rule behind it.
+// The case that led to cleaning: a deny rule on a path, with a broad allow
+// rule behind it. Each other spelling of the path (//etc/passwd,
+// /ETC/passwd, %2Fetc%2Fpasswd, ...) must be denied too, not allowed by the
+// broad rule.
 var (
 	readOnly = []Rule{{ID: "F-02", Tool: "read_*|get_*|list_*", Action: ActionAllow, Note: "Read-only tools"}}
 	denyEtc  = []Rule{{ID: "R-10", Tool: "read_file", When: []Cond{{Field: "args.path", Op: "prefix", Value: "/etc/"}}, Action: ActionDeny}}
@@ -144,7 +148,8 @@ func TestSafeCallsAreStillAllowed(t *testing.T) {
 	}
 }
 
-// The answer explains itself, so a reader of the record isn't confused.
+// When a cleaned pass decides, the answer's Basis says so, so a reader of the
+// record can see why //etc/passwd was denied by a rule on /etc/.
 func TestTheBasisSaysTheArgumentsWereCleaned(t *testing.T) {
 	res := decide(readOnly, denyEtc, "read_file", map[string]any{"path": "//etc/passwd"}, nil)
 	if !strings.Contains(res.Basis, "R-10 (matched after cleaning up") {
@@ -208,7 +213,8 @@ func TestNumbersAreUnchanged(t *testing.T) {
 
 // The safety property: cleaning can make an answer stricter, never looser.
 func TestCleaningNeverLoosensADecision(t *testing.T) {
-	// As typed, R-1 denies. Cleaned, R-0 would allow. R-1's answer is stricter, so it stands.
+	// As typed, R-1 denies. Cleaned, both rules match, and R-1, listed
+	// first, still decides. The answer must stay deny by R-1.
 	rules := []Rule{
 		{ID: "R-1", Tool: "read_file", When: []Cond{{Field: "args.path", Op: "eq", Value: "/Etc/Secret"}}, Action: ActionDeny},
 		{ID: "R-0", Tool: "read_file", When: []Cond{{Field: "args.path", Op: "eq", Value: "/etc/secret"}}, Action: ActionAllow},
@@ -218,7 +224,9 @@ func TestCleaningNeverLoosensADecision(t *testing.T) {
 	}
 }
 
-// A cleaned answer that is equally strict or weaker, or from the same rule, changes nothing.
+// A cleaned answer that is equally strict or weaker, or from the same rule,
+// changes nothing: here F-02 allows as typed, and A-1's allow once /TMP is
+// cleaned to /tmp doesn't replace it.
 func TestEquallyStrictOrWeakerSecondAnswerIsIgnored(t *testing.T) {
 	agent := []Rule{{ID: "A-1", Tool: "list_files", When: []Cond{{Field: "args.dir", Op: "eq", Value: "/tmp"}}, Action: ActionAllow}}
 	res := decide(readOnly, agent, "list_files", map[string]any{"dir": "/TMP"}, nil)
@@ -243,7 +251,8 @@ func judgeRule(id string, cond ...Cond) Rule {
 
 var refund = Cond{Field: "args.text", Op: "contains", Value: "refund"}
 
-// A judge rule the call only matches after cleaning goes to a person, and the judge is not asked.
+// A judge rule the call only matches after cleaning goes to a person, and
+// the judge is not asked: the judge is only asked about the call as sent.
 func TestJudgeRuleReachedOnlyAfterCleaningGoesToAPerson(t *testing.T) {
 	asked := 0
 	judge := func(context.Context, Rule) (Action, error) { asked++; return ActionAllow, nil }
@@ -377,7 +386,8 @@ func TestRulesWithTheSameIDAreTwoRules(t *testing.T) {
 }
 
 // A shell command holds slashes, and cleaning it as a path can take away
-// the words a rule looks for; the plain spelling is tried as well.
+// the words a rule looks for (`rm  -rf ../../x; cd /` becomes `x; cd /`),
+// so the plain spelling is tried as well.
 func TestCleaningACommandAsAPathHidesNothing(t *testing.T) {
 	rules := []Rule{{ID: "RM", Tool: "shell", When: []Cond{{Field: "args.command", Op: "contains", Value: "rm -rf"}}, Action: ActionDeny}}
 	allow := []Rule{{ID: "A", Tool: "shell", Action: ActionAllow}}

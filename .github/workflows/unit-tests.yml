@@ -53,11 +53,12 @@ jobs:
             exit 1
           fi
 
-      # pkg/policy's command condition is checked against bash and zsh
-      # themselves, each in a bubblewrap sandbox (command_shell_test.go).
-      # Ubuntu 24.04 restricts unprivileged user namespaces, which bwrap
-      # needs, behind this sysctl. The comparison is required here, so a
-      # runner change can't quietly turn it into a skip.
+      # pkg/policy's command condition is tested against real bash and zsh,
+      # each run inside a bubblewrap (bwrap) sandbox so nothing a test line
+      # names can actually run (see command_shell_test.go). This step
+      # installs bwrap and zsh (bash is already on the runner). bwrap needs
+      # unprivileged user namespaces, which Ubuntu 24.04 blocks unless this
+      # sysctl is set to 0.
       - name: Shells and a sandbox for the command condition's comparison
         run: |
           sudo apt-get update -qq
@@ -66,5 +67,9 @@ jobs:
 
       - name: Run unit tests
         env:
+          # Without this, the shell comparison skips when it can't run. With
+          # it, the tests fail unless bash and zsh, each with -c and
+          # interactively, were compared, so a runner change can't quietly
+          # turn the comparison into a skip.
           ATRYUM_SHELL_COMPARISON: required
         run: go test ./...

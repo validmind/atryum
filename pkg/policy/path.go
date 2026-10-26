@@ -10,7 +10,8 @@ import (
 // a file only once the machine that opens them resolves them: a variable, a
 // home directory, a Windows short name, a share, a path relative to a working
 // directory nobody here knows, or a /proc link. A rule can't tell where they
-// lead, so AmbiguousPath flags them for a rule that sends them to a person.
+// lead, so AmbiguousPath detects them, and a rule can send such calls to a
+// person instead of deciding by their text.
 var (
 	// %SystemRoot%, %ProgramFiles(x86)%, $HOME, ${HOME}, $env:USERPROFILE
 	pathVariable = regexp.MustCompile(`%[a-z_][a-z0-9_()]*%|\$\{?[a-z_][a-z0-9_]*`)
@@ -18,7 +19,8 @@ var (
 	shortName = regexp.MustCompile(`^[^~ ]{1,6}~[0-9]+(\.[^.]*)?$`)
 	// \\?\C:\ and \\.\C:\ are only another spelling of C:\ (cleanPath drops them)
 	driveDevice = regexp.MustCompile(`^(//[?.]/|/\?\?/)([a-z]:/)`)
-	// C:foo is relative to C:'s own working directory
+	// C:foo, with no slash after the colon, is foo in drive C:'s own current
+	// directory, which could be anywhere on C:
 	driveRelative = regexp.MustCompile(`^[a-z]:([^/ ]|$)`)
 	// /proc/self/root/etc/passwd is /etc/passwd; /dev/fd/3 is whatever is open
 	procLink = regexp.MustCompile(`^/proc/(self|thread-self|[0-9]+)/(root|cwd|fd|map_files)(/|$)|^/dev/fd(/|$)`)
@@ -29,12 +31,22 @@ var (
 // resolve: a variable (%SystemRoot%, $HOME), a leading "~", a Windows short
 // name (PROGRA~1), a share or device (\\host\C$, \\.\pipe), a drive-relative
 // path (C:foo), a relative path that climbs out of where it starts
-// (../../etc), or a /proc link. Embedders set it as facts.ambiguous_path, and
-// a firm rule on file tools sends such calls to a person. A value that
-// cannot be inspected counts as ambiguous.
+// (../../etc), or a /proc link. "/etc/passwd" and "src/main.go" aren't
+// ambiguous. A value that can't be turned into JSON (a channel, say) counts
+// as ambiguous.
 //
-// Only single-line text is read as a path, so file contents and messages
-// don't raise it; scope the rule to tools whose arguments are paths.
+// Embedders set it as facts.ambiguous_path, and a firm-wide rule on file
+// tools sends such calls to a person:
+//
+//	args := map[string]any{"path": "~/.ssh/id_rsa"}
+//	call := policy.Call{Tool: "read_file", Args: args,
+//		Facts: map[string]any{"ambiguous_path": policy.AmbiguousPath(args)}}
+//
+//	read_file when facts.ambiguous_path eq true  ->  human
+//
+// Text with a line break in it is never read as a path, so file contents
+// and messages don't raise it; still, scope the rule to tools whose
+// arguments are paths.
 func AmbiguousPath(v any) bool {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -47,6 +59,8 @@ func AmbiguousPath(v any) bool {
 	return ambiguousIn(tree)
 }
 
+// ambiguousIn reports whether any string in v, a decoded JSON value, at any
+// depth, is an ambiguous path.
 func ambiguousIn(v any) bool {
 	switch x := v.(type) {
 	case map[string]any:
@@ -67,6 +81,9 @@ func ambiguousIn(v any) bool {
 	return false
 }
 
+// ambiguousPath reports whether s, one string, is a path only the machine
+// running the tool can resolve: "$HOME/x", "~/x", "\\host\share", "C:foo",
+// "PROGRA~1/x", "../../etc" and "/proc/self/root/etc" are.
 func ambiguousPath(s string) bool {
 	if strings.ContainsAny(s, "\n\r") {
 		return false // free text, not a path

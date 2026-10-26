@@ -77,8 +77,8 @@ func TestAmbiguousPathLooksEverywhere(t *testing.T) {
 }
 
 // The setup the package doc recommends: allow rules on the paths a tool may
-// use, everything else to a person, and a firm rule on ambiguous paths. An
-// odd spelling never matches the allow rule, so it reaches a person rather
+// use, everything else to a person, and a firm-wide rule on ambiguous paths.
+// An odd spelling never matches the allow rule, so it reaches a person rather
 // than slipping past a deny rule.
 func TestAllowListedPathsFailSafe(t *testing.T) {
 	firm := []Rule{{ID: "F-PATH", Tool: "read_file|write_file", When: []Cond{{Field: "facts.ambiguous_path", Op: "eq", Value: true}}, Action: ActionHuman}}

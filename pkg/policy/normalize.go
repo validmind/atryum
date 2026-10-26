@@ -26,9 +26,12 @@ import (
 
 // canonicalText is the one cleaned-up spelling of a piece of text, so that
 // different spellings of the same thing compare equal: plainText, and then,
-// if the text holds a slash, cleanPath. Evaluate decides a call with each
-// of the two, because a shell command holds slashes too and cleaning it as
-// a path can take away the words a rule looks for.
+// if the text holds a slash or backslash, cleanPath. "/ETC//passwd" and
+// "%2Fetc%2Fpasswd" both become "/etc/passwd".
+//
+// Evaluate decides a call with plainText as well as with this, because text
+// that isn't a path can hold slashes too, and cleaning it as a path can take
+// away the words a rule looks for: canonicalText("cat a/../b") is "b".
 func canonicalText(s string) string {
 	s = plainText(s)
 	if strings.ContainsAny(s, `/\`) {
@@ -67,7 +70,8 @@ func plainText(s string) string {
 }
 
 // unescape decodes every valid %XX escape in s and keeps the rest as it is,
-// the way lenient decoders do (url.PathUnescape gives up on the first bad one).
+// the way lenient decoders do (url.PathUnescape gives up on the first bad
+// one): unescape("%2Fetc%2Fpasswd%") is "/etc/passwd%".
 func unescape(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
@@ -83,6 +87,7 @@ func unescape(s string) string {
 	return b.String()
 }
 
+// unhex is the value of the hex digit c, or -1 when c isn't one.
 func unhex(c byte) int {
 	switch {
 	case '0' <= c && c <= '9':
@@ -107,8 +112,8 @@ func dropInvisible(r rune) rune {
 	return r
 }
 
-// cleanPath turns "\" into "/" and removes "//", "." and ".." detours. A
-// trailing "/" is kept, because rules often say prefix "/etc/" and cleaning
+// cleanPath turns "\" into "/" and removes "//", "." and ".." detours:
+// "/tmp/../etc//passwd" is "/etc/passwd". A trailing "/" is kept, because rules often say prefix "/etc/" and cleaning
 // it to "/etc" would also match "/etcetera". s is already lower case.
 //
 // A Windows path gets what Windows itself does to it before opening it:
@@ -159,7 +164,8 @@ func cleanPath(s string) string {
 	return share + drive + s
 }
 
-// isDrive reports whether s starts with a drive root such as "c:/".
+// isDrive reports whether s, lower case and at least 3 bytes long, starts
+// with a drive root such as "c:/". "c:/x" does; "c:x" doesn't.
 func isDrive(s string) bool {
 	return 'a' <= s[0] && s[0] <= 'z' && s[1] == ':' && s[2] == '/'
 }
@@ -182,12 +188,15 @@ func windowsName(name string) string {
 // the arguments a rule reads, and remembers what it cleaned, because many
 // rules read the same argument and arguments can be large.
 type cleaner struct {
-	paths bool
-	done  map[string]string
+	paths bool              // clean with canonicalText (true) or plainText alone (false)
+	done  map[string]string // each text cleaned so far, by its text before cleaning
 }
 
+// newCleaner returns a cleaner for one pass of Evaluate. paths is whether
+// that pass cleans paths too.
 func newCleaner(paths bool) *cleaner { return &cleaner{paths: paths, done: map[string]string{}} }
 
+// text returns s cleaned, reusing the result when s was cleaned before.
 func (cl *cleaner) text(s string) string {
 	if t, ok := cl.done[s]; ok {
 		return t
@@ -200,10 +209,12 @@ func (cl *cleaner) text(s string) string {
 	return t
 }
 
-// args returns every argument that "args.a.b" names once keys are cleaned.
-// There can be more than one: an agent that sends both "path" and "PATH"
-// must not hide one behind the other, so a condition holds when it holds
-// for any of them. The values are returned as sent; compare cleans them.
+// args returns every argument that a field such as "args.a.b" names once
+// keys are cleaned; "args.opts.dir" names args["opts"]["dir"]. There can be
+// more than one: an agent that sends both "path" and "PATH" must not hide
+// one behind the other, so with the arguments {"Path": "/a", "path": "/b"},
+// "args.path" names both, and a condition holds when it holds for either.
+// The values are returned as sent; compare cleans them.
 func (cl *cleaner) args(field string, args map[string]any) []any {
 	rest, ok := strings.CutPrefix(field, "args.")
 	if !ok || rest == "" {
