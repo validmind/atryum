@@ -190,7 +190,9 @@ func report(sh shell, line, dir string) (string, error) {
 }
 
 // passed is what a shell passes to each command of cmds: its words after
-// any variables set for it, in the not-found handler's form.
+// any variables set for it, in the not-found handler's form. From a glob
+// on, it's only what the words start with: the shell passes the files the
+// glob matches, which a pattern never names (only a last * takes them).
 func passed(cmds [][]shellWord) []string {
 	var out []string
 	for _, cmd := range cmds {
@@ -202,11 +204,23 @@ func passed(cmds [][]shellWord) []string {
 		}
 		var b strings.Builder
 		for _, w := range cmd {
+			if w.glob {
+				b.WriteString("…")
+				break
+			}
 			b.WriteString("<" + w.text + ">")
 		}
 		out = append(out, b.String())
 	}
 	return out
+}
+
+// runs reports whether c, a command a shell ran, is p, one of passed's.
+func runs(c, p string) bool {
+	if prefix, ok := strings.CutSuffix(p, "…"); ok {
+		return strings.HasPrefix(c, prefix)
+	}
+	return c == p
 }
 
 // FuzzCommandAgreesWithShells checks two things for every line the reader
@@ -254,7 +268,7 @@ func FuzzCommandAgreesWithShells(f *testing.F) {
 			}
 			left := passed(cmds)
 			for _, c := range got {
-				i := slices.Index(left, c)
+				i := slices.IndexFunc(left, func(p string) bool { return runs(c, p) })
 				if i < 0 {
 					t.Fatalf("%q: %s ran %q, not one of ours: %q", line, sh.name, c, passed(cmds))
 				}
