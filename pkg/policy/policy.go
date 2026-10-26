@@ -119,16 +119,17 @@ type Evidence struct {
 // Every other field is optional, and a judge that fills none of them
 // behaves exactly as one that answered with the action alone. They are
 // written to be read by the agent whose call was judged, so that an agent
-// told no can tell what to do instead: Reasoning is why, Clauses are the
-// charter clauses the decision rests on, Evidence the parts of the call
-// that led there, and AllowedIf the change that would make the charter
-// allow the call.
+// told no knows why: Reasoning is why, Clauses are the charter clauses the
+// decision rests on, and Evidence the parts of the call that led there.
+//
+// It says why the call was refused, not how to get it allowed: an agent
+// works that out for itself from its charter, and a judge's suggestion
+// would read to it as a route around the decision.
 type Verdict struct {
 	Action    Action     `json:"action"`
 	Reasoning string     `json:"reasoning,omitempty"`
 	Clauses   []string   `json:"clauses,omitempty"`
 	Evidence  []Evidence `json:"evidence,omitempty"`
-	AllowedIf string     `json:"allowed_if,omitempty"`
 }
 
 // Judge is called for a matching "judge" rule. An error sends the call to a

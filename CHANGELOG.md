@@ -10,15 +10,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - A denied agent is told why. `policy.Verdict` carries the judge's account of
-  its decision — its reasoning, the charter clauses it relied on, up to three
-  parts of the call it quoted with what each does, and the change that would
-  make the call allowed — and `policy.Result` carries it to the caller as
-  `Judge`, with `JudgeErr` set instead when the judge was asked and could not
-  answer. `invocation.Explanation` puts the same account on a `Decision` and
-  on an invocation's `Approval` (`explanation` on the API), and a `Decider`
-  that fills it in has it rendered for the agent whose call it was.
-  Everything in it reaches that agent, so a decider puts nothing in it the
-  agent may not see.
+  its decision — its reasoning, the charter clauses it relied on and the
+  parts of the call it quoted with what each does — and `policy.Result`
+  carries it to the caller as `Judge`, with `JudgeErr` set instead when the
+  judge was asked and could not answer. `invocation.Explanation` puts the
+  same account on a `Decision` and on an invocation's `Approval`
+  (`explanation` on the API), and a `Decider` that fills it in has it
+  rendered for the agent whose call it was. The account says why a call was
+  refused, never what would get it allowed: an agent works that out from its
+  charter rather than being handed a route around the decision.
+- An account is model-written text, drawn partly from arguments the calling
+  agent chose, and it is rendered back into that agent's context, so it is
+  treated as untrusted data. `Explanation.Bounded` trims it to
+  `MaxEvidence`, `MaxClauses` and the length limits beside them, turns
+  control characters and line breaks into spaces, and is applied to every
+  decider's answer as it arrives. `invocation.DeniedText` renders it inside
+  a marked block labelled information rather than instructions, so an
+  account cannot pose as part of Atryum's own message. Everything in it
+  reaches the agent, so a decider puts nothing in it the agent may not see.
 
 ### Changed
 

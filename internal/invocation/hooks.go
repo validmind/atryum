@@ -215,6 +215,10 @@ func (s *Service) decide(ctx context.Context, call ToolCall) (d Decision) {
 	}
 	switch d.Verdict {
 	case VerdictAllow, VerdictNotify, VerdictDeny, VerdictPending:
+		// A decider's account is model-written text that reaches the agent:
+		// bound it here, where every decider's answer arrives, so nothing
+		// downstream has to trust its size or its spelling.
+		d.Explanation = d.Explanation.Bounded()
 		return d
 	}
 	return Decision{Verdict: VerdictDeny, Reason: fmt.Sprintf("decider returned unknown verdict %q", d.Verdict)}

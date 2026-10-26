@@ -480,7 +480,6 @@ func TestEvaluateCarriesTheJudgesAccount(t *testing.T) {
 		Reasoning: "the charter lets this agent read the ledger, never write it",
 		Clauses:   []string{"3.1", "3.4"},
 		Evidence:  []Evidence{{Quote: "UPDATE ledger SET", Why: "writes a system of record"}},
-		AllowedIf: "read the balance with a SELECT instead",
 	}
 	got := Evaluate(context.Background(), rules, nil, Call{Tool: "sql"},
 		func(context.Context, Rule) (Verdict, error) { return full, nil })
