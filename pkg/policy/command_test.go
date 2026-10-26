@@ -16,7 +16,8 @@ func TestCommandMatches(t *testing.T) {
 	}{
 		// A pattern without * is the command in full.
 		{"exact", "gh pr merge 3066", "gh pr merge 3066", true},
-		{"exact, extra spaces", "gh pr merge 3066", "  gh  pr\tmerge 3066 ", true},
+		{"exact, extra spaces", "gh pr merge 3066", "  gh  pr  merge 3066 ", true},
+		{"a tab, which an interactive shell completes at", "gh pr merge 3066", "gh pr\tmerge 3066", false},
 		{"exact, more words", "gh pr merge 3066", "gh pr merge 3066 --admin", false},
 		{"exact, fewer words", "gh pr merge 3066", "gh pr merge", false},
 		{"exact, other number", "gh pr merge 3066", "gh pr merge 3067", false},
@@ -57,6 +58,10 @@ func TestCommandMatches(t *testing.T) {
 		// {} as an argument, and a lone =, are text to both shells.
 		{"{} as an argument", "find . -name x -exec rm {} +", "find . -name x -exec rm {} +", true},
 		{"{} as a command", "echo *", "{} x", false},
+		{"{} as a command after an assignment", "FOO=1 '{}' x", "FOO=1 {} x", false},
+		{"[ as the test command", []any{"[ -f go.mod ]", "make"}, "[ -f go.mod ] && make", true},
+		{"[ as a glob", "ls *", "ls [ab]", true},
+		{"[ as a glob, named", "ls '[ab]'", "ls [ab]", false},
 		{"lone =", "test a = b", "test a = b", true},
 		{"non-ASCII", "echo é ü", "echo é ü", true},
 		{"= starting a word", "echo *", "echo =ls", true},
@@ -71,11 +76,13 @@ func TestCommandMatches(t *testing.T) {
 		{"escaped glob is text", "ls 'a*'", `ls a\*`, true},
 
 		// Harmless redirections are dropped; others match nothing.
-		{"2>&1", "gh pr merge *", "gh pr merge 1 2>&1 | tail -3", false},
+		{"2>&1, tail not named", "gh pr merge *", "gh pr merge 1 2>&1 | tail -3", false},
 		{"2>&1, tail named", []any{"gh pr merge *", "tail *"}, "gh pr merge 1 2>&1 | tail -3", true},
 		{">/dev/null", "go test *", "go test ./... >/dev/null 2>&1", true},
 		{"&> /dev/null", "go test *", "go test ./... &> /dev/null", true},
 		{"< /dev/null", "go test *", "go test ./... < /dev/null", true},
+		{">& /dev/null", "go test *", "go test ./... >& /dev/null", true},
+		{">& a file", "go test *", "go test ./... >& out.txt", false},
 		{">&- closes stdout", "go test *", "go test ./... >&-", false},
 		{"to a file", "gh pr merge *", "gh pr merge 1 > ~/.bashrc", false},
 		{"to another descriptor", "gh pr merge *", "gh pr merge 1 >&7", false},
@@ -107,6 +114,7 @@ func TestCommandMatches(t *testing.T) {
 		{"control character", "echo *", "echo \"\x01\"", false},
 		{"delete", "echo *", "echo \x7f", false},
 		{"carriage return", "git status", "git status\r", false},
+		{"not UTF-8", "echo *", "echo \xba0", false},
 		{"time", "make *", "time make", false},
 		{"job", "fg *", "%1", false},
 		{"job after an assignment", "A= *", "A= %0", false},
@@ -211,6 +219,25 @@ func TestCommandMatches(t *testing.T) {
 	}
 }
 
+// A pattern that isn't one, and a line that can't be read, say so in errors
+// an embedder can tell apart.
+func TestCommandErrors(t *testing.T) {
+	if _, err := ParseCommandValue("rm *.log"); !errors.Is(err, ErrBadPattern) || errors.Is(err, ErrUnreadable) {
+		t.Errorf("a glob in a pattern: %v", err)
+	}
+	if _, err := ParseCommandValue([]any{"ls", 2}); !errors.Is(err, ErrBadPattern) {
+		t.Errorf("a number in a list: %v", err)
+	}
+	if _, err := ParseCommandLine("echo $HOME"); !errors.Is(err, ErrUnreadable) {
+		t.Errorf("an expansion: %v", err)
+	}
+	// Text of any string type, as the engine's other operators read it.
+	type line string
+	if !matchCommand(line("git status"), []string{"git status"}) {
+		t.Error("a named string type")
+	}
+}
+
 func TestCommandNeedsText(t *testing.T) {
 	for _, v := range []any{nil, 5, []any{"git", "status"}, map[string]any{"cmd": "git status"}} {
 		call := Call{Tool: "shell", Args: map[string]any{"command": v}}
@@ -305,11 +332,12 @@ func TestShellCommandPattern(t *testing.T) {
 		n    int
 		open bool
 	}{
-		{"rm *.log", 2, false},       // a glob, which no pattern names
-		{"git show HEAD^", 3, false}, // ^ is a glob to zsh
-		{"ls ~'/a b'", 2, false},     // a ~ that must stay unquoted, beside a space that must not
-		{"FOO=1 make", 1, true},      // * after no program
-		{"make", 2, false},           // more words than it has
+		{"rm *.log", 2, false},         // a glob, which no pattern names
+		{"git show HEAD^", 3, false},   // ^ is a glob to zsh
+		{"ls ~'/a b'", 2, false},       // a ~ that must stay unquoted, beside a space that must not
+		{"FOO=1 make", 1, true},        // * after no program
+		{"gh pr merge 3066", 3, false}, // closed, and short of the command: it wouldn't match it
+		{"make", 2, false},             // more words than it has
 	} {
 		cmds, err := ParseCommandLine(tc.line)
 		if err != nil {

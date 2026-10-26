@@ -19,39 +19,39 @@ import (
 // each command goes to the not-found handler, which prints its words to
 // descriptor 3 (redirections in the line can't hide them), one write per
 // command so background ones don't interleave, ending in a NUL, which no
-// word holds (a word may hold a line break).
+// word holds (a word may hold a line break). An interactive one reads the
+// line on its standard input, as from a terminal, with history expansion
+// and its other interactive readings on.
 type shell struct {
 	name, bin, prelude string
 	args               []string
+	interactive        bool
 }
 
 var (
 	bashLike = shell{prelude: `command_not_found_handle() { printf -v l '<%s>' "$@"; printf '%s\0' "$l" >&3; }
 for b in $(compgen -b); do [[ $b == printf || $b == enable ]] || enable -n "$b"; done
 enable -n enable
-`, args: []string{"--noprofile", "--norc", "-c"}}
+`, args: []string{"--noprofile", "--norc"}}
 	// nonomatch: a glob that matches nothing stays as written, as in bash.
 	zshLike = shell{prelude: `setopt nonomatch
 command_not_found_handler() { printf -v l '<%s>' "$@"; printf '%s\0' "$l" >&3; }
 for b in ${(k)builtins}; do [[ $b == printf || $b == disable ]] || disable $b; done
 disable disable
-`, args: []string{"-f", "-c"}}
+`, args: []string{"-f"}}
 )
 
-// shells are every bash and zsh on this machine the comparison can run:
-// the ones on PATH and the system's own (macOS's /bin/bash is 3.2), each
-// in a sandbox that lets it start no other program, write no file but
-// /dev/null and reach no network: macOS's sandbox-exec, checked before
-// use. Elsewhere there are none, and the comparison is skipped rather than
-// run unconfined.
+// shells are every bash and zsh on this machine the comparison can run, each
+// run with -c and interactively: the ones on PATH and the system's own
+// (macOS's /bin/bash is 3.2), each in a sandbox that lets it start no other
+// program, write no file but /dev/null and reach no network: macOS's
+// sandbox-exec, checked before use. Elsewhere there are none, rather than
+// any run unconfined.
 func shells(t testing.TB) []shell {
 	t.Helper()
 	shellsOnce.Do(findShells)
 	if shellsErr != nil {
 		t.Fatal(shellsErr)
-	}
-	if len(sandboxedShells) == 0 {
-		t.Skip("comparing with a shell needs macOS's sandbox-exec, so that nothing a line names can run")
 	}
 	return sandboxedShells
 }
@@ -81,23 +81,49 @@ func findShells() {
 		}
 		seen[bin] = true
 		profile := fmt.Sprintf(`(version 1)(allow default)(deny network*)(deny process-exec)(allow process-exec (literal %q))(deny file-write*)(allow file-write* (literal "/dev/null"))`, bin)
-		sh := c.like
-		sh.name, sh.bin = bin, sb
-		sh.args = append([]string{"-p", profile, bin}, c.like.args...)
-		// The sandbox is checked, not assumed: the shell starts in it, and
-		// can't start a program it names.
-		out, _ := exec.Command(sb, append(sh.args, "echo inside; /usr/bin/true && echo ran")...).CombinedOutput()
-		if !strings.Contains(string(out), "inside") || strings.Contains(string(out), "ran") {
-			shellsErr = fmt.Errorf("%s in the sandbox: %q", bin, out)
-			return
+		for _, interactive := range []bool{false, true} {
+			sh := c.like
+			sh.bin, sh.interactive = sb, interactive
+			sh.args = append([]string{"-p", profile, bin}, c.like.args...)
+			sh.name = bin + " -c"
+			if interactive {
+				sh.args, sh.name = append(sh.args, "-i"), bin+" -i"
+			}
+			// The sandbox is checked, not assumed: the shell starts in it,
+			// and can't start a program it names.
+			// The words quoted apart: an interactive shell may echo what it
+			// reads, and only what runs prints them whole.
+			if out := run(sh, "echo in''side; /usr/bin/true && echo r''an", ""); !strings.Contains(out, "inside") || strings.Contains(out, "ran") {
+				shellsErr = fmt.Errorf("%s in the sandbox: %q", sh.name, out)
+				return
+			}
+			// And it can report a command's words: bash before 4 has no
+			// command_not_found_handle (macOS's /bin/bash is 3.2), so it can't.
+			if got, err := report(sh, "a b", os.TempDir()); err != nil || got != "<a><b>\x00" {
+				continue
+			}
+			sandboxedShells = append(sandboxedShells, sh)
 		}
-		// And it can report a command's words: bash before 4 has no
-		// command_not_found_handle (macOS's /bin/bash is 3.2), so it can't.
-		if got, err := report(sh, "a b", os.TempDir()); err != nil || got != "<a><b>\x00" {
-			continue
-		}
-		sandboxedShells = append(sandboxedShells, sh)
 	}
+}
+
+// run runs script in sh, with no prelude, and returns all it printed.
+func run(sh shell, script, dir string) string {
+	cmd := command(context.Background(), sh, script)
+	cmd.Dir = dir
+	out, _ := cmd.CombinedOutput()
+	return string(out)
+}
+
+// command is sh set to run script: as -c's argument, or, interactive, on
+// its standard input.
+func command(ctx context.Context, sh shell, script string) *exec.Cmd {
+	if sh.interactive {
+		cmd := exec.CommandContext(ctx, sh.bin, sh.args...)
+		cmd.Stdin = strings.NewReader(script)
+		return cmd
+	}
+	return exec.CommandContext(ctx, sh.bin, append(slices.Clone(sh.args), "-c", script)...)
 }
 
 // ran is the commands sh runs for line, each as its words, or ok false
@@ -139,9 +165,13 @@ func ran(t testing.TB, sh shell, line string, cmds [][]shellWord) ([]string, boo
 func report(sh shell, line, dir string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, sh.bin, append(slices.Clone(sh.args), sh.prelude+line+"\n")...)
+	cmd := command(ctx, sh, sh.prelude+line+"\n")
 	cmd.Dir = dir
 	cmd.Env = []string{"PATH=/nonexistent", "HOME=~", "LC_ALL=C"}
+	if sh.interactive {
+		// A terminal's: in the C locale, readline drops bytes past ASCII.
+		cmd.Env[2] = "LC_ALL=en_US.UTF-8"
+	}
 	r, w, err := os.Pipe()
 	if err != nil {
 		return "", err
@@ -180,15 +210,16 @@ func passed(cmds [][]shellWord) []string {
 }
 
 // FuzzCommandAgreesWithShells checks two things for every line the reader
-// reads. Each command bash or zsh runs is one the reader read, word for
-// word: a command condition can't let one run that it didn't see. A shell
-// may run fewer (a || that stops early, a glob zsh refuses), never others.
-// And the line's commands, each drafted as an exact pattern
-// (ShellCommand.Pattern), match the line. go test runs the seeds; go test
-// -fuzz=FuzzCommandAgreesWithShells ./pkg/policy explores.
+// reads. The line's commands, each drafted as an exact pattern
+// (ShellCommand.Pattern), match the line, everywhere. And, where shells can
+// be compared (shells), each command bash or zsh runs, with -c or
+// interactively, is one the reader read, word for word: a command condition
+// can't let one run that it didn't see. A shell may run fewer (a || that
+// stops early, a glob zsh refuses), never others. go test runs the seeds;
+// go test -fuzz=FuzzCommandAgreesWithShells ./pkg/policy explores.
 func FuzzCommandAgreesWithShells(f *testing.F) {
 	for _, s := range []string{
-		`gh pr merge 3066`, "  gh  pr\tmerge 3066 ", `cd web && gh pr merge 3066 --squash | tail -3`,
+		`gh pr merge 3066`, "  gh  pr  merge 3066 ", `cd web && gh pr merge 3066 --squash | tail -3`,
 		`git commit -m "fix the build"`, `git commit -m 'fix the build'`, `git commit -m "a; rm -rf ~"`,
 		`git commit -m "Done!"`, `echo "a != b"`, `echo a\; rm -rf ~`, `ls a\*`, "gh pr merge \\\n 3066",
 		`echo "a\"b\\c\d"`, `echo 'it'"'"'s'`, `echo a''b ""`, `go test ./... >/dev/null 2>&1`,
@@ -197,6 +228,7 @@ func FuzzCommandAgreesWithShells(f *testing.F) {
 		`go test ./... >&2 2>&1 &>/dev/null`, `x=1 y`, `a; FOO=1 b c`, `rm *.log`, `ls [ab]`,
 		"make;true;", "echo a\\\nb", `find . -name x -exec rm {} +`, `test a = b`, `git show HEAD^`,
 		"gh pr merge 3066\\\n>/dev/null", "echo x 2\\\n2>/dev/null", "a\\\n&& b", "a || b",
+		`echo "'" 'x!-2'`, `echo "a ! b"`, `[ -f go.mod ] && make`, `go test >& /dev/null`, `find . -exec rm {} +`,
 	} {
 		f.Add(s)
 	}
@@ -204,6 +236,16 @@ func FuzzCommandAgreesWithShells(f *testing.F) {
 		cmds, err := readLine(line)
 		if err != nil {
 			return
+		}
+		var exact []any
+		for _, c := range cmds {
+			if p, ok := (ShellCommand{words: c}).Pattern(len(c), false); ok {
+				exact = append(exact, p)
+			}
+		}
+		// Unless a word is a glob, which no pattern names.
+		if len(exact) == len(cmds) && !matchCommand(line, exact) {
+			t.Fatalf("%q: its own patterns %q don't match it", line, exact)
 		}
 		for _, sh := range shells(t) {
 			got, ok := ran(t, sh, line, cmds)
@@ -219,23 +261,15 @@ func FuzzCommandAgreesWithShells(f *testing.F) {
 				left = slices.Delete(left, i, i+1)
 			}
 		}
-		var exact []any
-		for _, c := range cmds {
-			p, ok := (ShellCommand{words: c}).Pattern(len(c), false)
-			if !ok {
-				return // a glob, which no pattern names
-			}
-			exact = append(exact, p)
-		}
-		if !matchCommand(line, exact) {
-			t.Fatalf("%q: its own patterns %q don't match it", line, exact)
-		}
 	})
 }
 
 // The harness reports what each shell reads, and runs nothing: a test of
 // the test, so a shell that printed nothing can't pass the fuzz target.
 func TestShellHarness(t *testing.T) {
+	if len(shells(t)) == 0 {
+		t.Skip("comparing with a shell needs macOS's sandbox-exec, so that nothing a line names can run")
+	}
 	for _, sh := range shells(t) {
 		t.Logf("comparing with %s", sh.name)
 		line := "a 'b c' && FOO=1 d >/dev/null"
