@@ -763,6 +763,17 @@ type CommandPattern struct {
 // `FOO=1 git push`, `env git push`, `sudo make install` or `sh -c 'ls'`, a
 // pattern has to name them.
 //
+// # The shell
+//
+// The reader models bash and zsh only. The embedder names the shell that
+// will run the line with the fact "shell" ("bash", "/bin/zsh",
+// "C:\\Git\\bin\\bash.exe"); any other value, such as "powershell" or
+// "cmd", makes the condition match nothing. Without the fact, the shell is
+// taken to be bash or zsh unless the program calling Evaluate runs on
+// Windows. An embedder that decides calls for agents on other machines must
+// set the fact: from a Linux server, `git status '& del x'` would be read as
+// one git command, while cmd.exe, for which ' isn't a quote, runs del.
+//
 // # Allow rules only
 //
 // Use command to allow. A rule that denies or holds by it would miss a line
@@ -911,7 +922,9 @@ func wordTexts(words []shellWord) []string {
 // other value, such as "powershell" or "cmd", means a command condition
 // matches nothing, since those shells quote, escape and expand differently
 // (in cmd.exe, 'a & b' is two commands). Without the fact, the shell is
-// assumed to be bash or zsh unless this program runs on Windows.
+// assumed to be bash or zsh unless this program runs on Windows. That guess
+// is about the machine running Evaluate, not the one running the command,
+// so an embedder that decides calls from other machines must set the fact.
 func shellIsPOSIX(c Call) bool {
 	v, ok := c.Facts["shell"]
 	if !ok {
