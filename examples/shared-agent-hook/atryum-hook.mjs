@@ -817,9 +817,19 @@ async function handlePreToolUse(event) {
   await deleteInvocation(id);
   jsonOut(
     denyOutput(
-      `atryum: tool call '${toolName(event)}' was ${decided.status} by reviewer. ${rulesEndpointHint(toolName(event))}${await planHint(toolName(event))}`,
+      `atryum: tool call '${toolName(event)}' was ${decided.status} by reviewer.${decisionDetail(decided)} ${rulesEndpointHint(toolName(event))}${await planHint(toolName(event))}`,
     ),
   );
+}
+
+// Atryum renders a refused call's reasons once, for every transport, so an
+// agent reading one through this hook and an agent reading one over the MCP
+// proxy are told the same things in the same order. Prefer that text; fall
+// back to the bare reason for a status that carries no tool result.
+function decisionDetail(decided) {
+  const rendered = decided?.error?.content?.find?.((c) => c?.type === "text")?.text;
+  const detail = (rendered || decided?.approval?.reason || "").trim();
+  return detail ? `\n\n${detail}\n` : "";
 }
 
 async function handleSessionStart() {

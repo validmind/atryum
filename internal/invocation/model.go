@@ -30,8 +30,9 @@ type Approval struct {
 	ActorID         *string  `json:"actor_id,omitempty"`
 	DecisionAt      *string  `json:"decision_at,omitempty"`
 	ConfidenceScore *float64 `json:"confidence_score,omitempty"`
-	// Explanation is why the call was decided this way, for the agent that
-	// made it to read. Nil when the decider gave no account.
+	// Explanation is why the call was refused, for the agent that made it
+	// to read. An account explains a refusal, so it is set on a denial and
+	// left nil otherwise; it is also nil when the decider gave none.
 	Explanation *Explanation `json:"explanation,omitempty"`
 }
 

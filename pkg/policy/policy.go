@@ -103,13 +103,6 @@ type Call struct {
 	Facts        map[string]any
 }
 
-// Evidence is a part of a call the judge quoted, and why that part led
-// where it did.
-type Evidence struct {
-	Quote string `json:"quote"`
-	Why   string `json:"why,omitempty"`
-}
-
 // Verdict is a judge's answer to a judge rule: the action it decided, and
 // the account it gives of deciding that way. Action is allow, deny or
 // human, or "" for an unknown verdict, which moves on to the level's next
@@ -118,18 +111,11 @@ type Evidence struct {
 //
 // Every other field is optional, and a judge that fills none of them
 // behaves exactly as one that answered with the action alone. They are
-// written to be read by the agent whose call was judged, so that an agent
-// told no knows why: Reasoning is why, Clauses are the charter clauses the
-// decision rests on, and Evidence the parts of the call that led there.
-//
-// It says why the call was refused, not how to get it allowed: an agent
-// works that out for itself from its charter, and a judge's suggestion
-// would read to it as a route around the decision.
+// carries the account the judge gives of it, which a caller renders for the
+// agent whose call was judged. See Explanation.
 type Verdict struct {
-	Action    Action     `json:"action"`
-	Reasoning string     `json:"reasoning,omitempty"`
-	Clauses   []string   `json:"clauses,omitempty"`
-	Evidence  []Evidence `json:"evidence,omitempty"`
+	Action Action `json:"action"`
+	Explanation
 }
 
 // Judge is called for a matching "judge" rule. An error sends the call to a
@@ -194,10 +180,23 @@ func Evaluate(ctx context.Context, firm, agent []Rule, c Call, judge Judge) Resu
 		// to give because no judge was asked about this rule.
 		return Verdict{Action: ActionHuman}, nil
 	}
+	wasAsked := func(r *Rule) bool {
+		for _, v := range verdicts {
+			if r != nil && reflect.DeepEqual(v.rule, *r) {
+				return true
+			}
+		}
+		return false
+	}
 	for _, paths := range []bool{false, true} {
 		res := evaluate(ctx, firm, agent, c, replay, newCleaner(paths))
 		if res.Rule != nil && res.Rule != best.Rule && strictness[res.Action] > strictness[best.Action] {
 			res.Basis += " (matched after cleaning up the arguments' case, spaces, escapes and path detours)"
+			if !wasAsked(res.Rule) {
+				// The judge never saw this rule: replay stood in for it, so
+				// there is no account to pass off as the judge's.
+				res.Judge = nil
+			}
 			best = res
 		}
 	}

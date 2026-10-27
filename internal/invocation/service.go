@@ -1837,7 +1837,6 @@ func (s *Service) submitDecided(ctx context.Context, inv Invocation, source, age
 	case VerdictAllow, VerdictNotify:
 		inv.Status = StatusApproved
 		inv.Approval = newApproval("auto_approved", d.Reason, nil)
-		inv.Approval.Explanation = d.Explanation
 		evts = append(evts, Event{InvocationID: inv.InvocationID, EventType: "invocation.approved", Payload: mustJSON(map[string]any{"auto_approved": true, "auto_reason": d.Reason}), CreatedAt: at})
 	case VerdictDeny:
 		inv.Status = StatusDenied

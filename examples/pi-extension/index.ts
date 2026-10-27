@@ -225,7 +225,12 @@ type InvocationResponse = {
   approval?: {
     reason?: string;
   };
-  error?: unknown;
+  // The tool result a refused call returns: Atryum renders the reasons for
+  // the refusal into its text content.
+  error?: {
+    content?: { type?: string; text?: string }[];
+    isError?: boolean;
+  };
 };
 
 type AgentRulesResponse = {
@@ -467,12 +472,17 @@ export default function (pi: ExtensionAPI) {
 
       invocationMap.delete(event.toolCallId);
       ctx.ui.setStatus("atryum", `blocked ${event.toolName}`);
-      const reviewerReason = decided.approval?.reason
-        ? ` Reason: ${decided.approval.reason}`
-        : "";
+      // Atryum renders a refused call's reasons once, for every transport,
+      // so an agent reading one here and an agent reading one over the MCP
+      // proxy are told the same things in the same order. Prefer that text;
+      // fall back to the bare reason for a status that carries no tool
+      // result.
+      const rendered = decided.error?.content?.find((c) => c?.type === "text")
+        ?.text;
+      const detail = (rendered || decided.approval?.reason || "").trim();
       return {
         block: true,
-        reason: `atryum: tool call '${event.toolName}' was ${decided.status} by reviewer.${reviewerReason} ${rulesEndpointHint(event.toolName)}${await planHint(event.toolName)}`,
+        reason: `atryum: tool call '${event.toolName}' was ${decided.status} by reviewer.${detail ? `\n\n${detail}\n` : ""} ${rulesEndpointHint(event.toolName)}${await planHint(event.toolName)}`,
       };
     } catch (err) {
       ctx.ui.setStatus("atryum", "gate failed");

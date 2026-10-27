@@ -475,12 +475,11 @@ func k8sSecretWithData() any {
 // told only "→ judge said deny".
 func TestEvaluateCarriesTheJudgesAccount(t *testing.T) {
 	rules := []Rule{{ID: "J-01", Tool: "*", Action: ActionJudge, Note: "Evaluate charter"}}
-	full := Verdict{
-		Action:    ActionDeny,
+	full := Verdict{Action: ActionDeny, Explanation: Explanation{
 		Reasoning: "the charter lets this agent read the ledger, never write it",
 		Clauses:   []string{"3.1", "3.4"},
 		Evidence:  []Evidence{{Quote: "UPDATE ledger SET", Why: "writes a system of record"}},
-	}
+	}}
 	got := Evaluate(context.Background(), rules, nil, Call{Tool: "sql"},
 		func(context.Context, Rule) (Verdict, error) { return full, nil })
 

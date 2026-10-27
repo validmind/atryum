@@ -16,9 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   judge was asked and could not answer. `invocation.Explanation` puts the
   same account on a `Decision` and on an invocation's `Approval`
   (`explanation` on the API), and a `Decider` that fills it in has it
-  rendered for the agent whose call it was. The account says why a call was
-  refused, never what would get it allowed: an agent works that out from its
-  charter rather than being handed a route around the decision.
+  rendered for the agent whose call it was, on a denial. The account says
+  why a call was refused, never what would get it allowed: an agent works
+  that out from its charter rather than being handed a route around the
+  decision. Atryum's own AI evaluation has only a reason to give, which it
+  already sent, so a structured account comes from a `Decider` that fills
+  one in.
 - An account is model-written text, drawn partly from arguments the calling
   agent chose, and it is rendered back into that agent's context, so it is
   treated as untrusted data. `Explanation.Bounded` trims it to
@@ -26,8 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   control characters and line breaks into spaces, and is applied to every
   decider's answer as it arrives. `invocation.DeniedText` renders it inside
   a marked block labelled information rather than instructions, so an
-  account cannot pose as part of Atryum's own message. Everything in it
-  reaches the agent, so a decider puts nothing in it the agent may not see.
+  account cannot pose as part of Atryum's own message, and cleans the one
+  line reason above it the same way. Everything in an account reaches the
+  agent, so a decider puts nothing in it the agent may not see.
+- The bundled hooks (`examples/shared-agent-hook`, `examples/pi-extension`)
+  print the text Atryum rendered for a refused call instead of composing
+  their own, so an agent refused through a hook and one refused over the MCP
+  proxy are told the same things in the same order.
 
 ### Changed
 
@@ -35,12 +43,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `(Action, error)`. A judge that only decides becomes
   `return policy.Verdict{Action: a}, nil`; one that explains itself fills in
   the rest. `policy.Result.Basis` is unchanged, so anything reading the basis
-  text keeps working.
+  text keeps working. `Verdict` embeds `policy.Explanation`, which
+  `invocation.Explanation` aliases, so an account passes from the rule
+  engine to a decision without being copied field by field.
 - Every path that denies a tool call renders its message through
-  `invocation.DeniedText`, so an agent denied through the MCP proxy and one
-  denied through a harness hook are told the same things in the same order.
-  A call denied by an `auto_deny` approval rule now carries the reason it
-  already recorded but previously kept to itself.
+  `invocation.DeniedText`, so every agent is told the same things in the
+  same order. A call denied by an `auto_deny` approval rule now carries the
+  reason it already recorded but previously kept to itself.
 
 ## [0.6.0] - 2026-10-23
 
