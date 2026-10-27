@@ -144,6 +144,11 @@ var strictness = map[Action]int{ActionAllow: 1, ActionNotify: 2, ActionHuman: 3,
 // path "//etc/passwd" is allowed as sent but denied once paths are
 // cleaned, so the answer is deny.
 //
+// An allow or notify becomes human when the rule that gave it has a
+// condition on an argument the agent sent under more than one spelling of
+// its name ("command" and "Command"), since the tool may read the one the
+// rule didn't (see respelledArg).
+//
 // The judge is asked at most once per rule. The cleaned passes reuse the real
 // verdict for every judge rule the first pass asked, and send a judge rule
 // that only a cleaned call reaches to a person.
@@ -180,6 +185,19 @@ func Evaluate(ctx context.Context, firm, agent []Rule, c Call, judge Judge) Resu
 		if res.Rule != nil && res.Rule != best.Rule && strictness[res.Action] > strictness[best.Action] {
 			res.Basis += " (matched after cleaning up the arguments' case, spaces, escapes and path detours)"
 			best = res
+		}
+	}
+	// The rule that allows may have read one of two spellings of an
+	// argument's name, as in {"command": "git status", "Command": "rm -rf ~"},
+	// while the tool reads the other. So when it reads an argument sent under
+	// more than one spelling, a person decides instead.
+	if best.Rule != nil && strictness[best.Action] < strictness[ActionHuman] {
+		for _, cond := range best.Rule.When {
+			if respelledArg(cond.Field, c.Args) {
+				best.Action = ActionHuman
+				best.Basis += fmt.Sprintf(" → %s was sent under more than one spelling of its name, a person decides", cond.Field)
+				break
+			}
 		}
 	}
 	return best

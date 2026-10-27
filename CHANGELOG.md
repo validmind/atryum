@@ -30,9 +30,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bubblewrap); CI requires the comparison. The reader models bash and zsh
   only: a call whose `facts.shell` names another shell (`powershell`,
   `cmd`) never matches, and with no such fact nothing matches when the
-  program runs on Windows.
+  program runs on Windows. That guess is about the machine running
+  `Evaluate`, so an embedder deciding calls for agents on other machines
+  must set `facts.shell`.
   A `command` condition reads the line as sent in every pass of
   `Evaluate`, never a cleaned copy: cleaning would change its words.
+
+### Fixed
+
+- `pkg/policy`: `Evaluate` no longer allows (or notifies) by a rule that
+  reads an argument the agent sent under more than one spelling of its
+  name, such as `{"command": "git status", "Command": "rm -rf ~"}`: a person
+  decides. The rule read one, but a server that decodes arguments into a Go
+  struct runs the last key that matches ignoring case. Names are compared
+  ignoring case and as the cleaned passes spell them.
 
 ## [0.6.0] - 2026-10-23
 

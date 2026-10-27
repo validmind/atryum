@@ -356,6 +356,40 @@ func TestAnotherSpellingOfTheKeyDoesNotHideTheArgument(t *testing.T) {
 	}
 }
 
+// An allow can't rest on one spelling of an argument's name when the agent
+// sent another: a server that decodes {"command": "git status", "Command":
+// "rm -rf ~"} into a Go struct runs rm -rf ~. A person decides instead.
+func TestAnAllowDoesNotReadOneSpellingOfTwo(t *testing.T) {
+	allow := func(field, op string, v any) []Rule {
+		return []Rule{{ID: "A-01", Tool: "Bash", When: []Cond{{Field: field, Op: op, Value: v}}, Action: ActionAllow}}
+	}
+	for _, tc := range []struct {
+		rules []Rule
+		args  map[string]any
+		want  Action
+	}{
+		{allow("args.command", "command", "git status"), map[string]any{"command": "git status"}, ActionAllow},
+		{allow("args.command", "command", "git status"), map[string]any{"command": "git status", "Command": "rm -rf ~"}, ActionHuman},
+		{allow("args.command", "prefix", "git status"), map[string]any{"command": "git status", "COMMAND": "rm -rf ~"}, ActionHuman},
+		{allow("args.command", "eq", "git status"), map[string]any{"command": "git status", " command": nil}, ActionHuman},
+		{allow("args.key", "eq", "a"), map[string]any{"key": "a", "Key": "b"}, ActionHuman}, // the Kelvin sign
+		{allow("args.opts.dir", "eq", "/w"), map[string]any{"opts": map[string]any{"dir": "/w", "Dir": "/"}}, ActionHuman},
+		{allow("args.opts.dir", "eq", "/w"), map[string]any{"opts": map[string]any{"dir": "/w"}, "Opts": map[string]any{}}, ActionHuman},
+		{allow("args.command", "eq", "ls"), map[string]any{"command": "ls", "Commands": "rm"}, ActionAllow}, // another name
+		{allow("facts.x", "eq", "1"), map[string]any{"command": "ls", "Command": "rm"}, ActionAllow},        // the rule reads no argument
+	} {
+		call := Call{Tool: "Bash", Args: tc.args, Facts: map[string]any{"x": "1"}}
+		if got := Evaluate(context.Background(), nil, tc.rules, call, nil); got.Action != tc.want {
+			t.Errorf("%v with %v: %s (%s), want %s", tc.rules[0].When, tc.args, got.Action, got.Basis, tc.want)
+		}
+	}
+	// A deny stays a deny.
+	deny := []Rule{{ID: "D-01", Tool: "Bash", When: []Cond{{Field: "args.command", Op: "contains", Value: "rm"}}, Action: ActionDeny}}
+	if got := decide(nil, deny, "Bash", map[string]any{"command": "rm x", "Command": "ls"}, nil); got.Action != ActionDeny {
+		t.Errorf("deny: got %s (%s)", got.Action, got.Basis)
+	}
+}
+
 // Facts are the embedder's own: the cleaned pass leaves their names and
 // values alone, so a rule that mixes args and facts still holds.
 func TestFactsAreComparedAsTheyAre(t *testing.T) {

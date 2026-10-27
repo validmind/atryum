@@ -412,7 +412,7 @@ func TestCommandInCleanedPasses(t *testing.T) {
 		{map[string]any{"command": "GIT STATUS"}, ActionHuman},                 // another program to a case-sensitive file system
 		{map[string]any{"COMMAND": "git status"}, ActionHuman},                 // not the argument the rule names
 		{map[string]any{"command": "git status; RM  -RF ~"}, ActionDeny},       // the deny catches the respelling
-		{map[string]any{"command": "git status", "Command": "x"}, ActionAllow}, // the named argument decides
+		{map[string]any{"command": "git status", "Command": "x"}, ActionHuman}, // the tool may read Command
 	} {
 		if got := Evaluate(context.Background(), nil, agent, Call{Tool: "Bash", Args: tc.args}, nil); got.Action != tc.want {
 			t.Errorf("%v: %s (%s), want %s", tc.args, got.Action, got.Basis, tc.want)

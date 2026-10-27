@@ -236,3 +236,50 @@ func (cl *cleaner) args(field string, args map[string]any) []any {
 	}
 	return found
 }
+
+// respelledArg reports whether a field such as "args.command" names more
+// than one argument when names are compared the way a server might compare
+// them: ignoring case, as Go's encoding/json does, and spelled as the
+// cleaned passes spell them. With {"command": "ls", "Command": "rm -rf ~"},
+// "args.command" names two, and a server that decodes into a struct runs
+// the last, rm -rf ~. A key whose value is null counts too.
+func respelledArg(field string, args map[string]any) bool {
+	rest, ok := strings.CutPrefix(field, "args.")
+	if !ok || rest == "" {
+		return false
+	}
+	found := []any{args}
+	for _, part := range strings.Split(rest, ".") {
+		name := argName(part)
+		var next []any
+		for _, v := range found {
+			m, _ := v.(map[string]any)
+			for k, item := range m {
+				if argName(k) == name {
+					next = append(next, item)
+				}
+			}
+		}
+		if len(next) > 1 {
+			return true
+		}
+		found = next
+	}
+	return false
+}
+
+// argName is an argument's name with its spelling and case settled, so that
+// argName(a) == argName(b) whenever strings.EqualFold(a, b): "Command",
+// "COMMAND" and " command" all give the same name, and so do "Key" and
+// "Key" (with the Kelvin sign).
+func argName(k string) string { return strings.Map(foldRune, plainText(k)) }
+
+// foldRune is the smallest rune that r case-folds to: 'k' and the Kelvin
+// sign both give 'K'.
+func foldRune(r rune) rune {
+	least := r
+	for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+		least = min(least, f)
+	}
+	return least
+}
