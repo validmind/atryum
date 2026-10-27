@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -99,5 +100,29 @@ func TestCleanRemovesInvisibleCharacters(t *testing.T) {
 func TestCleanCutsOnARuneBoundary(t *testing.T) {
 	if got := Clean(strings.Repeat("é", 10), 4); got != "éééé…" {
 		t.Errorf("got %q, want %q", got, "éééé…")
+	}
+}
+
+// Embedding Explanation must not change the verdict's shape on the wire.
+func TestVerdictJSONStaysFlat(t *testing.T) {
+	b, err := json.Marshal(Verdict{Action: ActionDeny, Explanation: Explanation{Reasoning: "r", Clauses: []string{"1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(b), `{"action":"deny","reasoning":"r","clauses":["1"]}`; got != want {
+		t.Errorf("got %s, want %s", got, want)
+	}
+}
+
+// Account copies, so a decision built from a result cannot reach back in.
+func TestAccountCopies(t *testing.T) {
+	res := Result{Judge: &Verdict{Action: ActionDeny, Explanation: Explanation{Reasoning: "first"}}}
+	got := res.Account()
+	got.Reasoning = "changed"
+	if res.Judge.Reasoning != "first" {
+		t.Errorf("Account aliased the verdict: %q", res.Judge.Reasoning)
+	}
+	if (Result{}).Account() != nil || (Result{Judge: &Verdict{Action: ActionDeny}}).Account() != nil {
+		t.Error("an empty or absent account should be nil")
 	}
 }

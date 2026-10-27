@@ -101,3 +101,18 @@ func Clean(s string, n int) string {
 	}
 	return string([]rune(s)[:n]) + "…"
 }
+
+// Account is the account the judge gave of the result, or nil when no judge
+// decided it or the judge said nothing. It is a copy, so a caller putting it
+// on a decision cannot reach back into the result.
+//
+// A caller carrying a decision to an agent uses this rather than reading
+// Judge itself: it is the one place that knows an empty account is no
+// account, and it keeps a result and the decision made from it apart.
+func (r Result) Account() *Explanation {
+	if r.Judge == nil || r.Judge.Explanation.Empty() {
+		return nil
+	}
+	ex := r.Judge.Explanation
+	return &ex
+}
