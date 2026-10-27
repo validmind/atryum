@@ -349,7 +349,10 @@ commands:
   Windows) that cannot read what a policy miss would expose.
 - **Don't rule on shell text.** `cat $(echo L2V0Yy9wYXNzd2Q= | base64 -d)`
   names no path a rule can see. Route shell tools to a judge or a person, or
-  allow only specific commands.
+  allow only specific commands with a `command` condition: it matches a line
+  only when every command in it is one of its patterns, and matches nothing it
+  can't read (an expansion like this one, a shell other than bash or zsh). It
+  is for allowing; to deny or hold, `contains` and `prefix` match more.
 
 ## Configuration and ownership
 
