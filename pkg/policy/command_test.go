@@ -419,3 +419,20 @@ func TestCommandInCleanedPasses(t *testing.T) {
 		}
 	}
 }
+
+func TestCommandShellFact(t *testing.T) {
+	cond := Cond{Field: "args.cmd", Op: "command", Value: "git status"}
+	for shell, want := range map[string]bool{
+		"bash": true, "/bin/zsh": true, `C:\Git\bin\bash.exe`: true,
+		"powershell": false, "cmd.exe": false, "": false, "sh": false,
+	} {
+		call := Call{Args: map[string]any{"cmd": "git status"}, Facts: map[string]any{"shell": shell}}
+		if got := condOK(cond, call); got != want {
+			t.Errorf("shell %q: got %v, want %v", shell, got, want)
+		}
+	}
+	call := Call{Args: map[string]any{"cmd": "git status"}, Facts: map[string]any{"shell": 7}}
+	if condOK(cond, call) {
+		t.Error("a shell fact that isn't text matched")
+	}
+}

@@ -304,7 +304,7 @@ func condMatches(c Cond, call Call, clean *cleaner) bool {
 	// every pass: cleaning would change the words it matches.
 	if c.Op == "command" {
 		v, ok := lookup(c.Field, call)
-		return ok && matchCommand(v, c.Value)
+		return ok && shellIsPOSIX(call) && matchCommand(v, c.Value)
 	}
 	if clean == nil || !strings.HasPrefix(c.Field, "args.") {
 		v, ok := lookup(c.Field, call)

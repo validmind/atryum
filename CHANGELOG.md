@@ -27,7 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `ShellCommand.Pattern` drafts patterns that match them.
   `FuzzCommandAgreesWithShells` checks the reader against bash and zsh
   themselves, sandboxed so nothing runs (macOS's sandbox-exec, Linux's
-  bubblewrap); CI requires the comparison.
+  bubblewrap); CI requires the comparison. The reader models bash and zsh
+  only: a call whose `facts.shell` names another shell (`powershell`,
+  `cmd`) never matches, and with no such fact nothing matches when the
+  program runs on Windows.
   A `command` condition reads the line as sent in every pass of
   `Evaluate`, never a cleaned copy: cleaning would change its words.
 

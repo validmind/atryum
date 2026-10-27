@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -902,6 +903,27 @@ func wordTexts(words []shellWord) []string {
 		out[i] = w.text
 	}
 	return out
+}
+
+// shellIsPOSIX reports whether the shell that will run a command line is one
+// the reader models, bash or zsh. The embedder says which with the fact
+// "shell" (a name or path: "bash", "/bin/zsh", "C:\\Git\\bin\\bash.exe"); any
+// other value, such as "powershell" or "cmd", means a command condition
+// matches nothing, since those shells quote, escape and expand differently
+// (in cmd.exe, 'a & b' is two commands). Without the fact, the shell is
+// assumed to be bash or zsh unless this program runs on Windows.
+func shellIsPOSIX(c Call) bool {
+	v, ok := c.Facts["shell"]
+	if !ok {
+		return runtime.GOOS != "windows"
+	}
+	name, ok := v.(string)
+	if !ok {
+		return false
+	}
+	name = strings.ToLower(name[strings.LastIndexAny(name, `/\`)+1:])
+	name = strings.TrimSuffix(name, ".exe")
+	return name == "bash" || name == "zsh"
 }
 
 // matchCommand reports whether line, a shell command line, is made only of
