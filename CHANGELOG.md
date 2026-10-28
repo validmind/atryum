@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Submits that arrive together for a new `client_session_id` now share one
+  session. Before, each could miss the lookup and mint its own `ses_` row, so
+  a parallel first tool call got a different `session_id` from its sibling
+  and its judge history (and anything else keyed on `session_id`) was split.
+  Sessions minted from `client_session_id` now get an ID derived from the
+  agent binding and `client_session_id`, and a duplicate insert is a no-op.
+
 ## [0.6.0] - 2026-10-23
 
 ### Fixed
