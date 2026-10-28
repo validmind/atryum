@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -162,11 +163,11 @@ func (s shape) call() Call {
 	return Call{Tool: s.tool, Args: args, Facts: s.facts}
 }
 
-func (s shape) judgeFn(context.Context, Rule) (Action, error) {
+func (s shape) judgeFn(context.Context, Rule) (Verdict, error) {
 	if s.judge == "" {
-		return "", errors.New("judge unavailable")
+		return Verdict{}, errors.New("judge unavailable")
 	}
-	return s.judge, nil
+	return Verdict{Action: s.judge}, nil
 }
 
 func TestReplayShapesMatchPrototype(t *testing.T) {
@@ -183,7 +184,7 @@ func TestReplayShapesMatchPrototype(t *testing.T) {
 // Charter v5 (draft) is what the shadow replay compares against v4: the
 // production deletes and scales the judge allowed flip to a person or deny.
 func TestK8sDraftFlips(t *testing.T) {
-	allow := func(context.Context, Rule) (Action, error) { return ActionAllow, nil }
+	allow := func(context.Context, Rule) (Verdict, error) { return Verdict{Action: ActionAllow}, nil }
 	for _, tc := range []struct {
 		tool, args string
 		want       Action
@@ -204,7 +205,9 @@ func TestK8sDraftFlips(t *testing.T) {
 
 func TestEvaluate(t *testing.T) {
 	ctx := context.Background()
-	verdict := func(v Action) Judge { return func(context.Context, Rule) (Action, error) { return v, nil } }
+	verdict := func(v Action) Judge {
+		return func(context.Context, Rule) (Verdict, error) { return Verdict{Action: v}, nil }
+	}
 	for _, tc := range []struct {
 		name         string
 		firm, agent  []Rule
@@ -236,7 +239,7 @@ func TestEvaluate(t *testing.T) {
 			call:  Call{Tool: "x"}, judge: verdict(ActionDeny), want: ActionDeny, rule: "J", basisContain: "J judged → judge said deny"},
 		{name: "judge error: a person decides",
 			agent: []Rule{{ID: "J", Tool: "x", Action: ActionJudge}, {ID: "next", Tool: "x", Action: ActionAllow}},
-			call:  Call{Tool: "x"}, judge: func(context.Context, Rule) (Action, error) { return "", errors.New("down") }, want: ActionHuman, rule: "J"},
+			call:  Call{Tool: "x"}, judge: func(context.Context, Rule) (Verdict, error) { return Verdict{}, errors.New("down") }, want: ActionHuman, rule: "J"},
 		{name: "nil judge: a person decides",
 			agent: []Rule{{ID: "J", Tool: "x", Action: ActionJudge}, {ID: "next", Tool: "x", Action: ActionAllow}},
 			call:  Call{Tool: "x"}, want: ActionHuman, rule: "J"},
@@ -464,4 +467,65 @@ func k8sDeployment() any {
 func k8sSecretWithData() any {
 	return jsonNumber(`{"apiVersion": "v1", "kind": "Secret", "metadata": {"name": "ledger-db-credentials"},
 	  "type": "Opaque", "stringData": {"username": "ledger", "password": "Tr0ub4dor&3xyz"}}`)
+}
+
+// A judge's account of its decision reaches the caller, which renders it
+// for the agent whose call was judged (sc-19113). Before this, Evaluate
+// kept the verdict's action and dropped the rest, so a denied agent was
+// told only "→ judge said deny".
+func TestEvaluateCarriesTheJudgesAccount(t *testing.T) {
+	rules := []Rule{{ID: "J-01", Tool: "*", Action: ActionJudge, Note: "Evaluate charter"}}
+	full := Verdict{Action: ActionDeny, Explanation: Explanation{
+		Reasoning: "the charter lets this agent read the ledger, never write it",
+		Clauses:   []string{"3.1", "3.4"},
+		Evidence:  []Evidence{{Quote: "UPDATE ledger SET", Why: "writes a system of record"}},
+	}}
+	got := Evaluate(context.Background(), rules, nil, Call{Tool: "sql"},
+		func(context.Context, Rule) (Verdict, error) { return full, nil })
+
+	if got.Action != ActionDeny {
+		t.Fatalf("action: got %s, want %s", got.Action, ActionDeny)
+	}
+	if got.Judge == nil {
+		t.Fatal("Judge is nil: the account was dropped")
+	}
+	if !reflect.DeepEqual(*got.Judge, full) {
+		t.Errorf("account: got %+v, want %+v", *got.Judge, full)
+	}
+	if got.JudgeErr != nil {
+		t.Errorf("JudgeErr: got %v, want nil", got.JudgeErr)
+	}
+	// The basis text is unchanged, so records and the console keep reading
+	// what they read before.
+	if want := "J-01 Evaluate charter → judge said deny"; got.Basis != want {
+		t.Errorf("basis: got %q, want %q", got.Basis, want)
+	}
+}
+
+// A judge that cannot answer leaves the error on the result, so callers
+// stop parsing it back out of the basis text.
+func TestEvaluateCarriesTheJudgesError(t *testing.T) {
+	rules := []Rule{{ID: "J-01", Tool: "*", Action: ActionJudge}}
+	down := errors.New("evaluator timed out")
+	got := Evaluate(context.Background(), rules, nil, Call{Tool: "sql"},
+		func(context.Context, Rule) (Verdict, error) { return Verdict{}, down })
+
+	if got.Action != ActionHuman {
+		t.Errorf("action: got %s, want %s", got.Action, ActionHuman)
+	}
+	if !errors.Is(got.JudgeErr, down) {
+		t.Errorf("JudgeErr: got %v, want %v", got.JudgeErr, down)
+	}
+	if got.Judge != nil {
+		t.Errorf("Judge: got %+v, want nil", got.Judge)
+	}
+}
+
+// A result no judge rule decided carries no account at all.
+func TestEvaluateLeavesTheAccountEmptyWithoutAJudgeRule(t *testing.T) {
+	rules := []Rule{{ID: "D-01", Tool: "*", Action: ActionDeny, Note: "never"}}
+	got := Evaluate(context.Background(), rules, nil, Call{Tool: "sql"}, nil)
+	if got.Judge != nil || got.JudgeErr != nil {
+		t.Errorf("got Judge=%+v JudgeErr=%v, want both nil", got.Judge, got.JudgeErr)
+	}
 }

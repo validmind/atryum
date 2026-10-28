@@ -478,7 +478,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 			inv.Status = StatusDenied
 			inv.CompletedAt = &completed
 			inv.Approval = newApproval("plan_denied", reason, confidence)
-			inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": "Tool call denied: " + reason}}, "isError": true})
+			inv.Error = deniedError("Tool call denied by the approved plan.", reason, nil)
 			s.commitOrLog(context.Background(), inv, s.invocations.UpdateResult,
 				Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(planPayload), CreatedAt: now},
 				Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"plan_id": planID, "reason": reason, "confidence": confidence}), CreatedAt: completed})
@@ -598,12 +598,12 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	}); err != nil {
 		// A decision that is not on record must not run: fail closed.
 		slog.Error("could not record the decision; denying the call", "invocation_id", inv.InvocationID, "error", err)
-		return s.denyByPolicy(ctx, inv, "the decision could not be recorded", nil)
+		return s.denyByPolicy(ctx, inv, "the decision could not be recorded", nil, nil)
 	}
 
 	switch decision.Disposition {
 	case policy.DispositionNever:
-		return s.denyByPolicy(ctx, inv, decision.Reason, aiConfidence)
+		return s.denyByPolicy(ctx, inv, decision.Reason, aiConfidence, decided.explanation())
 	case policy.DispositionAuto:
 		return s.executeNow(ctx, inv, upstream, req, decision.Reason, aiConfidence)
 	default:
@@ -1189,17 +1189,15 @@ func countSessionContextMessages(sessionContext string) int {
 	return count
 }
 
-// denyByPolicy hard-denies the call without execution.
-func (s *Service) denyByPolicy(ctx context.Context, inv Invocation, reason string, confidence *float64) (InvocationResponse, error) {
+// denyByPolicy hard-denies the call without execution. ex is the decider's
+// account of the denial, when one decided it, and reaches the agent.
+func (s *Service) denyByPolicy(ctx context.Context, inv Invocation, reason string, confidence *float64, ex *Explanation) (InvocationResponse, error) {
 	completed := time.Now().UTC()
 	inv.Status = StatusDenied
 	inv.CompletedAt = &completed
 	inv.Approval = newApproval("auto_denied", reason, confidence)
-	msg := "Tool call hard-denied by policy."
-	if reason != "" {
-		msg += " Reason: " + reason
-	}
-	inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": msg}}, "isError": true})
+	inv.Approval.Explanation = ex
+	inv.Error = deniedError("Tool call hard-denied by policy.", reason, ex)
 	s.commitOrLog(context.Background(), inv, s.invocations.UpdateResult, Event{
 		InvocationID: inv.InvocationID,
 		EventType:    "invocation.denied",
@@ -1458,11 +1456,7 @@ func (s *Service) resolvePending(ctx context.Context, invocationID string, appro
 		ActorID:    stringPtrIfNotEmpty(actorID),
 		DecisionAt: timePtr(now),
 	}
-	msg := "Tool call denied by the MCP permissions system."
-	if message != "" {
-		msg += "\n\nReason: " + message
-	}
-	inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": msg}}, "isError": true})
+	inv.Error = deniedError("Tool call denied by the MCP permissions system.", message, nil)
 	deniedPayload := map[string]any{"message": message, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input)}
 	if actorID != "" {
 		deniedPayload["actor_id"] = actorID
@@ -1666,7 +1660,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 			inv.Status = StatusDenied
 			inv.CompletedAt = &completed
 			inv.Approval = newApproval("plan_denied", reason, confidence)
-			inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": "Tool call denied: " + reason}}, "isError": true})
+			inv.Error = deniedError("Tool call denied by the approved plan.", reason, nil)
 			planPayload["disposition"] = "plan_denied"
 			s.commitOrLog(context.Background(), inv, s.invocations.UpdateResult,
 				Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(planPayload), CreatedAt: now},
@@ -1774,7 +1768,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		inv.Status = StatusDenied
 		inv.CompletedAt = &completed
 		inv.Approval = &Approval{Status: "auto_denied", Reason: stringPtr("matched approval rule (auto_deny)")}
-		inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": "Tool call denied by approval rule (auto_deny)."}}, "isError": true})
+		inv.Error = deniedError("Tool call denied by an approval rule.", "matched approval rule (auto_deny)", nil)
 		s.commitOrLog(context.Background(), inv, s.invocations.UpdateResult, received, Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"reason": "matched approval rule (auto_deny)", "disposition": "never"}), CreatedAt: completed})
 		return s.toResponse(inv), nil
 
@@ -1808,7 +1802,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 			inv.Status = StatusDenied
 			inv.CompletedAt = &completed
 			inv.Approval = newApproval("auto_denied", aiDecision.Reason, resolvedAIConfidence)
-			inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": "Tool call denied by AI evaluation. Reason: " + aiDecision.Reason}}, "isError": true})
+			inv.Error = deniedError("Tool call denied by AI evaluation.", aiDecision.Reason, nil)
 			s.commitOrLog(context.Background(), inv, s.invocations.UpdateResult, received, Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"reason": aiDecision.Reason, "disposition": "never"}), CreatedAt: completed})
 			return s.toResponse(inv), nil
 		}
@@ -1848,7 +1842,8 @@ func (s *Service) submitDecided(ctx context.Context, inv Invocation, source, age
 		inv.Status = StatusDenied
 		inv.CompletedAt = &at
 		inv.Approval = newApproval("auto_denied", d.Reason, nil)
-		inv.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": "Tool call denied. Reason: " + d.Reason}}, "isError": true})
+		inv.Approval.Explanation = d.Explanation
+		inv.Error = deniedError("Tool call denied.", d.Reason, d.Explanation)
 		evts = append(evts, Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"reason": d.Reason, "disposition": "never"}), CreatedAt: at})
 	default:
 		inv.Status = StatusPendingApproval

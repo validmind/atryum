@@ -103,20 +103,40 @@ type Call struct {
 	Facts        map[string]any
 }
 
-// Judge is called for a matching "judge" rule. It returns allow, deny or
+// Verdict is a judge's answer to a judge rule: the action it decided, and
+// the account it gives of deciding that way. Action is allow, deny or
 // human, or "" for an unknown verdict, which moves on to the level's next
 // matching rule; if no later rule in that level matches, the level's result
-// is human. An error sends the call to a person.
-type Judge func(ctx context.Context, r Rule) (Action, error)
+// is human.
+//
+// Every other field is optional, and a judge that fills none of them
+// behaves exactly as one that answered with the action alone. They are
+// carries the account the judge gives of it, which a caller renders for the
+// agent whose call was judged. See Explanation.
+type Verdict struct {
+	Action Action `json:"action"`
+	Explanation
+}
+
+// Judge is called for a matching "judge" rule. An error sends the call to a
+// person.
+type Judge func(ctx context.Context, r Rule) (Verdict, error)
 
 // Result is the decision. Rule and Level ("firm" or "agent") name the rule
 // that decided, and are empty when no rule matched; Rule points into the
 // slice passed to Evaluate. Basis is a short reason naming that rule.
+//
+// When a judge rule decided the result, Judge is the judge's answer, whose
+// account callers render for the agent; JudgeErr is set instead when the
+// judge was asked and could not answer. Both are nil for a result no judge
+// rule decided.
 type Result struct {
-	Action Action
-	Rule   *Rule
-	Level  string
-	Basis  string
+	Action   Action
+	Rule     *Rule
+	Level    string
+	Basis    string
+	Judge    *Verdict
+	JudgeErr error
 }
 
 var strictness = map[Action]int{ActionAllow: 1, ActionNotify: 2, ActionHuman: 3, ActionDeny: 4}
@@ -135,33 +155,48 @@ var strictness = map[Action]int{ActionAllow: 1, ActionNotify: 2, ActionHuman: 3,
 // that only a cleaned call reaches to a person.
 func Evaluate(ctx context.Context, firm, agent []Rule, c Call, judge Judge) Result {
 	type asked struct {
-		rule   Rule
-		action Action
-		err    error
+		rule    Rule
+		verdict Verdict
+		err     error
 	}
 	var verdicts []asked
 	recording := judge
 	if judge != nil {
-		recording = func(ctx context.Context, r Rule) (Action, error) {
-			a, err := judge(ctx, r)
-			verdicts = append(verdicts, asked{r, a, err})
-			return a, err
+		recording = func(ctx context.Context, r Rule) (Verdict, error) {
+			v, err := judge(ctx, r)
+			verdicts = append(verdicts, asked{r, v, err})
+			return v, err
 		}
 	}
 	best := evaluate(ctx, firm, agent, c, recording, nil)
 
-	replay := func(_ context.Context, r Rule) (Action, error) {
+	replay := func(_ context.Context, r Rule) (Verdict, error) {
 		for _, v := range verdicts {
 			if reflect.DeepEqual(v.rule, r) {
-				return v.action, v.err
+				return v.verdict, v.err
 			}
 		}
-		return ActionHuman, nil // reached only after cleaning: a person decides
+		// Reached only after cleaning: a person decides, with no account
+		// to give because no judge was asked about this rule.
+		return Verdict{Action: ActionHuman}, nil
+	}
+	wasAsked := func(r *Rule) bool {
+		for _, v := range verdicts {
+			if r != nil && reflect.DeepEqual(v.rule, *r) {
+				return true
+			}
+		}
+		return false
 	}
 	for _, paths := range []bool{false, true} {
 		res := evaluate(ctx, firm, agent, c, replay, newCleaner(paths))
 		if res.Rule != nil && res.Rule != best.Rule && strictness[res.Action] > strictness[best.Action] {
 			res.Basis += " (matched after cleaning up the arguments' case, spaces, escapes and path detours)"
+			if !wasAsked(res.Rule) {
+				// The judge never saw this rule: replay stood in for it, so
+				// there is no account to pass off as the judge's.
+				res.Judge = nil
+			}
 			best = res
 		}
 	}
@@ -207,7 +242,7 @@ func firstMatch(ctx context.Context, rules []Rule, c Call, judge Judge, clean *c
 			return Result{Action: r.Action, Rule: r, Basis: basis}, true
 		}
 		var (
-			v   Action
+			v   Verdict
 			err error
 		)
 		if judge == nil {
@@ -216,11 +251,14 @@ func firstMatch(ctx context.Context, rules []Rule, c Call, judge Judge, clean *c
 			v, err = judge(ctx, *r)
 		}
 		if err != nil {
-			return Result{Action: ActionHuman, Rule: r, Basis: fmt.Sprintf("%s → judge failed (%v), a person decides", basis, err)}, true
+			return Result{Action: ActionHuman, Rule: r, JudgeErr: err,
+				Basis: fmt.Sprintf("%s → judge failed (%v), a person decides", basis, err)}, true
 		}
-		switch v {
+		switch v.Action {
 		case ActionAllow, ActionDeny, ActionHuman:
-			return Result{Action: v, Rule: r, Basis: fmt.Sprintf("%s → judge said %s", basis, v)}, true
+			decided := v
+			return Result{Action: v.Action, Rule: r, Judge: &decided,
+				Basis: fmt.Sprintf("%s → judge said %s", basis, v.Action)}, true
 		}
 		deferred = r // unknown verdict: keep scanning this level
 	}
