@@ -51,6 +51,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same order. A call denied by an `auto_deny` approval rule now carries the
   reason it already recorded but previously kept to itself.
 
+### Fixed
+
+- A tool call's arguments keep their numbers as the agent wrote them. The
+  MCP proxy, `POST /api/v1/invocations`, `POST /api/v1/external/invocations`
+  and the managed-agents bridge decoded arguments into `float64`, so an
+  integer beyond 2^53 or a decimal with more digits than `float64` holds
+  changed: a transfer to account `9007199254740993` reached the upstream
+  tool, the decider, the stored invocation and its events as
+  `9007199254740992`, and a hook's own check refused the call because the
+  invocation no longer matched it. They are decoded with `UseNumber` now,
+  so arguments hold `json.Number`. Rule conditions read an exact number as
+  before (`2.50` is `2.5` for `eq` and `in`), and any other as written;
+  `gt` and `lt` compare as `float64`, as before.
+- `policy.ExactNumber` reports whether a `json.Number` survives `float64`,
+  for an embedder that hashes or compares arguments: two calls that differ
+  only in a digit `float64` can't hold must not count as the same call.
+
 ## [0.6.0] - 2026-10-23
 
 ### Fixed

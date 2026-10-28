@@ -1440,6 +1440,39 @@ func TestMCPToolsCallInterceptsInvocation(t *testing.T) {
 	}
 }
 
+// A tool call's arguments keep their numbers as the agent wrote them, on
+// every way in: as float64, 9007199254740993 would become 9007199254740992.
+func TestToolCallArgumentsKeepExactNumbers(t *testing.T) {
+	const args = `{"to_account":9007199254740993,"amount":12400.10}`
+	for _, tc := range []struct {
+		name, path, body string
+		input            func(*stubService) map[string]any
+	}{
+		{"mcp tools/call", "/mcp/demo", `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"transfer","arguments":` + args + `}}`,
+			func(s *stubService) map[string]any { return s.invokedReq.Input }},
+		{"invoke", "/api/v1/invocations", `{"server":"demo","tool":"transfer","input":` + args + `}`,
+			func(s *stubService) map[string]any { return s.invokedReq.Input }},
+		{"external invocation", "/api/v1/external/invocations", `{"source":"claude-code","tool":"transfer","input":` + args + `}`,
+			func(s *stubService) map[string]any { return s.submitReq.Input }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &stubService{invoke: invocation.InvocationResponse{InvocationID: "inv_1", Status: invocation.StatusSucceeded, Result: json.RawMessage(`{"content":[]}`)}}
+			h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("content-type", "application/json")
+			req = req.WithContext(auth.WithIdentity(req.Context(), auth.Identity{AgentID: "agent-1"}))
+			h.Routes().ServeHTTP(httptest.NewRecorder(), req)
+			if svc.invokedReq == nil && svc.submitReq == nil {
+				t.Fatal("no invocation request")
+			}
+			got, err := json.Marshal(tc.input(svc))
+			if err != nil || string(got) != `{"amount":12400.10,"to_account":9007199254740993}` {
+				t.Fatalf("input = %s (%v)", got, err)
+			}
+		})
+	}
+}
+
 func TestMCPRulesToolReturnsAgentRulesWithoutInvocation(t *testing.T) {
 	rules := &stubRulesRepo{rules: []store.Rule{
 		{ID: "read-auto", Action: invocation.RuleActionAutoApprove, ServerPatterns: []string{"demo"}, ToolPatterns: []string{"Read"}, Enabled: true, Order: 0},

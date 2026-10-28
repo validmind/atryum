@@ -32,6 +32,7 @@ package policy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -392,6 +393,12 @@ func lookup(field string, c Call) (any, bool) {
 }
 
 func text(v any) string {
+	if n, ok := v.(json.Number); ok {
+		if f, exact := ExactNumber(n); exact {
+			return strconv.FormatFloat(f, 'f', -1, 64)
+		}
+		return string(n)
+	}
 	rv := reflect.ValueOf(v)
 	switch rv.Kind() {
 	case reflect.String:
@@ -402,6 +409,52 @@ func text(v any) string {
 		return strconv.FormatFloat(rv.Float(), 'f', -1, 64)
 	}
 	return fmt.Sprint(v)
+}
+
+// ExactNumber returns the float64 nearest n, and whether it is n exactly:
+// whether that float64's shortest decimal form has n's value. 2.50, 1e2 and
+// 0.1 are exact. 9007199254740993 is not (float64 holds integers exactly
+// only up to 2^53, and it becomes 9007199254740992), nor is
+// 100.000000000000001, nor a number outside float64's range.
+//
+// Arguments decoded with json.Decoder.UseNumber keep such numbers as
+// written. Text conditions compare an exact number as they compare a
+// float64, and any other as written; an embedder that hashes or compares
+// arguments uses ExactNumber the same way, so two calls that differ only in
+// a digit float64 can't hold never count as the same.
+func ExactNumber(n json.Number) (float64, bool) {
+	f, err := strconv.ParseFloat(string(n), 64)
+	if err != nil {
+		return f, false
+	}
+	return f, sameDecimal(string(n), strconv.FormatFloat(f, 'e', -1, 64))
+}
+
+// sameDecimal reports whether decimal numbers a and b have the same value,
+// comparing digits and exponents as text: no arbitrary-precision arithmetic,
+// which an exponent like 1e-999999999 would make huge.
+func sameDecimal(a, b string) bool {
+	an, ad, ae, aok := decimal(a)
+	bn, bd, be, bok := decimal(b)
+	return aok && bok && ad == bd && (ad == "" || an == bn && ae == be)
+}
+
+// decimal splits a decimal number into its sign, its significant digits
+// without leading or trailing zeros ("" for zero), and the power of ten of
+// the last of them. ok is false for an exponent too large for an int.
+func decimal(s string) (neg bool, digits string, exp int, ok bool) {
+	neg = strings.HasPrefix(s, "-")
+	mant, e, hasExp := strings.Cut(strings.ToLower(strings.TrimPrefix(s, "-")), "e")
+	if hasExp {
+		var err error
+		if exp, err = strconv.Atoi(e); err != nil {
+			return false, "", 0, false
+		}
+	}
+	whole, frac, _ := strings.Cut(mant, ".")
+	digits = strings.TrimRight(whole+frac, "0")
+	exp += len(whole+frac) - len(digits) - len(frac)
+	return neg, strings.TrimLeft(digits, "0"), exp, true
 }
 
 func number(v any) (float64, bool) {

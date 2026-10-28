@@ -1,6 +1,7 @@
 package managedagents
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 )
@@ -125,12 +126,14 @@ func parseToolUse(evt RawEvent) (toolUse, bool) {
 		tu.EventID = firstString(m, "tool_use_id", "id")
 	}
 	tu.ServerName = firstString(m, "server_name", "mcp_server_name")
+	// Numbers as written (json.Number), as the API decodes arguments: an ID
+	// beyond float64's precision would otherwise change.
 	if raw, ok := m["input"]; ok {
-		_ = json.Unmarshal(raw, &tu.Input)
+		_ = decodeExact(raw, &tu.Input)
 	}
 	if tu.Input == nil {
 		if raw, ok := m["arguments"]; ok {
-			_ = json.Unmarshal(raw, &tu.Input)
+			_ = decodeExact(raw, &tu.Input)
 		}
 	}
 	return tu, tu.ToolName != ""
@@ -200,4 +203,10 @@ func parseToolResult(evt RawEvent) (toolResult, bool) {
 		tr.Content = raw
 	}
 	return tr, true
+}
+
+func decodeExact(raw []byte, v any) error {
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.UseNumber()
+	return d.Decode(v)
 }
