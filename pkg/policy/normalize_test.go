@@ -276,11 +276,11 @@ func TestJudgeIsAskedOnceAndItsVerdictStands(t *testing.T) {
 	}
 }
 
-// A judge with no opinion lets the level carry on to its next rule; the
-// cleaned pass must not turn that into "a person decides".
+// A judge with no opinion (next) lets the level carry on to its next rule;
+// the cleaned pass must not turn that into "a person decides".
 func TestAJudgeWithNoOpinionStillLetsTheNextRuleDecide(t *testing.T) {
 	asked := 0
-	judge := func(context.Context, Rule) (Verdict, error) { asked++; return Verdict{}, nil }
+	judge := func(context.Context, Rule) (Verdict, error) { asked++; return Verdict{Action: ActionNext}, nil }
 	rules := []Rule{judgeRule("J-1", refund), {ID: "N-1", Tool: "label", Action: ActionNotify}}
 	res := decide(nil, rules, "label", map[string]any{"text": "please refund me"}, judge)
 	if asked != 1 || res.Action != ActionNotify || res.Rule.ID != "N-1" {

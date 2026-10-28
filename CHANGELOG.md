@@ -51,6 +51,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same order. A call denied by an `auto_deny` approval rule now carries the
   reason it already recorded but previously kept to itself.
 
+- `pkg/policy`: a `Judge` that answers `""`, or anything other than allow,
+  deny, human or the new `policy.ActionNext`, now sends the call to a person
+  ("… → judge gave no verdict, a person decides") instead of moving on to the
+  level's next matching rule. A judge that means to defer returns
+  `ActionNext`; an embedder whose judge returned `""` to defer must return
+  `ActionNext` instead.
+
+### Fixed
+
+- A judge reply that couldn't be read no longer reaches the next matching
+  rule, which is often a broad allow: behind `payments over 10000 → judge`
+  then `payments → allow`, a large payment whose judge reply was cut off or
+  malformed was allowed. The agent writes the arguments the judge reads, so
+  it could steer the reply there. In `pkg/policy` (above) and in the
+  standalone service, where a verdict from the ValidMind backend's judge
+  other than `next_rule` that Atryum doesn't recognise now goes to human
+  approval instead of the next rule.
+
 ## [0.6.0] - 2026-10-23
 
 ### Fixed
