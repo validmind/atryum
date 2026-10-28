@@ -58,7 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ActionNext`; an embedder whose judge returned `""` to defer must return
   `ActionNext` instead.
 
-### Fixed
+### Security
 
 - A judge reply that couldn't be read no longer reaches the next matching
   rule, which is often a broad allow: behind `payments over 10000 → judge`
