@@ -31,9 +31,10 @@ func IdentityConflicts(ctx context.Context, agents *AgentsRepo, bindings *Manage
 	for _, rec := range records {
 		byID[rec.ID] = rec
 	}
-	boundTo := make(map[string]string, len(all))
+	// The same Claude agent ID may be bound once per account.
+	boundTo := make(map[string][]string, len(all))
 	for _, b := range all {
-		boundTo[b.ClaudeAgentID] = b.AgentCUID
+		boundTo[b.ClaudeAgentID] = append(boundTo[b.ClaudeAgentID], b.AgentCUID)
 	}
 	var out []IdentityConflict
 	for _, rec := range records {
@@ -42,15 +43,16 @@ func IdentityConflicts(ctx context.Context, agents *AgentsRepo, bindings *Manage
 			continue
 		}
 		for _, alias := range aliases {
-			owner, ok := boundTo[alias]
-			if !ok || owner == rec.ID {
-				continue
+			for _, owner := range boundTo[alias] {
+				if owner == rec.ID {
+					continue
+				}
+				bound, ok := byID[owner]
+				if !ok {
+					bound = AgentRecord{ID: owner}
+				}
+				out = append(out, IdentityConflict{Identity: alias, AliasAgent: rec, BindingAgent: bound})
 			}
-			bound, ok := byID[owner]
-			if !ok {
-				bound = AgentRecord{ID: owner}
-			}
-			out = append(out, IdentityConflict{Identity: alias, AliasAgent: rec, BindingAgent: bound})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Identity < out[j].Identity })

@@ -29,6 +29,13 @@ func TestIdentityConflictsFindsAnAliasOnAnotherAgentsBinding(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("ReplaceForAgent: %v", err)
 	}
+	// Helper also binds agent_01payments under a second account. That binding
+	// lists after Payments bot's and must not hide it.
+	if err := bindings.ReplaceForAgent(ctx, "helper", []ManagedAgentBinding{
+		{ID: "b3", AgentCUID: "helper", Account: "second", ClaudeAgentID: "agent_01payments"},
+	}); err != nil {
+		t.Fatalf("ReplaceForAgent helper: %v", err)
+	}
 
 	got, err := IdentityConflicts(ctx, agents, bindings)
 	if err != nil {

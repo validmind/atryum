@@ -152,6 +152,7 @@ type apiKeysRepo interface {
 type managedAgentBindingsRepo interface {
 	ListByAgent(ctx context.Context, agentCUID string) ([]store.ManagedAgentBinding, error)
 	GetByClaudeAgentID(ctx context.Context, account, claudeAgentID string) (store.ManagedAgentBinding, error)
+	ListByClaudeAgentID(ctx context.Context, claudeAgentID string) ([]store.ManagedAgentBinding, error)
 	ReplaceForAgent(ctx context.Context, agentCUID string, bindings []store.ManagedAgentBinding) error
 }
 
@@ -621,24 +622,25 @@ func (h *Handler) agentIDConflict(ctx context.Context, excludeID string, agentID
 		return conflictID, ownerName, err
 	}
 	for _, id := range agentIDs {
-		binding, err := h.managedAgentBindings.GetByClaudeAgentID(ctx, "", id)
-		if err == sql.ErrNoRows {
-			continue
-		}
+		// The same Claude agent ID may be bound once per account, so check
+		// every binding, not just the latest.
+		bindings, err := h.managedAgentBindings.ListByClaudeAgentID(ctx, id)
 		if err != nil {
 			return "", "", err
 		}
-		if binding.AgentCUID == excludeID {
-			continue
+		for _, binding := range bindings {
+			if binding.AgentCUID == excludeID {
+				continue
+			}
+			owner, err := h.agentsRepo.Get(ctx, binding.AgentCUID)
+			if err != nil && err != sql.ErrNoRows {
+				return "", "", err
+			}
+			if owner.VMName == "" {
+				return id, binding.AgentCUID, nil
+			}
+			return id, owner.VMName, nil
 		}
-		owner, err := h.agentsRepo.Get(ctx, binding.AgentCUID)
-		if err != nil && err != sql.ErrNoRows {
-			return "", "", err
-		}
-		if owner.VMName == "" {
-			return id, binding.AgentCUID, nil
-		}
-		return id, owner.VMName, nil
 	}
 	return "", "", nil
 }
@@ -651,15 +653,17 @@ func (h *Handler) claimManagedAgentBindings(ctx context.Context, agentCUID strin
 		return fmt.Errorf("managed agents bridge not configured (set [managed_agents].api_key)")
 	}
 	// An alias wins over a binding when Atryum resolves an agent, so a Claude
-	// agent ID another agent has as an alias can't be bound here. Force is
-	// for another Atryum instance's ownership metadata, not for this.
+	// agent ID another agent has as an alias can't be bound here unless force
+	// (admin only) takes the alias off that agent once the claims succeed.
 	ids := make([]string, 0, len(bindings))
 	for _, binding := range bindings {
 		ids = append(ids, binding.ClaudeAgentID)
 	}
-	if conflictID, ownerName, err := h.agentsRepo.CheckAgentIDConflict(ctx, agentCUID, ids); err != nil {
+	conflictID, ownerName, err := h.agentsRepo.CheckAgentIDConflict(ctx, agentCUID, ids)
+	if err != nil {
 		return err
-	} else if conflictID != "" {
+	}
+	if conflictID != "" && !force {
 		return &agentIDConflictError{ID: conflictID, Owner: ownerName}
 	}
 	if h.managedAgentBindings != nil {
@@ -687,6 +691,47 @@ func (h *Handler) claimManagedAgentBindings(ctx context.Context, agentCUID strin
 		if err != nil {
 			return err
 		}
+	}
+	if conflictID != "" {
+		return h.removeAliasesFromOtherAgents(ctx, agentCUID, ids)
+	}
+	return nil
+}
+
+// removeAliasesFromOtherAgents drops ids from the aliases of every agent but
+// keepCUID, so a force connect isn't overridden by an alias another agent
+// holds on the same Claude agent ID.
+func (h *Handler) removeAliasesFromOtherAgents(ctx context.Context, keepCUID string, ids []string) error {
+	drop := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		drop[id] = true
+	}
+	records, err := h.agentsRepo.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, rec := range records {
+		if rec.ID == keepCUID {
+			continue
+		}
+		aliases := parseAgentIDs(rec.AgentIDs)
+		kept := make([]string, 0, len(aliases))
+		for _, alias := range aliases {
+			if !drop[alias] {
+				kept = append(kept, alias)
+			}
+		}
+		if len(kept) == len(aliases) {
+			continue
+		}
+		encoded, err := json.Marshal(kept)
+		if err != nil {
+			return err
+		}
+		if err := h.agentsRepo.UpdateAgentIDs(ctx, rec.ID, string(encoded)); err != nil {
+			return err
+		}
+		log.Printf("force connect to agent %s removed Claude agent IDs from the aliases of agent %q (%s)", keepCUID, rec.VMName, rec.ID)
 	}
 	return nil
 }
@@ -740,6 +785,10 @@ func (h *Handler) releaseRemovedManagedAgentBindings(ctx context.Context, agentC
 func (h *Handler) writeManagedAgentClaimError(w http.ResponseWriter, r *http.Request, err error) {
 	var aliased *agentIDConflictError
 	if errors.As(err, &aliased) {
+		if h.isAdmin(r) {
+			writeError(w, http.StatusConflict, aliased.Error()+"; remove it from that agent's agent IDs, or force connect to take it")
+			return
+		}
 		h.writeAgentIDConflict(w, r, aliased.ID, aliased.Owner)
 		return
 	}
