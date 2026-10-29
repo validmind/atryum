@@ -941,6 +941,35 @@ func TestSummarizeInvocationPersistsBackendSummary(t *testing.T) {
 	}
 }
 
+func TestSummarizeInvocationSendsTheAgentsDigits(t *testing.T) {
+	now := time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
+	// 2^53 + 1: float64 can't hold it and rounds to ...992.
+	svc := &stubService{invoke: invocation.InvocationResponse{
+		InvocationID: "inv_123",
+		ServerName:   "bank",
+		ToolName:     "transfer",
+		Status:       invocation.StatusPendingApproval,
+		Input:        json.RawMessage(`{"to_account":9007199254740993}`),
+		SubmittedAt:  now,
+	}}
+	summarizer := &stubSummarizer{resp: backendclient.SummarizeInvocationResponse{Summary: "Transfer."}}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	h.summarizeClient = summarizer
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/review/invocations/inv_123/summarize", strings.NewReader(`{"model_config_cuid":"model_abc"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	input, ok := summarizer.req.Invocation["input"].(map[string]any)
+	if !ok || input["to_account"] != json.Number("9007199254740993") {
+		t.Fatalf("summarizer got input %#v, want to_account json.Number 9007199254740993", summarizer.req.Invocation["input"])
+	}
+}
+
 func TestSummarizeInvocationUsesSettingsModelConfigWhenRequestBodyEmpty(t *testing.T) {
 	now := time.Date(2026, 5, 28, 12, 0, 0, 0, time.UTC)
 	svc := &stubService{invoke: invocation.InvocationResponse{

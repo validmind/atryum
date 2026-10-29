@@ -2468,8 +2468,9 @@ func (h *Handler) summarizeInvocation(w http.ResponseWriter, r *http.Request, id
 		writeError(w, http.StatusInternalServerError, "failed to encode invocation: "+err.Error())
 		return
 	}
+	// Exact, so the summary names the numbers the agent sent.
 	var invMap map[string]any
-	if err := json.Unmarshal(raw, &invMap); err != nil {
+	if err := decodeArguments(bytes.NewReader(raw), &invMap); err != nil {
 		log.Printf("[summarizeInvocation] normalize invocation %s failed: %v", id, err)
 		writeError(w, http.StatusInternalServerError, "failed to normalize invocation: "+err.Error())
 		return

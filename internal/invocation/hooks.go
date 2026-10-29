@@ -381,8 +381,14 @@ func sameJSON(a, b []byte) bool {
 }
 
 func decodeExact(b []byte) (any, error) {
+	var v any
+	return v, unmarshalExact(b, &v)
+}
+
+// unmarshalExact is json.Unmarshal keeping numbers as json.Number, so a large
+// integer keeps its digits instead of rounding through float64.
+func unmarshalExact(b []byte, v any) error {
 	d := json.NewDecoder(bytes.NewReader(b))
 	d.UseNumber()
-	var v any
-	return v, d.Decode(&v)
+	return d.Decode(v)
 }
