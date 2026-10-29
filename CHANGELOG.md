@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Any signed-in user could take over another agent's Claude Managed Agent.
+  `POST /api/v1/agents` is open to every user, and Atryum resolves an
+  identity by an agent's aliases (`agent_ids`) before its Claude Managed
+  Agent bindings, so an alias on a Claude agent ID bound to another agent took
+  that agent's calls, which then ran under the alias holder's rules and
+  charter. This happened whether the alias came first or the binding did.
+  `force_claude_managed_agent_connect` likewise let any user move a binding
+  off another agent. Now an alias on a Claude agent ID bound to another agent,
+  and a binding of a Claude agent ID that is another agent's alias, are both
+  refused (409, for admins too), and only an admin may force connect (403
+  otherwise). An admin's force connect also removes the Claude agent ID from
+  any other agent's aliases, so an alias can't lock admins out of binding it.
+  The checks run before the write, not in one transaction, so two concurrent
+  requests can still both pass; the startup warning below finds those.
+- A 409 for an identity another agent holds names that agent only to an
+  admin. Members see only their own agents, so they're told the ID is
+  claimed by another agent.
+- At startup Atryum logs a warning for each identity that one agent has as an
+  alias while another has it bound, made before these checks existed. Its
+  calls go to the alias holder until it's removed from one of them.
+
 ### Fixed
 
 - A tool call's arguments keep their numbers as the agent wrote them. The

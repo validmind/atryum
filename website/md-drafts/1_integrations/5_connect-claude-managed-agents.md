@@ -90,7 +90,7 @@ Before connecting Atryum to Claude Managed Agents, make sure you have:
     :::
     Each Claude-managed agent can only be linked to one Atryum agent record at a time (within the same Atryum instance).
 
-    Check **Force connect if Claude metadata says another Atryum instance owns it** only when you intentionally want the Atryum agent you are configuring to take over a Claude Managed Agent that already has Atryum ownership metadata.
+    Check **Force connect if Claude metadata says another Atryum instance owns it** only when you intentionally want the Atryum agent you are configuring to take over a Claude Managed Agent that already has Atryum ownership metadata. Only an admin can force connect. Atryum refuses to connect a Claude Managed Agent whose ID another agent already lists under **Agent IDs**. Remove it from that agent first, or force connect, which also removes it from that agent's **Agent IDs**.
     :::
 
 4. Click **Save** to write Atryum ownership metadata to the Claude Managed Agent.
