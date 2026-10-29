@@ -1,6 +1,9 @@
 package invocation
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestPlanStatusFastPass(t *testing.T) {
 	const planID = "plan_2b1c9f8e-8b1f-4c2a-9f6d-1a2b3c4d5e6f"
@@ -22,6 +25,7 @@ func TestPlanStatusFastPass(t *testing.T) {
 		{"bare url with GET method", map[string]any{"url": pollURL, "method": "GET"}, true},
 		{"poll with inert description", map[string]any{"command": pollCurl, "description": "Poll Atryum plan status"}, true},
 		{"poll with timeout number", map[string]any{"command": pollCurl, "timeout": float64(30000)}, true},
+		{"poll with timeout as decoded", map[string]any{"command": pollCurl, "timeout": json.Number("30000")}, true},
 		{"poll run in background", map[string]any{"command": pollCurl, "run_in_background": true}, true},
 		{"argv shell wrapper", map[string]any{"command": []any{"bash", "-lc", pollCurl}}, true},
 		{"argv curl", map[string]any{"command": []any{"curl", "-fsS", pollURL}}, true},

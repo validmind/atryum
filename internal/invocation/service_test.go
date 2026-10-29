@@ -397,6 +397,37 @@ func TestSubmitPendingApprovalAutomaticallySummarizesInvocation(t *testing.T) {
 	}
 }
 
+func TestAutomaticSummaryGetsTheAgentsDigits(t *testing.T) {
+	db := newSQLiteTestDB(t)
+	service := invocation.NewService(store.NewInvocationRepo(db), store.NewEventRepo(db), nil, nil, nil, 5*time.Second, nil, nil, nil, summarySettingsStub{
+		orgCUID:         "org_123",
+		modelConfigCUID: "model_123",
+	})
+	summarizer := &summaryClientStub{summary: "Transfer to account 9007199254740993."}
+	service.SetInvocationSummarizer(summarizer)
+
+	// 2^53 + 1: float64 can't hold it and rounds to ...992.
+	resp, err := service.Submit(context.Background(), invocation.ExternalSubmitRequest{
+		Source: "amp",
+		Tool:   "transfer",
+		Input:  map[string]any{"to_account": json.Number("9007199254740993")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for summarizer.request().Invocation == nil && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	input, ok := summarizer.request().Invocation["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("no summary request for %s: %#v", resp.InvocationID, summarizer.request().Invocation)
+	}
+	if got := input["to_account"]; got != json.Number("9007199254740993") {
+		t.Fatalf("summarizer got to_account %#v, want json.Number 9007199254740993", got)
+	}
+}
+
 func TestSubmitMatchesApprovalRuleByExternalToolName(t *testing.T) {
 	db := newSQLiteTestDB(t)
 	invRepo := store.NewInvocationRepo(db)
