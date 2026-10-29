@@ -23,6 +23,7 @@ type identityRig struct {
 	members *store.AgentMembersRepo
 	keys    *store.APIKeysRepo
 	agents  *store.AgentsRepo
+	db      *sql.DB
 }
 
 func newIdentityRig(t *testing.T) *identityRig {
@@ -597,7 +598,7 @@ func newManagedAgentsIdentityRig(t *testing.T, claudeID string) (*identityRig, *
 	h.SetAuthz(nil, NewUserProvisioner(users))
 	h.SetManagedAgents(&stubManagedAgentsAdmin{})
 	h.SetManagedAgentBindings(bindings)
-	r := &identityRig{t: t, rig: rig, h: h.Routes(), users: users, members: members, keys: keys, agents: agents}
+	r := &identityRig{t: t, rig: rig, h: h.Routes(), users: users, members: members, keys: keys, agents: agents, db: db}
 
 	w := r.do(http.MethodPost, "/api/v1/agents", r.token("admin-1", true),
 		`{"name":"Victim","enabled":true,"claude_managed_agents":[{"claude_agent_id":"`+claudeID+`"}]}`)
@@ -605,6 +606,47 @@ func newManagedAgentsIdentityRig(t *testing.T, claudeID string) (*identityRig, *
 		t.Fatalf("admin create bound agent: %d %s", w.Code, w.Body.String())
 	}
 	return r, bindings, decode[OperatorAgent](t, w).CUID
+}
+
+// A force connect takes the Claude agent ID off the other agent's aliases only
+// once its own writes have succeeded: if creating the agent fails, the other
+// agent keeps its alias, and if taking the alias off fails, the new agent and
+// its claims are rolled back.
+func TestForceConnectLeavesTheOtherAgentsAliasWhenAWriteFails(t *testing.T) {
+	const claudeID = "agent_01later"
+	for _, tc := range []struct{ name, trigger string }{
+		{"creating the agent fails", `CREATE TRIGGER fail_create BEFORE INSERT ON agents WHEN NEW.vm_name = 'Payments bot' BEGIN SELECT RAISE(ABORT, 'boom'); END`},
+		{"taking the alias off fails", `CREATE TRIGGER fail_alias BEFORE UPDATE OF agent_ids ON agents BEGIN SELECT RAISE(ABORT, 'boom'); END`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, bindings, _ := newManagedAgentsIdentityRig(t, "agent_01other")
+			w := r.do(http.MethodPost, "/api/v1/agents", r.token("member-1", false),
+				`{"name":"Helper","enabled":true,"agent_ids":["`+claudeID+`"]}`)
+			if w.Code != http.StatusCreated {
+				t.Fatalf("member alias on a free ID: %d %s", w.Code, w.Body.String())
+			}
+			helper := decode[OperatorAgent](t, w).CUID
+			if _, err := r.db.Exec(tc.trigger); err != nil {
+				t.Fatalf("create trigger: %v", err)
+			}
+
+			w = r.do(http.MethodPost, "/api/v1/agents", r.token("admin-1", true),
+				`{"name":"Payments bot","enabled":true,"claude_managed_agents":[{"claude_agent_id":"`+claudeID+`"}],"force_claude_managed_agent_connect":true}`)
+			if w.Code != http.StatusInternalServerError {
+				t.Fatalf("force connect with a failing write: %d %s", w.Code, w.Body.String())
+			}
+			if got := boundAgent(t, bindings, r.agents, claudeID); got != helper {
+				t.Fatalf("%s resolves to %s, want the helper %s", claudeID, got, helper)
+			}
+			rec, err := r.agents.Get(context.Background(), helper)
+			if err != nil {
+				t.Fatalf("get helper: %v", err)
+			}
+			if got := parseAgentIDs(rec.AgentIDs); len(got) != 1 || got[0] != claudeID {
+				t.Fatalf("helper aliases = %v, want [%s]", got, claudeID)
+			}
+		})
+	}
 }
 
 func boundAgent(t *testing.T, bindings *store.ManagedAgentBindingRepo, agents *store.AgentsRepo, claudeID string) string {
