@@ -610,6 +610,39 @@ func toStoreManagedAgentBindings(agentCUID string, bindings []OperatorManagedAge
 	return out
 }
 
+// agentIDConflict returns the first of agentIDs that already names another
+// agent, as one of its aliases or as the Claude Managed Agent bound to it,
+// and that agent's name. Agents resolve by alias before binding, so an alias
+// on a bound Claude agent ID would take over that agent's calls, rules and
+// charter.
+func (h *Handler) agentIDConflict(ctx context.Context, excludeID string, agentIDs []string) (conflictID, ownerName string, err error) {
+	conflictID, ownerName, err = h.agentsRepo.CheckAgentIDConflict(ctx, excludeID, agentIDs)
+	if err != nil || conflictID != "" || h.managedAgentBindings == nil {
+		return conflictID, ownerName, err
+	}
+	for _, id := range agentIDs {
+		binding, err := h.managedAgentBindings.GetByClaudeAgentID(ctx, "", id)
+		if err == sql.ErrNoRows {
+			continue
+		}
+		if err != nil {
+			return "", "", err
+		}
+		if binding.AgentCUID == excludeID {
+			continue
+		}
+		owner, err := h.agentsRepo.Get(ctx, binding.AgentCUID)
+		if err != nil && err != sql.ErrNoRows {
+			return "", "", err
+		}
+		if owner.VMName == "" {
+			return id, binding.AgentCUID, nil
+		}
+		return id, owner.VMName, nil
+	}
+	return "", "", nil
+}
+
 func (h *Handler) claimManagedAgentBindings(ctx context.Context, agentCUID string, bindings []store.ManagedAgentBinding, force bool) error {
 	if len(bindings) == 0 {
 		return nil
@@ -3443,8 +3476,11 @@ func (h *Handler) operatorAgents(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "name is required")
 			return
 		}
+		if req.ForceClaudeManagedAgentConnect && !h.can(w, r, authz.ActionAdmin, authz.Resource{}) {
+			return
+		}
 		if len(req.AgentIDs) > 0 {
-			if conflictID, ownerName, err := h.agentsRepo.CheckAgentIDConflict(r.Context(), "", req.AgentIDs); err != nil {
+			if conflictID, ownerName, err := h.agentIDConflict(r.Context(), "", req.AgentIDs); err != nil {
 				writeError(w, http.StatusInternalServerError, "failed to check agent ID conflicts")
 				return
 			} else if conflictID != "" {
@@ -3601,8 +3637,11 @@ func (h *Handler) operatorAgentDetail(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
+		if req.ForceClaudeManagedAgentConnect && !h.can(w, r, authz.ActionAdmin, authz.Resource{}) {
+			return
+		}
 		if req.AgentIDs != nil && len(req.AgentIDs) > 0 {
-			if conflictID, ownerName, err := h.agentsRepo.CheckAgentIDConflict(r.Context(), id, req.AgentIDs); err != nil {
+			if conflictID, ownerName, err := h.agentIDConflict(r.Context(), id, req.AgentIDs); err != nil {
 				writeError(w, http.StatusInternalServerError, "failed to check agent ID conflicts")
 				return
 			} else if conflictID != "" {

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Any signed-in user could take over another agent's Claude Managed Agent:
+  `POST /api/v1/agents` is open to every user, and an agent alias equal to a
+  Claude agent ID already bound to another agent was accepted, then won over
+  the binding when Atryum resolved the agent, so that agent's calls ran under
+  the new agent's rules and charter. `force_claude_managed_agent_connect`
+  likewise let any user move a binding off another agent. An alias now
+  conflicts with a Claude agent ID bound to another agent, as it does with
+  another agent's alias (409, for admins too), and only an admin may force
+  connect (403 otherwise).
+
 ## [0.7.0] - 2026-10-28
 
 ### Added
