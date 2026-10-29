@@ -106,7 +106,7 @@ flowchart TD
     Any -->|yes| Evaluate --> Action
     Action -->|approved| Approve
     Action -->|denied| Deny
-    Action -->|human approval| Human
+    Action -->|human approval or no verdict| Human
     Action -->|next_rule| More
     More -->|yes| Evaluate
     More -->|no| Human
@@ -121,8 +121,10 @@ rule matches; it is not evaluated after a matching rule defers.
 
 An `ai_evaluation` rule selects one configured evaluator. Standalone deployments use
 a local LLM configuration stored in `llm_configs`. Evaluation errors escalate to human
-review; missing charter context denies; and an unknown verdict is treated as
-`next_rule`, eventually reaching human review if no later rule decides.
+review; missing charter context denies. Only an explicit `next_rule` moves on to
+the next matching rule: a verdict Atryum doesn't recognise never does, since that
+rule is often a broad approve. The local evaluator reads one as `denied`; any other
+evaluator's goes to human review.
 
 ## Atryum-executed calls
 
