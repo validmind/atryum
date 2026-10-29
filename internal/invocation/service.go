@@ -941,8 +941,12 @@ func toDecision(resp EvaluateResponse) policy.Decision {
 		return policy.Decision{Disposition: policy.DispositionNever, Reason: "ai_evaluation denied: " + resp.Reason}
 	case "human_approval":
 		return policy.Decision{Disposition: dispositionAIEscalated, Reason: "ai_evaluation requires human approval: " + resp.Reason}
-	default: // "next_rule" or any unrecognised value
+	case "next_rule":
 		return policy.Decision{Disposition: dispositionContinue, Reason: "ai_evaluation deferred to next rule: " + resp.Reason}
+	default:
+		// Never the next rule: it is often a broad approve, and a verdict nobody
+		// can read must not reach it.
+		return policy.Decision{Disposition: policy.DispositionHuman, Reason: fmt.Sprintf("ai_evaluation gave no verdict Atryum recognises (%q): a person decides", resp.Verdict)}
 	}
 }
 

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-28
+
 ### Added
 
 - A denied agent is told why. `policy.Verdict` carries the judge's account of
@@ -50,6 +52,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `invocation.DeniedText`, so every agent is told the same things in the
   same order. A call denied by an `auto_deny` approval rule now carries the
   reason it already recorded but previously kept to itself.
+- **Breaking:** a `Judge` that answers `""`, or anything other than allow,
+  deny, human or the new `policy.ActionNext`, now sends the call to a person
+  ("… → judge gave no verdict, a person decides") instead of moving on to the
+  level's next matching rule. A judge that means to defer returns
+  `ActionNext`; an embedder whose judge returned `""` to defer must return
+  `ActionNext` instead.
+
+### Security
+
+- A judge reply that couldn't be read no longer reaches the next matching
+  rule, which is often a broad allow: behind `payments over 10000 → judge`
+  then `payments → allow`, a large payment whose judge reply was cut off or
+  malformed was allowed. The agent writes the arguments the judge reads, so
+  it could steer the reply there. In `pkg/policy` (above) and in the
+  standalone service, where a verdict from the ValidMind backend's judge
+  other than `next_rule` that Atryum doesn't recognise now goes to human
+  approval instead of the next rule.
 
 ### Fixed
 
@@ -468,7 +487,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.0.3] - 2026-06-05
 
-[Unreleased]: https://github.com/validmind/atryum/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/validmind/atryum/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/validmind/atryum/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/validmind/atryum/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/validmind/atryum/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/validmind/atryum/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/validmind/atryum/compare/v0.2.0...v0.3.0

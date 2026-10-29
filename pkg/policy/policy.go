@@ -3,9 +3,11 @@
 //
 // Within a level the first matching rule decides; across levels the stricter
 // result wins (deny, then human, then notify, then allow); a call no rule
-// matches goes to a person. A level whose matching rules are all judge rules
-// that gave no verdict also goes to a person: it matched, so it never defers
-// to the other level.
+// matches goes to a person. A judge rule whose judge gives no verdict (an
+// answer it can't read) sends the call to a person; only a judge that says
+// ActionNext defers to the level's next matching rule. A level whose matching
+// rules are all judge rules that deferred also goes to a person: it matched,
+// so it never defers to the other level.
 //
 // Conditions compare text literally, so Evaluate also decides two cleaned-up
 // copies of every call and keeps the strictest answer: a deny rule on
@@ -44,7 +46,7 @@ import (
 
 // Action is what a rule does with a matching call: "allow", "notify" (allow,
 // then tell someone), "deny", "human" (hold for a person) or "judge" (ask the
-// Judge, which answers allow, deny or human).
+// Judge, which answers allow, deny, human or next).
 type Action string
 
 const (
@@ -53,6 +55,9 @@ const (
 	ActionDeny   Action = "deny"
 	ActionHuman  Action = "human"
 	ActionJudge  Action = "judge"
+	// ActionNext is a Judge's answer, never a rule's action: the charter
+	// doesn't cover the call, so the level's next matching rule decides.
+	ActionNext Action = "next"
 )
 
 // Cond is one condition on a call. Field is "args.<dotted.path>" into the
@@ -106,14 +111,16 @@ type Call struct {
 
 // Verdict is a judge's answer to a judge rule: the action it decided, and
 // the account it gives of deciding that way. Action is allow, deny or
-// human, or "" for an unknown verdict, which moves on to the level's next
-// matching rule; if no later rule in that level matches, the level's result
-// is human.
+// human, or next to defer to the level's next matching rule (if no later
+// rule in that level matches, the level's result is human). Any other
+// answer — "" among them, for a reply that didn't parse — sends the call to
+// a person: a later rule, often a broad allow, never decides a call the
+// judge couldn't.
 //
-// Every other field is optional, and a judge that fills none of them
-// behaves exactly as one that answered with the action alone. They are
-// carries the account the judge gives of it, which a caller renders for the
-// agent whose call was judged. See Explanation.
+// The embedded Explanation is the account the judge gives of its decision,
+// which a caller renders for the agent whose call was judged. Every field in
+// it is optional, and a judge that fills none of them behaves exactly as one
+// that answered with the action alone. See Explanation.
 type Verdict struct {
 	Action Action `json:"action"`
 	Explanation
@@ -260,8 +267,11 @@ func firstMatch(ctx context.Context, rules []Rule, c Call, judge Judge, clean *c
 			decided := v
 			return Result{Action: v.Action, Rule: r, Judge: &decided,
 				Basis: fmt.Sprintf("%s → judge said %s", basis, v.Action)}, true
+		case ActionNext:
+			deferred = r // the charter doesn't cover it: keep scanning this level
+			continue
 		}
-		deferred = r // unknown verdict: keep scanning this level
+		return Result{Action: ActionHuman, Rule: r, Basis: basis + " → judge gave no verdict, a person decides"}, true
 	}
 	if deferred != nil {
 		return Result{Action: ActionHuman, Rule: deferred, Basis: strings.TrimSpace(deferred.ID+" "+deferred.Note) + " → judge gave no verdict and no later rule matched, a person decides"}, true
