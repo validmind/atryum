@@ -367,6 +367,7 @@ func TestExactNumber(t *testing.T) {
 		"9007199254740993": false, "-9007199254740993": false, "1234567890123456789": false,
 		"100.000000000000001": false, "333333333.33333329": false,
 		"1e-999999999": false, "1e400": false, "1e99999999999999999999": false,
+		"NaN": false, "Inf": false, "+Inf": false, "-Inf": false,
 	} {
 		if _, got := ExactNumber(json.Number(n)); got != want {
 			t.Errorf("ExactNumber(%s) = %v, want %v", n, got, want)

@@ -36,6 +36,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -425,7 +426,9 @@ func text(v any) string {
 // whether that float64's shortest decimal form has n's value. 2.50, 1e2 and
 // 0.1 are exact. 9007199254740993 is not (float64 holds integers exactly
 // only up to 2^53, and it becomes 9007199254740992), nor is
-// 100.000000000000001, nor a number outside float64's range.
+// 100.000000000000001, nor a number outside float64's range. n is a JSON
+// number as a decoder produced it; NaN and the infinities, which JSON has no
+// spelling for, are never exact.
 //
 // Arguments decoded with json.Decoder.UseNumber keep such numbers as
 // written. Text conditions compare an exact number as they compare a
@@ -434,7 +437,7 @@ func text(v any) string {
 // a digit float64 can't hold never count as the same.
 func ExactNumber(n json.Number) (float64, bool) {
 	f, err := strconv.ParseFloat(string(n), 64)
-	if err != nil {
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
 		return f, false
 	}
 	return f, sameDecimal(string(n), strconv.FormatFloat(f, 'e', -1, 64))
