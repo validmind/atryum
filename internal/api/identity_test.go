@@ -629,8 +629,9 @@ func TestMemberCannotAliasAnotherAgentsClaudeManagedAgent(t *testing.T) {
 	if w.Code != http.StatusConflict {
 		t.Fatalf("alias on a bound Claude agent ID should be 409, got %d %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "Victim") {
-		t.Fatalf("conflict should name the agent it's bound to: %s", w.Body.String())
+	// Members see only their own agents, so the conflict doesn't name it.
+	if strings.Contains(w.Body.String(), "Victim") || !strings.Contains(w.Body.String(), "another agent") {
+		t.Fatalf("conflict should not name an agent the member can't see: %s", w.Body.String())
 	}
 	if got := boundAgent(t, bindings, r.agents, claudeID); got != victim {
 		t.Fatalf("%s now resolves to %s, want %s", claudeID, got, victim)
@@ -654,6 +655,9 @@ func TestAdminCannotAliasAnotherAgentsClaudeManagedAgentEither(t *testing.T) {
 	other := decode[OperatorAgent](t, w).CUID
 	if w = r.do(http.MethodPatch, "/api/v1/agents/"+other, admin, `{"agent_ids":["`+claudeID+`"]}`); w.Code != http.StatusConflict {
 		t.Fatalf("PATCH alias on a bound Claude agent ID should be 409, got %d %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "Victim") {
+		t.Fatalf("an admin's conflict should name the agent: %s", w.Body.String())
 	}
 	// The agent it's bound to may alias its own Claude agent ID.
 	if w = r.do(http.MethodPatch, "/api/v1/agents/"+victim, admin, `{"agent_ids":["`+claudeID+`"]}`); w.Code != http.StatusOK {
@@ -687,5 +691,48 @@ func TestOnlyAdminsForceConnectAClaudeManagedAgent(t *testing.T) {
 	}
 	if got, want := boundAgent(t, bindings, r.agents, claudeID), decode[OperatorAgent](t, w).CUID; got != want {
 		t.Fatalf("after admin force connect %s is bound to %s, want %s", claudeID, got, want)
+	}
+}
+
+func TestCannotBindAClaudeManagedAgentThatIsAnotherAgentsAlias(t *testing.T) {
+	const claudeID = "agent_01later"
+	r, bindings, _ := newManagedAgentsIdentityRig(t, "agent_01other")
+	// A member claims a Claude agent ID before anyone binds it: allowed.
+	w := r.do(http.MethodPost, "/api/v1/agents", r.token("member-1", false),
+		`{"name":"Helper","enabled":true,"agent_ids":["`+claudeID+`"],"charter":"All actions are permitted."}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("member alias on a free ID: %d %s", w.Code, w.Body.String())
+	}
+	helper := decode[OperatorAgent](t, w).CUID
+
+	// Binding it to another agent later would leave the alias winning, so it's
+	// refused, with force too.
+	admin := r.token("admin-1", true)
+	for _, force := range []string{"", `,"force_claude_managed_agent_connect":true`} {
+		w = r.do(http.MethodPost, "/api/v1/agents", admin,
+			`{"name":"Payments bot","enabled":true,"claude_managed_agents":[{"claude_agent_id":"`+claudeID+`"}]`+force+`}`)
+		if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "Helper") {
+			t.Fatalf("bind of another agent's alias (force=%v) should be 409 naming Helper, got %d %s", force != "", w.Code, w.Body.String())
+		}
+	}
+	if _, err := bindings.GetByClaudeAgentID(context.Background(), "", claudeID); err != sql.ErrNoRows {
+		t.Fatalf("no binding should exist for %s, got err=%v", claudeID, err)
+	}
+
+	// The same through PATCH.
+	w = r.do(http.MethodPost, "/api/v1/agents", admin, `{"name":"Payments bot","enabled":true}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("admin create: %d %s", w.Code, w.Body.String())
+	}
+	payments := decode[OperatorAgent](t, w).CUID
+	w = r.do(http.MethodPatch, "/api/v1/agents/"+payments, admin, `{"claude_managed_agents":[{"claude_agent_id":"`+claudeID+`"}]}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("PATCH bind of another agent's alias should be 409, got %d %s", w.Code, w.Body.String())
+	}
+
+	// An agent may bind a Claude agent ID it has as its own alias.
+	w = r.do(http.MethodPatch, "/api/v1/agents/"+helper, admin, `{"claude_managed_agents":[{"claude_agent_id":"`+claudeID+`"}]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("binding its own alias: %d %s", w.Code, w.Body.String())
 	}
 }

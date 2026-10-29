@@ -650,6 +650,18 @@ func (h *Handler) claimManagedAgentBindings(ctx context.Context, agentCUID strin
 	if h.managedAgents == nil {
 		return fmt.Errorf("managed agents bridge not configured (set [managed_agents].api_key)")
 	}
+	// An alias wins over a binding when Atryum resolves an agent, so a Claude
+	// agent ID another agent has as an alias can't be bound here. Force is
+	// for another Atryum instance's ownership metadata, not for this.
+	ids := make([]string, 0, len(bindings))
+	for _, binding := range bindings {
+		ids = append(ids, binding.ClaudeAgentID)
+	}
+	if conflictID, ownerName, err := h.agentsRepo.CheckAgentIDConflict(ctx, agentCUID, ids); err != nil {
+		return err
+	} else if conflictID != "" {
+		return &agentIDConflictError{ID: conflictID, Owner: ownerName}
+	}
 	if h.managedAgentBindings != nil {
 		for _, binding := range bindings {
 			existing, err := h.managedAgentBindings.GetByClaudeAgentID(ctx, binding.Account, binding.ClaudeAgentID)
@@ -725,12 +737,39 @@ func (h *Handler) releaseRemovedManagedAgentBindings(ctx context.Context, agentC
 	}
 }
 
-func writeManagedAgentClaimError(w http.ResponseWriter, err error) {
+func (h *Handler) writeManagedAgentClaimError(w http.ResponseWriter, r *http.Request, err error) {
+	var aliased *agentIDConflictError
+	if errors.As(err, &aliased) {
+		h.writeAgentIDConflict(w, r, aliased.ID, aliased.Owner)
+		return
+	}
 	if conflict, ok := err.(*managedagents.AgentClaimConflictError); ok {
+		if !h.isAdmin(r) {
+			writeError(w, http.StatusConflict, fmt.Sprintf("Claude managed agent %s is already linked to another agent", conflict.ClaudeAgentID))
+			return
+		}
 		writeError(w, http.StatusConflict, conflict.Error())
 		return
 	}
 	writeError(w, http.StatusBadRequest, err.Error())
+}
+
+// agentIDConflictError is an identity another agent already holds.
+type agentIDConflictError struct{ ID, Owner string }
+
+func (e *agentIDConflictError) Error() string {
+	return fmt.Sprintf("agent ID %q is already claimed by agent %q", e.ID, e.Owner)
+}
+
+// writeAgentIDConflict answers 409 for an identity another agent holds. Only
+// an admin is told which agent: members see only their own agents, so naming
+// the holder would reveal one they can't see.
+func (h *Handler) writeAgentIDConflict(w http.ResponseWriter, r *http.Request, id, owner string) {
+	if !h.isAdmin(r) {
+		writeError(w, http.StatusConflict, fmt.Sprintf("agent ID %q is already claimed by another agent", id))
+		return
+	}
+	writeError(w, http.StatusConflict, (&agentIDConflictError{ID: id, Owner: owner}).Error())
 }
 
 func parseAgentIDs(raw string) []string {
@@ -983,6 +1022,21 @@ func (h *Handler) can(w http.ResponseWriter, r *http.Request, action authz.Actio
 		return false
 	}
 	return true
+}
+
+// isAdmin says whether the request principal may perform ActionAdmin. Unlike
+// can it writes nothing, and an authorizer error counts as no.
+func (h *Handler) isAdmin(r *http.Request) bool {
+	p, ok := authz.PrincipalFromContext(r.Context())
+	if !ok {
+		return false
+	}
+	az := h.authorizer
+	if az == nil {
+		az = authz.Default{Members: h.agentMembersRepo}
+	}
+	allowed, err := az.Can(r.Context(), p, authz.ActionAdmin, authz.Resource{})
+	return err == nil && allowed
 }
 
 // SetManagedAgents installs the optional Claude Managed Agents events bridge,
@@ -3484,7 +3538,7 @@ func (h *Handler) operatorAgents(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, "failed to check agent ID conflicts")
 				return
 			} else if conflictID != "" {
-				writeError(w, http.StatusConflict, fmt.Sprintf("agent ID %q is already claimed by agent %q", conflictID, ownerName))
+				h.writeAgentIDConflict(w, r, conflictID, ownerName)
 				return
 			}
 		}
@@ -3514,7 +3568,7 @@ func (h *Handler) operatorAgents(w http.ResponseWriter, r *http.Request) {
 		if h.managedAgentBindings != nil && len(req.ClaudeManagedAgents) > 0 {
 			bindings = toStoreManagedAgentBindings(id, req.ClaudeManagedAgents)
 			if err := h.claimManagedAgentBindings(r.Context(), id, bindings, req.ForceClaudeManagedAgentConnect); err != nil {
-				writeManagedAgentClaimError(w, err)
+				h.writeManagedAgentClaimError(w, r, err)
 				return
 			}
 		}
@@ -3645,7 +3699,7 @@ func (h *Handler) operatorAgentDetail(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, "failed to check agent ID conflicts")
 				return
 			} else if conflictID != "" {
-				writeError(w, http.StatusConflict, fmt.Sprintf("agent ID %q is already claimed by agent %q", conflictID, ownerName))
+				h.writeAgentIDConflict(w, r, conflictID, ownerName)
 				return
 			}
 		}
@@ -3673,7 +3727,7 @@ func (h *Handler) operatorAgentDetail(w http.ResponseWriter, r *http.Request) {
 			}
 			bindings = toStoreManagedAgentBindings(id, *req.ClaudeManagedAgents)
 			if err := h.claimManagedAgentBindings(r.Context(), id, bindings, req.ForceClaudeManagedAgentConnect); err != nil {
-				writeManagedAgentClaimError(w, err)
+				h.writeManagedAgentClaimError(w, r, err)
 				return
 			}
 			managedBindingsTouched = true
