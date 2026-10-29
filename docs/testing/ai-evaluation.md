@@ -168,7 +168,7 @@ Result: `human_approval` (downstream grant overrides upstream blanket denial).
 
 ### Chaining rules with `next_rule`
 
-You can stack multiple AI Evaluation rules in priority order. When the LLM returns `next_rule`, Atryum advances to the next matching rule rather than making a final decision. If all matching rules defer, the invocation falls back to human approval.
+You can stack multiple AI Evaluation rules in priority order. When the LLM returns `next_rule`, Atryum advances to the next matching rule rather than making a final decision. If all matching rules defer, the invocation falls back to human approval. Only `next_rule` advances: a reply Atryum can't read never reaches the next rule, so a broad approve after an AI Evaluation rule can't decide a call the judge couldn't.
 
 ---
 

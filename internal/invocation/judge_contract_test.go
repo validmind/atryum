@@ -88,6 +88,25 @@ func TestJudgeUnrecognizedVerdictFailsClosedToDenied(t *testing.T) {
 	}
 }
 
+// A verdict that reaches the rule loop unchecked (the ValidMind backend's
+// judge) defers to the next rule only when it says next_rule. Anything else
+// goes to a person: the next rule is often a broad approve.
+func TestToDecisionDefersOnlyOnNextRule(t *testing.T) {
+	for verdict, want := range map[string]string{
+		"approved":       "auto",
+		"denied":         "never",
+		"human_approval": string(dispositionAIEscalated),
+		"next_rule":      string(dispositionContinue),
+		"":               "human",
+		"maybe":          "human",
+		"NEXT_RULE":      "human",
+	} {
+		if got := toDecision(EvaluateResponse{Verdict: verdict}); string(got.Disposition) != want {
+			t.Errorf("verdict %q = %s, want %s", verdict, got.Disposition, want)
+		}
+	}
+}
+
 func TestJudgeRequestCarriesCharterAndTemperatureZero(t *testing.T) {
 	srv, payload := newOpenAIStub(t, `{"verdict":"approved","confidence":1,"reason":"ok"}`)
 	const charter = "SENTINEL-CHARTER: only approve read-only calls."
