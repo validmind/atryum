@@ -646,38 +646,40 @@ func (h *Handler) agentIDConflict(ctx context.Context, excludeID string, agentID
 	return "", "", nil
 }
 
-func (h *Handler) claimManagedAgentBindings(ctx context.Context, agentCUID string, bindings []store.ManagedAgentBinding, force bool) error {
+func (h *Handler) claimManagedAgentBindings(ctx context.Context, agentCUID string, bindings []store.ManagedAgentBinding, force bool) ([]string, error) {
 	if len(bindings) == 0 {
-		return nil
+		return nil, nil
 	}
 	if h.managedAgents == nil {
-		return fmt.Errorf("managed agents bridge not configured (set [managed_agents].api_key)")
+		return nil, fmt.Errorf("managed agents bridge not configured (set [managed_agents].api_key)")
 	}
 	// An alias wins over a binding when Atryum resolves an agent, so a Claude
 	// agent ID another agent has as an alias can't be bound here unless force
-	// (admin only) takes the alias off that agent once the claims succeed.
+	// (admin only) takes the alias off that agent. The returned IDs are the
+	// ones to drop; the caller does that once its own writes have succeeded,
+	// so a failed write doesn't leave the other agent without its aliases.
 	ids := make([]string, 0, len(bindings))
 	for _, binding := range bindings {
 		ids = append(ids, binding.ClaudeAgentID)
 	}
 	conflictID, ownerName, err := h.agentsRepo.CheckAgentIDConflict(ctx, agentCUID, ids)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if conflictID != "" && !force {
-		return &agentIDConflictError{ID: conflictID, Owner: ownerName}
+		return nil, &agentIDConflictError{ID: conflictID, Owner: ownerName}
 	}
 	if h.managedAgentBindings != nil {
 		for _, binding := range bindings {
 			existing, err := h.managedAgentBindings.GetByClaudeAgentID(ctx, binding.Account, binding.ClaudeAgentID)
 			if err == nil && existing.AgentCUID != agentCUID {
 				if !force {
-					return &managedagents.AgentClaimConflictError{ClaudeAgentID: binding.ClaudeAgentID, Instance: "local", AgentCUID: existing.AgentCUID}
+					return nil, &managedagents.AgentClaimConflictError{ClaudeAgentID: binding.ClaudeAgentID, Instance: "local", AgentCUID: existing.AgentCUID}
 				}
 				continue
 			}
 			if err != nil && err != sql.ErrNoRows {
-				return err
+				return nil, err
 			}
 		}
 	}
@@ -690,13 +692,13 @@ func (h *Handler) claimManagedAgentBindings(ctx context.Context, agentCUID strin
 			Force:           force,
 		})
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if conflictID != "" {
-		return h.removeAliasesFromOtherAgents(ctx, agentCUID, ids)
+		return ids, nil
 	}
-	return nil
+	return nil, nil
 }
 
 // removeAliasesFromOtherAgents drops ids from the aliases of every agent but
@@ -3626,9 +3628,12 @@ func (h *Handler) operatorAgents(w http.ResponseWriter, r *http.Request) {
 			Tags:               req.Tags,
 		}
 		var bindings []store.ManagedAgentBinding
+		var dropAliases []string
 		if h.managedAgentBindings != nil && len(req.ClaudeManagedAgents) > 0 {
 			bindings = toStoreManagedAgentBindings(id, req.ClaudeManagedAgents)
-			if err := h.claimManagedAgentBindings(r.Context(), id, bindings, req.ForceClaudeManagedAgentConnect); err != nil {
+			var err error
+			dropAliases, err = h.claimManagedAgentBindings(r.Context(), id, bindings, req.ForceClaudeManagedAgentConnect)
+			if err != nil {
 				h.writeManagedAgentClaimError(w, r, err)
 				return
 			}
@@ -3648,8 +3653,17 @@ func (h *Handler) operatorAgents(w http.ResponseWriter, r *http.Request) {
 		}
 		if principal.UserID != "" && h.agentMembersRepo != nil {
 			if err := h.agentMembersRepo.Add(r.Context(), id, principal.UserID, store.AgentMemberRoleOwner); err != nil {
+				h.releaseManagedAgentBindings(r.Context(), id, bindings)
 				_ = h.agentsRepo.Delete(r.Context(), id)
 				writeError(w, http.StatusInternalServerError, "failed to record agent ownership")
+				return
+			}
+		}
+		if len(dropAliases) > 0 {
+			if err := h.removeAliasesFromOtherAgents(r.Context(), id, dropAliases); err != nil {
+				h.releaseManagedAgentBindings(r.Context(), id, bindings)
+				_ = h.agentsRepo.Delete(r.Context(), id)
+				writeError(w, http.StatusInternalServerError, "failed to take the Claude agent ID off the other agent's aliases")
 				return
 			}
 		}
@@ -3767,6 +3781,7 @@ func (h *Handler) operatorAgentDetail(w http.ResponseWriter, r *http.Request) {
 		var beforeBindings []store.ManagedAgentBinding
 		var bindings []store.ManagedAgentBinding
 		managedBindingsTouched := false
+		var dropAliases []string
 		if req.ClaudeManagedAgents != nil {
 			if h.managedAgentBindings == nil {
 				writeError(w, http.StatusServiceUnavailable, "managed agent bindings not configured")
@@ -3787,7 +3802,8 @@ func (h *Handler) operatorAgentDetail(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			bindings = toStoreManagedAgentBindings(id, *req.ClaudeManagedAgents)
-			if err := h.claimManagedAgentBindings(r.Context(), id, bindings, req.ForceClaudeManagedAgentConnect); err != nil {
+			dropAliases, err = h.claimManagedAgentBindings(r.Context(), id, bindings, req.ForceClaudeManagedAgentConnect)
+			if err != nil {
 				h.writeManagedAgentClaimError(w, r, err)
 				return
 			}
@@ -3858,6 +3874,12 @@ func (h *Handler) operatorAgentDetail(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			h.releaseRemovedManagedAgentBindings(r.Context(), id, beforeBindings, bindings)
+		}
+		if len(dropAliases) > 0 {
+			if err := h.removeAliasesFromOtherAgents(r.Context(), id, dropAliases); err != nil {
+				writeError(w, http.StatusInternalServerError, "bindings saved, but could not take the Claude agent ID off the other agent's aliases; force connect again")
+				return
+			}
 		}
 		record, err := h.agentsRepo.Get(r.Context(), id)
 		if err != nil {
