@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"database/sql"
@@ -1464,6 +1465,16 @@ func (h *Handler) handleAtryumRulesToolCall(w http.ResponseWriter, r *http.Reque
 	})
 }
 
+// decodeArguments decodes a request that carries a tool call's arguments,
+// keeping their numbers as written (json.Number). Decoded as float64, an ID
+// such as 9007199254740993 would become 9007199254740992, and the tool, the
+// decider and the record would all see a number the agent never sent.
+func decodeArguments(r io.Reader, v any) error {
+	d := json.NewDecoder(r)
+	d.UseNumber()
+	return d.Decode(v)
+}
+
 func stringArgument(arguments map[string]any, key string) string {
 	v, ok := arguments[key]
 	if !ok {
@@ -1564,7 +1575,7 @@ func apiMatchAgentCUIDs(cuids []string, agentCUID string) bool {
 
 func (h *Handler) handleInvocation(w http.ResponseWriter, r *http.Request, server string) {
 	var req invocation.CreateInvocationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeArguments(r.Body, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -1663,7 +1674,7 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			Name      string         `json:"name"`
 			Arguments map[string]any `json:"arguments"`
 		}
-		if err := json.Unmarshal(req.Params, &params); err != nil {
+		if err := decodeArguments(bytes.NewReader(req.Params), &params); err != nil {
 			h.writeRPCError(w, req.ID, -32602, "invalid params")
 			return
 		}
@@ -2457,8 +2468,9 @@ func (h *Handler) summarizeInvocation(w http.ResponseWriter, r *http.Request, id
 		writeError(w, http.StatusInternalServerError, "failed to encode invocation: "+err.Error())
 		return
 	}
+	// Exact, so the summary names the numbers the agent sent.
 	var invMap map[string]any
-	if err := json.Unmarshal(raw, &invMap); err != nil {
+	if err := decodeArguments(bytes.NewReader(raw), &invMap); err != nil {
 		log.Printf("[summarizeInvocation] normalize invocation %s failed: %v", id, err)
 		writeError(w, http.StatusInternalServerError, "failed to normalize invocation: "+err.Error())
 		return
@@ -4198,7 +4210,7 @@ func (h *Handler) externalInvocations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req invocation.ExternalSubmitRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeArguments(r.Body, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
