@@ -26,7 +26,9 @@ func NewExternalSessionRepoWithDialect(db *sql.DB, dialect Dialect) *ExternalSes
 }
 
 // CreateSession inserts a new session. The ID is expected to be set by the
-// caller (Atryum-minted).
+// caller (Atryum-minted). An existing row with the same ID is left as is:
+// get-or-create derives IDs from the key, so racing first submits insert the
+// same ID and must both succeed.
 func (r *ExternalSessionRepo) CreateSession(ctx context.Context, s invocation.ExternalSession) error {
 	now := time.Now().UTC()
 	if s.CreatedAt.IsZero() {
@@ -42,6 +44,7 @@ func (r *ExternalSessionRepo) CreateSession(ctx context.Context, s invocation.Ex
 	query, args, err := r.sb.Insert("external_sessions").
 		Columns("id", "agent_id", "harness", "client_session_id", "created_at", "last_seen_at", "expires_at").
 		Values(s.ID, s.AgentID, s.Harness, s.ClientSessionID, s.CreatedAt, s.LastSeenAt, s.ExpiresAt).
+		Suffix("ON CONFLICT (id) DO NOTHING").
 		ToSql()
 	if err != nil {
 		return err
@@ -73,9 +76,8 @@ func (r *ExternalSessionRepo) GetSession(ctx context.Context, id string) (invoca
 // GetSessionByAgentAndClientSessionID returns the most recently created session
 // matching (agent_id, client_session_id), or sql.ErrNoRows if none exists. This
 // backs the submit-path get-or-create: the (agent binding, client_session_id)
-// pair is the lookup key. Newest-first ordering makes a benign double-create
-// under a first-submit race resolve to the latest row — both rows are valid
-// audit records; see Service.getOrCreateSession.
+// pair is the lookup key. Newest-first ordering picks the live row after an
+// expiry rollover; see Service.getOrCreateSession.
 func (r *ExternalSessionRepo) GetSessionByAgentAndClientSessionID(ctx context.Context, agentID, clientSessionID string) (invocation.ExternalSession, error) {
 	query, args, err := r.sb.
 		Select("id", "agent_id", "harness", "client_session_id", "created_at", "last_seen_at", "expires_at").

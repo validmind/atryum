@@ -32,6 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Submits that arrive together for a new `client_session_id` now share one
+  session. Before, each could miss the lookup and mint its own `ses_` row, so
+  a parallel first tool call got a different `session_id` from its sibling
+  and its judge history (and anything else keyed on `session_id`) was split.
+  Sessions minted from `client_session_id` now get an ID derived from the
+  agent binding and `client_session_id`, and a duplicate insert is a no-op.
 - A tool call's arguments keep their numbers as the agent wrote them. The
   MCP proxy, `POST /api/v1/invocations`, `POST /api/v1/external/invocations`
   and the managed-agents bridge decoded arguments into `float64`, so an

@@ -309,8 +309,9 @@ func (s *Service) SetSessionStore(store sessionStore) {
 // Deprecated: harnesses should send client_session_id on the submit path and
 // let Atryum get-or-create the internal session (see getOrCreateSession). This
 // endpoint stays fully functional for explicit-control callers and for
-// back-compat with harnesses that still pre-mint. It is also reused internally
-// by getOrCreateSession to mint the ses_ row on first sight of a key.
+// back-compat with harnesses that still pre-mint. It always mints a random ID;
+// getOrCreateSession shares the unexported createSession helper and supplies
+// an ID derived from its key instead.
 //
 // agentID is the authenticated identity when present, else the self-declared id
 // (no-auth mode). A non-empty binding is required: session history is
@@ -319,6 +320,10 @@ func (s *Service) SetSessionStore(store sessionStore) {
 // session. Harnesses without an identity get history-free evaluation via the
 // no-session_id path instead.
 func (s *Service) CreateSession(ctx context.Context, req CreateSessionRequest, agentID string) (SessionResponse, error) {
+	return s.createSession(ctx, req, agentID, "ses_"+uuid.NewString())
+}
+
+func (s *Service) createSession(ctx context.Context, req CreateSessionRequest, agentID, id string) (SessionResponse, error) {
 	if s.sessions == nil {
 		return SessionResponse{}, fmt.Errorf("sessions not enabled")
 	}
@@ -331,7 +336,7 @@ func (s *Service) CreateSession(ctx context.Context, req CreateSessionRequest, a
 		return SessionResponse{}, fmt.Errorf("agent_id is too long")
 	}
 	sess := ExternalSession{
-		ID:              "ses_" + uuid.NewString(),
+		ID:              id,
 		AgentID:         agentID,
 		Harness:         truncateContextText(strings.TrimSpace(req.Harness), maxExternalSessionMetadataChars),
 		ClientSessionID: truncateContextText(strings.TrimSpace(req.ClientSessionID), maxExternalSessionMetadataChars),
@@ -1038,11 +1043,12 @@ func (s *Service) lookupSessionForAgent(ctx context.Context, sessionID, agentID 
 // and persistence agree on the key.
 //
 // Concurrency: two racing first-submits for the same key can each miss the
-// lookup and both mint a row. That is acceptable — both are valid audit rows,
-// and GetSessionByAgentAndClientSessionID returns the newest, so subsequent
-// calls converge on one session. We deliberately don't add locking; a uniqueness
-// constraint isn't a clean fit here because expiry rollover legitimately creates
-// multiple rows per key over time.
+// lookup. They must still land on one session, since anything keyed on
+// session_id (judge history, a caller's per-session approval) splits otherwise.
+// So the minted ID is derived from the key and the row it replaces (none, or
+// the expired one), and CreateSession ignores a duplicate ID: racers that saw
+// the same state compute the same ID, one insert wins, and both return it.
+// Rollover still gets a fresh ID because the expired row's ID is an input.
 func (s *Service) getOrCreateSession(ctx context.Context, agentID, clientSessionID, harness string) (string, error) {
 	if s.sessions == nil {
 		return "", fmt.Errorf("sessions not enabled")
@@ -1050,18 +1056,20 @@ func (s *Service) getOrCreateSession(ctx context.Context, agentID, clientSession
 	clientSessionID = truncateContextText(strings.TrimSpace(clientSessionID), maxExternalSessionMetadataChars)
 	agentID = strings.TrimSpace(agentID)
 	sess, err := s.sessions.GetSessionByAgentAndClientSessionID(ctx, agentID, clientSessionID)
+	previous := ""
 	switch {
 	case err == nil:
 		if sess.ExpiresAt.IsZero() || time.Now().UTC().Before(sess.ExpiresAt) {
 			return sess.ID, nil // reuse the live session
 		}
-		// expired: fall through to mint a fresh session (rollover).
+		previous = sess.ID // expired: mint a fresh session (rollover).
 	case errors.Is(err, sql.ErrNoRows):
 		// first sight of this key: fall through to mint.
 	default:
 		return "", err
 	}
-	resp, err := s.CreateSession(ctx, CreateSessionRequest{Harness: harness, ClientSessionID: clientSessionID}, agentID)
+	id := "ses_" + uuid.NewSHA1(uuid.NameSpaceOID, []byte(agentID+"\x00"+clientSessionID+"\x00"+previous)).String()
+	resp, err := s.createSession(ctx, CreateSessionRequest{Harness: harness, ClientSessionID: clientSessionID}, agentID, id)
 	if err != nil {
 		return "", err
 	}
