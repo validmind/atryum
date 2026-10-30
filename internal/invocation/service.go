@@ -309,8 +309,9 @@ func (s *Service) SetSessionStore(store sessionStore) {
 // Deprecated: harnesses should send client_session_id on the submit path and
 // let Atryum get-or-create the internal session (see getOrCreateSession). This
 // endpoint stays fully functional for explicit-control callers and for
-// back-compat with harnesses that still pre-mint. It is also reused internally
-// by getOrCreateSession to mint the ses_ row on first sight of a key.
+// back-compat with harnesses that still pre-mint. It always mints a random ID;
+// getOrCreateSession shares the unexported createSession helper and supplies
+// an ID derived from its key instead.
 //
 // agentID is the authenticated identity when present, else the self-declared id
 // (no-auth mode). A non-empty binding is required: session history is
