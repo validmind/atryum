@@ -80,6 +80,19 @@ func (r *ManagedAgentBindingRepo) GetByClaudeAgentID(ctx context.Context, accoun
 	return scanManagedAgentBinding(r.db.QueryRowContext(ctx, query, args...))
 }
 
+// ListByClaudeAgentID returns every binding of claudeAgentID, one per account.
+func (r *ManagedAgentBindingRepo) ListByClaudeAgentID(ctx context.Context, claudeAgentID string) ([]ManagedAgentBinding, error) {
+	query, args, err := r.sb.Select(managedAgentBindingColumns...).
+		From("managed_agent_bindings").
+		Where(sq.Eq{"claude_agent_id": claudeAgentID}).
+		OrderBy("updated_at DESC").
+		ToSql()
+	if err != nil {
+		return nil, err
+	}
+	return r.list(ctx, query, args...)
+}
+
 // ReplaceForAgent atomically replaces all Claude Managed Agent bindings for an
 // Atryum agent. This matches the edit-modal save semantics.
 func (r *ManagedAgentBindingRepo) ReplaceForAgent(ctx context.Context, agentCUID string, bindings []ManagedAgentBinding) error {

@@ -431,6 +431,7 @@ func runServer(args []string, o options) error {
 	}
 	handler := api.NewHandler(service, serverOperator, policyRegistry, rulesRepo, agentsRepo, agentSyncSettingsRepo, llmConfigsRepo, syncAgentsFn, backendClient, localEvaluator)
 	handler.SetManagedAgentBindings(managedAgentBindingRepo)
+	warnIdentityConflicts(context.Background(), agentsRepo, managedAgentBindingRepo)
 	handler.SetIdentityStores(usersRepo, agentMembersRepo, apiKeysRepo)
 	if o.agentAPIKeysEnabled() {
 		handler.SetAgentKeyResolver(api.NewAgentKeyResolver(apiKeysRepo, agentsRepo))
@@ -770,6 +771,28 @@ func parseAgentIDs(raw string) []string {
 		return nil
 	}
 	return ids
+}
+
+// warnIdentityConflicts logs every identity one agent has as an alias while
+// another has it bound as a Claude Managed Agent. The alias wins, so the alias
+// holder gets that agent's calls. The API refuses new ones; this finds those
+// made before it did.
+func warnIdentityConflicts(ctx context.Context, agents *store.AgentsRepo, bindings *store.ManagedAgentBindingRepo) {
+	conflicts, err := store.IdentityConflicts(ctx, agents, bindings)
+	if err != nil {
+		slog.Warn("identity conflict check failed", "error", err)
+		return
+	}
+	for _, c := range conflicts {
+		bound := c.BindingAgent.VMName
+		if bound == "" {
+			bound = c.BindingAgent.ID
+		}
+		slog.Warn("agent ID claimed by two agents; its calls go to the alias holder. Remove it from one of them.",
+			"agent_id", c.Identity,
+			"alias_of", c.AliasAgent.VMName, "alias_agent_cuid", c.AliasAgent.ID,
+			"bound_to", bound, "bound_agent_cuid", c.BindingAgent.ID)
+	}
 }
 
 func (a *agentsLookupAdapter) GetByAgentID(ctx context.Context, agentID string) (invocation.AgentRecord, error) {

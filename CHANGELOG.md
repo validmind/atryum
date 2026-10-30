@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Any signed-in user could take over another agent's Claude Managed Agent.
+  `POST /api/v1/agents` is open to every user, and Atryum resolves an
+  identity by an agent's aliases (`agent_ids`) before its Claude Managed
+  Agent bindings, so an alias on a Claude agent ID bound to another agent took
+  that agent's calls, which then ran under the alias holder's rules and
+  charter. This happened whether the alias came first or the binding did.
+  `force_claude_managed_agent_connect` likewise let any user move a binding
+  off another agent. Now an alias on a Claude agent ID bound to another agent,
+  and a binding of a Claude agent ID that is another agent's alias, are both
+  refused (409, for admins too), and only an admin may force connect (403
+  otherwise). An admin's force connect also removes the Claude agent ID from
+  any other agent's aliases, so an alias can't lock admins out of binding it.
+  The checks run before the write, not in one transaction, so two concurrent
+  requests can still both pass; the startup warning below finds those.
+- A 409 for an identity another agent holds names that agent only to an
+  admin. Members see only their own agents, so they're told the ID is
+  claimed by another agent.
+- At startup Atryum logs a warning for each identity that one agent has as an
+  alias while another has it bound, made before these checks existed. Its
+  calls go to the alias holder until it's removed from one of them.
+
+### Fixed
+
+- Submits that arrive together for a new `client_session_id` now share one
+  session. Before, each could miss the lookup and mint its own `ses_` row, so
+  a parallel first tool call got a different `session_id` from its sibling
+  and its judge history (and anything else keyed on `session_id`) was split.
+  Sessions minted from `client_session_id` now get an ID derived from the
+  agent binding and `client_session_id`, and a duplicate insert is a no-op.
+- A tool call's arguments keep their numbers as the agent wrote them. The
+  MCP proxy, `POST /api/v1/invocations`, `POST /api/v1/external/invocations`
+  and the managed-agents bridge decoded arguments into `float64`, so an
+  integer beyond 2^53 or a decimal with more digits than `float64` holds
+  changed: a transfer to account `9007199254740993` reached the upstream
+  tool, the decider, the stored invocation and its events as
+  `9007199254740992`, and a hook's own check refused the call because the
+  invocation no longer matched it. They are decoded with `UseNumber` now,
+  so arguments hold `json.Number`. Rule conditions read an exact number as
+  before (`2.50` is `2.5` for `eq` and `in`), and any other as written;
+  `gt` and `lt` compare as `float64`, as before. The AI summary of an
+  invocation gets the same digits, so it no longer names `…992`.
+- `policy.ExactNumber` reports whether a `json.Number` survives `float64`,
+  for an embedder that hashes or compares arguments: two calls that differ
+  only in a digit `float64` can't hold must not count as the same call.
+
+## [0.7.0] - 2026-10-28
+
 ### Added
 
 - A denied agent is told why. `policy.Verdict` carries the judge's account of
@@ -50,22 +99,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `invocation.DeniedText`, so every agent is told the same things in the
   same order. A call denied by an `auto_deny` approval rule now carries the
   reason it already recorded but previously kept to itself.
-
-- `pkg/policy`: a `Judge` that answers `""`, or anything other than allow,
+- **Breaking:** a `Judge` that answers `""`, or anything other than allow,
   deny, human or the new `policy.ActionNext`, now sends the call to a person
   ("… → judge gave no verdict, a person decides") instead of moving on to the
   level's next matching rule. A judge that means to defer returns
   `ActionNext`; an embedder whose judge returned `""` to defer must return
   `ActionNext` instead.
-
-### Fixed
-
-- Submits that arrive together for a new `client_session_id` now share one
-  session. Before, each could miss the lookup and mint its own `ses_` row, so
-  a parallel first tool call got a different `session_id` from its sibling
-  and its judge history (and anything else keyed on `session_id`) was split.
-  Sessions minted from `client_session_id` now get an ID derived from the
-  agent binding and `client_session_id`, and a duplicate insert is a no-op.
 
 ### Security
 
@@ -478,7 +517,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.0.3] - 2026-06-05
 
-[Unreleased]: https://github.com/validmind/atryum/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/validmind/atryum/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/validmind/atryum/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/validmind/atryum/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/validmind/atryum/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/validmind/atryum/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/validmind/atryum/compare/v0.2.0...v0.3.0

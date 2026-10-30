@@ -329,6 +329,15 @@ func TestNumberCoercion(t *testing.T) {
 		{"gt amount given as string", c("args.v", "gt", 10000), "18500", true},
 		{"gt exponent string", c("args.v", "gt", 999999), "1e6", true},
 		{"gt json.Number", c("args.v", "gt", 10000), json.Number("10000.5"), true},
+		// Arguments decoded with UseNumber: exact numbers read as a float64
+		// does, others as written.
+		{"eq json.Number trailing zero", c("args.v", "eq", 2.5), json.Number("2.50"), true},
+		{"eq json.Number exponent", c("args.v", "eq", 1000000), json.Number("1e6"), true},
+		{"in json.Number", c("args.v", "in", []any{float64(5e6), float64(1e6)}), json.Number("1000000"), true},
+		{"eq json.Number beyond float64", c("args.v", "eq", "9007199254740993"), json.Number("9007199254740993"), true},
+		{"json.Number beyond float64 is not its double", c("args.v", "eq", "9007199254740992"), json.Number("9007199254740993"), false},
+		{"in json.Number beyond float64", c("args.v", "in", []string{"9007199254740992"}), json.Number("9007199254740993"), false},
+		{"gt json.Number beyond float64", c("args.v", "gt", 9007199254740000), json.Number("9007199254740993"), true},
 		{"lt uint8", c("args.v", "lt", 300), uint8(255), true},
 		{"gt named int", c("args.v", "gt", myInt(1)), myInt(2), true},
 		{"gt int64 vs float", c("args.v", "gt", 2.5), int64(3), true},
@@ -349,6 +358,21 @@ func jsonNumber(s string) any {
 		panic(err)
 	}
 	return v
+}
+
+func TestExactNumber(t *testing.T) {
+	for n, want := range map[string]bool{
+		"0": true, "-0": true, "2.50": true, "1e2": true, "1E30": true, "0.1": true, "1e-7": true,
+		"333333333.3333333": true, "9007199254740992": true, "-9007199254740992": true,
+		"9007199254740993": false, "-9007199254740993": false, "1234567890123456789": false,
+		"100.000000000000001": false, "333333333.33333329": false,
+		"1e-999999999": false, "1e400": false, "1e99999999999999999999": false,
+		"NaN": false, "Inf": false, "+Inf": false, "-Inf": false,
+	} {
+		if _, got := ExactNumber(json.Number(n)); got != want {
+			t.Errorf("ExactNumber(%s) = %v, want %v", n, got, want)
+		}
+	}
 }
 
 // The glob cache stays bounded however many distinct patterns it sees.

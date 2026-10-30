@@ -1903,8 +1903,9 @@ func (s *Service) summarizePendingApproval(invocationID string) {
 			slog.Warn("invocation summary skipped: encode invocation failed", "invocation_id", invocationID, "error", err)
 			return
 		}
+		// Exact, so the summary names the numbers the agent sent.
 		var invMap map[string]any
-		if err := json.Unmarshal(raw, &invMap); err != nil {
+		if err := unmarshalExact(raw, &invMap); err != nil {
 			slog.Warn("invocation summary skipped: normalize invocation failed", "invocation_id", invocationID, "error", err)
 			return
 		}

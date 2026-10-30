@@ -852,3 +852,15 @@ func TestToolUseCachesAreBounded(t *testing.T) {
 	}
 	w.mu.Unlock()
 }
+
+// A managed agent's tool input keeps its numbers as written.
+func TestParseToolUseKeepsExactNumbers(t *testing.T) {
+	raw := json.RawMessage(`{"id":"tool_evt_1","type":"agent.tool_use","name":"transfer","input":{"to_account":9007199254740993}}`)
+	tu, ok := parseToolUse(RawEvent{ID: "tool_evt_1", Type: evtAgentToolUse, Raw: raw})
+	if !ok {
+		t.Fatal("not a tool use")
+	}
+	if got, _ := json.Marshal(tu.Input); string(got) != `{"to_account":9007199254740993}` {
+		t.Fatalf("input = %s", got)
+	}
+}

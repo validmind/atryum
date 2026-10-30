@@ -2,6 +2,7 @@ package invocation
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	neturl "net/url"
@@ -1204,7 +1205,7 @@ func planStatusFastPass(origins planOriginSet, planID string, input map[string]a
 				continue
 			}
 			return false
-		case bool, float64, int, int64, nil:
+		case bool, float64, int, int64, json.Number, nil:
 			if !planPollScalarKeys[strings.ToLower(key)] {
 				return false
 			}
