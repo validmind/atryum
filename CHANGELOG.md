@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- `/mcp/{server}` passed every JSON-RPC method other than `tools/call` on to
+  the upstream with no rule, review or audit record, so a caller could read
+  upstream data with `resources/read`, `prompts/get` or `completion/complete`
+  even when every tool was denied or held for a person. Now only `ping` and
+  `notifications/*` are forwarded; every other method gets `-32601 method not
+  found` (notifications get a 202) and never reaches the upstream. Atryum
+  advertises only the tools capability, so a client that follows the spec
+  doesn't send these. A deployment that relied on resources or prompts through
+  Atryum will see them stop working.
+
 - Any signed-in user could take over another agent's Claude Managed Agent.
   `POST /api/v1/agents` is open to every user, and Atryum resolves an
   identity by an agent's aliases (`agent_ids`) before its Claude Managed
