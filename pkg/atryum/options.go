@@ -90,6 +90,7 @@ type options struct {
 	stuckReports        bool
 	resolveHooks        []func(ResolvePending)
 	dbPool              DBPool
+	upstreamCredentials UpstreamCredentials
 }
 
 type extensionMigrations struct {

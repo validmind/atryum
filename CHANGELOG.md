@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `WithUpstreamCredentials` lets an embedding program choose the credential
+  for each upstream contact. Atryum asks it, with the verified caller (agent
+  ID, issuer, auth method, key ID) and why it is calling (`list`, `call`,
+  `forward`, or `execute` just before a call runs), on every path that
+  resolves an HTTP upstream, and again right before a call executes, so a
+  call held for approval and released later uses the credential as it stands
+  then. An error from it aborts that contact and reaches the caller (a
+  `tools/list` gets JSON-RPC -32000, a call `invocation.failed`) instead of
+  falling back to a stored token. With the option set, the stored OAuth
+  credential overlay (`oauth_credentials`) is never applied. Without it,
+  nothing changes.
+- Upstream MCP sessions are keyed by the credential's `SessionKey`, so callers
+  using different credentials never share an `Mcp-Session-Id`. A 401 from the
+  upstream clears that credential's session and calls its `OnUnauthorized`
+  before the error is returned, so the embedder can renew it.
+
 ### Security
 
 - Any signed-in user could take over another agent's Claude Managed Agent.

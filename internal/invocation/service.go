@@ -363,7 +363,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		attribute.String("atryum.tool", req.Tool),
 	))
 	defer span.End()
-	upstream, err := s.resolver.ResolveContext(ctx, req.Server)
+	upstream, err := s.resolver.ResolveContext(mcp.WithPurpose(ctx, mcp.PurposeCall), req.Server)
 	if err != nil {
 		return InvocationResponse{}, err
 	}
@@ -661,7 +661,7 @@ func (s *Service) lookupToolInfo(ctx context.Context, serverName, toolName strin
 		return tool, found
 	}
 
-	upstream, err := s.resolver.ResolveContext(ctx, serverName)
+	upstream, err := s.resolver.ResolveContext(mcp.WithPurpose(ctx, mcp.PurposeList), serverName)
 	if err != nil {
 		return mcp.Tool{}, false
 	}
@@ -1351,7 +1351,16 @@ func (s *Service) abandonHeld(ctx context.Context, inv Invocation) InvocationRes
 func (s *Service) finishExecution(ctx context.Context, inv Invocation, upstream mcp.Upstream, req CreateInvocationRequest) (InvocationResponse, error) {
 	execCtx, cancel := context.WithTimeout(ctx, s.defaultTimeout)
 	defer cancel()
-	result, err := s.client.Invoke(execCtx, upstream, req.Tool, req.Input, req.RequestID)
+	var result mcp.InvokeResult
+	var err error
+	if upstream.ResolvedByProvider {
+		// Ask the provider again: a held call may run long after it was
+		// resolved, and must use the credential as it stands now.
+		upstream, err = s.resolver.ResolveContext(mcp.WithInvocationID(mcp.WithPurpose(ctx, mcp.PurposeExecute), inv.InvocationID), req.Server)
+	}
+	if err == nil {
+		result, err = s.client.Invoke(execCtx, upstream, req.Tool, req.Input, req.RequestID)
+	}
 	completed := time.Now().UTC()
 	inv.CompletedAt = &completed
 	recordCtx := context.WithoutCancel(ctx)
@@ -2073,7 +2082,7 @@ func (s *Service) ListTools(ctx context.Context, server string) ([]mcp.Tool, err
 	if server == "" {
 		return nil, fmt.Errorf("server is required")
 	}
-	upstream, err := s.resolver.ResolveContext(ctx, server)
+	upstream, err := s.resolver.ResolveContext(mcp.WithPurpose(ctx, mcp.PurposeList), server)
 	if err != nil {
 		return nil, err
 	}

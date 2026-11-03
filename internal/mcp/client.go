@@ -122,6 +122,27 @@ type Upstream struct {
 	// the registration provenance so the UI can label it correctly and we
 	// can act on the distinction later (e.g. "re-register" buttons).
 	OAuthClientRegistration ClientRegistration
+
+	// SessionKey, when set, keys this upstream's cached MCP session (and its
+	// initialize lock) instead of Name, so callers using different
+	// credentials never share a session. Set by a CredentialProvider; never
+	// persisted.
+	SessionKey string
+	// OnUnauthorized, when set, is called synchronously when the upstream
+	// answers 401 to a request made with this upstream's credential, before
+	// the error reaches the caller. Set by a CredentialProvider.
+	OnUnauthorized func(ctx context.Context)
+	// ResolvedByProvider records that a CredentialProvider produced this
+	// upstream's credential, so execution asks the provider again.
+	ResolvedByProvider bool
+}
+
+// sessionKey is the key of this upstream's cached MCP session.
+func (u Upstream) sessionKey() string {
+	if u.SessionKey != "" {
+		return u.SessionKey
+	}
+	return u.Name
 }
 
 type ClientRegistration string
@@ -232,8 +253,17 @@ type AccessTokenView struct {
 type Resolver struct {
 	store       ServerStore
 	credentials CredentialStore
+	provider    CredentialProvider
 	bootstrap   map[string]Upstream
 }
+
+// CredentialProvider decides the credential for one upstream contact. It
+// receives the resolved upstream (with the server row's own token and
+// headers) and returns it with the credential to use. An error aborts the
+// contact. When a provider is set, the CredentialStore overlay is never
+// applied. The purpose and invocation are on the context (PurposeFromContext,
+// InvocationIDFromContext).
+type CredentialProvider func(ctx context.Context, upstream Upstream) (Upstream, error)
 
 type Client struct {
 	httpClient *http.Client
@@ -308,6 +338,26 @@ func (r *Resolver) WithCredentials(credentials CredentialStore) *Resolver {
 	return r
 }
 
+// WithCredentialProvider makes the resolver ask p for every upstream's
+// credential, replacing the CredentialStore overlay entirely.
+func (r *Resolver) WithCredentialProvider(p CredentialProvider) *Resolver {
+	r.provider = p
+	return r
+}
+
+// credential applies the provider when one is set, else the overlay.
+func (r *Resolver) credential(ctx context.Context, upstream Upstream) (Upstream, error) {
+	if r.provider == nil {
+		return r.overlayCredential(ctx, upstream), nil
+	}
+	resolved, err := r.provider(ctx, upstream)
+	if err != nil {
+		return Upstream{}, err
+	}
+	resolved.ResolvedByProvider = true
+	return resolved, nil
+}
+
 func NewHTTPClient() *Client {
 	debug := strings.EqualFold(os.Getenv("ATRYUM_MCP_DEBUG"), "1") || strings.EqualFold(os.Getenv("ATRYUM_MCP_DEBUG"), "true")
 	return &Client{httpClient: &http.Client{}, debug: debug, sessionInitLocks: make(map[string]*sync.Mutex), sessions: make(map[string]string), sessionProtocols: make(map[string]string)}
@@ -321,7 +371,7 @@ func (r *Resolver) ResolveContext(ctx context.Context, name string) (Upstream, e
 	if r.store != nil {
 		upstream, err := r.store.GetServer(ctx, name)
 		if err == nil {
-			return r.overlayCredential(ctx, upstream), nil
+			return r.credential(ctx, upstream)
 		}
 		if err != nil && err != sql.ErrNoRows {
 			return Upstream{}, err
@@ -329,7 +379,7 @@ func (r *Resolver) ResolveContext(ctx context.Context, name string) (Upstream, e
 		if slug := EndpointSlug(name); slug != "" {
 			upstream, err := r.store.GetServerByEndpointSlug(ctx, slug)
 			if err == nil {
-				return r.overlayCredential(ctx, upstream), nil
+				return r.credential(ctx, upstream)
 			}
 			if err != nil && err != sql.ErrNoRows {
 				return Upstream{}, err
@@ -341,12 +391,12 @@ func (r *Resolver) ResolveContext(ctx context.Context, name string) (Upstream, e
 		slug := EndpointSlug(name)
 		for _, candidate := range r.bootstrap {
 			if candidate.Enabled && EndpointSlug(candidate.Name) == slug {
-				return r.overlayCredential(ctx, candidate), nil
+				return r.credential(ctx, candidate)
 			}
 		}
 		return Upstream{}, fmt.Errorf("upstream %q not configured or disabled", name)
 	}
-	return r.overlayCredential(ctx, upstream), nil
+	return r.credential(ctx, upstream)
 }
 
 // overlayCredential injects the live OAuth access token (when one is
@@ -374,16 +424,25 @@ func (r *Resolver) ListAll(ctx context.Context) ([]Upstream, error) {
 			return nil, err
 		}
 		if len(upstreams) > 0 {
-			for i := range upstreams {
-				upstreams[i] = r.overlayCredential(ctx, upstreams[i])
+			out := upstreams[:0]
+			for _, u := range upstreams {
+				resolved, err := r.credential(ctx, u)
+				if err != nil {
+					continue // the caller has no credential for this one
+				}
+				out = append(out, resolved)
 			}
-			return upstreams, nil
+			return out, nil
 		}
 	}
 	var result []Upstream
 	for _, u := range r.bootstrap {
 		if u.Enabled {
-			result = append(result, r.overlayCredential(ctx, u))
+			resolved, err := r.credential(ctx, u)
+			if err != nil {
+				continue
+			}
+			result = append(result, resolved)
 		}
 	}
 	return result, nil
@@ -730,10 +789,10 @@ func (c *Client) doHTTPEnvelopeRaw(ctx context.Context, upstream Upstream, body 
 }
 
 func (c *Client) doHTTPEnvelope(ctx context.Context, upstream Upstream, body []byte, protocolVersion string) (ForwardResult, error) {
-	sessionID := c.getSession(upstream.Name)
+	sessionID := c.getSession(upstream.sessionKey())
 	effectiveProtocol := protocolVersion
 	if sessionID != "" {
-		if sessionProtocol := c.getSessionProtocol(upstream.Name); sessionProtocol != "" {
+		if sessionProtocol := c.getSessionProtocol(upstream.sessionKey()); sessionProtocol != "" {
 			effectiveProtocol = sessionProtocol
 		}
 	}
@@ -746,10 +805,20 @@ func (c *Client) doHTTPEnvelope(ctx context.Context, upstream Upstream, body []b
 	// Capture/clear session id based on response. 404 with an existing
 	// session means the server forgot us; drop it so the next call inits.
 	if newSession := strings.TrimSpace(resp.Header.Get("Mcp-Session-Id")); newSession != "" {
-		c.setSession(upstream.Name, newSession, effectiveProtocol)
+		c.setSession(upstream.sessionKey(), newSession, effectiveProtocol)
 	} else if resp.StatusCode == http.StatusNotFound && sessionID != "" {
-		c.clearSessionIfCurrent(upstream.Name, sessionID)
+		c.clearSessionIfCurrent(upstream.sessionKey(), sessionID)
 		sessionExpired = true
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		// The credential was rejected: drop its session so the next request
+		// initializes again, and tell the credential's provider first.
+		if sessionID != "" {
+			c.clearSessionIfCurrent(upstream.sessionKey(), sessionID)
+		}
+		if upstream.OnUnauthorized != nil {
+			upstream.OnUnauthorized(ctx)
+		}
 	}
 	contentType := resp.Header.Get("Content-Type")
 	if sessionExpired {
@@ -840,11 +909,11 @@ func (c *Client) ensureHTTPSession(ctx context.Context, upstream Upstream) error
 }
 
 func (c *Client) reinitializeRequiredHTTPSession(ctx context.Context, upstream Upstream, failedSessionID string) error {
-	initLock := c.getSessionInitLock(upstream.Name)
+	initLock := c.getSessionInitLock(upstream.sessionKey())
 	initLock.Lock()
 	defer initLock.Unlock()
 
-	currentSessionID := c.getSession(upstream.Name)
+	currentSessionID := c.getSession(upstream.sessionKey())
 	if failedSessionID != "" && currentSessionID != "" && currentSessionID != failedSessionID {
 		c.debugf("upstream session reinit skipped server=%s failed_session=%q current_session=%q reason=session_already_replaced", upstream.Name, failedSessionID, currentSessionID)
 		return nil
@@ -855,20 +924,20 @@ func (c *Client) reinitializeRequiredHTTPSession(ctx context.Context, upstream U
 	}
 	if failedSessionID != "" {
 		c.debugf("upstream session reinit clearing server=%s session=%q", upstream.Name, failedSessionID)
-		c.clearSessionIfCurrent(upstream.Name, failedSessionID)
+		c.clearSessionIfCurrent(upstream.sessionKey(), failedSessionID)
 	} else {
 		c.debugf("upstream session reinit clearing server=%s session=(none)", upstream.Name)
-		c.clearSession(upstream.Name)
+		c.clearSession(upstream.sessionKey())
 	}
 	return c.initializeHTTPSessionCandidates(ctx, upstream, true)
 }
 
 func (c *Client) ensureHTTPSessionMode(ctx context.Context, upstream Upstream, requireSession bool) error {
-	initLock := c.getSessionInitLock(upstream.Name)
+	initLock := c.getSessionInitLock(upstream.sessionKey())
 	initLock.Lock()
 	defer initLock.Unlock()
 
-	if c.getSession(upstream.Name) != "" {
+	if c.getSession(upstream.sessionKey()) != "" {
 		return nil
 	}
 	return c.initializeHTTPSessionCandidates(ctx, upstream, requireSession)
@@ -925,29 +994,29 @@ func (c *Client) initializeHTTPSession(ctx context.Context, upstream Upstream, p
 	}
 	c.debugf("connection test http response server=%s status=%d content_type=%q protocol=%q body=%s", upstream.Name, result.StatusCode, result.ContentType, result.ProtocolVersion, truncateForLog(result.Body, 600))
 	if result.StatusCode >= http.StatusBadRequest {
-		c.clearSession(upstream.Name)
+		c.clearSession(upstream.sessionKey())
 		return false, fmt.Errorf("upstream initialize using MCP %s failed: http %d: %s", protocolVersion, result.StatusCode, extractForwardResultErrorDetail(result, json.RawMessage([]byte("1"))))
 	}
 	resultBody, err := DecodeJSONRPCPayload(result, json.RawMessage([]byte("1")))
 	if err != nil {
-		c.clearSession(upstream.Name)
+		c.clearSession(upstream.sessionKey())
 		return false, fmt.Errorf("upstream initialize using MCP %s returned invalid JSON-RPC: %w", protocolVersion, err)
 	}
 	if len(bytes.TrimSpace(resultBody)) > 0 {
 		var rpcResp rpcResponse
 		if err := json.Unmarshal(resultBody, &rpcResp); err != nil {
-			c.clearSession(upstream.Name)
+			c.clearSession(upstream.sessionKey())
 			return false, fmt.Errorf("upstream initialize using MCP %s returned invalid JSON-RPC: %w", protocolVersion, err)
 		}
 		if len(rpcResp.Error) > 0 && string(rpcResp.Error) != "null" {
-			c.clearSession(upstream.Name)
+			c.clearSession(upstream.sessionKey())
 			return false, fmt.Errorf("upstream initialize using MCP %s error: %s", protocolVersion, rpcErrorDetail(rpcResp.Error))
 		}
 	}
 	// Spec requires the client to send notifications/initialized after a
 	// successful initialize. Stateless servers ignore it; stateful ones need
 	// it to mark the session usable.
-	hadSession := c.getSession(upstream.Name) != ""
+	hadSession := c.getSession(upstream.sessionKey()) != ""
 	if hadSession {
 		notifyBody, err := json.Marshal(Envelope{JSONRPC: "2.0", Method: "notifications/initialized", Params: mustRawJSON(map[string]any{})})
 		if err == nil {

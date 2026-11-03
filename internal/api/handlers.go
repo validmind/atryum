@@ -5031,7 +5031,7 @@ func (h *Handler) forwardProxyEnvelope(ctx context.Context, server string, envel
 		h.debugf("forward proxy skipped server=%s method=%s reason=no_resolver", server, envelope.Method)
 		return mcp.ForwardResult{}, false
 	}
-	upstream, err := resolver.ResolveContext(ctx, server)
+	upstream, err := resolver.ResolveContext(mcp.WithPurpose(ctx, mcp.PurposeForward), server)
 	if err != nil {
 		h.debugf("forward proxy resolve failed server=%s method=%s err=%v", server, envelope.Method, err)
 		return mcp.ForwardResult{}, false

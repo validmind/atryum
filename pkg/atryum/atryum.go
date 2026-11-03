@@ -349,6 +349,9 @@ func runServer(args []string, o options) error {
 	}
 	client := mcp.NewHTTPClient()
 	resolver := mcp.NewResolver(serverRepo, cfg).WithCredentials(store.NewRefreshingOAuthCredentialStore(oauthRepo, client))
+	if o.upstreamCredentials != nil {
+		resolver = resolver.WithCredentialProvider(upstreamCredentialProvider(o.upstreamCredentials))
+	}
 	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
 		return fmt.Errorf("bootstrap servers: %w", err)
 	}
