@@ -678,6 +678,9 @@ func (c *Client) invokeHTTP(ctx context.Context, upstream Upstream, tool string,
 	if err != nil {
 		return InvokeResult{}, err
 	}
+	if err := unauthorizedErr(result); err != nil {
+		return InvokeResult{}, err
+	}
 	rpcResp, err := decodeRPCResponse(result, json.RawMessage([]byte("1")))
 	if err != nil {
 		return InvokeResult{}, err
@@ -724,6 +727,9 @@ func (c *Client) listToolsHTTP(ctx context.Context, upstream Upstream) ([]Tool, 
 	}
 	result, err := c.doHTTPEnvelopeWithSessionRetry(ctx, upstream, body, DefaultMCPProtocolVersion)
 	if err != nil {
+		return nil, err
+	}
+	if err := unauthorizedErr(result); err != nil {
 		return nil, err
 	}
 	rpcResp, err := decodeRPCResponse(result, json.RawMessage([]byte("1")))
@@ -1024,6 +1030,16 @@ func (c *Client) initializeHTTPSession(ctx context.Context, upstream Upstream, p
 		}
 	}
 	return hadSession, nil
+}
+
+// unauthorizedErr says plainly that the upstream rejected the credential. A
+// 401 usually has no JSON-RPC body, so decoding it would only report
+// "unexpected end of JSON input", which tells the caller nothing.
+func unauthorizedErr(result ForwardResult) error {
+	if result.StatusCode != http.StatusUnauthorized {
+		return nil
+	}
+	return fmt.Errorf("the upstream rejected the credential (HTTP 401): %s", extractForwardResultErrorDetail(result, json.RawMessage([]byte("1"))))
 }
 
 func decodeRPCResponse(result ForwardResult, expectedID json.RawMessage) (rpcResponse, error) {

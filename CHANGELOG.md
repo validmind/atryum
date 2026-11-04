@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   using different credentials never share an `Mcp-Session-Id`. A 401 from the
   upstream clears that credential's session and calls its `OnUnauthorized`
   before the error is returned, so the embedder can renew it.
+- A `401` from an upstream on a tool call or a tool listing now reads "the
+  upstream rejected the credential (HTTP 401)" instead of "unexpected end of
+  JSON input", which is what an empty 401 body used to decode as.
 
 ### Security
 

@@ -151,6 +151,9 @@ func TestUnauthorizedClearsSessionAndCallsBackFirst(t *testing.T) {
 	if err == nil && !result.Failed {
 		t.Fatal("invoke after revocation succeeded")
 	}
+	if err == nil || !strings.Contains(err.Error(), "rejected the credential (HTTP 401)") {
+		t.Fatalf("err = %v, want it to say the upstream rejected the credential", err)
+	}
 	if called != 1 {
 		t.Fatalf("OnUnauthorized called %d times, want 1 before the error returned", called)
 	}
