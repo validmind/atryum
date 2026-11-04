@@ -2,6 +2,7 @@ package atryum
 
 import (
 	"context"
+	"errors"
 
 	"github.com/validmind/atryum/internal/auth"
 	"github.com/validmind/atryum/internal/mcp"
@@ -20,7 +21,28 @@ const (
 	UpstreamExecute = mcp.PurposeExecute
 	// UpstreamForward is any other forwarded method.
 	UpstreamForward = mcp.PurposeForward
+	// UpstreamInitialize is a client starting a session. Nothing goes to the
+	// upstream: the function may only return an UpstreamUnavailable to give
+	// the client a notice, and must do no more than look the caller up.
+	UpstreamInitialize = mcp.PurposeInitialize
 )
+
+// Tool is a tool as an MCP server lists it.
+type Tool = mcp.Tool
+
+// UpstreamUnavailable is returned (as the error) by the credential function
+// when the caller can't use the server yet, such as a person who hasn't
+// connected their account. Atryum then doesn't contact the upstream: a
+// tools/list is answered with Tools, so the client sees something to read
+// instead of an error it would swallow, an initialize adds Instructions for
+// the client's model, and any other contact fails with Message.
+type UpstreamUnavailable struct {
+	Message      string
+	Tools        []Tool
+	Instructions string
+}
+
+func (u *UpstreamUnavailable) Error() string { return u.Message }
 
 // UpstreamContact describes one upstream contact, for WithUpstreamCredentials.
 type UpstreamContact struct {
@@ -82,6 +104,10 @@ func upstreamCredentialProvider(fn UpstreamCredentials) mcp.CredentialProvider {
 		}
 		cred, err := fn(ctx, contact)
 		if err != nil {
+			var u *UpstreamUnavailable
+			if errors.As(err, &u) {
+				return mcp.Upstream{}, &mcp.Unavailable{Message: u.Message, Tools: u.Tools, Instructions: u.Instructions}
+			}
 			return mcp.Upstream{}, err
 		}
 		if cred.BearerToken != "" {

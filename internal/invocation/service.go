@@ -2078,12 +2078,29 @@ func nullableRaw(b []byte) []byte {
 	return b
 }
 
+// Notice is what the embedder wants a client told when it starts a session on
+// server (mcp.Unavailable.Instructions), or "". It never contacts the upstream.
+func (s *Service) Notice(ctx context.Context, server string) string {
+	_, err := s.resolver.ResolveContext(mcp.WithPurpose(ctx, mcp.PurposeInitialize), server)
+	var u *mcp.Unavailable
+	if errors.As(err, &u) {
+		return u.Instructions
+	}
+	return ""
+}
+
 func (s *Service) ListTools(ctx context.Context, server string) ([]mcp.Tool, error) {
 	if server == "" {
 		return nil, fmt.Errorf("server is required")
 	}
 	upstream, err := s.resolver.ResolveContext(mcp.WithPurpose(ctx, mcp.PurposeList), server)
 	if err != nil {
+		// A caller who can't use the server yet is shown what the embedder
+		// says to show, never an error their harness would swallow.
+		var u *mcp.Unavailable
+		if errors.As(err, &u) && len(u.Tools) > 0 {
+			return u.Tools, nil
+		}
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, s.defaultTimeout)

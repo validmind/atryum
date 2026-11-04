@@ -116,3 +116,39 @@ func TestExecutionFailsWhenTheProviderRefusesAtExecute(t *testing.T) {
 		t.Fatalf("upstream received %d requests; a refused execute must not contact it", hits)
 	}
 }
+
+func TestUnavailableCallerIsShownTheEmbeddersToolsAndNotice(t *testing.T) {
+	hits := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hits++; w.WriteHeader(http.StatusInternalServerError) }))
+	defer upstream.Close()
+
+	placeholder := mcp.Tool{Name: "connect_account", Description: "Shortcut isn't connected for Bob. Connect it at https://aa.example-bank.com/connected-accounts?connect=shortcut."}
+	svc := newProviderService(t, upstream.URL, func(ctx context.Context, u mcp.Upstream) (mcp.Upstream, error) {
+		if mcp.PurposeFromContext(ctx) == mcp.PurposeCall {
+			return u, nil
+		}
+		return mcp.Upstream{}, &mcp.Unavailable{Message: "not connected", Tools: []mcp.Tool{placeholder}, Instructions: "Connect Shortcut first."}
+	})
+
+	tools, err := svc.ListTools(context.Background(), "demo")
+	if err != nil || len(tools) != 1 || tools[0].Name != "connect_account" {
+		t.Fatalf("ListTools = %v, %v; want the embedder's placeholder and no error", tools, err)
+	}
+	if got := svc.Notice(context.Background(), "demo"); got != "Connect Shortcut first." {
+		t.Fatalf("Notice = %q", got)
+	}
+	if hits != 0 {
+		t.Fatalf("the upstream was contacted %d times; a caller who can't use it must never reach it", hits)
+	}
+
+	// An Unavailable with no tools to show is still an error, as before.
+	svc = newProviderService(t, upstream.URL, func(ctx context.Context, u mcp.Upstream) (mcp.Upstream, error) {
+		return mcp.Upstream{}, &mcp.Unavailable{Message: "not connected"}
+	})
+	if _, err := svc.ListTools(context.Background(), "demo"); err == nil || !strings.Contains(err.Error(), "not connected") {
+		t.Fatalf("ListTools with nothing to show: %v", err)
+	}
+	if got := svc.Notice(context.Background(), "demo"); got != "" {
+		t.Fatalf("Notice with no instructions = %q", got)
+	}
+}

@@ -11,6 +11,9 @@ const (
 	PurposeCall    Purpose = "call"    // tools/call, resolved before the decider runs
 	PurposeExecute Purpose = "execute" // just before a call runs, a released held call included
 	PurposeForward Purpose = "forward" // other forwarded methods
+	// PurposeInitialize is a client starting a session. Nothing is sent to the
+	// upstream: the embedder may only add a notice for the client.
+	PurposeInitialize Purpose = "initialize"
 )
 
 type purposeKey struct{}

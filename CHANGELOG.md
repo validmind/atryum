@@ -24,6 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   using different credentials never share an `Mcp-Session-Id`. A 401 from the
   upstream clears that credential's session and calls its `OnUnauthorized`
   before the error is returned, so the embedder can renew it.
+- The credential function can return an `UpstreamUnavailable` for a caller who
+  can't use a server yet. A `tools/list` is then answered with the tools it
+  carries (for example one placeholder that explains and links) instead of an
+  error, which a harness such as Claude Code swallows, leaving the server
+  connected with no tools and no reason; an `initialize` adds its
+  `Instructions`; any other contact fails with its `Message`. The upstream is
+  never contacted. A new `UpstreamInitialize` purpose lets the function look
+  the caller up when a session starts, without renewing or sending anything.
 - A `401` from an upstream on a tool call or a tool listing now reads "the
   upstream rejected the credential (HTTP 401)" instead of "unexpected end of
   JSON input", which is what an empty 401 body used to decode as.
