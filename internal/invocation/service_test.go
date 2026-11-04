@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1167,9 +1168,10 @@ func TestSubmitGetOrCreateCreatesThenReusesSession(t *testing.T) {
 // has missed, so the two submits below are guaranteed to race to mint.
 type raceLookupStore struct {
 	*store.ExternalSessionRepo
-	calls chan struct{}
-	both  chan struct{}
-	once  sync.Once
+	calls    chan struct{}
+	both     chan struct{}
+	once     sync.Once
+	timedOut atomic.Bool
 }
 
 func (r *raceLookupStore) GetSessionByAgentAndClientSessionID(ctx context.Context, agentID, clientSessionID string) (invocation.ExternalSession, error) {
@@ -1179,11 +1181,12 @@ func (r *raceLookupStore) GetSessionByAgentAndClientSessionID(ctx context.Contex
 		if len(r.calls) == cap(r.calls) {
 			r.once.Do(func() { close(r.both) })
 		}
-		// If the other submit never gets here, carry on and let the
-		// assertions report it rather than hanging the package.
+		// If the other submit never gets here, carry on and let the test
+		// report it rather than hanging the package.
 		select {
 		case <-r.both:
 		case <-time.After(5 * time.Second):
+			r.timedOut.Store(true)
 		}
 	default:
 	}
@@ -1223,6 +1226,9 @@ func TestSubmitGetOrCreateConcurrentFirstSubmitsShareSession(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+	}
+	if racing.timedOut.Load() {
+		t.Fatal("barrier timed out: the submits never raced, so this run proved nothing")
 	}
 	if ids[0] == "" || ids[0] != ids[1] {
 		t.Fatalf("concurrent first submits got different sessions: %q, %q", ids[0], ids[1])
