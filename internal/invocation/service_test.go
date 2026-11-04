@@ -1167,16 +1167,24 @@ func TestSubmitGetOrCreateCreatesThenReusesSession(t *testing.T) {
 // has missed, so the two submits below are guaranteed to race to mint.
 type raceLookupStore struct {
 	*store.ExternalSessionRepo
-	arrived sync.WaitGroup
-	calls   chan struct{}
+	calls chan struct{}
+	both  chan struct{}
+	once  sync.Once
 }
 
 func (r *raceLookupStore) GetSessionByAgentAndClientSessionID(ctx context.Context, agentID, clientSessionID string) (invocation.ExternalSession, error) {
 	sess, err := r.ExternalSessionRepo.GetSessionByAgentAndClientSessionID(ctx, agentID, clientSessionID)
 	select {
 	case r.calls <- struct{}{}:
-		r.arrived.Done()
-		r.arrived.Wait()
+		if len(r.calls) == cap(r.calls) {
+			r.once.Do(func() { close(r.both) })
+		}
+		// If the other submit never gets here, carry on and let the
+		// assertions report it rather than hanging the package.
+		select {
+		case <-r.both:
+		case <-time.After(5 * time.Second):
+		}
 	default:
 	}
 	return sess, err
@@ -1190,8 +1198,7 @@ func (r *raceLookupStore) GetSessionByAgentAndClientSessionID(ctx context.Contex
 func TestSubmitGetOrCreateConcurrentFirstSubmitsShareSession(t *testing.T) {
 	db := newSQLiteTestDB(t)
 	service, _ := newGetOrCreateTestService(t, db)
-	racing := &raceLookupStore{ExternalSessionRepo: store.NewExternalSessionRepo(db), calls: make(chan struct{}, 2)}
-	racing.arrived.Add(2)
+	racing := &raceLookupStore{ExternalSessionRepo: store.NewExternalSessionRepo(db), calls: make(chan struct{}, 2), both: make(chan struct{})}
 	service.SetSessionStore(racing)
 	ctx := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "amp-1"})
 
