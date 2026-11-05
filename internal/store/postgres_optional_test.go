@@ -44,6 +44,16 @@ func TestPostgresOptional_InitAndInvocationCRUD(t *testing.T) {
 		t.Fatalf("InitDBWithDialect: %v", err)
 	}
 
+	// get-or-create derives session IDs from the key, so racing first submits
+	// insert the same ID; the second insert must be a no-op, not an error.
+	sessions := NewExternalSessionRepoWithDialect(db, DialectPostgres)
+	sess := invocation.ExternalSession{ID: "ses_pg", AgentID: "agent", ClientSessionID: "thread-1"}
+	for range 2 {
+		if err := sessions.CreateSession(context.Background(), sess); err != nil {
+			t.Fatalf("CreateSession: %v", err)
+		}
+	}
+
 	repo := NewInvocationRepoWithDialect(db, DialectPostgres)
 	inv := invocation.Invocation{
 		InvocationID: "pg-inv-1",
