@@ -27,18 +27,19 @@ import (
 )
 
 type stubService struct {
-	tools         []mcp.Tool
-	invoke        invocation.InvocationResponse
-	invErr        error
-	getErr        error
-	setResp       invocation.InvocationResponse
-	setID         string
-	setText       string
-	listErr       error
-	upstream      mcp.Upstream
-	forward       mcp.ForwardResult
-	fwdErr        error
-	plansDisabled bool
+	forwardedMethods []string // every method ForwardEnvelope was asked to send upstream
+	tools            []mcp.Tool
+	invoke           invocation.InvocationResponse
+	invErr           error
+	getErr           error
+	setResp          invocation.InvocationResponse
+	setID            string
+	setText          string
+	listErr          error
+	upstream         mcp.Upstream
+	forward          mcp.ForwardResult
+	fwdErr           error
+	plansDisabled    bool
 
 	invokedReq *invocation.CreateInvocationRequest
 	invokedCtx context.Context
@@ -176,7 +177,8 @@ func (s *stubService) PlansEnabled() bool { return !s.plansDisabled }
 func (s *stubService) PlanEvents(context.Context, string, invocation.EventListFilter) (invocation.EventListResponse, error) {
 	return invocation.EventListResponse{}, nil
 }
-func (s *stubService) ForwardEnvelope(context.Context, mcp.Upstream, mcp.Envelope, string) (mcp.ForwardResult, error) {
+func (s *stubService) ForwardEnvelope(_ context.Context, _ mcp.Upstream, env mcp.Envelope, _ string) (mcp.ForwardResult, error) {
+	s.forwardedMethods = append(s.forwardedMethods, env.Method)
 	return s.forward, s.fwdErr
 }
 func (s *stubService) ResolveContext(context.Context, string) (mcp.Upstream, error) {
@@ -2582,5 +2584,70 @@ func TestOperatorAgentCharterPreviewLocalAgentNoCharterYieldsEmptyResult(t *test
 	}
 	if len(resp.Segments) != 0 || resp.Combined != "" {
 		t.Fatalf("expected empty result for an agent with no charter, got %#v", resp)
+	}
+}
+
+// Only `tools/call` is gated by policy, so any other request that carries data
+// back from the upstream (resources, prompts, completions) must not be
+// forwarded: it would read upstream data with no rule, review or record.
+func TestMCPDoesNotForwardUngatedMethods(t *testing.T) {
+	for _, method := range []string{
+		"resources/read", "resources/list", "resources/templates/list", "resources/subscribe",
+		"prompts/get", "prompts/list", "completion/complete", "logging/setLevel",
+		"sampling/createMessage", "tasks/get", "some/unknown",
+	} {
+		t.Run(method, func(t *testing.T) {
+			svc := &stubService{
+				upstream: mcp.Upstream{Name: "demo", Mode: mcp.UpstreamModeHTTP},
+				forward:  mcp.ForwardResult{StatusCode: http.StatusOK, Body: []byte(`{"jsonrpc":"2.0","id":1,"result":{"contents":[{"text":"secret"}]}}`), ContentType: "application/json"},
+			}
+			h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+			req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"`+method+`","params":{"uri":"file:///etc/passwd"}}`))
+			w := httptest.NewRecorder()
+
+			h.Routes().ServeHTTP(w, req)
+
+			if len(svc.forwardedMethods) != 0 {
+				t.Fatalf("%s was forwarded upstream: %v", method, svc.forwardedMethods)
+			}
+			if !strings.Contains(w.Body.String(), `"code":-32601`) || strings.Contains(w.Body.String(), "secret") {
+				t.Fatalf("expected method-not-found, got %s", w.Body.String())
+			}
+		})
+	}
+}
+
+// The same methods sent as notifications (no id) get no response, but must
+// not reach the upstream either.
+func TestMCPDoesNotForwardUngatedNotificationLikeMethods(t *testing.T) {
+	svc := &stubService{upstream: mcp.Upstream{Name: "demo", Mode: mcp.UpstreamModeHTTP}, forward: mcp.ForwardResult{StatusCode: http.StatusOK}}
+	h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","method":"logging/setLevel","params":{"level":"debug"}}`))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if len(svc.forwardedMethods) != 0 {
+		t.Fatalf("logging/setLevel was forwarded upstream: %v", svc.forwardedMethods)
+	}
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", w.Code)
+	}
+}
+
+// `ping` and `notifications/*` carry no upstream data to the caller and stay
+// forwarded.
+func TestMCPStillForwardsPingAndNotifications(t *testing.T) {
+	for _, body := range []string{
+		`{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}`,
+		`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}}`,
+	} {
+		svc := &stubService{upstream: mcp.Upstream{Name: "demo", Mode: mcp.UpstreamModeHTTP}, forward: mcp.ForwardResult{StatusCode: http.StatusOK, Body: []byte(`{"jsonrpc":"2.0","id":1,"result":{}}`), ContentType: "application/json"}}
+		h := NewHandler(svc, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+		req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(body))
+		h.Routes().ServeHTTP(httptest.NewRecorder(), req)
+		if len(svc.forwardedMethods) != 1 {
+			t.Fatalf("expected %s to be forwarded once, got %v", body, svc.forwardedMethods)
+		}
 	}
 }

@@ -1870,6 +1870,19 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		}
 		h.writeRPCResult(w, req.ID, normalizeToolCallResult(resp.Result, false))
 	default:
+		if !forwardableMCPMethod(req.Method) {
+			// Only tools/call is gated by policy and recorded. Anything else
+			// that returns upstream data (resources/read, prompts/get,
+			// completion/complete) would skip every rule, review and audit
+			// record, so it is refused here and never reaches the upstream.
+			h.debugf("server-side mcp method refused server=%s method=%s reason=not_gated", server, req.Method)
+			if req.IsNotification() {
+				w.WriteHeader(http.StatusAccepted)
+				return
+			}
+			h.writeRPCError(w, req.ID, -32601, "method not found")
+			return
+		}
 		forwarded, forwardedOK := h.forwardProxyEnvelope(r.Context(), server, req, protocolVersion)
 		if !forwardedOK {
 			if req.IsNotification() {
@@ -5017,6 +5030,14 @@ func inferServerStatus(upstream mcp.Upstream) mcp.ServerStatus {
 func (h *Handler) writeRPCResult(w http.ResponseWriter, id json.RawMessage, result any) {
 	body, _ := json.Marshal(result)
 	writeJSON(w, http.StatusOK, jsonRPCResponse{JSONRPC: "2.0", ID: id, Result: body})
+}
+
+// forwardableMCPMethod reports whether /mcp may pass a method it doesn't handle
+// itself on to the upstream: `ping` (a liveness probe) and `notifications/*`
+// (one-way, nothing comes back). Every other method is refused, because
+// atryum advertises only the tools capability and has no policy for the rest.
+func forwardableMCPMethod(method string) bool {
+	return method == "ping" || strings.HasPrefix(method, "notifications/")
 }
 
 func (h *Handler) forwardProxyEnvelope(ctx context.Context, server string, envelope mcp.Envelope, protocolVersion string) (mcp.ForwardResult, bool) {
