@@ -76,7 +76,7 @@ func (r *AgentSyncSettingsRepo) Save(ctx context.Context, s AgentSyncSettings) e
 		// PostgreSQL upsert
 		query = `INSERT INTO agent_sync_settings (id, org_cuid, agent_record_type_slug, charter_field_key, summary_model_config_cuid, summary_atryum_llm_config_id, default_agent_vm_cuid, updated_at)
 VALUES (1, $1, $2, $3, $4, $5, $6, $7)
-ON CONFLICT (id) DO UPDATE SET
+ON CONFLICT (tenant_id, id) DO UPDATE SET
   org_cuid                      = EXCLUDED.org_cuid,
   agent_record_type_slug        = EXCLUDED.agent_record_type_slug,
   charter_field_key             = EXCLUDED.charter_field_key,

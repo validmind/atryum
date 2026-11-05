@@ -238,6 +238,12 @@ func WithStuckReports() Option {
 // DBPool sizes the PostgreSQL connection pool; see WithDBPool.
 type DBPool = store.DBPool
 
+// OpenPostgres opens a Postgres pool like the one WithDatabase hands over:
+// each connection acts for the tenant on the call's context (package
+// tenant). A pool that reads or writes atryum's tables needs it, since
+// row-level security shows a connection that set no tenant nothing.
+func OpenPostgres(dsn string) (*sql.DB, error) { return store.OpenPostgres(dsn) }
+
 // WithDBPool sizes the PostgreSQL connection pool. Each set (non-zero) field
 // overrides server.database_pool in the config file, which overrides the
 // defaults: 20 open and 10 idle connections, idle ones closed after 5

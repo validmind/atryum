@@ -23,6 +23,7 @@ import (
 
 	"github.com/validmind/atryum/internal/config"
 	"github.com/validmind/atryum/internal/version"
+	"github.com/validmind/atryum/pkg/tenant"
 )
 
 type UpstreamMode string
@@ -795,10 +796,10 @@ func (c *Client) doHTTPEnvelopeRaw(ctx context.Context, upstream Upstream, body 
 }
 
 func (c *Client) doHTTPEnvelope(ctx context.Context, upstream Upstream, body []byte, protocolVersion string) (ForwardResult, error) {
-	sessionID := c.getSession(upstream.sessionKey())
+	sessionID := c.getSession(sessionKey(ctx, upstream))
 	effectiveProtocol := protocolVersion
 	if sessionID != "" {
-		if sessionProtocol := c.getSessionProtocol(upstream.sessionKey()); sessionProtocol != "" {
+		if sessionProtocol := c.getSessionProtocol(sessionKey(ctx, upstream)); sessionProtocol != "" {
 			effectiveProtocol = sessionProtocol
 		}
 	}
@@ -811,16 +812,16 @@ func (c *Client) doHTTPEnvelope(ctx context.Context, upstream Upstream, body []b
 	// Capture/clear session id based on response. 404 with an existing
 	// session means the server forgot us; drop it so the next call inits.
 	if newSession := strings.TrimSpace(resp.Header.Get("Mcp-Session-Id")); newSession != "" {
-		c.setSession(upstream.sessionKey(), newSession, effectiveProtocol)
+		c.setSession(sessionKey(ctx, upstream), newSession, effectiveProtocol)
 	} else if resp.StatusCode == http.StatusNotFound && sessionID != "" {
-		c.clearSessionIfCurrent(upstream.sessionKey(), sessionID)
+		c.clearSessionIfCurrent(sessionKey(ctx, upstream), sessionID)
 		sessionExpired = true
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
 		// The credential was rejected: drop its session so the next request
 		// initializes again, and tell the credential's provider first.
 		if sessionID != "" {
-			c.clearSessionIfCurrent(upstream.sessionKey(), sessionID)
+			c.clearSessionIfCurrent(sessionKey(ctx, upstream), sessionID)
 		}
 		if upstream.OnUnauthorized != nil {
 			upstream.OnUnauthorized(ctx)
@@ -848,6 +849,14 @@ func (c *Client) doHTTPEnvelopeWithSessionRetry(ctx context.Context, upstream Up
 		return ForwardResult{}, err
 	}
 	return c.doHTTPEnvelope(ctx, upstream, body, protocolVersion)
+}
+
+// sessionKey names an upstream's cached session by tenant and credential
+// (Upstream.sessionKey): two tenants' servers can share a name, and two
+// callers with different credentials the same server, and neither pair may
+// share a session.
+func sessionKey(ctx context.Context, upstream Upstream) string {
+	return tenant.From(ctx) + "\x00" + upstream.sessionKey()
 }
 
 func (c *Client) getSession(name string) string {
@@ -915,11 +924,11 @@ func (c *Client) ensureHTTPSession(ctx context.Context, upstream Upstream) error
 }
 
 func (c *Client) reinitializeRequiredHTTPSession(ctx context.Context, upstream Upstream, failedSessionID string) error {
-	initLock := c.getSessionInitLock(upstream.sessionKey())
+	initLock := c.getSessionInitLock(sessionKey(ctx, upstream))
 	initLock.Lock()
 	defer initLock.Unlock()
 
-	currentSessionID := c.getSession(upstream.sessionKey())
+	currentSessionID := c.getSession(sessionKey(ctx, upstream))
 	if failedSessionID != "" && currentSessionID != "" && currentSessionID != failedSessionID {
 		c.debugf("upstream session reinit skipped server=%s failed_session=%q current_session=%q reason=session_already_replaced", upstream.Name, failedSessionID, currentSessionID)
 		return nil
@@ -930,20 +939,20 @@ func (c *Client) reinitializeRequiredHTTPSession(ctx context.Context, upstream U
 	}
 	if failedSessionID != "" {
 		c.debugf("upstream session reinit clearing server=%s session=%q", upstream.Name, failedSessionID)
-		c.clearSessionIfCurrent(upstream.sessionKey(), failedSessionID)
+		c.clearSessionIfCurrent(sessionKey(ctx, upstream), failedSessionID)
 	} else {
 		c.debugf("upstream session reinit clearing server=%s session=(none)", upstream.Name)
-		c.clearSession(upstream.sessionKey())
+		c.clearSession(sessionKey(ctx, upstream))
 	}
 	return c.initializeHTTPSessionCandidates(ctx, upstream, true)
 }
 
 func (c *Client) ensureHTTPSessionMode(ctx context.Context, upstream Upstream, requireSession bool) error {
-	initLock := c.getSessionInitLock(upstream.sessionKey())
+	initLock := c.getSessionInitLock(sessionKey(ctx, upstream))
 	initLock.Lock()
 	defer initLock.Unlock()
 
-	if c.getSession(upstream.sessionKey()) != "" {
+	if c.getSession(sessionKey(ctx, upstream)) != "" {
 		return nil
 	}
 	return c.initializeHTTPSessionCandidates(ctx, upstream, requireSession)
@@ -1000,29 +1009,29 @@ func (c *Client) initializeHTTPSession(ctx context.Context, upstream Upstream, p
 	}
 	c.debugf("connection test http response server=%s status=%d content_type=%q protocol=%q body=%s", upstream.Name, result.StatusCode, result.ContentType, result.ProtocolVersion, truncateForLog(result.Body, 600))
 	if result.StatusCode >= http.StatusBadRequest {
-		c.clearSession(upstream.sessionKey())
+		c.clearSession(sessionKey(ctx, upstream))
 		return false, fmt.Errorf("upstream initialize using MCP %s failed: http %d: %s", protocolVersion, result.StatusCode, extractForwardResultErrorDetail(result, json.RawMessage([]byte("1"))))
 	}
 	resultBody, err := DecodeJSONRPCPayload(result, json.RawMessage([]byte("1")))
 	if err != nil {
-		c.clearSession(upstream.sessionKey())
+		c.clearSession(sessionKey(ctx, upstream))
 		return false, fmt.Errorf("upstream initialize using MCP %s returned invalid JSON-RPC: %w", protocolVersion, err)
 	}
 	if len(bytes.TrimSpace(resultBody)) > 0 {
 		var rpcResp rpcResponse
 		if err := json.Unmarshal(resultBody, &rpcResp); err != nil {
-			c.clearSession(upstream.sessionKey())
+			c.clearSession(sessionKey(ctx, upstream))
 			return false, fmt.Errorf("upstream initialize using MCP %s returned invalid JSON-RPC: %w", protocolVersion, err)
 		}
 		if len(rpcResp.Error) > 0 && string(rpcResp.Error) != "null" {
-			c.clearSession(upstream.sessionKey())
+			c.clearSession(sessionKey(ctx, upstream))
 			return false, fmt.Errorf("upstream initialize using MCP %s error: %s", protocolVersion, rpcErrorDetail(rpcResp.Error))
 		}
 	}
 	// Spec requires the client to send notifications/initialized after a
 	// successful initialize. Stateless servers ignore it; stateful ones need
 	// it to mark the session usable.
-	hadSession := c.getSession(upstream.sessionKey()) != ""
+	hadSession := c.getSession(sessionKey(ctx, upstream)) != ""
 	if hadSession {
 		notifyBody, err := json.Marshal(Envelope{JSONRPC: "2.0", Method: "notifications/initialized", Params: mustRawJSON(map[string]any{})})
 		if err == nil {
