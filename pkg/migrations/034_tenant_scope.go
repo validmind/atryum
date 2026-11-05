@@ -167,7 +167,9 @@ func pgConstraints(tx *sql.Tx, types ...string) ([]pgConstraint, error) {
 }
 
 // pgUniqueIndexes maps the unique indexes on tenantTables that back no
-// constraint and don't lead with tenant_id to their definitions.
+// constraint and don't lead with tenant_id to their definitions. An index
+// that leads with an expression has no column at indkey[0] (attnum 0), so
+// the comparison is IS DISTINCT FROM, which counts that NULL as different.
 func pgUniqueIndexes(tx *sql.Tx) (map[string]string, error) {
 	rows, err := tx.Query(`
 		SELECT ic.relname, pg_get_indexdef(i.indexrelid)
@@ -177,7 +179,7 @@ func pgUniqueIndexes(tx *sql.Tx) (map[string]string, error) {
 		WHERE t.relnamespace = current_schema()::regnamespace
 		  AND t.relname = ANY($1) AND i.indisunique
 		  AND NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid = i.indexrelid)
-		  AND (SELECT attname FROM pg_attribute WHERE attrelid = i.indrelid AND attnum = i.indkey[0]) <> 'tenant_id'`, tenantTables)
+		  AND (SELECT attname FROM pg_attribute WHERE attrelid = i.indrelid AND attnum = i.indkey[0]) IS DISTINCT FROM 'tenant_id'`, tenantTables)
 	if err != nil {
 		return nil, err
 	}

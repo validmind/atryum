@@ -80,6 +80,35 @@ func (c *tenantConn) QueryContext(ctx context.Context, query string, args []driv
 	return c.pgxConn.QueryContext(ctx, query, args)
 }
 
+// PrepareContext wraps the statement so each run sets its own call's tenant:
+// pgx's statement runs on the embedded connection and would skip use.
+func (c *tenantConn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
+	st, err := c.pgxConn.PrepareContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	return tenantStmt{st.(*stdlib.Stmt), c}, nil
+}
+
+type tenantStmt struct {
+	*stdlib.Stmt
+	c *tenantConn
+}
+
+func (s tenantStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
+	if err := s.c.use(ctx); err != nil {
+		return nil, err
+	}
+	return s.Stmt.ExecContext(ctx, args)
+}
+
+func (s tenantStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
+	if err := s.c.use(ctx); err != nil {
+		return nil, err
+	}
+	return s.Stmt.QueryContext(ctx, args)
+}
+
 func (c *tenantConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
 	if err := c.use(ctx); err != nil {
 		return nil, err
