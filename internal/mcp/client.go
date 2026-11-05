@@ -346,10 +346,19 @@ func (r *Resolver) WithCredentialProvider(p CredentialProvider) *Resolver {
 	return r
 }
 
-// credential applies the provider when one is set, else the overlay.
+// HasProvider reports whether a CredentialProvider is set.
+func (r *Resolver) HasProvider() bool { return r.provider != nil }
+
+// credential applies the provider when one is set, else the overlay. The
+// provider is asked about HTTP upstreams only: a stdio server has no
+// request to carry a token, so a provider that refuses a caller must not
+// keep them from a local server that needs none.
 func (r *Resolver) credential(ctx context.Context, upstream Upstream) (Upstream, error) {
 	if r.provider == nil {
 		return r.overlayCredential(ctx, upstream), nil
+	}
+	if upstream.BaseURL == "" {
+		return upstream, nil
 	}
 	resolved, err := r.provider(ctx, upstream)
 	if err != nil {
@@ -368,11 +377,24 @@ func (r *Resolver) Resolve(name string) (Upstream, error) {
 	return r.ResolveContext(context.Background(), name)
 }
 
+// ResolveContext finds the upstream (Lookup) with the credential to contact
+// it: the provider's, when one is set, else the stored OAuth overlay.
 func (r *Resolver) ResolveContext(ctx context.Context, name string) (Upstream, error) {
+	upstream, err := r.Lookup(ctx, name)
+	if err != nil {
+		return Upstream{}, err
+	}
+	return r.credential(ctx, upstream)
+}
+
+// Lookup finds an enabled upstream by name or endpoint slug, as configured:
+// no credential is resolved, so no provider is asked and no stored token
+// applied. For paths that need the server and never contact it.
+func (r *Resolver) Lookup(ctx context.Context, name string) (Upstream, error) {
 	if r.store != nil {
 		upstream, err := r.store.GetServer(ctx, name)
 		if err == nil {
-			return r.credential(ctx, upstream)
+			return upstream, nil
 		}
 		if err != nil && err != sql.ErrNoRows {
 			return Upstream{}, err
@@ -380,7 +402,7 @@ func (r *Resolver) ResolveContext(ctx context.Context, name string) (Upstream, e
 		if slug := EndpointSlug(name); slug != "" {
 			upstream, err := r.store.GetServerByEndpointSlug(ctx, slug)
 			if err == nil {
-				return r.credential(ctx, upstream)
+				return upstream, nil
 			}
 			if err != nil && err != sql.ErrNoRows {
 				return Upstream{}, err
@@ -392,12 +414,12 @@ func (r *Resolver) ResolveContext(ctx context.Context, name string) (Upstream, e
 		slug := EndpointSlug(name)
 		for _, candidate := range r.bootstrap {
 			if candidate.Enabled && EndpointSlug(candidate.Name) == slug {
-				return r.credential(ctx, candidate)
+				return candidate, nil
 			}
 		}
 		return Upstream{}, fmt.Errorf("upstream %q not configured or disabled", name)
 	}
-	return r.credential(ctx, upstream)
+	return upstream, nil
 }
 
 // overlayCredential injects the live OAuth access token (when one is

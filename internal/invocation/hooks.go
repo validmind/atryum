@@ -275,7 +275,9 @@ func (s *Service) ReportStuck(ctx context.Context, server string, args map[strin
 	if report["task"] == "" || report["boundary"] == "" {
 		return InvocationResponse{}, fmt.Errorf("%w: task and boundary are required", ErrInvalidStuckReport)
 	}
-	upstream, err := s.resolver.ResolveContext(ctx, server)
+	// The report needs the server's name only: no credential, so a caller
+	// with no account on the server can still say they're stuck on it.
+	upstream, err := s.resolver.Lookup(ctx, server)
 	if err != nil {
 		return InvocationResponse{}, fmt.Errorf("%w: unknown server %q", ErrInvalidStuckReport, server)
 	}

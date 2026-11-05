@@ -152,3 +152,64 @@ func TestUnavailableCallerIsShownTheEmbeddersToolsAndNotice(t *testing.T) {
 		t.Fatalf("Notice with no instructions = %q", got)
 	}
 }
+
+// A stuck report names the server and contacts nothing, so it needs no
+// credential: a caller the provider refuses (no account yet) can still say
+// they're stuck on that server.
+func TestStuckReportAsksNoCredential(t *testing.T) {
+	asked := 0
+	svc := newProviderService(t, "http://127.0.0.1:1", func(ctx context.Context, u mcp.Upstream) (mcp.Upstream, error) {
+		asked++
+		return mcp.Upstream{}, &mcp.Unavailable{Message: "connect your account first"}
+	})
+	resp, err := svc.ReportStuck(context.Background(), "demo", map[string]any{"task": "pay INV-1", "boundary": "needs a person"})
+	if err != nil {
+		t.Fatalf("ReportStuck: %v", err)
+	}
+	if resp.Status != invocation.StatusReported || asked != 0 {
+		t.Fatalf("report status %q, provider asked %d times; want reported, 0", resp.Status, asked)
+	}
+	if _, err := svc.ReportStuck(context.Background(), "nope", map[string]any{"task": "x", "boundary": "y"}); !errors.Is(err, invocation.ErrInvalidStuckReport) {
+		t.Fatalf("unknown server: %v", err)
+	}
+}
+
+// countingServers counts the reads a resolver makes of its server store.
+type countingServers struct {
+	mcp.ServerStore
+	reads int
+}
+
+func (c *countingServers) GetServer(ctx context.Context, name string) (mcp.Upstream, error) {
+	c.reads++
+	return c.ServerStore.GetServer(ctx, name)
+}
+
+// Without a credential provider there is no notice to give, and asking
+// would read the server and its stored credential on every initialize.
+func TestNoticeWithoutProviderReadsNothing(t *testing.T) {
+	db := newSQLiteTestDB(t)
+	servers := &countingServers{ServerStore: store.NewServerRepo(db)}
+	cfg := config.Config{Upstreams: []config.UpstreamConfig{{Name: "demo", Mode: "http", BaseURL: "http://127.0.0.1:1", Enabled: true, TimeoutSeconds: 5}}}
+	resolver := mcp.NewResolver(servers, cfg)
+	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	svc := invocation.NewService(store.NewInvocationRepo(db), store.NewEventRepo(db), resolver, mcp.NewHTTPClient(), policy.AlwaysDenyProvider{},
+		5*time.Second, stubRulesStore{}, nil, nil, nil)
+	servers.reads = 0
+	if n := svc.Notice(context.Background(), "demo"); n != "" {
+		t.Fatalf("notice %q without a provider", n)
+	}
+	if servers.reads != 0 {
+		t.Fatalf("Notice read the store %d times without a provider", servers.reads)
+	}
+	withProvider := mcp.NewResolver(servers, cfg).WithCredentialProvider(func(ctx context.Context, u mcp.Upstream) (mcp.Upstream, error) {
+		return mcp.Upstream{}, &mcp.Unavailable{Instructions: "Connect your account."}
+	})
+	svc = invocation.NewService(store.NewInvocationRepo(db), store.NewEventRepo(db), withProvider, mcp.NewHTTPClient(), policy.AlwaysDenyProvider{},
+		5*time.Second, stubRulesStore{}, nil, nil, nil)
+	if n := svc.Notice(context.Background(), "demo"); n != "Connect your account." {
+		t.Fatalf("notice with a provider = %q", n)
+	}
+}

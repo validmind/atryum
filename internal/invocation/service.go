@@ -217,6 +217,10 @@ type sessionStore interface {
 
 type resolver interface {
 	ResolveContext(ctx context.Context, name string) (mcp.Upstream, error)
+	// Lookup is ResolveContext without a credential: the server as configured.
+	Lookup(ctx context.Context, name string) (mcp.Upstream, error)
+	// HasProvider says a CredentialProvider decides each contact's credential.
+	HasProvider() bool
 	ListAll(ctx context.Context) ([]mcp.Upstream, error)
 }
 
@@ -2094,8 +2098,13 @@ func nullableRaw(b []byte) []byte {
 }
 
 // Notice is what the embedder wants a client told when it starts a session on
-// server (mcp.Unavailable.Instructions), or "". It never contacts the upstream.
+// server (mcp.Unavailable.Instructions), or "". It never contacts the upstream,
+// and without a credential provider it reads nothing: only a provider has
+// notices to give.
 func (s *Service) Notice(ctx context.Context, server string) string {
+	if !s.resolver.HasProvider() {
+		return ""
+	}
 	_, err := s.resolver.ResolveContext(mcp.WithPurpose(ctx, mcp.PurposeInitialize), server)
 	var u *mcp.Unavailable
 	if errors.As(err, &u) {

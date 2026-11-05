@@ -13,9 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for each upstream contact. Atryum asks it, with the verified caller (agent
   ID, issuer, auth method, key ID) and why it is calling (`list`, `call`,
   `forward`, or `execute` just before a call runs), on every path that
-  resolves an HTTP upstream, and again right before a call executes, so a
-  call held for approval and released later uses the credential as it stands
-  then. An error from it aborts that contact and reaches the caller (a
+  resolves an HTTP upstream (never for a stdio server, which no token can
+  reach, nor for a stuck report, which needs only the server's name), and
+  again right before a call executes, so a call held for approval and
+  released later uses the credential as it stands then. An error from it aborts that contact and reaches the caller (a
   `tools/list` gets JSON-RPC -32000, a call `invocation.failed`) instead of
   falling back to a stored token. With the option set, the stored OAuth
   credential overlay (`oauth_credentials`) is never applied. Without it,

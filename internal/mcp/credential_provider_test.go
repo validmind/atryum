@@ -141,7 +141,7 @@ func TestUnauthorizedClearsSessionAndCallsBackFirst(t *testing.T) {
 	if _, err := client.Invoke(context.Background(), upstream, "echo", map[string]any{}, nil); err != nil {
 		t.Fatalf("first invoke: %v", err)
 	}
-	if client.getSession("shortcut/sam") == "" {
+	if client.getSession(sessionKey(context.Background(), upstream)) == "" {
 		t.Fatal("session not cached under its key")
 	}
 	upstreamServer.mu.Lock()
@@ -157,7 +157,7 @@ func TestUnauthorizedClearsSessionAndCallsBackFirst(t *testing.T) {
 	if called != 1 {
 		t.Fatalf("OnUnauthorized called %d times, want 1 before the error returned", called)
 	}
-	if client.getSession("shortcut/sam") != "" {
+	if client.getSession(sessionKey(context.Background(), upstream)) != "" {
 		t.Fatal("session for the rejected credential was kept")
 	}
 }
@@ -169,5 +169,32 @@ func TestPurposeAndInvocationOnContext(t *testing.T) {
 	ctx := WithInvocationID(WithPurpose(context.Background(), PurposeExecute), "inv_1")
 	if PurposeFromContext(ctx) != PurposeExecute || InvocationIDFromContext(ctx) != "inv_1" {
 		t.Fatal("purpose or invocation lost")
+	}
+}
+
+// The provider is asked about HTTP upstreams only: a stdio server has no
+// request to carry a token, so a provider refusing a caller (no account
+// yet) must not keep them from a local server that needs none.
+func TestProviderSkipsStdioUpstreams(t *testing.T) {
+	cfg := config.Config{Upstreams: []config.UpstreamConfig{
+		{Name: "local", Mode: "stdio", Command: "cat", Enabled: true},
+		{Name: "hosted", Mode: "http", BaseURL: "http://127.0.0.1:1", Enabled: true},
+	}}
+	var asked []string
+	r := NewResolver(nil, cfg).WithCredentialProvider(func(ctx context.Context, u Upstream) (Upstream, error) {
+		asked = append(asked, u.Name)
+		return Upstream{}, errors.New("no account")
+	})
+	if u, err := r.ResolveContext(context.Background(), "local"); err != nil || u.Command != "cat" || u.ResolvedByProvider {
+		t.Fatalf("stdio upstream = %+v, %v", u, err)
+	}
+	if _, err := r.ResolveContext(context.Background(), "hosted"); err == nil {
+		t.Fatal("the provider's refusal of the HTTP upstream was dropped")
+	}
+	if strings.Join(asked, ",") != "hosted" {
+		t.Fatalf("provider asked about %v, want hosted only", asked)
+	}
+	if u, err := r.Lookup(context.Background(), "hosted"); err != nil || u.ResolvedByProvider || len(asked) != 1 {
+		t.Fatalf("Lookup = %+v, %v, asked %v; want the server with no provider call", u, err, asked)
 	}
 }
