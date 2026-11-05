@@ -39,6 +39,10 @@ func TestPostgresOptional_InitAndInvocationCRUD(t *testing.T) {
 	if _, err := db.Exec(`SET search_path TO ` + schema); err != nil {
 		t.Fatalf("set search_path: %v", err)
 	}
+	// A plain pgx pool, not OpenDatabase's, so set the tenant its rows default to.
+	if _, err := db.Exec(`SET app.tenant_id = 'default'`); err != nil {
+		t.Fatalf("set tenant: %v", err)
+	}
 
 	if err := InitDBWithDialect(db, DialectPostgres); err != nil {
 		t.Fatalf("InitDBWithDialect: %v", err)

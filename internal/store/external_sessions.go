@@ -44,7 +44,7 @@ func (r *ExternalSessionRepo) CreateSession(ctx context.Context, s invocation.Ex
 	query, args, err := r.sb.Insert("external_sessions").
 		Columns("id", "agent_id", "harness", "client_session_id", "created_at", "last_seen_at", "expires_at").
 		Values(s.ID, s.AgentID, s.Harness, s.ClientSessionID, s.CreatedAt, s.LastSeenAt, s.ExpiresAt).
-		Suffix("ON CONFLICT (id) DO NOTHING").
+		Suffix("ON CONFLICT (tenant_id, id) DO NOTHING").
 		ToSql()
 	if err != nil {
 		return err

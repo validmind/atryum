@@ -58,7 +58,12 @@ func OpenDatabase(databaseURL, databasePath string) (*sql.DB, Dialect, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	db, err := sql.Open(target.DriverName, target.DSN)
+	var db *sql.DB
+	if target.Dialect == DialectPostgres {
+		db, err = OpenPostgres(target.DSN)
+	} else {
+		db, err = sql.Open(target.DriverName, target.DSN)
+	}
 	if err != nil {
 		return nil, "", err
 	}

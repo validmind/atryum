@@ -113,7 +113,7 @@ func (r *AgentsRepo) Upsert(ctx context.Context, agent AgentRecord) error {
 			agent.Charter,
 			tags,
 		).
-		Suffix(`ON CONFLICT (vm_cuid) DO UPDATE SET
+		Suffix(`ON CONFLICT (tenant_id, vm_cuid) DO UPDATE SET
 			vm_organization_cuid = excluded.vm_organization_cuid,
 			vm_organization_name = excluded.vm_organization_name,
 			vm_name              = excluded.vm_name,

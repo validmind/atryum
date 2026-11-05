@@ -351,7 +351,7 @@ func (r *ServerRepo) UpsertServer(ctx context.Context, upstream mcp.Upstream) er
 			updateMap["oauth_client_id"], updateMap["oauth_client_secret"], updateMap["oauth_scopes"], updateMap["oauth_client_registration"],
 			now, now,
 		).
-		Suffix("ON CONFLICT(name) DO UPDATE SET mode = excluded.mode, base_url = excluded.base_url, auth_token = excluded.auth_token, timeout_seconds = excluded.timeout_seconds, command = excluded.command, args_json = excluded.args_json, env_json = excluded.env_json, enabled = excluded.enabled, auth_type = excluded.auth_type, connection_status = excluded.connection_status, auth_status = excluded.auth_status, reauth_needed = excluded.reauth_needed, last_checked_at = excluded.last_checked_at, last_check_ok = excluded.last_check_ok, last_error_summary = excluded.last_error_summary, action_required = excluded.action_required, oauth_provider_id = excluded.oauth_provider_id, oauth_provider_label = excluded.oauth_provider_label, oauth_authorize_url = excluded.oauth_authorize_url, oauth_token_url = excluded.oauth_token_url, oauth_client_id = excluded.oauth_client_id, oauth_client_secret = excluded.oauth_client_secret, oauth_scopes = excluded.oauth_scopes, oauth_client_registration = excluded.oauth_client_registration, updated_at = excluded.updated_at").
+		Suffix("ON CONFLICT (tenant_id, name) DO UPDATE SET mode = excluded.mode, base_url = excluded.base_url, auth_token = excluded.auth_token, timeout_seconds = excluded.timeout_seconds, command = excluded.command, args_json = excluded.args_json, env_json = excluded.env_json, enabled = excluded.enabled, auth_type = excluded.auth_type, connection_status = excluded.connection_status, auth_status = excluded.auth_status, reauth_needed = excluded.reauth_needed, last_checked_at = excluded.last_checked_at, last_check_ok = excluded.last_check_ok, last_error_summary = excluded.last_error_summary, action_required = excluded.action_required, oauth_provider_id = excluded.oauth_provider_id, oauth_provider_label = excluded.oauth_provider_label, oauth_authorize_url = excluded.oauth_authorize_url, oauth_token_url = excluded.oauth_token_url, oauth_client_id = excluded.oauth_client_id, oauth_client_secret = excluded.oauth_client_secret, oauth_scopes = excluded.oauth_scopes, oauth_client_registration = excluded.oauth_client_registration, updated_at = excluded.updated_at").
 		ToSql()
 	if err != nil {
 		return err
@@ -501,7 +501,7 @@ func (r *OAuthRepo) UpsertCredential(ctx context.Context, cred OAuthCredential) 
 	query, args, err := r.sb.Insert("oauth_credentials").
 		Columns("server_name", "access_token", "refresh_token", "token_type", "scope", "expires_at", "created_at", "updated_at").
 		Values(cred.ServerName, cred.AccessToken, emptyToNil(cred.RefreshToken), emptyToNil(cred.TokenType), emptyToNil(cred.Scope), cred.ExpiresAt, cred.CreatedAt, cred.UpdatedAt).
-		Suffix("ON CONFLICT(server_name) DO UPDATE SET access_token = excluded.access_token, refresh_token = excluded.refresh_token, token_type = excluded.token_type, scope = excluded.scope, expires_at = excluded.expires_at, updated_at = excluded.updated_at").
+		Suffix("ON CONFLICT (tenant_id, server_name) DO UPDATE SET access_token = excluded.access_token, refresh_token = excluded.refresh_token, token_type = excluded.token_type, scope = excluded.scope, expires_at = excluded.expires_at, updated_at = excluded.updated_at").
 		ToSql()
 	if err != nil {
 		return err
@@ -546,7 +546,7 @@ func (r *OAuthRepo) UpsertConnectSession(ctx context.Context, session OAuthConne
 	query, args, err := r.sb.Insert("oauth_connect_sessions").
 		Columns("state", "server_name", "status", "code_verifier", "redirect_uri", "started_at", "completed_at", "error_message").
 		Values(session.State, session.ServerName, session.Status, emptyToNil(session.CodeVerifier), session.RedirectURI, session.StartedAt, session.CompletedAt, emptyToNil(derefString(session.ErrorMessage))).
-		Suffix("ON CONFLICT(state) DO UPDATE SET status = excluded.status, code_verifier = excluded.code_verifier, redirect_uri = excluded.redirect_uri, completed_at = excluded.completed_at, error_message = excluded.error_message").
+		Suffix("ON CONFLICT (tenant_id, state) DO UPDATE SET status = excluded.status, code_verifier = excluded.code_verifier, redirect_uri = excluded.redirect_uri, completed_at = excluded.completed_at, error_message = excluded.error_message").
 		ToSql()
 	if err != nil {
 		return err
