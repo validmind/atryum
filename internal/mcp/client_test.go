@@ -719,16 +719,18 @@ func TestReinitializeSkipsWhenNewerSessionExists(t *testing.T) {
 
 	client := NewHTTPClient()
 	client.httpClient = server.Client()
-	client.setSession("shortcut", "sid-fresh", MCPProtocolVersion2025_03_26)
+	upstream := Upstream{Name: "shortcut", Mode: UpstreamModeHTTP, BaseURL: server.URL}
+	key := sessionKey(context.Background(), upstream)
+	client.setSession(key, "sid-fresh", MCPProtocolVersion2025_03_26)
 
-	err := client.reinitializeRequiredHTTPSession(context.Background(), Upstream{Name: "shortcut", Mode: UpstreamModeHTTP, BaseURL: server.URL}, "sid-stale")
+	err := client.reinitializeRequiredHTTPSession(context.Background(), upstream, "sid-stale")
 	if err != nil {
 		t.Fatalf("reinitializeRequiredHTTPSession returned error: %v", err)
 	}
 	if got := atomic.LoadInt32(&initializeCount); got != 0 {
 		t.Fatalf("initialize count = %d, want 0", got)
 	}
-	if got := client.getSession("shortcut"); got != "sid-fresh" {
+	if got := client.getSession(key); got != "sid-fresh" {
 		t.Fatalf("session = %q, want sid-fresh", got)
 	}
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/validmind/atryum/internal/auth"
 	"github.com/validmind/atryum/internal/invocation/policy"
 	"github.com/validmind/atryum/internal/mcp"
+	"github.com/validmind/atryum/pkg/tenant"
 )
 
 // tracer is a no-op until telemetry.Setup installs a real provider, so the
@@ -484,7 +485,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 			inv.CompletedAt = &completed
 			inv.Approval = newApproval("plan_denied", reason, confidence)
 			inv.Error = deniedError("Tool call denied by the approved plan.", reason, nil)
-			s.commitOrLog(context.Background(), inv, s.invocations.UpdateResult,
+			s.commitOrLog(context.WithoutCancel(ctx), inv, s.invocations.UpdateResult,
 				Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(planPayload), CreatedAt: now},
 				Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"plan_id": planID, "reason": reason, "confidence": confidence}), CreatedAt: completed})
 			return s.toResponse(inv), nil
@@ -656,8 +657,10 @@ func (s *Service) lookupToolInfo(ctx context.Context, serverName, toolName strin
 		return mcp.Tool{}, false
 	}
 
+	// Keyed by tenant too: two tenants' servers can share a name.
+	catalogKey := tenant.From(ctx) + "\x00" + serverName
 	s.toolCatalogMu.Lock()
-	entry, ok := s.toolCatalog[serverName]
+	entry, ok := s.toolCatalog[catalogKey]
 	fresh := ok && time.Since(entry.fetchedAt) < toolCatalogTTL
 	s.toolCatalogMu.Unlock()
 
@@ -685,7 +688,7 @@ func (s *Service) lookupToolInfo(ctx context.Context, serverName, toolName strin
 		byName[t.Name] = t
 	}
 	s.toolCatalogMu.Lock()
-	s.toolCatalog[serverName] = toolCatalogEntry{tools: byName, fetchedAt: time.Now()}
+	s.toolCatalog[catalogKey] = toolCatalogEntry{tools: byName, fetchedAt: time.Now()}
 	s.toolCatalogMu.Unlock()
 
 	tool, found := byName[toolName]
@@ -1210,7 +1213,7 @@ func (s *Service) denyByPolicy(ctx context.Context, inv Invocation, reason strin
 	inv.Approval = newApproval("auto_denied", reason, confidence)
 	inv.Approval.Explanation = ex
 	inv.Error = deniedError("Tool call hard-denied by policy.", reason, ex)
-	s.commitOrLog(context.Background(), inv, s.invocations.UpdateResult, Event{
+	s.commitOrLog(context.WithoutCancel(ctx), inv, s.invocations.UpdateResult, Event{
 		InvocationID: inv.InvocationID,
 		EventType:    "invocation.denied",
 		Payload:      mustJSON(map[string]any{"reason": reason, "disposition": "never"}),
@@ -1267,7 +1270,7 @@ func (s *Service) waitForHumanApproval(ctx context.Context, inv Invocation, upst
 	}); err != nil {
 		return InvocationResponse{}, err
 	}
-	s.summarizePendingApproval(inv.InvocationID)
+	s.summarizePendingApproval(ctx, inv.InvocationID)
 
 	for {
 		poll := s.approvalPoll
@@ -1674,7 +1677,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 			inv.Approval = newApproval("plan_denied", reason, confidence)
 			inv.Error = deniedError("Tool call denied by the approved plan.", reason, nil)
 			planPayload["disposition"] = "plan_denied"
-			s.commitOrLog(context.Background(), inv, s.invocations.UpdateResult,
+			s.commitOrLog(context.WithoutCancel(ctx), inv, s.invocations.UpdateResult,
 				Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(planPayload), CreatedAt: now},
 				Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"plan_id": planID, "reason": reason, "confidence": confidence}), CreatedAt: completed})
 			return s.toResponse(inv), nil
@@ -1689,7 +1692,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 				Event{InvocationID: inv.InvocationID, EventType: "invocation.pending_approval", Payload: mustJSON(planPayload), CreatedAt: time.Now().UTC()}); err != nil {
 				return InvocationResponse{}, err
 			}
-			s.summarizePendingApproval(inv.InvocationID)
+			s.summarizePendingApproval(ctx, inv.InvocationID)
 			return s.toResponse(inv), nil
 		}
 	}
@@ -1781,7 +1784,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		inv.CompletedAt = &completed
 		inv.Approval = &Approval{Status: "auto_denied", Reason: stringPtr("matched approval rule (auto_deny)")}
 		inv.Error = deniedError("Tool call denied by an approval rule.", "matched approval rule (auto_deny)", nil)
-		s.commitOrLog(context.Background(), inv, s.invocations.UpdateResult, received, Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"reason": "matched approval rule (auto_deny)", "disposition": "never"}), CreatedAt: completed})
+		s.commitOrLog(context.WithoutCancel(ctx), inv, s.invocations.UpdateResult, received, Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"reason": "matched approval rule (auto_deny)", "disposition": "never"}), CreatedAt: completed})
 		return s.toResponse(inv), nil
 
 	case RuleActionAutoApprove:
@@ -1815,7 +1818,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 			inv.CompletedAt = &completed
 			inv.Approval = newApproval("auto_denied", aiDecision.Reason, resolvedAIConfidence)
 			inv.Error = deniedError("Tool call denied by AI evaluation.", aiDecision.Reason, nil)
-			s.commitOrLog(context.Background(), inv, s.invocations.UpdateResult, received, Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"reason": aiDecision.Reason, "disposition": "never"}), CreatedAt: completed})
+			s.commitOrLog(context.WithoutCancel(ctx), inv, s.invocations.UpdateResult, received, Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"reason": aiDecision.Reason, "disposition": "never"}), CreatedAt: completed})
 			return s.toResponse(inv), nil
 		}
 		// Tag AI-escalated invocations before falling through to human approval so the
@@ -1831,7 +1834,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	if err := s.commit(ctx, inv, s.invocations.UpdateResult, received, Event{InvocationID: inv.InvocationID, EventType: "invocation.pending_approval", Payload: mustJSON(receivedPayload), CreatedAt: time.Now().UTC()}); err != nil {
 		return InvocationResponse{}, err
 	}
-	s.summarizePendingApproval(inv.InvocationID)
+	s.summarizePendingApproval(ctx, inv.InvocationID)
 	return s.toResponse(inv), nil
 }
 
@@ -1867,14 +1870,14 @@ func (s *Service) submitDecided(ctx context.Context, inv Invocation, source, age
 	return s.toResponse(inv), nil
 }
 
-func (s *Service) summarizePendingApproval(invocationID string) {
+func (s *Service) summarizePendingApproval(ctx context.Context, invocationID string) {
 	// Under a decider the embedding program owns reviews; don't send the
 	// call's arguments to Atryum's summarizer backend.
 	if s.summarizer == nil || invocationID == "" || s.decider != nil {
 		return
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
 		defer cancel()
 
 		orgCUID := ""
