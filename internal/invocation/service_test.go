@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1167,16 +1168,26 @@ func TestSubmitGetOrCreateCreatesThenReusesSession(t *testing.T) {
 // has missed, so the two submits below are guaranteed to race to mint.
 type raceLookupStore struct {
 	*store.ExternalSessionRepo
-	arrived sync.WaitGroup
-	calls   chan struct{}
+	calls    chan struct{}
+	both     chan struct{}
+	once     sync.Once
+	timedOut atomic.Bool
 }
 
 func (r *raceLookupStore) GetSessionByAgentAndClientSessionID(ctx context.Context, agentID, clientSessionID string) (invocation.ExternalSession, error) {
 	sess, err := r.ExternalSessionRepo.GetSessionByAgentAndClientSessionID(ctx, agentID, clientSessionID)
 	select {
 	case r.calls <- struct{}{}:
-		r.arrived.Done()
-		r.arrived.Wait()
+		if len(r.calls) == cap(r.calls) {
+			r.once.Do(func() { close(r.both) })
+		}
+		// If the other submit never gets here, carry on and let the test
+		// report it rather than hanging the package.
+		select {
+		case <-r.both:
+		case <-time.After(5 * time.Second):
+			r.timedOut.Store(true)
+		}
 	default:
 	}
 	return sess, err
@@ -1190,8 +1201,7 @@ func (r *raceLookupStore) GetSessionByAgentAndClientSessionID(ctx context.Contex
 func TestSubmitGetOrCreateConcurrentFirstSubmitsShareSession(t *testing.T) {
 	db := newSQLiteTestDB(t)
 	service, _ := newGetOrCreateTestService(t, db)
-	racing := &raceLookupStore{ExternalSessionRepo: store.NewExternalSessionRepo(db), calls: make(chan struct{}, 2)}
-	racing.arrived.Add(2)
+	racing := &raceLookupStore{ExternalSessionRepo: store.NewExternalSessionRepo(db), calls: make(chan struct{}, 2), both: make(chan struct{})}
 	service.SetSessionStore(racing)
 	ctx := auth.WithIdentity(context.Background(), auth.Identity{AgentID: "amp-1"})
 
@@ -1216,6 +1226,9 @@ func TestSubmitGetOrCreateConcurrentFirstSubmitsShareSession(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+	}
+	if racing.timedOut.Load() {
+		t.Fatal("barrier timed out: the submits never raced, so this run proved nothing")
 	}
 	if ids[0] == "" || ids[0] != ids[1] {
 		t.Fatalf("concurrent first submits got different sessions: %q, %q", ids[0], ids[1])
