@@ -1049,6 +1049,10 @@ func (s *Service) lookupSessionForAgent(ctx context.Context, sessionID, agentID 
 // the expired one), and CreateSession ignores a duplicate ID: racers that saw
 // the same state compute the same ID, one insert wins, and both return it.
 // Rollover still gets a fresh ID because the expired row's ID is an input.
+// The ID is content-addressed, though: once a row is deleted, the same key
+// computes the same ID again, so a reaper that deletes external_sessions rows
+// must delete or re-key their invocations too, or the next submit inherits
+// the reaped session's history.
 func (s *Service) getOrCreateSession(ctx context.Context, agentID, clientSessionID, harness string) (string, error) {
 	if s.sessions == nil {
 		return "", fmt.Errorf("sessions not enabled")
