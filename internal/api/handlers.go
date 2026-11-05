@@ -1782,6 +1782,15 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		if h.externalDecider {
 			delete(result, "instructions") // they describe Atryum's own rules tools
 		}
+		// An embedder that can't let this caller use the server yet says why.
+		if n, ok := h.svc.(interface {
+			Notice(context.Context, string) string
+		}); ok {
+			if notice := strings.TrimSpace(n.Notice(r.Context(), server)); notice != "" {
+				prev, _ := result["instructions"].(string)
+				result["instructions"] = strings.TrimSpace(prev + "\n\n" + notice)
+			}
+		}
 		h.writeRPCResult(w, req.ID, result)
 	case "notifications/initialized":
 		w.WriteHeader(http.StatusAccepted)
@@ -5031,7 +5040,7 @@ func (h *Handler) forwardProxyEnvelope(ctx context.Context, server string, envel
 		h.debugf("forward proxy skipped server=%s method=%s reason=no_resolver", server, envelope.Method)
 		return mcp.ForwardResult{}, false
 	}
-	upstream, err := resolver.ResolveContext(ctx, server)
+	upstream, err := resolver.ResolveContext(mcp.WithPurpose(ctx, mcp.PurposeForward), server)
 	if err != nil {
 		h.debugf("forward proxy resolve failed server=%s method=%s err=%v", server, envelope.Method, err)
 		return mcp.ForwardResult{}, false

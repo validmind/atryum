@@ -2584,3 +2584,42 @@ func TestOperatorAgentCharterPreviewLocalAgentNoCharterYieldsEmptyResult(t *test
 		t.Fatalf("expected empty result for an agent with no charter, got %#v", resp)
 	}
 }
+
+// noticeService is a stubService that also has something to tell a client
+// who can't use the server yet.
+type noticeService struct {
+	stubService
+	notice string
+}
+
+func (s *noticeService) Notice(context.Context, string) string { return s.notice }
+
+func TestMCPInitializeCarriesTheEmbeddersNotice(t *testing.T) {
+	for name, tc := range map[string]struct {
+		notice, want string
+	}{
+		"a notice is added": {"Shortcut isn't connected for Bob. Connect it at https://aa.example-bank.com/connected-accounts?connect=shortcut.", "Shortcut isn't connected for Bob"},
+		"no notice, none":   {"", ""},
+	} {
+		h := NewHandler(&noticeService{notice: tc.notice}, stubServerService{}, nil, nil, nil, nil, nil, nil, nil, nil)
+		req := httptest.NewRequest(http.MethodPost, "/mcp/demo", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		h.Routes().ServeHTTP(w, req)
+		var resp struct {
+			Result struct {
+				Instructions string `json:"instructions"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		got := resp.Result.Instructions
+		if tc.want != "" && !strings.Contains(got, tc.want) {
+			t.Errorf("%s: instructions = %q, want them to contain %q", name, got, tc.want)
+		}
+		if tc.want == "" && strings.Contains(got, "isn't connected") {
+			t.Errorf("%s: instructions = %q", name, got)
+		}
+	}
+}

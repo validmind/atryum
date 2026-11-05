@@ -217,6 +217,10 @@ type sessionStore interface {
 
 type resolver interface {
 	ResolveContext(ctx context.Context, name string) (mcp.Upstream, error)
+	// Lookup is ResolveContext without a credential: the server as configured.
+	Lookup(ctx context.Context, name string) (mcp.Upstream, error)
+	// HasProvider says a CredentialProvider decides each contact's credential.
+	HasProvider() bool
 	ListAll(ctx context.Context) ([]mcp.Upstream, error)
 }
 
@@ -369,7 +373,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		attribute.String("atryum.tool", req.Tool),
 	))
 	defer span.End()
-	upstream, err := s.resolver.ResolveContext(ctx, req.Server)
+	upstream, err := s.resolver.ResolveContext(mcp.WithPurpose(ctx, mcp.PurposeCall), req.Server)
 	if err != nil {
 		return InvocationResponse{}, err
 	}
@@ -669,7 +673,7 @@ func (s *Service) lookupToolInfo(ctx context.Context, serverName, toolName strin
 		return tool, found
 	}
 
-	upstream, err := s.resolver.ResolveContext(ctx, serverName)
+	upstream, err := s.resolver.ResolveContext(mcp.WithPurpose(ctx, mcp.PurposeList), serverName)
 	if err != nil {
 		return mcp.Tool{}, false
 	}
@@ -1366,7 +1370,16 @@ func (s *Service) abandonHeld(ctx context.Context, inv Invocation) InvocationRes
 func (s *Service) finishExecution(ctx context.Context, inv Invocation, upstream mcp.Upstream, req CreateInvocationRequest) (InvocationResponse, error) {
 	execCtx, cancel := context.WithTimeout(ctx, s.defaultTimeout)
 	defer cancel()
-	result, err := s.client.Invoke(execCtx, upstream, req.Tool, req.Input, req.RequestID)
+	var result mcp.InvokeResult
+	var err error
+	if upstream.ResolvedByProvider {
+		// Ask the provider again: a held call may run long after it was
+		// resolved, and must use the credential as it stands now.
+		upstream, err = s.resolver.ResolveContext(mcp.WithInvocationID(mcp.WithPurpose(ctx, mcp.PurposeExecute), inv.InvocationID), req.Server)
+	}
+	if err == nil {
+		result, err = s.client.Invoke(execCtx, upstream, req.Tool, req.Input, req.RequestID)
+	}
 	completed := time.Now().UTC()
 	inv.CompletedAt = &completed
 	recordCtx := context.WithoutCancel(ctx)
@@ -2084,12 +2097,34 @@ func nullableRaw(b []byte) []byte {
 	return b
 }
 
+// Notice is what the embedder wants a client told when it starts a session on
+// server (mcp.Unavailable.Instructions), or "". It never contacts the upstream,
+// and without a credential provider it reads nothing: only a provider has
+// notices to give.
+func (s *Service) Notice(ctx context.Context, server string) string {
+	if !s.resolver.HasProvider() {
+		return ""
+	}
+	_, err := s.resolver.ResolveContext(mcp.WithPurpose(ctx, mcp.PurposeInitialize), server)
+	var u *mcp.Unavailable
+	if errors.As(err, &u) {
+		return u.Instructions
+	}
+	return ""
+}
+
 func (s *Service) ListTools(ctx context.Context, server string) ([]mcp.Tool, error) {
 	if server == "" {
 		return nil, fmt.Errorf("server is required")
 	}
-	upstream, err := s.resolver.ResolveContext(ctx, server)
+	upstream, err := s.resolver.ResolveContext(mcp.WithPurpose(ctx, mcp.PurposeList), server)
 	if err != nil {
+		// A caller who can't use the server yet is shown what the embedder
+		// says to show, never an error their harness would swallow.
+		var u *mcp.Unavailable
+		if errors.As(err, &u) && len(u.Tools) > 0 {
+			return u.Tools, nil
+		}
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, s.defaultTimeout)

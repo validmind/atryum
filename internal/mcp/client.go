@@ -123,6 +123,27 @@ type Upstream struct {
 	// the registration provenance so the UI can label it correctly and we
 	// can act on the distinction later (e.g. "re-register" buttons).
 	OAuthClientRegistration ClientRegistration
+
+	// SessionKey, when set, keys this upstream's cached MCP session (and its
+	// initialize lock) instead of Name, so callers using different
+	// credentials never share a session. Set by a CredentialProvider; never
+	// persisted.
+	SessionKey string
+	// OnUnauthorized, when set, is called synchronously when the upstream
+	// answers 401 to a request made with this upstream's credential, before
+	// the error reaches the caller. Set by a CredentialProvider.
+	OnUnauthorized func(ctx context.Context)
+	// ResolvedByProvider records that a CredentialProvider produced this
+	// upstream's credential, so execution asks the provider again.
+	ResolvedByProvider bool
+}
+
+// sessionKey is the key of this upstream's cached MCP session.
+func (u Upstream) sessionKey() string {
+	if u.SessionKey != "" {
+		return u.SessionKey
+	}
+	return u.Name
 }
 
 type ClientRegistration string
@@ -233,8 +254,17 @@ type AccessTokenView struct {
 type Resolver struct {
 	store       ServerStore
 	credentials CredentialStore
+	provider    CredentialProvider
 	bootstrap   map[string]Upstream
 }
+
+// CredentialProvider decides the credential for one upstream contact. It
+// receives the resolved upstream (with the server row's own token and
+// headers) and returns it with the credential to use. An error aborts the
+// contact. When a provider is set, the CredentialStore overlay is never
+// applied. The purpose and invocation are on the context (PurposeFromContext,
+// InvocationIDFromContext).
+type CredentialProvider func(ctx context.Context, upstream Upstream) (Upstream, error)
 
 type Client struct {
 	httpClient *http.Client
@@ -309,6 +339,35 @@ func (r *Resolver) WithCredentials(credentials CredentialStore) *Resolver {
 	return r
 }
 
+// WithCredentialProvider makes the resolver ask p for every upstream's
+// credential, replacing the CredentialStore overlay entirely.
+func (r *Resolver) WithCredentialProvider(p CredentialProvider) *Resolver {
+	r.provider = p
+	return r
+}
+
+// HasProvider reports whether a CredentialProvider is set.
+func (r *Resolver) HasProvider() bool { return r.provider != nil }
+
+// credential applies the provider when one is set, else the overlay. The
+// provider is asked about HTTP upstreams only: a stdio server has no
+// request to carry a token, so a provider that refuses a caller must not
+// keep them from a local server that needs none.
+func (r *Resolver) credential(ctx context.Context, upstream Upstream) (Upstream, error) {
+	if r.provider == nil {
+		return r.overlayCredential(ctx, upstream), nil
+	}
+	if upstream.BaseURL == "" {
+		return upstream, nil
+	}
+	resolved, err := r.provider(ctx, upstream)
+	if err != nil {
+		return Upstream{}, err
+	}
+	resolved.ResolvedByProvider = true
+	return resolved, nil
+}
+
 func NewHTTPClient() *Client {
 	debug := strings.EqualFold(os.Getenv("ATRYUM_MCP_DEBUG"), "1") || strings.EqualFold(os.Getenv("ATRYUM_MCP_DEBUG"), "true")
 	return &Client{httpClient: &http.Client{}, debug: debug, sessionInitLocks: make(map[string]*sync.Mutex), sessions: make(map[string]string), sessionProtocols: make(map[string]string)}
@@ -318,11 +377,24 @@ func (r *Resolver) Resolve(name string) (Upstream, error) {
 	return r.ResolveContext(context.Background(), name)
 }
 
+// ResolveContext finds the upstream (Lookup) with the credential to contact
+// it: the provider's, when one is set, else the stored OAuth overlay.
 func (r *Resolver) ResolveContext(ctx context.Context, name string) (Upstream, error) {
+	upstream, err := r.Lookup(ctx, name)
+	if err != nil {
+		return Upstream{}, err
+	}
+	return r.credential(ctx, upstream)
+}
+
+// Lookup finds an enabled upstream by name or endpoint slug, as configured:
+// no credential is resolved, so no provider is asked and no stored token
+// applied. For paths that need the server and never contact it.
+func (r *Resolver) Lookup(ctx context.Context, name string) (Upstream, error) {
 	if r.store != nil {
 		upstream, err := r.store.GetServer(ctx, name)
 		if err == nil {
-			return r.overlayCredential(ctx, upstream), nil
+			return upstream, nil
 		}
 		if err != nil && err != sql.ErrNoRows {
 			return Upstream{}, err
@@ -330,7 +402,7 @@ func (r *Resolver) ResolveContext(ctx context.Context, name string) (Upstream, e
 		if slug := EndpointSlug(name); slug != "" {
 			upstream, err := r.store.GetServerByEndpointSlug(ctx, slug)
 			if err == nil {
-				return r.overlayCredential(ctx, upstream), nil
+				return upstream, nil
 			}
 			if err != nil && err != sql.ErrNoRows {
 				return Upstream{}, err
@@ -342,12 +414,12 @@ func (r *Resolver) ResolveContext(ctx context.Context, name string) (Upstream, e
 		slug := EndpointSlug(name)
 		for _, candidate := range r.bootstrap {
 			if candidate.Enabled && EndpointSlug(candidate.Name) == slug {
-				return r.overlayCredential(ctx, candidate), nil
+				return candidate, nil
 			}
 		}
 		return Upstream{}, fmt.Errorf("upstream %q not configured or disabled", name)
 	}
-	return r.overlayCredential(ctx, upstream), nil
+	return upstream, nil
 }
 
 // overlayCredential injects the live OAuth access token (when one is
@@ -375,16 +447,25 @@ func (r *Resolver) ListAll(ctx context.Context) ([]Upstream, error) {
 			return nil, err
 		}
 		if len(upstreams) > 0 {
-			for i := range upstreams {
-				upstreams[i] = r.overlayCredential(ctx, upstreams[i])
+			out := upstreams[:0]
+			for _, u := range upstreams {
+				resolved, err := r.credential(ctx, u)
+				if err != nil {
+					continue // the caller has no credential for this one
+				}
+				out = append(out, resolved)
 			}
-			return upstreams, nil
+			return out, nil
 		}
 	}
 	var result []Upstream
 	for _, u := range r.bootstrap {
 		if u.Enabled {
-			result = append(result, r.overlayCredential(ctx, u))
+			resolved, err := r.credential(ctx, u)
+			if err != nil {
+				continue
+			}
+			result = append(result, resolved)
 		}
 	}
 	return result, nil
@@ -620,6 +701,9 @@ func (c *Client) invokeHTTP(ctx context.Context, upstream Upstream, tool string,
 	if err != nil {
 		return InvokeResult{}, err
 	}
+	if err := unauthorizedErr(result); err != nil {
+		return InvokeResult{}, err
+	}
 	rpcResp, err := decodeRPCResponse(result, json.RawMessage([]byte("1")))
 	if err != nil {
 		return InvokeResult{}, err
@@ -666,6 +750,9 @@ func (c *Client) listToolsHTTP(ctx context.Context, upstream Upstream) ([]Tool, 
 	}
 	result, err := c.doHTTPEnvelopeWithSessionRetry(ctx, upstream, body, DefaultMCPProtocolVersion)
 	if err != nil {
+		return nil, err
+	}
+	if err := unauthorizedErr(result); err != nil {
 		return nil, err
 	}
 	rpcResp, err := decodeRPCResponse(result, json.RawMessage([]byte("1")))
@@ -752,6 +839,16 @@ func (c *Client) doHTTPEnvelope(ctx context.Context, upstream Upstream, body []b
 		c.clearSessionIfCurrent(sessionKey(ctx, upstream), sessionID)
 		sessionExpired = true
 	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		// The credential was rejected: drop its session so the next request
+		// initializes again, and tell the credential's provider first.
+		if sessionID != "" {
+			c.clearSessionIfCurrent(sessionKey(ctx, upstream), sessionID)
+		}
+		if upstream.OnUnauthorized != nil {
+			upstream.OnUnauthorized(ctx)
+		}
+	}
 	contentType := resp.Header.Get("Content-Type")
 	if sessionExpired {
 		bodyBytes, _ := io.ReadAll(resp.Body)
@@ -776,10 +873,12 @@ func (c *Client) doHTTPEnvelopeWithSessionRetry(ctx context.Context, upstream Up
 	return c.doHTTPEnvelope(ctx, upstream, body, protocolVersion)
 }
 
-// sessionKey names an upstream's cached session by tenant and server name:
-// two tenants' servers can share a name and must not share a session.
+// sessionKey names an upstream's cached session by tenant and credential
+// (Upstream.sessionKey): two tenants' servers can share a name, and two
+// callers with different credentials the same server, and neither pair may
+// share a session.
 func sessionKey(ctx context.Context, upstream Upstream) string {
-	return tenant.From(ctx) + "\x00" + upstream.Name
+	return tenant.From(ctx) + "\x00" + upstream.sessionKey()
 }
 
 func (c *Client) getSession(name string) string {
@@ -962,6 +1061,16 @@ func (c *Client) initializeHTTPSession(ctx context.Context, upstream Upstream, p
 		}
 	}
 	return hadSession, nil
+}
+
+// unauthorizedErr says plainly that the upstream rejected the credential. A
+// 401 usually has no JSON-RPC body, so decoding it would only report
+// "unexpected end of JSON input", which tells the caller nothing.
+func unauthorizedErr(result ForwardResult) error {
+	if result.StatusCode != http.StatusUnauthorized {
+		return nil
+	}
+	return fmt.Errorf("the upstream rejected the credential (HTTP 401): %s", extractForwardResultErrorDetail(result, json.RawMessage([]byte("1"))))
 }
 
 func decodeRPCResponse(result ForwardResult, expectedID json.RawMessage) (rpcResponse, error) {
