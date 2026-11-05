@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/validmind/atryum/internal/invocation"
+	"github.com/validmind/atryum/pkg/tenant"
 )
 
 // InvocationGateway is the slice of invocation.Service the bridge reuses to run
@@ -142,7 +143,7 @@ func (s *Service) Start(ctx context.Context) error {
 			continue
 		}
 		reg = s.rewindCursorIfParkedOnPendingAction(ctx, reg, acct.client)
-		s.startWatcher(reg)
+		s.startWatcher(ctx, reg)
 		started++
 	}
 	if s.bindings != nil {
@@ -194,7 +195,7 @@ func (s *Service) RegisterSession(ctx context.Context, req RegisterSessionReques
 	if err != nil {
 		stored = reg
 	}
-	s.startWatcher(stored)
+	s.startWatcher(ctx, stored)
 	return stored, nil
 }
 
@@ -334,7 +335,7 @@ func (s *Service) discoverSessions(ctx context.Context) {
 			if err != nil {
 				stored = reg
 			}
-			s.startWatcher(stored)
+			s.startWatcher(ctx, stored)
 			known[session.ID] = true
 			slog.Info("managed agents: discovered session", "session_id", session.ID, "account", accountName, "claude_agent_id", claudeAgentID)
 		}
@@ -560,7 +561,9 @@ func (s *Service) resolveAccount(name string) (string, error) {
 }
 
 // startWatcher launches (or restarts) the watcher goroutine for a session.
-func (s *Service) startWatcher(reg SessionRegistration) {
+// The watcher outlives ctx (it stops with the service) but acts for ctx's
+// tenant, the one that stored the session.
+func (s *Service) startWatcher(ctx context.Context, reg SessionRegistration) {
 	if s.rootCtx == nil {
 		// Start() hasn't run yet; this happens only if RegisterSession is
 		// called before Start. Use a background root so the watcher still runs.
@@ -576,7 +579,7 @@ func (s *Service) startWatcher(reg SessionRegistration) {
 	if cancel, ok := s.watchers[reg.SessionID]; ok {
 		cancel() // replace any existing watcher
 	}
-	ctx, cancel := context.WithCancel(s.rootCtx)
+	ctx, cancel := context.WithCancel(tenant.With(s.rootCtx, tenant.From(ctx)))
 	s.watchers[reg.SessionID] = cancel
 	w := &watcher{svc: s, acct: acct, reg: reg, lastEventID: reg.LastEventID, pending: make(map[string]pendingCall)}
 	s.wg.Add(1)
