@@ -323,6 +323,30 @@ the database handle, an embedding program can set:
   how each caller authenticated (`ToolCall.Auth`, `Invocation.Auth`).
 - `WithDatabaseURL`: the database URL, overriding the config file.
 
+### Tenants
+
+On PostgreSQL one database can hold many tenants' data. Every table has a
+`tenant_id` that leads each primary, unique and foreign key, so names are unique
+per tenant and no row can point at another tenant's. Row-level security shows a
+connection only the rows of the tenant in its `app.tenant_id` setting.
+
+- Put the tenant on the context with `tenant.With(ctx, id)` (`pkg/tenant`). Atryum's
+  pool sets `app.tenant_id` from the context before each statement or
+  transaction, and a transaction refuses a statement for another tenant. A
+  context with no tenant acts for `default`, which is all a single-tenant
+  Atryum ever uses.
+- Open any pool of your own on Atryum's tables with `atryum.OpenPostgres`, which
+  does the same. A plain pool sets no tenant, so it reads no rows and its
+  inserts fail.
+- Row-level security binds only a role that doesn't own the tables and doesn't
+  have `BYPASSRLS`. Connect as a separate application role; the owner sees
+  every tenant.
+- Needs PostgreSQL 15 or later. The tenant is a session setting, so don't put a
+  transaction-mode pooler (PgBouncer in transaction mode) between Atryum and
+  the database.
+
+SQLite holds one tenant, `default`.
+
 ## Path arguments
 
 A rule decides from the text of a call; the file is opened by an upstream MCP

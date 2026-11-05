@@ -51,7 +51,7 @@ func (r *ManagedAgentSessionRepo) Upsert(ctx context.Context, s ManagedAgentSess
 	query, args, err := r.sb.Insert("managed_agent_sessions").
 		Columns("session_id", "account", "agent_id", "description", "last_event_id", "created_at", "updated_at").
 		Values(s.SessionID, s.Account, s.AgentID, s.Description, s.LastEventID, s.CreatedAt, now).
-		Suffix(`ON CONFLICT (session_id) DO UPDATE SET
+		Suffix(`ON CONFLICT (tenant_id, session_id) DO UPDATE SET
 			account     = excluded.account,
 			agent_id    = excluded.agent_id,
 			description = excluded.description,

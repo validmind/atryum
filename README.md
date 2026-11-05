@@ -175,7 +175,7 @@ The embedded invocation view subscribes to the review SSE stream, updates list/d
 
 ## Storage
 
-SQLite by default, PostgreSQL optional via `server.database_url`. Both are first-class — migrations live in `internal/store/migrations/` and apply at startup. Core tables:
+SQLite by default, PostgreSQL optional via `server.database_url`. Both are first-class — migrations live in `internal/store/migrations/` and apply at startup. PostgreSQL needs version 15 or later and can hold many tenants in one database, kept apart by row-level security (see `pkg/tenant` and [Tenants](docs/architecture.md#tenants)). Core tables:
 
 - `mcp_servers` — upstream connection settings and generic auth/connection status, including `connection_status`, `auth_status`, `reauth_needed`, `auth_type`, `last_checked_at`, `last_check_ok`, `last_error_summary`, and `action_required`.
 - `oauth_credentials` and related OAuth client registration tables — tokens and client registrations held by Atryum on behalf of agents.

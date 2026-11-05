@@ -5,6 +5,9 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/validmind/atryum/pkg/tenant"
 )
 
 // clearSessionsStore is a SessionStore whose Delete fails for one configured
@@ -84,5 +87,59 @@ func TestClearSessionsStopsWatchersForSessionsDeletedBeforeAFailure(t *testing.T
 		if !stopped[id] {
 			t.Errorf("watcher for %s was not stopped despite its DB row being deleted (zombie watcher)", id)
 		}
+	}
+}
+
+// tenantClient records the tenant of each context the watcher calls it with.
+type tenantClient struct {
+	eofStreamClient
+	seen chan string
+}
+
+func (c tenantClient) ListEventsSince(ctx context.Context, sessionID, after string) ([]RawEvent, error) {
+	select {
+	case c.seen <- tenant.From(ctx):
+	default:
+	}
+	return nil, nil
+}
+
+func (c tenantClient) StreamEvents(ctx context.Context, sessionID string) (EventStream, error) {
+	select {
+	case c.seen <- tenant.From(ctx):
+	default:
+	}
+	return eofStream{}, nil
+}
+
+// missingStore's Get fails, so RegisterSession watches the registration it built.
+type missingStore struct{ clearSessionsStore }
+
+func (s *missingStore) Get(ctx context.Context, id string) (SessionRegistration, error) {
+	return SessionRegistration{}, errors.New("not found")
+}
+
+// A session's watcher acts for the tenant that registered it, not the
+// service's background root.
+func TestWatcherActsForRegisteringTenant(t *testing.T) {
+	client := tenantClient{seen: make(chan string, 16)}
+	svc, err := NewService(nil, &missingStore{}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.accounts["acct"] = account{client: client}
+	defer svc.Close()
+
+	ctx := tenant.With(context.Background(), "acme")
+	if _, err := svc.RegisterSession(ctx, RegisterSessionRequest{SessionID: "sess_1", Account: "acct"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-client.seen:
+		if got != "acme" {
+			t.Fatalf("watcher acted for tenant %q, want acme", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("watcher never called the client")
 	}
 }

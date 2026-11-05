@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Tenants, for programs that embed Atryum and serve more than one
+  organization from one Postgres database. Every table has a `tenant_id`, and
+  every primary, unique and foreign key starts with it, so names are unique
+  per tenant and no row can point at another tenant's. Postgres row-level
+  security shows a connection only the rows of the tenant it set in
+  `app.tenant_id`. Atryum's pool sets it before each statement from the
+  request's context (`tenant.With` in `pkg/tenant`; a context that names none
+  acts for `default`). `atryum.OpenPostgres` opens such a pool for an
+  embedder's own queries. Row-level security binds only a role that neither
+  owns the tables nor has `BYPASSRLS`, so an embedder serving several tenants
+  connects as one. A standalone Atryum, and every SQLite database, stays one
+  tenant, `default`, and needs no change.
+
+### Changed
+
+- Migration 034 needs Postgres 15 or later (it uses `ON DELETE SET NULL` with
+  a column list).
+- A pool that skips Atryum's opener (a plain `sql.Open("pgx", ...)`) must set
+  `app.tenant_id` before writing to Atryum's tables, or the insert fails: the
+  column's default reads that setting. The `*sql.DB` handed over by
+  `WithDatabase` already does. The connection under `database/sql`'s `Raw` is
+  no longer a `*stdlib.Conn`; it still has `Conn() *pgx.Conn`.
+- Atryum's connections keep the tenant as a session setting, so they need a
+  session that stays one connection. A pooler in transaction mode, such as
+  PgBouncer's, would carry one request's tenant into another's.
+
 ### Security
 
 - Any signed-in user could take over another agent's Claude Managed Agent.

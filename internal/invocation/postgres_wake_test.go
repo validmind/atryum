@@ -15,6 +15,7 @@ import (
 	"github.com/validmind/atryum/internal/invocation/policy"
 	"github.com/validmind/atryum/internal/mcp"
 	"github.com/validmind/atryum/internal/store"
+	"github.com/validmind/atryum/pkg/tenant"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -166,7 +167,7 @@ func postgresReplicas(t *testing.T, upstreamURL string) (string, func() (*invoca
 	}
 	dsn += sep + "search_path=" + schema
 	return dsn, func() (*invocation.Service, *sql.DB) {
-		db, err := sql.Open("pgx", dsn)
+		db, err := store.OpenPostgres(dsn)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -196,4 +197,25 @@ func TestPostgresConcurrentIdenticalSubmits(t *testing.T) {
 	a, _ := replica()
 	b, _ := replica()
 	checkConcurrentIdenticalSubmits(t, a, b)
+}
+
+// A denial is recorded for the call's own tenant: the write that records it
+// outlives the request's cancellation but keeps its tenant.
+func TestPostgresDenialRecordedForTenant(t *testing.T) {
+	upstream, _ := fakeMCP(t)
+	_, replica := postgresReplicas(t, upstream.URL)
+	svc, _ := replica()
+	svc.SetDecider(verdictDecider(invocation.VerdictDeny))
+	ctx := tenant.With(context.Background(), "acme")
+	resp, err := svc.Invoke(ctx, invocation.CreateInvocationRequest{Server: "bank", Tool: "pay", Input: map[string]any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.Get(ctx, resp.InvocationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != invocation.StatusDenied {
+		t.Fatalf("stored status %q, want denied", got.Status)
+	}
 }
