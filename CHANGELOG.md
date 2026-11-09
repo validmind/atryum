@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `policy.Holds(when, call)` reports whether conditions hold for a call in
+  every pass `Evaluate` takes: as sent, cleaned up, and with paths cleaned
+  too. `Evaluate` needs one pass to match, which makes a deny stricter; an
+  embedder that lets a person allow calls by what they say (Agent Authority's
+  session approvals) needs every pass, so that `args.path prefix /tmp/` does
+  not allow `/tmp/../etc/passwd` or `/tmp/%2E%2E/etc/passwd`.
 - `WithUpstreamCredentials` lets an embedding program choose the credential
   for each upstream contact. Atryum asks it, with the verified caller (agent
   ID, issuer, auth method, key ID) and why it is calling (`list`, `call`,
