@@ -6,6 +6,7 @@ on:
     paths:
       - "cmd/**"
       - "internal/**"
+      - "pkg/**"
       - "go.mod"
       - "go.sum"
       - "Justfile"
@@ -14,6 +15,7 @@ on:
     paths:
       - "cmd/**"
       - "internal/**"
+      - "pkg/**"
       - "go.mod"
       - "go.sum"
       - "Justfile"
