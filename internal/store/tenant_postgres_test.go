@@ -192,4 +192,43 @@ func TestPostgresCheckRowSecurityBinds(t *testing.T) {
 	if err := CheckRowSecurityBinds(context.Background(), admin); err == nil || !strings.Contains(err.Error(), "bypasses row-level security") {
 		t.Fatalf("a superuser: %v, want refused", err)
 	}
+
+	// A login that owns a table, through a role, without being a superuser.
+	var dbName string
+	if err := app.QueryRow(`SELECT current_database()`).Scan(&dbName); err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.Path = "/" + dbName
+	onDB, err := sql.Open("pgx", u.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer onDB.Close()
+	owner, member := dbName+"_owner", dbName+"_owner_member"
+	t.Cleanup(func() {
+		onDB.Exec(`ALTER TABLE mcp_servers OWNER TO CURRENT_USER`)
+		onDB.Exec(`DROP ROLE IF EXISTS ` + member + `, ` + owner)
+	})
+	for _, q := range []string{
+		`CREATE ROLE ` + owner + ` NOLOGIN NOSUPERUSER`,
+		`ALTER TABLE mcp_servers OWNER TO ` + owner,
+		`CREATE ROLE ` + member + ` LOGIN PASSWORD 'app' IN ROLE ` + owner,
+	} {
+		if _, err := onDB.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	u.User = url.UserPassword(member, "app")
+	asOwner, err := sql.Open("pgx", u.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer asOwner.Close()
+	if err := CheckRowSecurityBinds(context.Background(), asOwner); err == nil || !strings.Contains(err.Error(), "bypasses row-level security") {
+		t.Fatalf("a member of a table's owner: %v, want refused", err)
+	}
 }
