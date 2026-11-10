@@ -334,13 +334,23 @@ connection only the rows of the tenant in its `app.tenant_id` setting.
   pool sets `app.tenant_id` from the context before each statement or
   transaction, and a transaction refuses a statement for another tenant. A
   context with no tenant acts for `default`, which is all a single-tenant
-  Atryum ever uses.
+  Atryum ever uses, unless the embedding program sets `WithRequestTenant`:
+  then it is an error (`ErrNoTenant`), so work that lost its tenant stops.
+- To serve many tenants, an embedding program sets `WithRequestTenant`. Every
+  agent route asks it which tenant a request acts for before anything
+  authenticates it, so the agent key lookup already runs as that tenant and
+  another tenant's key is unknown. `WithTenants` lists the tenants for work
+  no request starts (Managed Agents sessions).
+- The config file's `[[upstreams]]` belong to `default`. Another tenant uses
+  only the servers stored for it.
 - Open any pool of your own on Atryum's tables with `atryum.OpenPostgres`, which
   does the same. A plain pool sets no tenant, so it reads no rows and its
   inserts fail.
 - Row-level security binds only a role that doesn't own the tables and doesn't
   have `BYPASSRLS`. Connect as a separate application role; the owner sees
-  every tenant.
+  every tenant. With `WithRequestTenant` set, Atryum refuses to start as a
+  superuser, a `BYPASSRLS` role or an owner of the tables, or as a member of
+  one.
 - Needs PostgreSQL 15 or later. The tenant is a session setting, so don't put a
   transaction-mode pooler (PgBouncer in transaction mode) between Atryum and
   the database.

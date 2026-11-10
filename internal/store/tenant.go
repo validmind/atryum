@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -51,8 +53,46 @@ type tenantConn struct {
 	inTx   bool
 }
 
+// requireTenant makes a context that names no tenant an error instead of
+// acting for tenant.Default. It is per process, like the tenants a process
+// serves: Main sets it, after migrating, when the embedding program resolves
+// a tenant per request.
+var requireTenant atomic.Bool
+
+// RequireTenant turns requireTenant on.
+func RequireTenant() { requireTenant.Store(true) }
+
+// CheckRowSecurityBinds refuses a login that row-level security doesn't
+// bind, or that can SET ROLE to one it doesn't: a superuser, a role with
+// BYPASSRLS, or a table's owner, directly or through membership (NOINHERIT
+// included). Through such a login every tenant reads every other's rows.
+func CheckRowSecurityBinds(ctx context.Context, db *sql.DB) error {
+	var who string
+	var unbound bool
+	err := db.QueryRowContext(ctx, `SELECT current_user,
+		EXISTS (SELECT 1 FROM pg_roles r WHERE (r.rolsuper OR r.rolbypassrls) AND pg_has_role(current_user, r.oid, 'MEMBER'))
+		OR EXISTS (SELECT 1 FROM pg_class c WHERE c.relrowsecurity AND pg_has_role(current_user, c.relowner, 'MEMBER'))`).Scan(&who, &unbound)
+	if err != nil {
+		return err
+	}
+	if unbound {
+		return fmt.Errorf("login %q bypasses row-level security (a superuser, BYPASSRLS, or an owner of the tables), so tenants would read each other's rows: serve as a login that owns nothing", who)
+	}
+	return nil
+}
+
+// ErrNoTenant is returned for a statement whose context names no tenant once
+// RequireTenant is on.
+var ErrNoTenant = errors.New("store: the context names no tenant")
+
 func (c *tenantConn) use(ctx context.Context) error {
-	id := tenant.From(ctx)
+	id, ok := tenant.Lookup(ctx)
+	if !ok {
+		if requireTenant.Load() {
+			return ErrNoTenant
+		}
+		id = tenant.Default
+	}
 	if id == c.tenant {
 		return nil
 	}

@@ -91,6 +91,8 @@ type options struct {
 	resolveHooks        []func(ResolvePending)
 	dbPool              DBPool
 	upstreamCredentials UpstreamCredentials
+	requestTenant       RequestTenant
+	tenants             func(context.Context) ([]string, error)
 }
 
 type extensionMigrations struct {
@@ -281,4 +283,50 @@ func buildOptions(opts []Option) options {
 		opt(&o)
 	}
 	return o
+}
+
+// RequestTenant names the tenant an agent request acts for, from what the
+// request carries (its bearer, for example), before Atryum authenticates it.
+// It returns "" for a credential it doesn't know, which any caller can send,
+// and an error when it fails (a database it can't reach): both get 401, and
+// an error or a panic is logged.
+type RequestTenant func(r *http.Request) (string, error)
+
+// WithRequestTenant lets one Atryum serve many tenants. Every agent route
+// (/mcp/, /api/v1/invocations, /api/v1/external/*, /api/v1/agent/*) asks f
+// first and runs the request as that tenant (pkg/tenant), so row-level
+// security scopes the key lookup and everything after it; a request f
+// can't place gets 401. It also makes a missing tenant an error: once
+// migrations have run, a query whose context names no tenant fails instead
+// of acting for tenant.Default, so work that loses its tenant stops rather
+// than reading or writing the default tenant's rows. Atryum's own startup
+// and background work name tenant.Default, or each tenant (WithTenants).
+//
+// A JWT's tenant usually comes from its issuer: with an IdP configured
+// ([[auth]]), f may read the issuer from the unverified token, since Atryum
+// verifies the token against that issuer next and a forged one fails.
+// Without one, Atryum verifies only agent keys, so place requests by them.
+//
+// It needs PostgreSQL, whose row-level security keeps tenants apart, and a
+// login that security binds: Main refuses to start on SQLite, or as a
+// superuser, a role with BYPASSRLS, or an owner of the tables (or a member
+// of one). Migrate as the owner and serve as another login.
+//
+// The missing-tenant error binds every query on Atryum's pool, the
+// embedding program's included: a WithDatabase hook, a WithRoutes or
+// WithAuthenticatedRoutes handler, and the program's own startup and
+// background work must name their tenant (tenant.With). Routes no request
+// tenant reaches fail too: Atryum's operator API, UI and OAuth connect
+// flow, and /agent_ids, /invocations/ and /models/, which answer 500. Mount
+// them only for one tenant (WithDecider leaves them out).
+func WithRequestTenant(f RequestTenant) Option {
+	return func(o *options) { o.requestTenant = f }
+}
+
+// WithTenants tells Atryum which tenants exist, for the work no request
+// starts: Claude Managed Agents sessions are resumed and discovered in each
+// tenant f lists, as that tenant. Without it, that work covers only
+// tenant.Default. f runs with a context that names tenant.Default.
+func WithTenants(f func(ctx context.Context) ([]string, error)) Option {
+	return func(o *options) { o.tenants = f }
 }

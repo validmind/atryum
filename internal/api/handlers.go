@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -35,6 +36,7 @@ import (
 	"github.com/validmind/atryum/internal/store"
 	"github.com/validmind/atryum/internal/version"
 	"github.com/validmind/atryum/pkg/authz"
+	"github.com/validmind/atryum/pkg/tenant"
 )
 
 //go:embed web/*
@@ -205,6 +207,7 @@ type Handler struct {
 	agentMembersRepo agentMembersRepo
 	apiKeysRepo      apiKeysRepo
 	keyResolver      auth.AgentKeyResolver
+	requestTenant    func(*http.Request) (string, error)
 	authorizer       authz.Authorizer
 	userProvisioner  auth.UserProvisioner
 
@@ -1043,6 +1046,14 @@ func (h *Handler) SetAgentKeyResolver(r auth.AgentKeyResolver) {
 	h.keyResolver = r
 }
 
+// SetRequestTenant makes every agent runtime route ask f which tenant a
+// request acts for before anything authenticates it, and run the request as
+// that tenant: the key lookup, the decider, the event hook and the upstream
+// call. A request f returns an error or no tenant for gets 401.
+func (h *Handler) SetRequestTenant(f func(*http.Request) (string, error)) {
+	h.requestTenant = f
+}
+
 // SetAuthz installs the operator-API authorizer and the user provisioner
 // consulted by the operator auth middleware. When authorizer is nil the
 // handler falls back to authz.Default over the installed membership store.
@@ -1277,6 +1288,7 @@ func (h *Handler) agentRuntimeHandler(next http.Handler) http.Handler {
 		auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug, KeyResolver: h.keyResolver},
 	)(next)
 	handler = h.noAuthAgentIDHint(handler)
+	handler = h.withRequestTenant(handler)
 	if h.keyResolver != nil {
 		return handler
 	}
@@ -1290,6 +1302,45 @@ func (h *Handler) agentRuntimeHandler(next http.Handler) http.Handler {
 		}
 		handler.ServeHTTP(w, r)
 	})
+}
+
+// withRequestTenant runs next as the tenant requestTenant names (see
+// SetRequestTenant). It wraps the auth middleware, so the key lookup already
+// runs as that tenant, and a key from another tenant is unknown.
+func (h *Handler) withRequestTenant(next http.Handler) http.Handler {
+	if h.requestTenant == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, err := h.placeRequest(r)
+		if err != nil || id == "" {
+			// "" is a credential the hook doesn't know, which any caller can
+			// send; an error is the hook failing, which an operator must see.
+			if err != nil {
+				log.Printf("request tenant: %s %s: %v", r.Method, r.URL.Path, err)
+			}
+			if h.authValidator != nil {
+				// The challenge an MCP client follows to find where to sign
+				// in, as the auth middleware writes it.
+				auth.Challenge(w, r, h.authValidator, "/.well-known/oauth-protected-resource", "unknown credential")
+				return
+			}
+			writeError(w, http.StatusUnauthorized, "unknown credential")
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(tenant.With(r.Context(), id)))
+	})
+}
+
+// placeRequest calls requestTenant, turning a panic into an error so a
+// faulty hook answers 401 like any request it can't place.
+func (h *Handler) placeRequest(r *http.Request) (id string, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			id, err = "", fmt.Errorf("panicked: %v\n%s", p, debug.Stack())
+		}
+	}()
+	return h.requestTenant(r)
 }
 
 func (h *Handler) noAuthAgentIDHint(next http.Handler) http.Handler {
@@ -5228,10 +5279,20 @@ func (h *Handler) lookupClientInfo(r *http.Request) (clientInfoSnapshot, bool) {
 }
 
 // sessionKeyFromRequest produces a best-effort identifier for the agent
-// session originating this HTTP request. Prefers the standard MCP
-// `Mcp-Session-Id` header when the client sets it; falls back to remote
-// IP + User-Agent which is usually distinct enough for local dev.
+// session originating this HTTP request, within the request's tenant.
+// Prefers the standard MCP `Mcp-Session-Id` header when the client sets it;
+// falls back to remote IP + User-Agent which is usually distinct enough for
+// local dev. Both are the client's to choose, so the tenant leads the key:
+// one tenant's session never stands for another's.
 func sessionKeyFromRequest(r *http.Request) string {
+	key := sessionKeyWithinTenant(r)
+	if key == "" {
+		return ""
+	}
+	return tenant.From(r.Context()) + "\x00" + key
+}
+
+func sessionKeyWithinTenant(r *http.Request) string {
 	if v := strings.TrimSpace(r.Header.Get("Mcp-Session-Id")); v != "" {
 		return "sid:" + v
 	}

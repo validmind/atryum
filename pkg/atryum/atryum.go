@@ -37,6 +37,7 @@ import (
 	"github.com/validmind/atryum/internal/store"
 	"github.com/validmind/atryum/internal/telemetry"
 	"github.com/validmind/atryum/pkg/authz"
+	"github.com/validmind/atryum/pkg/tenant"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
@@ -255,6 +256,19 @@ func runServer(args []string, o options) error {
 	if err := migrate(db, dialect, o); err != nil {
 		return err
 	}
+	if o.requestTenant != nil {
+		if dialect != store.DialectPostgres {
+			// Only PostgreSQL's row-level security keeps tenants apart.
+			return fmt.Errorf("WithRequestTenant needs PostgreSQL: SQLite holds one tenant")
+		}
+		if err := store.CheckRowSecurityBinds(context.Background(), db); err != nil {
+			return fmt.Errorf("WithRequestTenant: %w", err)
+		}
+		store.RequireTenant() // see WithRequestTenant
+	}
+	// Startup work acts for the default tenant, by name: with RequireTenant
+	// on, a context that names none can't query.
+	defaultCtx := tenant.With(context.Background(), tenant.Default)
 	for _, hook := range o.databaseHooks {
 		hook(db, dialect == store.DialectPostgres)
 	}
@@ -340,9 +354,9 @@ func runServer(args []string, o options) error {
 
 	// Attempt startup sync when DB settings are already configured.
 	{
-		startupSettings, _ := agentSyncSettingsRepo.Get(context.Background())
+		startupSettings, _ := agentSyncSettingsRepo.Get(defaultCtx)
 		if backendClient != nil && startupSettings.OrgCUID != "" && startupSettings.AgentRecordTypeSlug != "" {
-			if err := syncAgents(context.Background()); err != nil {
+			if err := syncAgents(defaultCtx); err != nil {
 				log.Printf("agent sync failed: %v", err)
 			}
 		}
@@ -352,7 +366,7 @@ func runServer(args []string, o options) error {
 	if o.upstreamCredentials != nil {
 		resolver = resolver.WithCredentialProvider(upstreamCredentialProvider(o.upstreamCredentials))
 	}
-	if err := resolver.BootstrapIfEmpty(context.Background()); err != nil {
+	if err := resolver.BootstrapIfEmpty(defaultCtx); err != nil {
 		return fmt.Errorf("bootstrap servers: %w", err)
 	}
 
@@ -422,7 +436,7 @@ func runServer(args []string, o options) error {
 	}
 	serverOperator := api.NewServerOperatorService(serverRepo, oauthRepo, client, 5*time.Second, cfg.Server.PublicBaseURL)
 	if *initServers {
-		if err := initEnabledServerStatuses(context.Background(), serverRepo, serverOperator); err != nil {
+		if err := initEnabledServerStatuses(defaultCtx, serverRepo, serverOperator); err != nil {
 			return fmt.Errorf("init servers: %w", err)
 		}
 	}
@@ -434,8 +448,11 @@ func runServer(args []string, o options) error {
 	}
 	handler := api.NewHandler(service, serverOperator, policyRegistry, rulesRepo, agentsRepo, agentSyncSettingsRepo, llmConfigsRepo, syncAgentsFn, backendClient, localEvaluator)
 	handler.SetManagedAgentBindings(managedAgentBindingRepo)
-	warnIdentityConflicts(context.Background(), agentsRepo, managedAgentBindingRepo)
+	warnIdentityConflicts(defaultCtx, agentsRepo, managedAgentBindingRepo)
 	handler.SetIdentityStores(usersRepo, agentMembersRepo, apiKeysRepo)
+	if o.requestTenant != nil {
+		handler.SetRequestTenant(o.requestTenant)
+	}
 	if o.agentAPIKeysEnabled() {
 		handler.SetAgentKeyResolver(api.NewAgentKeyResolver(apiKeysRepo, agentsRepo))
 	} else {
@@ -528,7 +545,10 @@ func runServer(args []string, o options) error {
 		}
 		managedSvc.SetInstanceName(resolveInstanceIdentity(cfg.Server))
 		managedSvc.SetBindings(&managedBindingStoreAdapter{repo: managedAgentBindingRepo})
-		if err := managedSvc.Start(context.Background()); err != nil {
+		if o.tenants != nil {
+			managedSvc.SetTenants(o.tenants)
+		}
+		if err := managedSvc.Start(defaultCtx); err != nil {
 			return fmt.Errorf("start managed agents bridge: %w", err)
 		}
 		handler.SetManagedAgents(managedSvc)

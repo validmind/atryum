@@ -2,6 +2,7 @@ package managedagents
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -64,8 +65,12 @@ type Service struct {
 	rootCtx context.Context
 	cancel  context.CancelFunc
 
+	// tenants lists the tenants whose sessions and bindings are watched;
+	// nil means only tenant.Default.
+	tenants func(context.Context) ([]string, error)
+
 	mu       sync.Mutex
-	watchers map[string]context.CancelFunc
+	watchers map[string]context.CancelFunc // by watcherKey
 	wg       sync.WaitGroup
 }
 
@@ -127,24 +132,61 @@ func (s *Service) SetInstanceName(name string) {
 	s.instanceName = name
 }
 
-// Start resumes watching every previously-registered session. It is safe to
-// call once at startup.
+// SetTenants makes Start and discovery cover every tenant f lists, each
+// tenant's sessions and bindings read and watched as that tenant. Without it
+// only tenant.Default is covered. Call before Start.
+func (s *Service) SetTenants(f func(context.Context) ([]string, error)) {
+	s.tenants = f
+}
+
+// eachTenant runs fn as each tenant SetTenants lists, or as tenant.Default.
+func (s *Service) eachTenant(ctx context.Context, fn func(context.Context) error) error {
+	ids := []string{tenant.Default}
+	if s.tenants != nil {
+		var err error
+		if ids, err = s.tenants(tenant.With(ctx, tenant.Default)); err != nil {
+			return fmt.Errorf("list tenants: %w", err)
+		}
+	}
+	var errs []error
+	for _, id := range ids {
+		if err := fn(tenant.With(ctx, id)); err != nil {
+			errs = append(errs, fmt.Errorf("tenant %s: %w", id, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// watcherKey keys a watcher by its tenant and session: one tenant's session
+// never replaces another's watcher.
+func watcherKey(ctx context.Context, sessionID string) string {
+	return tenant.From(ctx) + "\x00" + sessionID
+}
+
+// Start resumes watching every previously-registered session, in every
+// tenant. It is safe to call once at startup.
 func (s *Service) Start(ctx context.Context) error {
 	s.rootCtx, s.cancel = context.WithCancel(context.Background())
-	regs, err := s.sessions.List(ctx)
-	if err != nil {
-		return fmt.Errorf("list managed-agent sessions: %w", err)
-	}
 	started := 0
-	for _, reg := range regs {
-		acct, ok := s.accounts[reg.Account]
-		if !ok {
-			slog.Warn("managed agents: skipping session for unknown account", "session_id", reg.SessionID, "account", reg.Account)
-			continue
+	err := s.eachTenant(ctx, func(ctx context.Context) error {
+		regs, err := s.sessions.List(ctx)
+		if err != nil {
+			return fmt.Errorf("list managed-agent sessions: %w", err)
 		}
-		reg = s.rewindCursorIfParkedOnPendingAction(ctx, reg, acct.client)
-		s.startWatcher(ctx, reg)
-		started++
+		for _, reg := range regs {
+			acct, ok := s.accounts[reg.Account]
+			if !ok {
+				slog.Warn("managed agents: skipping session for unknown account", "session_id", reg.SessionID, "account", reg.Account)
+				continue
+			}
+			reg = s.rewindCursorIfParkedOnPendingAction(ctx, reg, acct.client)
+			s.startWatcher(ctx, reg)
+			started++
+		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 	if s.bindings != nil {
 		s.startDiscovery()
@@ -214,9 +256,9 @@ func (s *Service) DeleteSession(ctx context.Context, sessionID string) error {
 		return err
 	}
 	s.mu.Lock()
-	if cancel, ok := s.watchers[sessionID]; ok {
+	if cancel, ok := s.watchers[watcherKey(ctx, sessionID)]; ok {
 		cancel()
-		delete(s.watchers, sessionID)
+		delete(s.watchers, watcherKey(ctx, sessionID))
 	}
 	s.mu.Unlock()
 	return nil
@@ -235,9 +277,9 @@ func (s *Service) ClearSessions(ctx context.Context) (int, error) {
 			return cleared, err
 		}
 		s.mu.Lock()
-		if cancel, ok := s.watchers[session.SessionID]; ok {
+		if cancel, ok := s.watchers[watcherKey(ctx, session.SessionID)]; ok {
 			cancel()
-			delete(s.watchers, session.SessionID)
+			delete(s.watchers, watcherKey(ctx, session.SessionID))
 		}
 		s.mu.Unlock()
 		cleared++
@@ -259,7 +301,15 @@ func (s *Service) startDiscovery() {
 func (s *Service) discoveryLoop(ctx context.Context) {
 	// Discover immediately so the UI binding becomes active without waiting for
 	// the first tick.
-	s.discoverSessions(ctx)
+	discover := func() {
+		if err := s.eachTenant(ctx, func(ctx context.Context) error {
+			s.discoverSessions(ctx)
+			return nil
+		}); err != nil {
+			slog.Warn("managed agents: discovery", "error", err)
+		}
+	}
+	discover()
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
@@ -267,7 +317,7 @@ func (s *Service) discoveryLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.discoverSessions(ctx)
+			discover()
 		}
 	}
 }
@@ -576,11 +626,12 @@ func (s *Service) startWatcher(ctx context.Context, reg SessionRegistration) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if cancel, ok := s.watchers[reg.SessionID]; ok {
+	key := watcherKey(ctx, reg.SessionID)
+	if cancel, ok := s.watchers[key]; ok {
 		cancel() // replace any existing watcher
 	}
 	ctx, cancel := context.WithCancel(tenant.With(s.rootCtx, tenant.From(ctx)))
-	s.watchers[reg.SessionID] = cancel
+	s.watchers[key] = cancel
 	w := &watcher{svc: s, acct: acct, reg: reg, lastEventID: reg.LastEventID, pending: make(map[string]pendingCall)}
 	s.wg.Add(1)
 	go func() {
