@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -193,7 +194,9 @@ func TestPostgresCheckRowSecurityBinds(t *testing.T) {
 		t.Fatalf("a superuser: %v, want refused", err)
 	}
 
-	// A login that owns a table, through a role, without being a superuser.
+	// Logins that aren't superusers: a member of a role that owns a table,
+	// and one with BYPASSRLS. Roles are cluster-wide, so they get a random
+	// password and are dropped before the test's connection closes.
 	var dbName string
 	if err := app.QueryRow(`SELECT current_database()`).Scan(&dbName); err != nil {
 		t.Fatal(err)
@@ -208,27 +211,34 @@ func TestPostgresCheckRowSecurityBinds(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer onDB.Close()
-	owner, member := dbName+"_owner", dbName+"_owner_member"
-	t.Cleanup(func() {
-		onDB.Exec(`ALTER TABLE mcp_servers OWNER TO CURRENT_USER`)
-		onDB.Exec(`DROP ROLE IF EXISTS ` + member + `, ` + owner)
-	})
+	owner, member, bypass, pw := dbName+"_owner", dbName+"_owner_member", dbName+"_bypass", rand.Text()
+	defer func() {
+		for _, q := range []string{`ALTER TABLE mcp_servers OWNER TO CURRENT_USER`, `DROP ROLE IF EXISTS ` + member + `, ` + bypass + `, ` + owner} {
+			if _, err := onDB.Exec(q); err != nil {
+				t.Errorf("%s: %v", q, err)
+			}
+		}
+	}()
 	for _, q := range []string{
 		`CREATE ROLE ` + owner + ` NOLOGIN NOSUPERUSER`,
 		`ALTER TABLE mcp_servers OWNER TO ` + owner,
-		`CREATE ROLE ` + member + ` LOGIN PASSWORD 'app' IN ROLE ` + owner,
+		`CREATE ROLE ` + member + ` LOGIN PASSWORD '` + pw + `' IN ROLE ` + owner,
+		`CREATE ROLE ` + bypass + ` LOGIN BYPASSRLS PASSWORD '` + pw + `'`,
 	} {
 		if _, err := onDB.Exec(q); err != nil {
 			t.Fatalf("%s: %v", q, err)
 		}
 	}
-	u.User = url.UserPassword(member, "app")
-	asOwner, err := sql.Open("pgx", u.String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer asOwner.Close()
-	if err := CheckRowSecurityBinds(context.Background(), asOwner); err == nil || !strings.Contains(err.Error(), "bypasses row-level security") {
-		t.Fatalf("a member of a table's owner: %v, want refused", err)
+	for name, login := range map[string]string{"a member of a table's owner": member, "a BYPASSRLS login": bypass} {
+		u.User = url.UserPassword(login, pw)
+		db, err := sql.Open("pgx", u.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = CheckRowSecurityBinds(context.Background(), db)
+		db.Close()
+		if err == nil || !strings.Contains(err.Error(), "bypasses row-level security") {
+			t.Errorf("%s: %v, want refused", name, err)
+		}
 	}
 }
