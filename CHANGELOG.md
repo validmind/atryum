@@ -43,9 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   another tenant is unknown, and a request the program can't place gets
   `401`, with the `WWW-Authenticate` challenge MCP clients follow to sign in
   when an IdP is configured. With it set, a query whose context names no
-  tenant fails (`ErrNoTenant`) instead of acting for the default tenant, so
-  the operator API, UI and OAuth connect flow, which name none, fail too. It
-  needs PostgreSQL; Atryum refuses it on SQLite.
+  tenant fails (`ErrNoTenant`) instead of acting for the default tenant. That
+  includes the embedding program's own queries on Atryum's pool, and the
+  routes no request tenant reaches: the operator API, UI and OAuth connect
+  flow, and `/agent_ids`, `/invocations/` and `/models/` (`500`). It needs
+  PostgreSQL and a login row-level security binds: Atryum refuses to start
+  on SQLite, or as a superuser, a `BYPASSRLS` role or an owner of the
+  tables. A hook that errors or panics is logged; one that returns "" for
+  an unknown credential isn't.
 - `WithTenants` lists the tenants for work no request starts: Claude Managed
   Agents sessions are resumed and discovered in every tenant, as that
   tenant. Without it, as before, only the default tenant's.

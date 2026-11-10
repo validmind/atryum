@@ -261,6 +261,9 @@ func runServer(args []string, o options) error {
 			// Only PostgreSQL's row-level security keeps tenants apart.
 			return fmt.Errorf("WithRequestTenant needs PostgreSQL: SQLite holds one tenant")
 		}
+		if err := store.CheckRowSecurityBinds(context.Background(), db); err != nil {
+			return fmt.Errorf("WithRequestTenant: %w", err)
+		}
 		store.RequireTenant() // see WithRequestTenant
 	}
 	// Startup work acts for the default tenant, by name: with RequireTenant

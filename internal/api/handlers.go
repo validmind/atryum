@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -1313,8 +1314,10 @@ func (h *Handler) withRequestTenant(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, err := h.placeRequest(r)
 		if err != nil || id == "" {
-			if err != nil && h.debug {
-				log.Printf("request tenant: %v", err)
+			// "" is a credential the hook doesn't know, which any caller can
+			// send; an error is the hook failing, which an operator must see.
+			if err != nil {
+				log.Printf("request tenant: %s %s: %v", r.Method, r.URL.Path, err)
 			}
 			if h.authValidator != nil {
 				// The challenge an MCP client follows to find where to sign
@@ -1334,7 +1337,7 @@ func (h *Handler) withRequestTenant(next http.Handler) http.Handler {
 func (h *Handler) placeRequest(r *http.Request) (id string, err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			id, err = "", fmt.Errorf("request tenant panicked: %v", p)
+			id, err = "", fmt.Errorf("panicked: %v\n%s", p, debug.Stack())
 		}
 	}()
 	return h.requestTenant(r)

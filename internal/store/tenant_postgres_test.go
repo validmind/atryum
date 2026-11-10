@@ -172,3 +172,24 @@ func TestPostgresRequireTenant(t *testing.T) {
 		t.Fatalf("the default tenant, by name: %v", err)
 	}
 }
+
+// Main refuses WithRequestTenant through a login row-level security doesn't
+// bind: the test's admin (a superuser) is refused, the tenant login isn't.
+func TestPostgresCheckRowSecurityBinds(t *testing.T) {
+	app := openTenantTestDB(t)
+	if err := CheckRowSecurityBinds(context.Background(), app); err != nil {
+		t.Fatalf("the tenant login: %v, want accepted", err)
+	}
+	dsn := os.Getenv("ATRYUM_POSTGRES_TEST_DSN")
+	if dsn == "" {
+		dsn = localPostgresTestDSN
+	}
+	admin, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	if err := CheckRowSecurityBinds(context.Background(), admin); err == nil || !strings.Contains(err.Error(), "bypasses row-level security") {
+		t.Fatalf("a superuser: %v, want refused", err)
+	}
+}

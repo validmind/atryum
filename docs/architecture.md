@@ -348,7 +348,9 @@ connection only the rows of the tenant in its `app.tenant_id` setting.
   inserts fail.
 - Row-level security binds only a role that doesn't own the tables and doesn't
   have `BYPASSRLS`. Connect as a separate application role; the owner sees
-  every tenant.
+  every tenant. With `WithRequestTenant` set, Atryum refuses to start as a
+  superuser, a `BYPASSRLS` role or an owner of the tables, or as a member of
+  one.
 - Needs PostgreSQL 15 or later. The tenant is a session setting, so don't put a
   transaction-mode pooler (PgBouncer in transaction mode) between Atryum and
   the database.

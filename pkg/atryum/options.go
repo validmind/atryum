@@ -287,7 +287,9 @@ func buildOptions(opts []Option) options {
 
 // RequestTenant names the tenant an agent request acts for, from what the
 // request carries (its bearer, for example), before Atryum authenticates it.
-// It returns an error, or "", for a request it can't place.
+// It returns "" for a credential it doesn't know, which any caller can send,
+// and an error when it fails (a database it can't reach): both get 401, and
+// an error or a panic is logged.
 type RequestTenant func(r *http.Request) (string, error)
 
 // WithRequestTenant lets one Atryum serve many tenants. Every agent route
@@ -303,9 +305,19 @@ type RequestTenant func(r *http.Request) (string, error)
 // A JWT's tenant usually comes from its issuer: with an IdP configured
 // ([[auth]]), f may read the issuer from the unverified token, since Atryum
 // verifies the token against that issuer next and a forged one fails.
-// Without one, Atryum verifies only agent keys, so place requests by them. It needs PostgreSQL, whose row-level security keeps tenants
-// apart: Main refuses it on SQLite. Atryum's operator API, UI and OAuth
-// connect flow name no tenant, so with this option set they fail: mount
+// Without one, Atryum verifies only agent keys, so place requests by them.
+//
+// It needs PostgreSQL, whose row-level security keeps tenants apart, and a
+// login that security binds: Main refuses to start on SQLite, or as a
+// superuser, a role with BYPASSRLS, or an owner of the tables (or a member
+// of one). Migrate as the owner and serve as another login.
+//
+// The missing-tenant error binds every query on Atryum's pool, the
+// embedding program's included: a WithDatabase hook, a WithRoutes or
+// WithAuthenticatedRoutes handler, and the program's own startup and
+// background work must name their tenant (tenant.With). Routes no request
+// tenant reaches fail too: Atryum's operator API, UI and OAuth connect
+// flow, and /agent_ids, /invocations/ and /models/, which answer 500. Mount
 // them only for one tenant (WithDecider leaves them out).
 func WithRequestTenant(f RequestTenant) Option {
 	return func(o *options) { o.requestTenant = f }

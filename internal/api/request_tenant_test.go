@@ -1,10 +1,13 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -46,23 +49,31 @@ func TestRequestTenantScopesAgentRoutes(t *testing.T) {
 	route := h.agentRuntimeHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ran = tenant.From(r.Context()) + "/" + auth.AgentIDFromContext(r.Context())
 	}))
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	for _, c := range []struct {
 		bearer, ran string
 		code        int
+		logs        string // a hook that fails is logged; an unknown credential isn't
 	}{
-		{"atr_acme", "acme/agent-acme", http.StatusOK},
-		{"atr_bank", "bank/agent-bank", http.StatusOK},
-		{"atr_unplaced", "", http.StatusUnauthorized},
-		{"atr_other", "", http.StatusUnauthorized},
-		{"atr_panic", "", http.StatusUnauthorized},
+		{"atr_acme", "acme/agent-acme", http.StatusOK, ""},
+		{"atr_bank", "bank/agent-bank", http.StatusOK, ""},
+		{"atr_unplaced", "", http.StatusUnauthorized, ""},
+		{"atr_other", "", http.StatusUnauthorized, "unknown issuer"},
+		{"atr_panic", "", http.StatusUnauthorized, "panicked: hook bug"},
 	} {
 		ran = ""
+		logged.Reset()
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest("POST", "/api/v1/external/invocations", nil)
 		r.Header.Set("Authorization", "Bearer "+c.bearer)
 		route.ServeHTTP(w, r)
 		if w.Code != c.code || ran != c.ran {
 			t.Errorf("%s: %d, ran %q; want %d, %q", c.bearer, w.Code, ran, c.code, c.ran)
+		}
+		if got := logged.String(); c.logs == "" && got != "" || !strings.Contains(got, c.logs) {
+			t.Errorf("%s: logged %q, want %q", c.bearer, got, c.logs)
 		}
 	}
 }
