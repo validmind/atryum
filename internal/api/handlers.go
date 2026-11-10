@@ -1311,7 +1311,7 @@ func (h *Handler) withRequestTenant(next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id, err := h.requestTenant(r)
+		id, err := h.placeRequest(r)
 		if err != nil || id == "" {
 			if err != nil && h.debug {
 				log.Printf("request tenant: %v", err)
@@ -1327,6 +1327,17 @@ func (h *Handler) withRequestTenant(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r.WithContext(tenant.With(r.Context(), id)))
 	})
+}
+
+// placeRequest calls requestTenant, turning a panic into an error so a
+// faulty hook answers 401 like any request it can't place.
+func (h *Handler) placeRequest(r *http.Request) (id string, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			id, err = "", fmt.Errorf("request tenant panicked: %v", p)
+		}
+	}()
+	return h.requestTenant(r)
 }
 
 func (h *Handler) noAuthAgentIDHint(next http.Handler) http.Handler {

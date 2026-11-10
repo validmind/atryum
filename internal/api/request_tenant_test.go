@@ -37,6 +37,8 @@ func TestRequestTenantScopesAgentRoutes(t *testing.T) {
 			return "bank", nil
 		case "Bearer atr_unplaced":
 			return "", nil
+		case "Bearer atr_panic":
+			panic("hook bug")
 		}
 		return "", errors.New("unknown issuer")
 	})
@@ -52,6 +54,7 @@ func TestRequestTenantScopesAgentRoutes(t *testing.T) {
 		{"atr_bank", "bank/agent-bank", http.StatusOK},
 		{"atr_unplaced", "", http.StatusUnauthorized},
 		{"atr_other", "", http.StatusUnauthorized},
+		{"atr_panic", "", http.StatusUnauthorized},
 	} {
 		ran = ""
 		w := httptest.NewRecorder()
