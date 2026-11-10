@@ -302,7 +302,10 @@ type RequestTenant func(r *http.Request) (string, error)
 //
 // A JWT's tenant usually comes from its issuer: f may read the issuer from
 // the unverified token, since Atryum verifies the token next and a forged
-// one fails. Atryum's operator routes and UI assume one tenant.
+// one fails. It needs PostgreSQL, whose row-level security keeps tenants
+// apart: Main refuses it on SQLite. Atryum's operator API, UI and OAuth
+// connect flow name no tenant, so with this option set they fail: mount
+// them only for one tenant (WithDecider leaves them out).
 func WithRequestTenant(f RequestTenant) Option {
 	return func(o *options) { o.requestTenant = f }
 }

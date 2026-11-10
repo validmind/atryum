@@ -257,6 +257,10 @@ func runServer(args []string, o options) error {
 		return err
 	}
 	if o.requestTenant != nil {
+		if dialect != store.DialectPostgres {
+			// Only PostgreSQL's row-level security keeps tenants apart.
+			return fmt.Errorf("WithRequestTenant needs PostgreSQL: SQLite holds one tenant")
+		}
 		store.RequireTenant() // see WithRequestTenant
 	}
 	// Startup work acts for the default tenant, by name: with RequireTenant

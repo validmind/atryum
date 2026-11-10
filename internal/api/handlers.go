@@ -1316,6 +1316,12 @@ func (h *Handler) withRequestTenant(next http.Handler) http.Handler {
 			if err != nil && h.debug {
 				log.Printf("request tenant: %v", err)
 			}
+			if h.authValidator != nil {
+				// The challenge an MCP client follows to find where to sign
+				// in, as the auth middleware writes it.
+				auth.Challenge(w, r, h.authValidator, "/.well-known/oauth-protected-resource", "unknown credential")
+				return
+			}
 			writeError(w, http.StatusUnauthorized, "unknown credential")
 			return
 		}
@@ -5259,10 +5265,20 @@ func (h *Handler) lookupClientInfo(r *http.Request) (clientInfoSnapshot, bool) {
 }
 
 // sessionKeyFromRequest produces a best-effort identifier for the agent
-// session originating this HTTP request. Prefers the standard MCP
-// `Mcp-Session-Id` header when the client sets it; falls back to remote
-// IP + User-Agent which is usually distinct enough for local dev.
+// session originating this HTTP request, within the request's tenant.
+// Prefers the standard MCP `Mcp-Session-Id` header when the client sets it;
+// falls back to remote IP + User-Agent which is usually distinct enough for
+// local dev. Both are the client's to choose, so the tenant leads the key:
+// one tenant's session never stands for another's.
 func sessionKeyFromRequest(r *http.Request) string {
+	key := sessionKeyWithinTenant(r)
+	if key == "" {
+		return ""
+	}
+	return tenant.From(r.Context()) + "\x00" + key
+}
+
+func sessionKeyWithinTenant(r *http.Request) string {
 	if v := strings.TrimSpace(r.Header.Get("Mcp-Session-Id")); v != "" {
 		return "sid:" + v
 	}

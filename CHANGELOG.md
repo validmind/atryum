@@ -41,8 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   authenticates anything, and runs the request as that tenant: the agent key
   lookup, the decider, the event hook and the upstream call. A key from
   another tenant is unknown, and a request the program can't place gets
-  `401`. With it set, a query whose context names no tenant fails
-  (`ErrNoTenant`) instead of acting for the default tenant.
+  `401`, with the `WWW-Authenticate` challenge MCP clients follow to sign in
+  when an IdP is configured. With it set, a query whose context names no
+  tenant fails (`ErrNoTenant`) instead of acting for the default tenant, so
+  the operator API, UI and OAuth connect flow, which name none, fail too. It
+  needs PostgreSQL; Atryum refuses it on SQLite.
 - `WithTenants` lists the tenants for work no request starts: Claude Managed
   Agents sessions are resumed and discovered in every tenant, as that
   tenant. Without it, as before, only the default tenant's.
@@ -59,6 +62,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Managed Agents watchers are keyed by tenant and session, so one tenant's
   session never replaces another tenant's watcher.
+- The MCP client name and version Atryum remembers from `initialize` are
+  keyed by tenant, so one tenant's client never labels another tenant's
+  calls when both come from the same address and User-Agent.
 
 ## [0.8.0] - 2026-11-05
 

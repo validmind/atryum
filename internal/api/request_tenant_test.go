@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/validmind/atryum/internal/auth"
@@ -60,5 +61,43 @@ func TestRequestTenantScopesAgentRoutes(t *testing.T) {
 		if w.Code != c.code || ran != c.ran {
 			t.Errorf("%s: %d, ran %q; want %d, %q", c.bearer, w.Code, ran, c.code, c.ran)
 		}
+	}
+}
+
+// The client info an initialize leaves is the tenant's own: another tenant's
+// request from the same address and User-Agent doesn't find it.
+func TestClientInfoIsPerTenant(t *testing.T) {
+	h := &Handler{clientInfoCache: map[string]clientInfoSnapshot{}}
+	req := func(id string) *http.Request {
+		r := httptest.NewRequest("POST", "/mcp/shared", nil)
+		r.RemoteAddr = "10.0.0.1:443" // the ingress, for every client
+		r.Header.Set("User-Agent", "mcp-sdk")
+		return r.WithContext(tenant.With(r.Context(), id))
+	}
+	h.recordInitializeClientInfo(req("acme"), []byte(`{"clientInfo": {"name": "AcmeOnlyClient", "version": "1"}}`))
+	if snap, ok := h.lookupClientInfo(req("bank")); ok {
+		t.Fatalf("bank found acme's client info: %+v", snap)
+	}
+	if snap, ok := h.lookupClientInfo(req("acme")); !ok || snap.Name != "AcmeOnlyClient" {
+		t.Fatalf("acme lost its own client info: %+v %v", snap, ok)
+	}
+}
+
+// With an IdP configured, the 401 for a request the hook can't place keeps
+// the challenge an MCP client follows to find where to sign in.
+func TestRequestTenantRefusalKeepsTheChallenge(t *testing.T) {
+	v, err := auth.NewValidator([]auth.Config{{Enabled: true, Issuer: "https://idp.test", Audience: "atryum", JWKSURL: "http://127.0.0.1:1"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{authValidator: v}
+	h.SetRequestTenant(func(*http.Request) (string, error) { return "", nil })
+	route := h.agentRuntimeHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("an unplaced request reached the route")
+	}))
+	w := httptest.NewRecorder()
+	route.ServeHTTP(w, httptest.NewRequest("POST", "/mcp/shared", nil))
+	if c := w.Header().Get("WWW-Authenticate"); w.Code != http.StatusUnauthorized || !strings.Contains(c, `resource_metadata="http://example.com/.well-known/oauth-protected-resource"`) {
+		t.Fatalf("%d, WWW-Authenticate %q; want 401 with the resource metadata", w.Code, c)
 	}
 }

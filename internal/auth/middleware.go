@@ -326,6 +326,18 @@ func challengeScope(v *Validator, ve *ValidationError) string {
 	return common
 }
 
+// Challenge answers 401 as the middleware does for a request it can't
+// authenticate: WWW-Authenticate names the protected-resource metadata
+// (RFC 9728), so an MCP client can find the authorization server and sign
+// in. A request with no bearer gets no error code, as in the middleware.
+func Challenge(w http.ResponseWriter, r *http.Request, v *Validator, resourceMetadataPath, description string) {
+	code := "invalid_token"
+	if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
+		code = ""
+	}
+	writeChallenge(w, http.StatusUnauthorized, description, code, absoluteURL(r, resourceMetadataPath), challengeScope(v, nil))
+}
+
 func writeChallenge(w http.ResponseWriter, status int, description string, errorCode string, resourceMetadataURL string, scope string) {
 	parts := []string{`Bearer realm="atryum"`}
 	if errorCode != "" {
