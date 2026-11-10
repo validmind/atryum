@@ -36,6 +36,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A `401` from an upstream on a tool call or a tool listing now reads "the
   upstream rejected the credential (HTTP 401)" instead of "unexpected end of
   JSON input", which is what an empty 401 body used to decode as.
+- `WithRequestTenant` lets one Atryum serve many tenants. Every agent route
+  asks the embedding program which tenant a request acts for, before it
+  authenticates anything, and runs the request as that tenant: the agent key
+  lookup, the decider, the event hook and the upstream call. A key from
+  another tenant is unknown, and a request the program can't place gets
+  `401`. With it set, a query whose context names no tenant fails
+  (`ErrNoTenant`) instead of acting for the default tenant.
+- `WithTenants` lists the tenants for work no request starts: Claude Managed
+  Agents sessions are resumed and discovered in every tenant, as that
+  tenant. Without it, as before, only the default tenant's.
+- `tenant.Lookup` reports whether a context names a tenant.
+
+### Security
+
+- The config file's `[[upstreams]]` belong to the default tenant. Before, a
+  tenant with no server of a given name fell back to the config upstream of
+  that name, with the config's credentials, and listed every config
+  upstream when it had no servers of its own.
+
+### Fixed
+
+- Managed Agents watchers are keyed by tenant and session, so one tenant's
+  session never replaces another tenant's watcher.
 
 ## [0.8.0] - 2026-11-05
 

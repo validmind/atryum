@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"errors"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -51,8 +53,27 @@ type tenantConn struct {
 	inTx   bool
 }
 
+// requireTenant makes a context that names no tenant an error instead of
+// acting for tenant.Default. It is per process, like the tenants a process
+// serves: Main sets it, after migrating, when the embedding program resolves
+// a tenant per request.
+var requireTenant atomic.Bool
+
+// RequireTenant turns requireTenant on.
+func RequireTenant() { requireTenant.Store(true) }
+
+// ErrNoTenant is returned for a statement whose context names no tenant once
+// RequireTenant is on.
+var ErrNoTenant = errors.New("store: the context names no tenant")
+
 func (c *tenantConn) use(ctx context.Context) error {
-	id := tenant.From(ctx)
+	id, ok := tenant.Lookup(ctx)
+	if !ok {
+		if requireTenant.Load() {
+			return ErrNoTenant
+		}
+		id = tenant.Default
+	}
 	if id == c.tenant {
 		return nil
 	}

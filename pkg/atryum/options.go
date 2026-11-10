@@ -91,6 +91,8 @@ type options struct {
 	resolveHooks        []func(ResolvePending)
 	dbPool              DBPool
 	upstreamCredentials UpstreamCredentials
+	requestTenant       RequestTenant
+	tenants             func(context.Context) ([]string, error)
 }
 
 type extensionMigrations struct {
@@ -281,4 +283,34 @@ func buildOptions(opts []Option) options {
 		opt(&o)
 	}
 	return o
+}
+
+// RequestTenant names the tenant an agent request acts for, from what the
+// request carries (its bearer, for example), before Atryum authenticates it.
+// It returns an error, or "", for a request it can't place.
+type RequestTenant func(r *http.Request) (string, error)
+
+// WithRequestTenant lets one Atryum serve many tenants. Every agent route
+// (/mcp/, /api/v1/invocations, /api/v1/external/*, /api/v1/agent/*) asks f
+// first and runs the request as that tenant (pkg/tenant), so row-level
+// security scopes the key lookup and everything after it; a request f
+// can't place gets 401. It also makes a missing tenant an error: once
+// migrations have run, a query whose context names no tenant fails instead
+// of acting for tenant.Default, so work that loses its tenant stops rather
+// than reading or writing the default tenant's rows. Atryum's own startup
+// and background work name tenant.Default, or each tenant (WithTenants).
+//
+// A JWT's tenant usually comes from its issuer: f may read the issuer from
+// the unverified token, since Atryum verifies the token next and a forged
+// one fails. Atryum's operator routes and UI assume one tenant.
+func WithRequestTenant(f RequestTenant) Option {
+	return func(o *options) { o.requestTenant = f }
+}
+
+// WithTenants tells Atryum which tenants exist, for the work no request
+// starts: Claude Managed Agents sessions are resumed and discovered in each
+// tenant f lists, as that tenant. Without it, that work covers only
+// tenant.Default. f runs with a context that names tenant.Default.
+func WithTenants(f func(ctx context.Context) ([]string, error)) Option {
+	return func(o *options) { o.tenants = f }
 }

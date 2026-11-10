@@ -35,6 +35,7 @@ import (
 	"github.com/validmind/atryum/internal/store"
 	"github.com/validmind/atryum/internal/version"
 	"github.com/validmind/atryum/pkg/authz"
+	"github.com/validmind/atryum/pkg/tenant"
 )
 
 //go:embed web/*
@@ -205,6 +206,7 @@ type Handler struct {
 	agentMembersRepo agentMembersRepo
 	apiKeysRepo      apiKeysRepo
 	keyResolver      auth.AgentKeyResolver
+	requestTenant    func(*http.Request) (string, error)
 	authorizer       authz.Authorizer
 	userProvisioner  auth.UserProvisioner
 
@@ -1043,6 +1045,14 @@ func (h *Handler) SetAgentKeyResolver(r auth.AgentKeyResolver) {
 	h.keyResolver = r
 }
 
+// SetRequestTenant makes every agent runtime route ask f which tenant a
+// request acts for before anything authenticates it, and run the request as
+// that tenant: the key lookup, the decider, the event hook and the upstream
+// call. A request f returns an error or no tenant for gets 401.
+func (h *Handler) SetRequestTenant(f func(*http.Request) (string, error)) {
+	h.requestTenant = f
+}
+
 // SetAuthz installs the operator-API authorizer and the user provisioner
 // consulted by the operator auth middleware. When authorizer is nil the
 // handler falls back to authz.Default over the installed membership store.
@@ -1277,6 +1287,7 @@ func (h *Handler) agentRuntimeHandler(next http.Handler) http.Handler {
 		auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug, KeyResolver: h.keyResolver},
 	)(next)
 	handler = h.noAuthAgentIDHint(handler)
+	handler = h.withRequestTenant(handler)
 	if h.keyResolver != nil {
 		return handler
 	}
@@ -1289,6 +1300,26 @@ func (h *Handler) agentRuntimeHandler(next http.Handler) http.Handler {
 			return
 		}
 		handler.ServeHTTP(w, r)
+	})
+}
+
+// withRequestTenant runs next as the tenant requestTenant names (see
+// SetRequestTenant). It wraps the auth middleware, so the key lookup already
+// runs as that tenant, and a key from another tenant is unknown.
+func (h *Handler) withRequestTenant(next http.Handler) http.Handler {
+	if h.requestTenant == nil {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, err := h.requestTenant(r)
+		if err != nil || id == "" {
+			if err != nil && h.debug {
+				log.Printf("request tenant: %v", err)
+			}
+			writeError(w, http.StatusUnauthorized, "unknown credential")
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(tenant.With(r.Context(), id)))
 	})
 }
 

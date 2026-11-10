@@ -409,10 +409,11 @@ func (r *Resolver) Lookup(ctx context.Context, name string) (Upstream, error) {
 			}
 		}
 	}
-	upstream, ok := r.bootstrap[name]
+	configured := r.configured(ctx)
+	upstream, ok := configured[name]
 	if !ok || !upstream.Enabled {
 		slug := EndpointSlug(name)
-		for _, candidate := range r.bootstrap {
+		for _, candidate := range configured {
 			if candidate.Enabled && EndpointSlug(candidate.Name) == slug {
 				return candidate, nil
 			}
@@ -459,7 +460,7 @@ func (r *Resolver) ListAll(ctx context.Context) ([]Upstream, error) {
 		}
 	}
 	var result []Upstream
-	for _, u := range r.bootstrap {
+	for _, u := range r.configured(ctx) {
 		if u.Enabled {
 			resolved, err := r.credential(ctx, u)
 			if err != nil {
@@ -469,6 +470,16 @@ func (r *Resolver) ListAll(ctx context.Context) ([]Upstream, error) {
 		}
 	}
 	return result, nil
+}
+
+// configured is the config file's [[upstreams]], which belong to the
+// default tenant: they carry the config's own credentials, so another
+// tenant falls back to none of them.
+func (r *Resolver) configured(ctx context.Context) map[string]Upstream {
+	if tenant.From(ctx) != tenant.Default {
+		return nil
+	}
+	return r.bootstrap
 }
 
 func (r *Resolver) BootstrapIfEmpty(ctx context.Context) error {
@@ -482,7 +493,7 @@ func (r *Resolver) BootstrapIfEmpty(ctx context.Context) error {
 	if count > 0 {
 		return nil
 	}
-	for _, upstream := range r.bootstrap {
+	for _, upstream := range r.configured(ctx) {
 		if err := r.store.CreateServer(ctx, upstream); err != nil {
 			return err
 		}

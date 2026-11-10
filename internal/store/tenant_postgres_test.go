@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -155,4 +156,19 @@ func openTenantTestDB(t *testing.T) *sql.DB {
 	t.Cleanup(func() { db.Close() })
 	db.SetMaxOpenConns(1) // one session, so each call has to switch tenants
 	return db
+}
+
+// With RequireTenant on, a statement whose context names no tenant fails
+// instead of acting for the default tenant.
+func TestPostgresRequireTenant(t *testing.T) {
+	db := openTenantTestDB(t)
+	RequireTenant()
+	t.Cleanup(func() { requireTenant.Store(false) })
+	servers := NewServerRepoWithDialect(db, DialectPostgres)
+	if _, err := servers.CountServers(context.Background()); !errors.Is(err, ErrNoTenant) {
+		t.Fatalf("no tenant: %v, want ErrNoTenant", err)
+	}
+	if _, err := servers.CountServers(tenant.With(context.Background(), tenant.Default)); err != nil {
+		t.Fatalf("the default tenant, by name: %v", err)
+	}
 }

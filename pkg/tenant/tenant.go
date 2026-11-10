@@ -17,12 +17,18 @@ func With(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, key{}, id)
 }
 
-// From returns the tenant ctx acts for, or Default.
-// ponytail: falls back to Default so single-tenant callers need no change;
-// make a missing tenant an error once an embedder runs more than one.
+// From returns the tenant ctx acts for, or Default. A program that runs
+// more than one tenant sets WithRequestTenant, and Atryum's connections then
+// refuse a context that names none instead of acting for Default.
 func From(ctx context.Context) string {
-	if id, _ := ctx.Value(key{}).(string); id != "" {
+	if id, ok := Lookup(ctx); ok {
 		return id
 	}
 	return Default
+}
+
+// Lookup returns the tenant ctx names, and whether it names one.
+func Lookup(ctx context.Context) (string, bool) {
+	id, _ := ctx.Value(key{}).(string)
+	return id, id != ""
 }

@@ -66,7 +66,7 @@ func TestClearSessionsStopsWatchersForSessionsDeletedBeforeAFailure(t *testing.T
 	stopped := map[string]bool{}
 	for _, sess := range store.sessions {
 		id := sess.SessionID
-		svc.watchers[id] = func() {
+		svc.watchers[watcherKey(context.Background(), id)] = func() {
 			mu.Lock()
 			stopped[id] = true
 			mu.Unlock()
@@ -141,5 +141,52 @@ func TestWatcherActsForRegisteringTenant(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("watcher never called the client")
+	}
+}
+
+// tenantSessions lists each tenant's own sessions, as row-level security would.
+type tenantSessions struct {
+	clearSessionsStore
+	byTenant map[string][]SessionRegistration
+}
+
+func (s *tenantSessions) List(ctx context.Context) ([]SessionRegistration, error) {
+	return s.byTenant[tenant.From(ctx)], nil
+}
+
+// Start resumes every tenant's sessions, each watched as its own tenant and
+// keyed apart, so one tenant's session never replaces another's watcher.
+func TestStartResumesEveryTenantsSessions(t *testing.T) {
+	client := tenantClient{seen: make(chan string, 64)}
+	store := &tenantSessions{byTenant: map[string][]SessionRegistration{
+		tenant.Default: {{SessionID: "sess_1", Account: "acct"}},
+		"acme":         {{SessionID: "sess_1", Account: "acct"}},
+	}}
+	svc, err := NewService(nil, store, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.accounts["acct"] = account{client: client}
+	svc.SetTenants(func(ctx context.Context) ([]string, error) {
+		return []string{tenant.Default, "acme"}, nil
+	})
+	defer svc.Close()
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	svc.mu.Lock()
+	n := len(svc.watchers)
+	svc.mu.Unlock()
+	if n != 2 {
+		t.Fatalf("%d watchers, want one per tenant", n)
+	}
+	seen := map[string]bool{}
+	for deadline := time.After(3 * time.Second); !seen["acme"] || !seen[tenant.Default]; {
+		select {
+		case id := <-client.seen:
+			seen[id] = true
+		case <-deadline:
+			t.Fatalf("watchers acted for %v, want default and acme", seen)
+		}
 	}
 }
