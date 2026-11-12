@@ -85,11 +85,11 @@ func Main(opts ...Option) {
 }
 
 // checkAgentAuth is WithRequireAgentAuth's startup check.
-func checkAgentAuth(cfg config.Config) error {
+func checkAgentAuth(cfg config.Config, issuerResolver bool) error {
 	if cfg.AuthDebug.SkipVerify || truthyEnv("ATRYUM_AUTH_DEBUG_SKIP_VERIFY") {
 		return errors.New("agent auth is required: auth_debug.skip_verify and ATRYUM_AUTH_DEBUG_SKIP_VERIFY are not allowed")
 	}
-	enabled := false
+	enabled := issuerResolver
 	for _, a := range cfg.Auth {
 		if !a.Enabled {
 			continue
@@ -107,6 +107,23 @@ func checkAgentAuth(cfg config.Config) error {
 		return errors.New("agent auth is required: configure at least one [[auth]] issuer with enabled = true")
 	}
 	return nil
+}
+
+// secureIssuers refuses a resolved issuer whose keys would come over plain
+// http, as checkAgentAuth does for [[auth]].
+func secureIssuers(f IssuerResolver) IssuerResolver {
+	return func(ctx context.Context, issuer string) (AuthConfig, bool, error) {
+		c, ok, err := f(ctx, issuer)
+		if err != nil || !ok {
+			return AuthConfig{}, false, err
+		}
+		for _, u := range []string{c.Issuer, c.JWKSURL} {
+			if u = strings.TrimSpace(u); u != "" && !secureOrLoopback(u) {
+				return AuthConfig{}, false, fmt.Errorf("%q must be an https URL (plain http only on loopback)", u)
+			}
+		}
+		return c, true, nil
+	}
 }
 
 func secureOrLoopback(raw string) bool {
@@ -192,7 +209,7 @@ func runServer(args []string, o options) error {
 		cfg.Server.DatabaseURL = o.databaseURL
 	}
 	if o.requireAgentAuth {
-		if err := checkAgentAuth(cfg); err != nil {
+		if err := checkAgentAuth(cfg, o.issuerResolver != nil); err != nil {
 			return err
 		}
 	}
@@ -481,10 +498,13 @@ func runServer(args []string, o options) error {
 	if err != nil {
 		return fmt.Errorf("auth: %w", err)
 	}
+	if o.issuerResolver != nil {
+		authValidator = authValidator.WithIssuerResolver(secureIssuers(o.issuerResolver))
+	}
 	if authValidator != nil {
 		handler.SetAuthValidator(authValidator)
 		userProvisioner.WithUserInfo(auth.NewUserInfoClient(authValidator, nil))
-		log.Printf("inbound auth enabled (%d issuer(s))", len(authValidator.Configs()))
+		log.Printf("inbound auth enabled (%d issuer(s), runtime issuers %t)", len(authValidator.Configs()), o.issuerResolver != nil)
 	} else {
 		log.Printf("inbound auth disabled (no [[auth]] section configured)")
 	}

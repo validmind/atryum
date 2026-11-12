@@ -341,6 +341,11 @@ connection only the rows of the tenant in its `app.tenant_id` setting.
   authenticates it, so the agent key lookup already runs as that tenant and
   another tenant's key is unknown. `WithTenants` lists the tenants for work
   no request starts (Managed Agents sessions).
+- `[[auth]]` issuers are read at startup. To add a tenant's agent-token issuer
+  while Atryum runs, set `WithIssuerResolver`: a token whose `iss` no
+  `[[auth]]` block names is looked up through it, for the request's tenant.
+  `[[auth]]` wins for its own issuers, a resolver error refuses the token, and
+  signing keys are cached per tenant and JWKS URL.
 - The config file's `[[upstreams]]` belong to `default`. Another tenant uses
   only the servers stored for it.
 - Open any pool of your own on Atryum's tables with `atryum.OpenPostgres`, which

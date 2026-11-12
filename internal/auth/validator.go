@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"slices"
 	"strconv"
@@ -14,13 +15,16 @@ import (
 	"time"
 
 	jwt "github.com/golang-jwt/jwt/v5"
+
+	"github.com/validmind/atryum/pkg/tenant"
 )
 
 // Validator validates incoming bearer tokens against one or more configured
 // authorization servers (e.g. Keycloak, Auth0). It is safe for concurrent use.
 type Validator struct {
 	configs []Config
-	caches  map[string]*keyCache // by issuer
+	resolve IssuerResolver
+	caches  map[string]*keyCache // by issuer; by tenant, issuer and JWKS URL for resolved issuers
 	client  *http.Client
 	mu      sync.Mutex
 	now     func() time.Time
@@ -91,10 +95,36 @@ func NewValidator(configs []Config, client *http.Client) (*Validator, error) {
 	if len(enabled) == 0 {
 		return nil, nil
 	}
+	return newValidator(enabled, client), nil
+}
+
+func newValidator(configs []Config, client *http.Client) *Validator {
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}
 	}
-	return &Validator{configs: enabled, caches: map[string]*keyCache{}, client: client, now: time.Now}, nil
+	return &Validator{configs: configs, caches: map[string]*keyCache{}, client: client, now: time.Now}
+}
+
+// IssuerResolver looks up an agent-token issuer that isn't in the static
+// [[auth]] list, for the tenant ctx acts for (pkg/tenant). It returns
+// ok=false for an issuer it doesn't know. The config is used as an [[auth]]
+// block would be (Enabled must be true), except that it never allows
+// operator login: AdminEnabled is ignored.
+type IssuerResolver func(ctx context.Context, issuer string) (cfg Config, ok bool, err error)
+
+// WithIssuerResolver makes v also accept agent tokens from issuers resolve
+// knows. The static configs win for their own issuers: resolve is asked only
+// about an issuer none of them names. A resolver error refuses the token. On
+// a nil v (no static configs) it returns a Validator with resolve alone.
+func (v *Validator) WithIssuerResolver(resolve IssuerResolver) *Validator {
+	if resolve == nil {
+		return v
+	}
+	if v == nil {
+		v = newValidator(nil, nil)
+	}
+	v.resolve = resolve
+	return v
 }
 
 // Configs returns the active validator configs (read-only view).
@@ -276,12 +306,12 @@ func (v *Validator) verify(ctx context.Context, bearer string) (jwt.MapClaims, C
 	}
 	iss, _ := claims["iss"].(string)
 	iss = strings.TrimRight(strings.TrimSpace(iss), "/")
-	cfg, ok := v.matchConfig(iss, claims["aud"])
-	if !ok {
-		return nil, Config{}, &ValidationError{Result: ResultInvalid, Description: "issuer/audience not allowed"}
+	cfg, cacheKey, verr := v.configFor(ctx, iss, claims["aud"])
+	if verr != nil {
+		return nil, Config{}, verr
 	}
 
-	cache, err := v.cacheFor(ctx, cfg)
+	cache, err := v.cacheFor(ctx, cfg, cacheKey)
 	if err != nil {
 		return nil, Config{}, &ValidationError{Result: ResultInvalid, Description: "cannot fetch signing keys"}
 	}
@@ -321,6 +351,35 @@ func (v *Validator) verify(ctx context.Context, bearer string) (jwt.MapClaims, C
 	return verifiedClaims, cfg, nil
 }
 
+// configFor finds the config for a token's issuer and audience: a static
+// one, else (for an issuer no static config names) the resolver's. It also
+// returns the key its signing keys are cached under. A resolved issuer's
+// keys are cached per tenant, so one tenant's issuer config is never used
+// for another's tokens, and per JWKS URL, so a changed URL takes effect.
+func (v *Validator) configFor(ctx context.Context, iss string, aud any) (Config, string, *ValidationError) {
+	notAllowed := &ValidationError{Result: ResultInvalid, Description: "issuer/audience not allowed"}
+	if cfg, ok := v.matchConfig(iss, aud); ok {
+		return cfg, cfg.Issuer, nil
+	}
+	if v.resolve == nil || iss == "" {
+		return Config{}, "", notAllowed
+	}
+	if _, static := v.ConfigForIssuer(iss); static {
+		return Config{}, "", notAllowed
+	}
+	cfg, ok, err := v.resolve(ctx, iss)
+	if err != nil {
+		log.Printf("[auth] resolve issuer %q: %v", iss, err)
+		return Config{}, "", &ValidationError{Result: ResultInvalid, Description: "cannot resolve issuer"}
+	}
+	cfg = cfg.Normalized()
+	if !ok || !cfg.Enabled || cfg.Issuer != iss || cfg.Audience == "" || !audienceMatches(aud, cfg.Audience) {
+		return Config{}, "", notAllowed
+	}
+	cfg.AdminEnabled = false // agent tokens only: operator login stays on [[auth]]
+	return cfg, tenant.From(ctx) + "\x00" + cfg.Issuer + "\x00" + cfg.JWKSURL, nil
+}
+
 func (v *Validator) matchConfig(issuer string, audienceClaim any) (Config, bool) {
 	for _, c := range v.configs {
 		if c.Issuer == issuer && audienceMatches(audienceClaim, c.Audience) {
@@ -348,10 +407,10 @@ func audienceMatches(claim any, audience string) bool {
 	return false
 }
 
-func (v *Validator) cacheFor(ctx context.Context, cfg Config) (*keyCache, error) {
+func (v *Validator) cacheFor(ctx context.Context, cfg Config, key string) (*keyCache, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if c, ok := v.caches[cfg.Issuer]; ok {
+	if c, ok := v.caches[key]; ok {
 		return c, nil
 	}
 	jwksURL := cfg.JWKSURL
@@ -363,7 +422,7 @@ func (v *Validator) cacheFor(ctx context.Context, cfg Config) (*keyCache, error)
 		jwksURL = discovered
 	}
 	c := newKeyCache(jwksURL, v.client, 10*time.Minute)
-	v.caches[cfg.Issuer] = c
+	v.caches[key] = c
 	return c, nil
 }
 

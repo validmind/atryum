@@ -28,7 +28,12 @@ func TestCheckAgentAuth(t *testing.T) {
 		"http on a lookalike":    {cfg: config.Config{Auth: []auth.Config{{Enabled: true, Issuer: "http://127.0.0.1.evil.example", Audience: "aa"}}}},
 	} {
 		t.Setenv("ATRYUM_AUTH_DEBUG_SKIP_VERIFY", tc.env)
-		if err := checkAgentAuth(tc.cfg); (err == nil) != tc.wantOK {
+		if name == "no [[auth]]" {
+			if err := checkAgentAuth(tc.cfg, true); err != nil {
+				t.Errorf("no [[auth]], issuer resolver: err = %v", err)
+			}
+		}
+		if err := checkAgentAuth(tc.cfg, false); (err == nil) != tc.wantOK {
 			t.Errorf("%s: err = %v", name, err)
 		}
 	}
@@ -50,6 +55,25 @@ func TestAgentAPIKeysDefault(t *testing.T) {
 	} {
 		if got := buildOptions(tc.opts).agentAPIKeysEnabled(); got != tc.want {
 			t.Errorf("%s: agentAPIKeysEnabled = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+// A resolved issuer must serve its keys over https, as [[auth]] must.
+func TestSecureIssuers(t *testing.T) {
+	for name, tc := range map[string]struct {
+		cfg    AuthConfig
+		wantOK bool
+	}{
+		"https":           {AuthConfig{Issuer: "https://idp", JWKSURL: "https://idp/jwks"}, true},
+		"loopback http":   {AuthConfig{Issuer: "http://127.0.0.1:9091"}, true},
+		"plain http":      {AuthConfig{Issuer: "http://idp.bank"}, false},
+		"plain http jwks": {AuthConfig{Issuer: "https://idp", JWKSURL: "http://idp.bank/jwks"}, false},
+	} {
+		f := secureIssuers(func(context.Context, string) (AuthConfig, bool, error) { return tc.cfg, true, nil })
+		_, ok, err := f(context.Background(), tc.cfg.Issuer)
+		if ok != tc.wantOK || (err == nil) != tc.wantOK {
+			t.Errorf("%s: ok = %v, err = %v", name, ok, err)
 		}
 	}
 }
