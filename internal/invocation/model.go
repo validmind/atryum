@@ -2,7 +2,11 @@ package invocation
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/mail"
+	"strings"
 	"time"
+	"unicode"
 )
 
 type Status string
@@ -34,6 +38,12 @@ type Approval struct {
 	// to read. An account explains a refusal, so it is set on a denial and
 	// left nil otherwise; it is also nil when the decider gave none.
 	Explanation *Explanation `json:"explanation,omitempty"`
+	// Code, ReviewID and Route are the embedder decider's Decision fields
+	// (a stable reason code, the review a held call opened, and who decides
+	// it), so a caller such as an application can act on them.
+	Code     string `json:"code,omitempty"`
+	ReviewID string `json:"review_id,omitempty"`
+	Route    string `json:"route,omitempty"`
 }
 
 type Invocation struct {
@@ -64,13 +74,18 @@ type Invocation struct {
 	ClientName    *string `json:"client_name,omitempty"`
 	ClientVersion *string `json:"client_version,omitempty"`
 	// Auth records how the caller authenticated; empty fields when unknown.
-	Auth        Auth       `json:"auth"`
-	Input       []byte     `json:"-"`
-	Response    []byte     `json:"-"`
-	Error       []byte     `json:"-"`
-	Summary     *string    `json:"summary,omitempty"`
-	SubmittedAt time.Time  `json:"submitted_at"`
-	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	Auth Auth `json:"auth"`
+	// Asserted is the identity an MCP gateway vouched for (nil otherwise).
+	Asserted *AssertedIdentity `json:"asserted,omitempty"`
+	// GatewayCheckKey groups identical gateway checks (same gateway, user,
+	// server, tool and canonical arguments); empty off the gateway path.
+	GatewayCheckKey string     `json:"-"`
+	Input           []byte     `json:"-"`
+	Response        []byte     `json:"-"`
+	Error           []byte     `json:"-"`
+	Summary         *string    `json:"summary,omitempty"`
+	SubmittedAt     time.Time  `json:"submitted_at"`
+	CompletedAt     *time.Time `json:"completed_at,omitempty"`
 }
 
 type Event struct {
@@ -91,8 +106,10 @@ type InvocationListFilter struct {
 	PlanID     string   // filters to invocations linked to one approved plan
 	SessionID  string   // filters to invocations belonging to one external session
 	ClientName string
-	StartDate  *time.Time
-	EndDate    *time.Time
+	// GatewayCheckKey filters to gateway invocations with this check key.
+	GatewayCheckKey string
+	StartDate       *time.Time
+	EndDate         *time.Time
 }
 
 type EventListFilter struct {
@@ -117,6 +134,11 @@ type CreateInvocationRequest struct {
 	// the per-row fallback for anonymous (no agent_id) invocations.
 	ClientName    string `json:"-"`
 	ClientVersion string `json:"-"`
+	// Asserted is the end user an application acts for on the MCP proxy
+	// (X-Atryum-End-User* headers), set by the handler after it has checked
+	// the credential's "app" capability; WaitMS bounds a held call for one.
+	Asserted *AssertedIdentity `json:"-"`
+	WaitMS   int               `json:"-"`
 }
 
 // ExternalSubmitRequest is used by callers that execute the tool themselves
@@ -173,6 +195,135 @@ type ExternalSubmitRequest struct {
 	// via the agents.agent_ids array. A verified OAuth identity in the
 	// request context always wins. Optional.
 	AgentID string `json:"agent_id,omitempty"`
+	// OnBehalfOf is the end user an application (a credential with the
+	// "app" capability) makes this call for. The handler refuses it from any
+	// other credential and turns it into Asserted.
+	OnBehalfOf *OnBehalfOf `json:"on_behalf_of,omitempty"`
+	// WaitMS bounds how long the decider may take (default 3000, max
+	// 10000). When it runs out the call is held for a person rather than
+	// answered late. Only used with OnBehalfOf.
+	WaitMS int `json:"wait_ms,omitempty"`
+	// Asserted and GatewayCheckKey are set only by Atryum's handlers, after
+	// they have checked the caller's credential capability. They are never
+	// read from a request body.
+	Asserted        *AssertedIdentity `json:"-"`
+	GatewayCheckKey string            `json:"-"`
+}
+
+// OnBehalfOf is who an application makes a call for.
+type OnBehalfOf struct {
+	// AppAgent names which of the application's agents acts. Optional: the
+	// embedder falls back to the application's default agent.
+	AppAgent string   `json:"app_agent,omitempty"`
+	EndUser  *EndUser `json:"end_user,omitempty"`
+	// Token is the end user's sign-in token (a JWT) for the decider to
+	// verify. Never stored or logged.
+	Token string `json:"token,omitempty"`
+}
+
+// EndUser is an application's end user as the application asserts it.
+type EndUser struct {
+	ID      string   `json:"id"`
+	Email   string   `json:"email,omitempty"`
+	Display string   `json:"display,omitempty"`
+	Roles   []string `json:"roles,omitempty"`
+	// Tenant is the end user's organization inside the application. A
+	// pointer so an empty tenant differs from none.
+	Tenant *string `json:"tenant,omitempty"`
+}
+
+// Limits on what an application may assert (research R13 of spec 010).
+const (
+	MaxEndUserIDLen     = 256
+	MaxEndUserRoles     = 32
+	MaxEndUserRoleLen   = 64
+	MaxEndUserTenantLen = 128
+	MaxEndUserTextLen   = 256
+	MaxAppAgentLen      = 128
+	MaxEndUserTokenLen  = 16384
+	DefaultWaitMS       = 3000
+	MaxWaitMS           = 10000
+)
+
+// OnBehalfOfError names the field of an on_behalf_of block that is wrong.
+type OnBehalfOfError struct {
+	Field  string
+	Reason string
+}
+
+func (e *OnBehalfOfError) Error() string { return e.Field + ": " + e.Reason }
+
+// Validate checks o against the limits above. It never trims or truncates:
+// a bad value is refused, not quietly changed.
+func (o *OnBehalfOf) Validate() error {
+	if o == nil {
+		return nil
+	}
+	bad := func(field, reason string) error {
+		return &OnBehalfOfError{Field: "on_behalf_of." + field, Reason: reason}
+	}
+	if len(o.AppAgent) > MaxAppAgentLen {
+		return bad("app_agent", "too long")
+	}
+	if len(o.Token) > MaxEndUserTokenLen {
+		return bad("token", "too long")
+	}
+	u := o.EndUser
+	if u == nil {
+		if o.Token != "" {
+			return bad("end_user", "required with token")
+		}
+		return nil
+	}
+	switch {
+	case strings.TrimSpace(u.ID) == "":
+		return bad("end_user.id", "required")
+	case len(u.ID) > MaxEndUserIDLen:
+		return bad("end_user.id", "too long")
+	case hasControl(u.ID):
+		return bad("end_user.id", "control characters")
+	case len(u.Display) > MaxEndUserTextLen:
+		return bad("end_user.display", "too long")
+	case len(u.Roles) > MaxEndUserRoles:
+		return bad("end_user.roles", "too many")
+	}
+	if u.Email != "" {
+		if len(u.Email) > MaxEndUserTextLen {
+			return bad("end_user.email", "too long")
+		}
+		if a, err := mail.ParseAddress(u.Email); err != nil || a.Address != u.Email {
+			return bad("end_user.email", "not an email address")
+		}
+	}
+	for i, r := range u.Roles {
+		if r == "" || len(r) > MaxEndUserRoleLen || hasControl(r) {
+			return bad(fmt.Sprintf("end_user.roles[%d]", i), "empty, too long or control characters")
+		}
+	}
+	if u.Tenant != nil && (len(*u.Tenant) > MaxEndUserTenantLen || hasControl(*u.Tenant)) {
+		return bad("end_user.tenant", "too long or control characters")
+	}
+	return nil
+}
+
+func hasControl(s string) bool {
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// EffectiveWaitMS is WaitMS with the default and the cap applied.
+func (r ExternalSubmitRequest) EffectiveWaitMS() int {
+	switch {
+	case r.WaitMS <= 0:
+		return DefaultWaitMS
+	case r.WaitMS > MaxWaitMS:
+		return MaxWaitMS
+	}
+	return r.WaitMS
 }
 
 // ExternalExecutionUpdate is sent by the external executor to report on a
@@ -217,6 +368,12 @@ type InvocationResponse struct {
 	Result      json.RawMessage `json:"result,omitempty"`
 	Error       json.RawMessage `json:"error,omitempty"`
 	Summary     string          `json:"summary,omitempty"`
+	// Asserted is the identity an MCP gateway vouched for, when the call
+	// came through one; UserID is then Asserted.UserID.
+	Asserted *AssertedIdentity `json:"asserted,omitempty"`
+	// Decision is the embedder decider's result for this submit, when one
+	// ran. In-process only (the gateway handler maps it to a verdict).
+	Decision *Decision `json:"-"`
 }
 
 type InvocationListResponse struct {

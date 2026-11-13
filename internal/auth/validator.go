@@ -24,6 +24,7 @@ import (
 type Validator struct {
 	configs []Config
 	resolve IssuerResolver
+	caps    CapabilityResolver
 	caches  map[string]*keyCache // by issuer; by tenant, issuer and JWKS URL for resolved issuers
 	client  *http.Client
 	mu      sync.Mutex
@@ -45,6 +46,45 @@ type Identity struct {
 	KeyID string
 	// UserID is the user who issued the key, when known.
 	UserID string
+	// Capabilities are extra rights the credential holds (api_keys only);
+	// see Capability*.
+	Capabilities []string
+}
+
+// CapabilityAsserter lets a key call /api/v1/gateway/* and assert which human
+// (and sub-agent) a tool call is made for. Only gateways hold it.
+const CapabilityAsserter = "asserter"
+
+// CapabilityApp lets a credential send on_behalf_of on
+// /api/v1/external/invocations (and the X-Atryum-End-User* headers on the
+// MCP proxy): an application acting for its end users. Only applications
+// hold it.
+const CapabilityApp = "app"
+
+// CapabilityResolver returns the capabilities an IdP-token identity holds.
+// API keys carry theirs in api_keys.capabilities; a JWT carries none, so the
+// embedder says which runtime identities are, say, applications. An error
+// refuses the token.
+type CapabilityResolver func(ctx context.Context, id Identity) ([]string, error)
+
+// WithCapabilityResolver makes Validate fill Identity.Capabilities for JWT
+// identities from f. A nil v or f returns v unchanged.
+func (v *Validator) WithCapabilityResolver(f CapabilityResolver) *Validator {
+	if v == nil || f == nil {
+		return v
+	}
+	v.caps = f
+	return v
+}
+
+// HasCapability reports whether the identity holds capability c.
+func (id Identity) HasCapability(c string) bool {
+	for _, have := range id.Capabilities {
+		if have == c {
+			return true
+		}
+	}
+	return false
 }
 
 // Result classifies a validation outcome.
@@ -174,6 +214,13 @@ func (v *Validator) Validate(ctx context.Context, bearer string) (Identity, erro
 	}
 	if identity.AgentID == "" {
 		return Identity{}, &ValidationError{Result: ResultInvalid, Description: "no usable agent identity claim"}
+	}
+	if v.caps != nil {
+		caps, err := v.caps(ctx, identity)
+		if err != nil {
+			return Identity{}, &ValidationError{Result: ResultInvalid, Description: "capability lookup failed"}
+		}
+		identity.Capabilities = caps
 	}
 	return identity, nil
 }

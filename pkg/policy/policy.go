@@ -69,6 +69,11 @@ const (
 //   - gt, lt: the field and Value compared as numbers
 //   - in: Value is a list (any slice or array) and the field's text equals one
 //     item's text
+//   - has: the field is a list and one of its items' text equals Value's
+//     text (for a multi-valued fact such as an end user's roles)
+//   - has_any: the field and Value are both lists and share an item's text
+//
+// A field that is not a list never satisfies has or has_any.
 //
 // Text is a string as is, a number in plain decimal without exponent or
 // trailing zeros (1000000, 2.5, 0.00001), a boolean as "true" or "false", and
@@ -363,17 +368,42 @@ func compare(c Cond, v any, spell func(any) string) bool {
 		}
 		return a < b
 	case "in":
-		list := reflect.ValueOf(c.Value)
-		if list.Kind() != reflect.Slice && list.Kind() != reflect.Array {
-			return false
+		for _, item := range items(c.Value) {
+			if spell(v) == spell(item) {
+				return true
+			}
 		}
-		for i := 0; i < list.Len(); i++ {
-			if spell(v) == spell(list.Index(i).Interface()) {
+	case "has":
+		for _, item := range items(v) {
+			if spell(item) == spell(c.Value) {
+				return true
+			}
+		}
+	case "has_any":
+		want := map[string]bool{}
+		for _, w := range items(c.Value) {
+			want[spell(w)] = true
+		}
+		for _, item := range items(v) {
+			if want[spell(item)] {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// items is v's elements when v is a slice or array, else nil.
+func items(v any) []any {
+	list := reflect.ValueOf(v)
+	if !list.IsValid() || (list.Kind() != reflect.Slice && list.Kind() != reflect.Array) {
+		return nil
+	}
+	out := make([]any, list.Len())
+	for i := range out {
+		out[i] = list.Index(i).Interface()
+	}
+	return out
 }
 
 // lookup resolves "args.a.b" or "facts.name" against the call.

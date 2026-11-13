@@ -3,6 +3,7 @@ package atryum
 import (
 	"context"
 	"database/sql"
+	"github.com/validmind/atryum/internal/api"
 	"net/http"
 
 	"github.com/validmind/atryum/internal/auth"
@@ -19,6 +20,9 @@ type (
 	Decider = invocation.Decider
 	// ToolCall is the call a Decider is asked about.
 	ToolCall = invocation.ToolCall
+	// AssertedIdentity is who a trusted caller (an MCP gateway, or an
+	// application acting for its end users) vouched for on a ToolCall.
+	AssertedIdentity = invocation.AssertedIdentity
 	// Decision is a Decider's result.
 	Decision = invocation.Decision
 	// Explanation is a Decider's account of a decision (Decision.Explanation,
@@ -62,6 +66,11 @@ type ResolvePending func(ctx context.Context, tx *sql.Tx, invocationID string, a
 // ErrNotPending is wrapped by ResolvePending when the call is no longer pending.
 var ErrNotPending = invocation.ErrNotPending
 
+// DecisionDeadline reports when the caller of this decision stops waiting, if
+// it set one (an MCP gateway's timeout, or an application's wait_ms). A
+// decider bounds its slow steps by it; see invocation.WithDecisionDeadline.
+var DecisionDeadline = invocation.DecisionDeadline
+
 // ErrIdempotencyConflict is returned (HTTP 409 on the API) when an agent
 // reuses an idempotency key for a different request. Keys are scoped per
 // agent, so another agent's key never conflicts.
@@ -79,6 +88,7 @@ const (
 type options struct {
 	extraRoutes         []func(mux *http.ServeMux)
 	authenticatedRoutes []func(mux *http.ServeMux, authenticate func(http.Handler) http.Handler)
+	agentRoutes         []func(mux *http.ServeMux, authenticate func(http.Handler) http.Handler)
 	extensionMigrations []extensionMigrations
 	databaseHooks       []func(db *sql.DB, usePostgres bool)
 	authorizer          authz.Authorizer
@@ -95,6 +105,8 @@ type options struct {
 	requestTenant       RequestTenant
 	tenants             func(context.Context) ([]string, error)
 	issuerResolver      IssuerResolver
+	capabilityResolver  CapabilityResolver
+	assertionRejected   func(ctx context.Context, r AssertionRejection) error
 }
 
 type extensionMigrations struct {
@@ -364,3 +376,74 @@ type IssuerResolver = auth.IssuerResolver
 func WithIssuerResolver(f IssuerResolver) Option {
 	return func(o *options) { o.issuerResolver = f }
 }
+
+// CapabilityResolver returns the extra rights (for example "app") an
+// IdP-token identity holds; see WithCapabilityResolver.
+type CapabilityResolver = auth.CapabilityResolver
+
+// AuthIdentity is a verified agent identity: what a CapabilityResolver is
+// asked about (its Issuer and AgentID name the IdP client).
+type AuthIdentity = auth.Identity
+
+// CapabilityApp is the capability that lets a credential act for end users
+// (on_behalf_of on /api/v1/external/invocations, X-Atryum-End-User* on the
+// MCP proxy).
+const CapabilityApp = auth.CapabilityApp
+
+// WithCapabilityResolver says which capabilities an agent token's identity
+// holds. API keys carry theirs in the database; IdP tokens carry none, so an
+// embedder that binds an IdP client to an application returns "app" here.
+// f runs on every request with an IdP token and should cache. An error from
+// f refuses the token (401).
+func WithCapabilityResolver(f CapabilityResolver) Option {
+	return func(o *options) { o.capabilityResolver = f }
+}
+
+// AssertionRejection is a call that claimed to act for an end user from a
+// credential without the "app" capability; Atryum refused it (403
+// not_an_asserter) and created no invocation.
+type AssertionRejection = api.AssertionRejection
+
+// WithAssertionRejected lets the embedder record refused end-user claims (no
+// invocation exists for them, so no EventHook change carries them). f runs
+// synchronously with the request's context (and its tenant); an error is
+// logged and never reaches the caller.
+func WithAssertionRejected(f func(ctx context.Context, r AssertionRejection) error) Option {
+	return func(o *options) { o.assertionRejected = f }
+}
+
+// RedactAssertedIdentity removes one application end user's identifying
+// details (id, display name, email, roles, end-user tenant) from the
+// invocations application agent by made for them, and from those
+// invocations' event payloads, within the tenant ctx names. userKey is
+// EndUserKey(by, euTenant, hasEUTenant, endUserID). db is the database
+// WithDatabase handed the embedder. It returns how many invocations changed.
+func RedactAssertedIdentity(ctx context.Context, db *sql.DB, usePostgres bool, by, userKey string) (int, error) {
+	dialect := store.DialectSQLite
+	if usePostgres {
+		dialect = store.DialectPostgres
+	}
+	return store.RedactAssertedIdentity(ctx, db, dialect, by, userKey)
+}
+
+// EndUserKey identifies one end user of one application (agent by) the way
+// Atryum stores it; see RedactAssertedIdentity.
+var EndUserKey = invocation.EndUserKey
+
+// WithAgentRoutes registers routes behind the agent routes' authentication:
+// handlers wrapped with authenticate run only for a request with a verified
+// agent identity (an agent key or an agent token, and the request's tenant
+// under WithRequestTenant), which AgentIdentity reads. For an embedder's
+// agent-facing API, such as an application reading and deciding its
+// reviews. Patterns must not collide with built-in routes.
+func WithAgentRoutes(register func(mux *http.ServeMux, authenticate func(http.Handler) http.Handler)) Option {
+	return func(o *options) {
+		if register != nil {
+			o.agentRoutes = append(o.agentRoutes, register)
+		}
+	}
+}
+
+// AgentIdentity is the verified agent identity of a request authenticated
+// by a WithAgentRoutes handler, with its capabilities.
+func AgentIdentity(ctx context.Context) (AuthIdentity, bool) { return auth.IdentityFromContext(ctx) }

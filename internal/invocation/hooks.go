@@ -41,7 +41,58 @@ type ToolCall struct {
 	SessionID    string          `json:"session_id,omitempty"`
 	// Auth is how the caller proved AgentID.
 	Auth Auth `json:"auth"`
+	// Asserted is who an MCP gateway (a key with the "asserter" capability,
+	// see auth.CapabilityAsserter) says the call is for. Nil on every other
+	// path. AgentID stays the gateway's own registered agent; Asserted.AgentID
+	// is recorded, never used to resolve the agent.
+	Asserted *AssertedIdentity `json:"asserted,omitempty"`
 }
+
+// AssertedIdentity is the identity a trusted caller vouches for on one call:
+// an MCP gateway (Kind "gateway", a key with the "asserter" capability) or an
+// application acting for its end users (Kind "app", a credential with the
+// "app" capability). By is set by Atryum from the caller's credential, never
+// from a request body; any field may be empty when the caller did not send
+// it.
+type AssertedIdentity struct {
+	UserID      string `json:"user_id,omitempty"`
+	UserType    string `json:"user_type,omitempty"`
+	UserDisplay string `json:"user_display,omitempty"`
+	AgentID     string `json:"agent_id,omitempty"`
+	SessionID   string `json:"session_id,omitempty"`
+	By          string `json:"by"`
+	// Vendor is the gateway kind (truefoundry, kuadrant, generic).
+	Vendor string `json:"vendor,omitempty"`
+	// Kind is "gateway" or "app"; it tells the decider which trust path
+	// applies. Empty is read as "gateway" (rows written before apps).
+	Kind string `json:"kind,omitempty"`
+	// Email, Roles and EUTenant describe an application's end user. EUTenant
+	// is the end user's own organization inside the application (not the
+	// Atryum tenant); HasEUTenant tells an empty tenant from none.
+	Email       string   `json:"email,omitempty"`
+	Roles       []string `json:"roles,omitempty"`
+	EUTenant    string   `json:"eu_tenant,omitempty"`
+	HasEUTenant bool     `json:"has_eu_tenant,omitempty"`
+	// AppAgent names which of the application's agents is acting; the
+	// embedder resolves it among that application's agents only.
+	AppAgent string `json:"app_agent,omitempty"`
+	// Token is the end user's sign-in token, for the decider to verify. It
+	// is never stored, logged or serialized.
+	Token string `json:"-"`
+	// UserKey is sha256(By, EUTenant, UserID): it scopes idempotency keys to
+	// one end user and finds their rows for redaction. Set by Atryum.
+	UserKey string `json:"-"`
+}
+
+// CodeUnavailable is Decision.Code when the decider failed and the call was
+// denied for it (fail closed).
+const CodeUnavailable = "aa_unavailable"
+
+// AssertedKindGateway and AssertedKindApp are AssertedIdentity.Kind values.
+const (
+	AssertedKindGateway = "gateway"
+	AssertedKindApp     = "app"
+)
 
 // Auth is how a caller authenticated. Method is "jwt" (an IdP token, Issuer
 // is its iss), "api_key" (an Atryum agent API key, Issuer "atryum:api-key",
@@ -78,6 +129,12 @@ type Decision struct {
 	Verdict  Verdict `json:"verdict"`
 	Reason   string  `json:"reason,omitempty"`
 	ReviewID string  `json:"review_id,omitempty"`
+	// Code is a stable, machine-readable reason (rule_allow, review_opened,
+	// aa_unavailable, ...), returned to callers as approval.code. Optional.
+	Code string `json:"code,omitempty"`
+	// Route says who decides a pending call: "org", "end_user" or
+	// "eu_tenant_admin". Optional; empty means the embedder's own reviewers.
+	Route string `json:"route,omitempty"`
 	// Explanation is the decider's account of this decision, rendered for
 	// the agent whose call it was. Optional.
 	Explanation *Explanation `json:"explanation,omitempty"`
@@ -206,12 +263,12 @@ func (s *Service) decide(ctx context.Context, call ToolCall) (d Decision) {
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("decider panicked; denying the call", "invocation_id", call.InvocationID, "panic", r)
-			d = Decision{Verdict: VerdictDeny, Reason: fmt.Sprintf("decider panic: %v", r)}
+			d = Decision{Verdict: VerdictDeny, Reason: fmt.Sprintf("decider panic: %v", r), Code: CodeUnavailable}
 		}
 	}()
 	d, err := s.decider(ctx, call)
 	if err != nil {
-		return Decision{Verdict: VerdictDeny, Reason: "decider error: " + err.Error()}
+		return Decision{Verdict: VerdictDeny, Reason: "decider error: " + err.Error(), Code: CodeUnavailable}
 	}
 	switch d.Verdict {
 	case VerdictAllow, VerdictNotify, VerdictDeny, VerdictPending:
@@ -221,7 +278,7 @@ func (s *Service) decide(ctx context.Context, call ToolCall) (d Decision) {
 		d.Explanation = d.Explanation.Bounded()
 		return d
 	}
-	return Decision{Verdict: VerdictDeny, Reason: fmt.Sprintf("decider returned unknown verdict %q", d.Verdict)}
+	return Decision{Verdict: VerdictDeny, Reason: fmt.Sprintf("decider returned unknown verdict %q", d.Verdict), Code: CodeUnavailable}
 }
 
 // explanation is d's account of itself, or nil. Safe on a nil Decision, so
@@ -338,11 +395,13 @@ var ErrIdempotencyConflict = errors.New("idempotency key was already used for a 
 // callers share one scope). Without verified identity a key is only as
 // private as the agent ID a caller claims, which is how standalone Atryum
 // without auth trusts its callers anyway.
-func (s *Service) priorRequest(ctx context.Context, agentID string, key *string, upstream, tool string, input []byte) (*Invocation, error) {
+func (s *Service) priorRequest(ctx context.Context, agentID, userKey string, key *string, upstream, tool string, input []byte) (*Invocation, error) {
 	if key == nil || *key == "" {
 		return nil, nil
 	}
-	prior, err := s.invocations.GetByIdempotencyKey(ctx, agentID, *key)
+	// Keys are scoped per agent and, for an application, per end user:
+	// userKey is "" for every other caller.
+	prior, err := s.invocations.GetByIdempotencyKey(ctx, agentID, userKey, *key)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -357,8 +416,8 @@ func (s *Service) priorRequest(ctx context.Context, agentID string, key *string,
 
 // lostCreateRace handles a failed insert: when a concurrent request with the
 // same key won, it answers like priorRequest; otherwise it returns createErr.
-func (s *Service) lostCreateRace(ctx context.Context, agentID string, key *string, upstream, tool string, input []byte, createErr error) (InvocationResponse, error) {
-	prior, err := s.priorRequest(ctx, agentID, key, upstream, tool, input)
+func (s *Service) lostCreateRace(ctx context.Context, agentID, userKey string, key *string, upstream, tool string, input []byte, createErr error) (InvocationResponse, error) {
+	prior, err := s.priorRequest(ctx, agentID, userKey, key, upstream, tool, input)
 	if err != nil || prior != nil {
 		return prior.response(s), err
 	}
@@ -393,4 +452,21 @@ func unmarshalExact(b []byte, v any) error {
 	d := json.NewDecoder(bytes.NewReader(b))
 	d.UseNumber()
 	return d.Decode(v)
+}
+
+type decisionDeadlineKey struct{}
+
+// WithDecisionDeadline tells the decider when its caller (an MCP gateway with
+// a few seconds' timeout) stops waiting. It is a value, not a context
+// deadline, so the decision can still be recorded after the caller has gone:
+// a decider bounds its slow steps (the judge) by it and, when the time is too
+// short, sends the call to a person rather than answering late.
+func WithDecisionDeadline(ctx context.Context, t time.Time) context.Context {
+	return context.WithValue(ctx, decisionDeadlineKey{}, t)
+}
+
+// DecisionDeadline reports the deadline WithDecisionDeadline set, if any.
+func DecisionDeadline(ctx context.Context) (time.Time, bool) {
+	t, ok := ctx.Value(decisionDeadlineKey{}).(time.Time)
+	return t, ok
 }

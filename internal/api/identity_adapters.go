@@ -67,6 +67,8 @@ func (r *AgentKeyResolver) ResolveAgentKey(ctx context.Context, token string) (a
 		Method:  auth.IdentityMethodAPIKey,
 		KeyID:   key.ID,
 		UserID:  key.CreatedBy,
+		// Capabilities carry rights like "asserter" (an MCP gateway's key).
+		Capabilities: key.Capabilities,
 	}, nil
 }
 

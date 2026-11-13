@@ -47,8 +47,8 @@ func TestInitDB_FreshDatabase(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 34 {
-		t.Fatalf("expected 34 migrations, got %d", count)
+	if count != 36 {
+		t.Fatalf("expected 36 migrations, got %d", count)
 	}
 
 	// Verify all tables exist
@@ -77,8 +77,8 @@ func TestInitDB_Idempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 34 {
-		t.Fatalf("expected 34 migrations after double init, got %d", count)
+	if count != 36 {
+		t.Fatalf("expected 36 migrations after double init, got %d", count)
 	}
 }
 
@@ -171,7 +171,7 @@ func TestInvocationRepo_CRUD(t *testing.T) {
 	if err := repo.Create(ctx, inv2); err != nil {
 		t.Fatalf("Create inv2: %v", err)
 	}
-	got3, err := repo.GetByIdempotencyKey(ctx, "", "idem-abc")
+	got3, err := repo.GetByIdempotencyKey(ctx, "", "", "idem-abc")
 	if err != nil {
 		t.Fatalf("GetByIdempotencyKey: %v", err)
 	}
@@ -205,12 +205,12 @@ func checkIdempotencyPerAgent(t *testing.T, repo *InvocationRepo) {
 		t.Fatal("anonymous callers stored one key twice")
 	}
 	for agent, want := range map[string]string{"agent-a": "inv-a", "agent-b": "inv-b", "": "inv-anon"} {
-		got, err := repo.GetByIdempotencyKey(ctx, agent, "shared-key")
+		got, err := repo.GetByIdempotencyKey(ctx, agent, "", "shared-key")
 		if err != nil || got.InvocationID != want {
 			t.Fatalf("GetByIdempotencyKey(%q) = %s, %v; want %s", agent, got.InvocationID, err, want)
 		}
 	}
-	if _, err := repo.GetByIdempotencyKey(ctx, "agent-c", "shared-key"); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := repo.GetByIdempotencyKey(ctx, "agent-c", "", "shared-key"); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("another agent's lookup: %v, want sql.ErrNoRows", err)
 	}
 }
@@ -247,7 +247,7 @@ func TestInvocationRepo_UpdateSummary(t *testing.T) {
 	if got.Summary == nil || *got.Summary != "Read /tmp/test." {
 		t.Fatalf("Get summary = %#v", got.Summary)
 	}
-	byKey, err := repo.GetByIdempotencyKey(ctx, "", "summary-key")
+	byKey, err := repo.GetByIdempotencyKey(ctx, "", "", "summary-key")
 	if err != nil {
 		t.Fatalf("GetByIdempotencyKey: %v", err)
 	}
@@ -1084,8 +1084,8 @@ func TestInitDBToleratesRenumberedMigrationStamps(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if count != 34 {
-		t.Fatalf("expected 34 migrations recorded, got %d", count)
+	if count != 36 {
+		t.Fatalf("expected 36 migrations recorded, got %d", count)
 	}
 
 	// The columns/tables the renumbered migrations add must still be

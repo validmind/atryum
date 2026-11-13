@@ -196,7 +196,10 @@ type invocationRepo interface {
 	UpdateResultFrom(ctx context.Context, inv Invocation, from Status) (bool, error)
 	UpdateSummary(ctx context.Context, id string, summary string) error
 	Get(ctx context.Context, id string) (Invocation, error)
-	GetByIdempotencyKey(ctx context.Context, agentID, key string) (Invocation, error)
+	// GetByIdempotencyKey finds agentID's invocation with key. userKey is
+	// the end user's key (AssertedIdentity.UserKey) for an application's
+	// call and "" otherwise; keys never match across end users.
+	GetByIdempotencyKey(ctx context.Context, agentID, userKey, key string) (Invocation, error)
 	List(ctx context.Context, filter InvocationListFilter) ([]Invocation, int, error)
 	ListAgentIDs(ctx context.Context) ([]string, error)
 }
@@ -386,7 +389,16 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	// is disabled the field is empty and we fall back to request_id for rule
 	// matching to preserve pre-auth behavior.
 	agentID := auth.AgentIDFromContext(ctx)
-	if prior, err := s.priorRequest(ctx, agentID, req.IdempotencyKey, upstream.Name, req.Tool, inputJSON); err != nil || prior != nil {
+	if a := req.Asserted; a != nil && a.Kind == AssertedKindApp && a.UserID != "" {
+		a.UserKey = EndUserKey(a.By, a.EUTenant, a.HasEUTenant, a.UserID)
+	}
+	userKey := endUserKey(req.Asserted)
+	if req.Asserted != nil && req.Asserted.Kind == AssertedKindApp {
+		if _, set := DecisionDeadline(ctx); !set {
+			ctx = WithDecisionDeadline(ctx, time.Now().Add(time.Duration(waitMS(req.WaitMS))*time.Millisecond))
+		}
+	}
+	if prior, err := s.priorRequest(ctx, agentID, userKey, req.IdempotencyKey, upstream.Name, req.Tool, inputJSON); err != nil || prior != nil {
 		return prior.response(s), err
 	}
 	agentRec := s.resolveAgentRecord(ctx, agentID)
@@ -414,8 +426,12 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 		v := req.ClientVersion
 		inv.ClientVersion = &v
 	}
+	if req.Asserted != nil {
+		a := *req.Asserted
+		inv.Asserted = &a
+	}
 	if err := s.create(ctx, inv); err != nil {
-		return s.lostCreateRace(ctx, agentID, req.IdempotencyKey, upstream.Name, req.Tool, inputJSON, err)
+		return s.lostCreateRace(ctx, agentID, userKey, req.IdempotencyKey, upstream.Name, req.Tool, inputJSON, err)
 	}
 	span.SetAttributes(attribute.String("atryum.invocation.id", inv.InvocationID))
 	if agentID != "" {
@@ -512,7 +528,7 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	ruleMatched := false
 	var decided *Decision
 	if s.decider != nil {
-		d := s.decide(ctx, ToolCall{InvocationID: inv.InvocationID, Path: "proxy", AgentID: agentID, Server: upstream.Name, Tool: req.Tool, Arguments: inv.Input, Auth: inv.Auth})
+		d := s.decide(ctx, ToolCall{InvocationID: inv.InvocationID, Path: "proxy", AgentID: agentID, Server: upstream.Name, Tool: req.Tool, Arguments: inv.Input, Auth: inv.Auth, Asserted: inv.Asserted})
 		decided = &d
 		decision = d.disposition()
 		ruleMatched = true // skips the default policy below
@@ -599,6 +615,14 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	}
 	if decided != nil {
 		receivedPayload["decision"] = decided
+		if decided.Verdict == VerdictPending && (decided.Code != "" || decided.ReviewID != "" || decided.Route != "") {
+			// Keep the review and its route on the row, so a held call's
+			// answer (heldForReview, a later GET) can name them.
+			if inv.Approval == nil {
+				inv.Approval = newApproval("pending", decided.Reason, nil)
+			}
+			inv.Approval.Code, inv.Approval.ReviewID, inv.Approval.Route = decided.Code, decided.ReviewID, decided.Route
+		}
 	}
 	if err := s.commit(ctx, inv, writeGated, Event{
 		InvocationID: inv.InvocationID,
@@ -1280,6 +1304,16 @@ func (s *Service) waitForHumanApproval(ctx context.Context, inv Invocation, upst
 	}
 	s.summarizePendingApproval(ctx, inv.InvocationID)
 
+	// An application's end user doesn't wait for a person: after wait_ms the
+	// call is answered "held" and the review stays open. Once approved, the
+	// application retries the identical call, which the embedder's approval
+	// lets through as a new invocation.
+	var held <-chan time.Time
+	if req.Asserted != nil && req.Asserted.Kind == AssertedKindApp {
+		t := time.NewTimer(time.Duration(waitMS(req.WaitMS)) * time.Millisecond)
+		defer t.Stop()
+		held = t.C
+	}
 	for {
 		poll := s.approvalPoll
 		if s.wake != nil && s.wake.Connected() {
@@ -1290,6 +1324,9 @@ func (s *Service) waitForHumanApproval(ctx context.Context, inv Invocation, upst
 		case <-ctx.Done():
 			timer.Stop()
 			return s.abandonHeld(context.WithoutCancel(ctx), inv), nil
+		case <-held:
+			timer.Stop()
+			return s.heldForReview(ctx, inv), nil
 		case <-timer.C:
 		case <-woken:
 			timer.Stop()
@@ -1327,6 +1364,35 @@ func (s *Service) waitForHumanApproval(ctx context.Context, inv Invocation, upst
 		return InvocationResponse{}, err
 	}
 	return s.finishExecution(ctx, inv, upstream, req)
+}
+
+// heldForReview answers an application's held MCP call without waiting for
+// the person: the row stays pending_approval (its review open) and the
+// result tells the caller to retry once it is approved.
+func (s *Service) heldForReview(ctx context.Context, inv Invocation) InvocationResponse {
+	cur, err := s.invocations.Get(ctx, inv.InvocationID)
+	if err == nil {
+		inv = cur
+	}
+	resp := s.toResponse(inv)
+	if inv.Status != StatusPendingApproval {
+		return resp // decided just now: the caller sees the decision
+	}
+	reviewID := ""
+	if inv.Approval != nil {
+		reviewID = inv.Approval.ReviewID
+	}
+	text := "Held for review"
+	if reviewID != "" {
+		text += " " + reviewID
+	}
+	text += "; retry the same call after it is approved."
+	resp.Error = mustJSON(map[string]any{"content": []map[string]any{{"type": "text", "text": text}}, "isError": true})
+	return resp
+}
+
+func waitMS(ms int) int {
+	return ExternalSubmitRequest{WaitMS: ms}.EffectiveWaitMS()
 }
 
 // abandonHeld marks a held call failed once its caller has gone. A denial
@@ -1556,7 +1622,21 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	}
 	// Upstream is always empty on this path (see below), which also keeps a
 	// key used for an Invoke from matching a Submit.
-	if prior, err := s.priorRequest(ctx, agentID, req.IdempotencyKey, "", req.Tool, inputJSON); err != nil || prior != nil {
+	// An application's end user: Atryum fills the key from the asserting
+	// credential and the end user, never from the body.
+	if req.Asserted != nil && req.Asserted.Kind == AssertedKindApp && req.Asserted.UserID != "" {
+		a := req.Asserted
+		a.UserKey = EndUserKey(a.By, a.EUTenant, a.HasEUTenant, a.UserID)
+	}
+	userKey := endUserKey(req.Asserted)
+	if req.Asserted != nil && req.Asserted.Kind == AssertedKindApp {
+		// An application's end user is waiting: the decider has wait_ms,
+		// after which it holds the call for a person instead of answering late.
+		if _, set := DecisionDeadline(ctx); !set {
+			ctx = WithDecisionDeadline(ctx, time.Now().Add(time.Duration(req.EffectiveWaitMS())*time.Millisecond))
+		}
+	}
+	if prior, err := s.priorRequest(ctx, agentID, userKey, req.IdempotencyKey, "", req.Tool, inputJSON); err != nil || prior != nil {
 		return prior.response(s), err
 	}
 	agentRec := s.resolveAgentRecord(ctx, agentID)
@@ -1586,7 +1666,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		if harness == "" {
 			harness = source
 		}
-		resolved, err := s.getOrCreateSession(ctx, agentID, req.ClientSessionID, harness)
+		resolved, err := s.getOrCreateSession(ctx, agentID, endUserSessionKey(req.Asserted, req.ClientSessionID), harness)
 		if err != nil {
 			return InvocationResponse{}, err
 		}
@@ -1630,8 +1710,13 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	if sessionID != "" {
 		inv.SessionID = &sessionID
 	}
+	if req.Asserted != nil {
+		a := *req.Asserted
+		inv.Asserted = &a
+		inv.GatewayCheckKey = req.GatewayCheckKey
+	}
 	if err := s.create(ctx, inv); err != nil {
-		return s.lostCreateRace(ctx, agentID, req.IdempotencyKey, "", req.Tool, inputJSON, err)
+		return s.lostCreateRace(ctx, agentID, userKey, req.IdempotencyKey, "", req.Tool, inputJSON, err)
 	}
 	span.SetAttributes(attribute.String("atryum.invocation.id", inv.InvocationID))
 	if agentID != "" {
@@ -1858,10 +1943,13 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 // submitDecided finishes Submit when a decider is set: the decision is
 // recorded with the received event and the resulting status in one write.
 func (s *Service) submitDecided(ctx context.Context, inv Invocation, source, agentID, sessionID string, now time.Time) (InvocationResponse, error) {
-	d := s.decide(ctx, ToolCall{InvocationID: inv.InvocationID, Path: "submit", AgentID: agentID, Server: source, Tool: inv.Tool, Arguments: inv.Input, SessionID: sessionID, Auth: inv.Auth})
+	d := s.decide(ctx, ToolCall{InvocationID: inv.InvocationID, Path: "submit", AgentID: agentID, Server: source, Tool: inv.Tool, Arguments: inv.Input, SessionID: sessionID, Auth: inv.Auth, Asserted: inv.Asserted})
 	receivedPayload := map[string]any{"tool": inv.Tool, "upstream": source, "request_id": inv.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "external": true, "decision": d}
 	if agentID != "" {
 		receivedPayload["agent_id"] = agentID
+	}
+	if inv.Asserted != nil {
+		receivedPayload["asserted"] = inv.Asserted
 	}
 	evts := []Event{{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(receivedPayload), CreatedAt: now}}
 	at := time.Now().UTC()
@@ -1879,12 +1967,20 @@ func (s *Service) submitDecided(ctx context.Context, inv Invocation, source, age
 		evts = append(evts, Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"reason": d.Reason, "disposition": "never"}), CreatedAt: at})
 	default:
 		inv.Status = StatusPendingApproval
+		if d.Code != "" || d.ReviewID != "" || d.Route != "" {
+			inv.Approval = newApproval("pending", d.Reason, nil)
+		}
 		evts = append(evts, Event{InvocationID: inv.InvocationID, EventType: "invocation.pending_approval", Payload: mustJSON(receivedPayload), CreatedAt: at})
+	}
+	if inv.Approval != nil {
+		inv.Approval.Code, inv.Approval.ReviewID, inv.Approval.Route = d.Code, d.ReviewID, d.Route
 	}
 	if err := s.commit(ctx, inv, s.invocations.UpdateResult, evts...); err != nil {
 		return InvocationResponse{}, err
 	}
-	return s.toResponse(inv), nil
+	resp := s.toResponse(inv)
+	resp.Decision = &d
+	return resp, nil
 }
 
 func (s *Service) summarizePendingApproval(ctx context.Context, invocationID string) {
@@ -2227,6 +2323,19 @@ func (s *Service) toResponse(inv Invocation) InvocationResponse {
 	}
 	if len(inv.Error) > 0 {
 		resp.Error = json.RawMessage(inv.Error)
+	}
+	if inv.Asserted != nil {
+		a := *inv.Asserted
+		if a.Kind == AssertedKindApp {
+			// The application already knows its end user's details; echo only
+			// what identifies the call, not email, roles or tenant.
+			a = AssertedIdentity{UserID: a.UserID, By: a.By, Kind: a.Kind, AppAgent: a.AppAgent}
+		}
+		resp.Asserted = &a
+		if a.UserID != "" {
+			u := a.UserID
+			resp.UserID = &u
+		}
 	}
 	return resp
 }

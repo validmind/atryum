@@ -79,9 +79,10 @@ func NewOAuthRepoWithDialect(db *sql.DB, dialect Dialect) *OAuthRepo {
 // from internal/store/migrations/ in order.
 
 // invocationColumns is every invocations column, in scanInvocation's order.
-var invocationColumns = []string{"invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at", "matched_rule_id", "plan_id", "plan_step_index", "agent_id", "session_id", "summary", "client_name", "client_version", "auth_issuer", "auth_method", "auth_key_id"}
+var invocationColumns = []string{"invocation_id", "request_id", "idempotency_key", "tool_name", "upstream_name", "status", "approval_json", "request_json", "response_json", "error_json", "submitted_at", "completed_at", "matched_rule_id", "plan_id", "plan_step_index", "agent_id", "session_id", "summary", "client_name", "client_version", "auth_issuer", "auth_method", "auth_key_id", "asserted_user_id", "asserted_user_type", "asserted_user_display", "asserted_agent_id", "asserted_session_id", "asserted_by", "identity_basis", "gateway_check_key", "asserted_user_email", "asserted_roles", "asserted_eu_tenant", "asserted_app_agent", "asserted_kind", "asserted_user_key"}
 
 func (r *InvocationRepo) Create(ctx context.Context, inv invocation.Invocation) error {
+	asserted := assertedColumns(inv.Asserted)
 	var approval any
 	if inv.Approval != nil {
 		b, _ := json.Marshal(inv.Approval)
@@ -90,6 +91,8 @@ func (r *InvocationRepo) Create(ctx context.Context, inv invocation.Invocation) 
 	query, args, err := r.sb.Insert("invocations").Columns(invocationColumns...).Values(
 		inv.InvocationID, inv.RequestID, inv.IdempotencyKey, inv.Tool, inv.Upstream, inv.Status, approval, string(inv.Input), nullableString(inv.Response), nullableString(inv.Error), inv.SubmittedAt, inv.CompletedAt, inv.MatchedRuleID, inv.PlanID, inv.PlanStepIndex, inv.AgentID, inv.SessionID, inv.Summary, inv.ClientName, inv.ClientVersion,
 		nullIfEmpty(inv.Auth.Issuer), nullIfEmpty(inv.Auth.Method), nullIfEmpty(inv.Auth.KeyID),
+		asserted.UserID, asserted.UserType, asserted.UserDisplay, asserted.AgentID, asserted.SessionID, asserted.By, asserted.Basis, nullIfEmpty(inv.GatewayCheckKey),
+		asserted.Email, asserted.Roles, asserted.EUTenant, asserted.AppAgent, asserted.Kind, asserted.UserKey,
 	).ToSql()
 	if err != nil {
 		return err
@@ -173,9 +176,10 @@ func (r *InvocationRepo) Get(ctx context.Context, id string) (invocation.Invocat
 }
 
 // GetByIdempotencyKey returns agentID's invocation with key; keys are unique
-// per agent (a NULL agent_id is the empty agent), never across agents.
-func (r *InvocationRepo) GetByIdempotencyKey(ctx context.Context, agentID, key string) (invocation.Invocation, error) {
-	query, args, err := r.sb.Select(invocationColumns...).From("invocations").Where(sq.Eq{"idempotency_key": key}).Where(sq.Expr("COALESCE(agent_id, '') = ?", agentID)).ToSql()
+// per agent (a NULL agent_id is the empty agent) and, for an application's
+// call, per end user (userKey; "" for every other caller), never across them.
+func (r *InvocationRepo) GetByIdempotencyKey(ctx context.Context, agentID, userKey, key string) (invocation.Invocation, error) {
+	query, args, err := r.sb.Select(invocationColumns...).From("invocations").Where(sq.Eq{"idempotency_key": key}).Where(sq.Expr("COALESCE(agent_id, '') = ?", agentID)).Where(sq.Expr("COALESCE(asserted_user_key, '') = ?", userKey)).ToSql()
 	if err != nil {
 		return invocation.Invocation{}, err
 	}
@@ -616,7 +620,9 @@ func scanInvocation(scanner interface{ Scan(dest ...any) error }) (invocation.In
 	var sessionID sql.NullString
 	var summary, clientName, clientVersion sql.NullString
 	var authIssuer, authMethod, authKeyID sql.NullString
-	if err := scanner.Scan(&inv.InvocationID, &requestID, &idempotencyKey, &inv.Tool, &inv.Upstream, &inv.Status, &approval, &requestJSON, &responseJSON, &errorJSON, &inv.SubmittedAt, &completedAt, &matchedRuleID, &planID, &planStepIndex, &agentID, &sessionID, &summary, &clientName, &clientVersion, &authIssuer, &authMethod, &authKeyID); err != nil {
+	var aUser, aUserType, aUserDisplay, aAgent, aSession, aBy, basis, checkKey sql.NullString
+	var aEmail, aRoles, aEUTenant, aAppAgent, aKind, aUserKey sql.NullString
+	if err := scanner.Scan(&inv.InvocationID, &requestID, &idempotencyKey, &inv.Tool, &inv.Upstream, &inv.Status, &approval, &requestJSON, &responseJSON, &errorJSON, &inv.SubmittedAt, &completedAt, &matchedRuleID, &planID, &planStepIndex, &agentID, &sessionID, &summary, &clientName, &clientVersion, &authIssuer, &authMethod, &authKeyID, &aUser, &aUserType, &aUserDisplay, &aAgent, &aSession, &aBy, &basis, &checkKey, &aEmail, &aRoles, &aEUTenant, &aAppAgent, &aKind, &aUserKey); err != nil {
 		return invocation.Invocation{}, err
 	}
 	if requestID.Valid {
@@ -668,7 +674,46 @@ func scanInvocation(scanner interface{ Scan(dest ...any) error }) (invocation.In
 		inv.ClientVersion = &clientVersion.String
 	}
 	inv.Auth = invocation.Auth{Issuer: authIssuer.String, Method: authMethod.String, KeyID: authKeyID.String}
+	if basis.String == identityBasisAsserted {
+		inv.Asserted = &invocation.AssertedIdentity{UserID: aUser.String, UserType: aUserType.String, UserDisplay: aUserDisplay.String, AgentID: aAgent.String, SessionID: aSession.String, By: aBy.String,
+			Kind: aKind.String, Email: aEmail.String, EUTenant: aEUTenant.String, HasEUTenant: aEUTenant.Valid, AppAgent: aAppAgent.String, UserKey: aUserKey.String}
+		if aRoles.Valid && aRoles.String != "" {
+			_ = json.Unmarshal([]byte(aRoles.String), &inv.Asserted.Roles) // written by assertedColumns; a bad value leaves no roles
+		}
+	}
+	inv.GatewayCheckKey = checkKey.String
 	return inv, nil
+}
+
+// identityBasisAsserted marks an invocation whose user/agent a gateway
+// vouched for; NULL means the caller's credential was the only identity.
+const identityBasisAsserted = "asserted"
+
+type assertedCols struct {
+	UserID, UserType, UserDisplay, AgentID, SessionID, By, Basis any
+	Email, Roles, EUTenant, AppAgent, Kind, UserKey              any
+}
+
+// assertedColumns maps a gateway's asserted identity to its columns (all NULL
+// when there is none).
+func assertedColumns(a *invocation.AssertedIdentity) assertedCols {
+	if a == nil {
+		return assertedCols{}
+	}
+	c := assertedCols{
+		UserID: nullIfEmpty(a.UserID), UserType: nullIfEmpty(a.UserType), UserDisplay: nullIfEmpty(a.UserDisplay),
+		AgentID: nullIfEmpty(a.AgentID), SessionID: nullIfEmpty(a.SessionID), By: nullIfEmpty(a.By), Basis: identityBasisAsserted,
+		Email: nullIfEmpty(a.Email), AppAgent: nullIfEmpty(a.AppAgent), Kind: nullIfEmpty(a.Kind), UserKey: nullIfEmpty(a.UserKey),
+	}
+	if a.HasEUTenant {
+		c.EUTenant = a.EUTenant // an empty tenant is stored as '' (sent), not NULL (absent)
+	}
+	if len(a.Roles) > 0 {
+		b, _ := json.Marshal(a.Roles)
+		c.Roles = string(b)
+	}
+	// The end user's sign-in token (a.Token) is never stored.
+	return c
 }
 
 func nullIfEmpty(s string) any {
@@ -797,6 +842,10 @@ func applyInvocationFilter(builder sq.SelectBuilder, countBuilder sq.SelectBuild
 	if filter.ClientName != "" {
 		builder = builder.Where(sq.Eq{"client_name": filter.ClientName})
 		countBuilder = countBuilder.Where(sq.Eq{"client_name": filter.ClientName})
+	}
+	if filter.GatewayCheckKey != "" {
+		builder = builder.Where(sq.Eq{"gateway_check_key": filter.GatewayCheckKey})
+		countBuilder = countBuilder.Where(sq.Eq{"gateway_check_key": filter.GatewayCheckKey})
 	}
 	if filter.StartDate != nil {
 		builder = builder.Where(sq.GtOrEq{"submitted_at": *filter.StartDate})

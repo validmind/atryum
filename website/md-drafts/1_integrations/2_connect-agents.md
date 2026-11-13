@@ -476,3 +476,67 @@ Admin auth responses use these status codes:
 - `403` — the token is valid, but the user is disabled or lacks permission for the request (for example, a member calling an admin-only endpoint or acting on an agent they do not belong to).
 
 The frontend attaches bearer tokens to Axios calls and uses authenticated fetch-based SSE for the live invocation stream. It attempts silent token refresh before retrying an expiry-related `401` once. Browser console debug logs with the `[admin-auth]` prefix show refresh attempts and outcomes; token values are never logged.
+
+## Act for an application's end users
+
+Some agents aren't a person's coding agent: they run inside an application that offers agentic features to many end users. All of those end users reach Atryum through the application's one credential, so on its own every call would look like it came from the same agent. To tell them apart, the application says who each call is for.
+
+Only a credential holding the **`app` capability** may do this. Any other credential that sends end-user details is refused with `403` and code `not_an_asserter`, and no invocation is created. The embedding program grants the capability: on an API key it's stored with the key, and for an IdP client it comes from `WithCapabilityResolver`.
+
+### On the hook path
+
+Add an `on_behalf_of` block to `POST /api/v1/external/invocations`:
+
+```json
+{
+  "source": "payments",
+  "tool": "transfer_funds",
+  "input": { "from": "chk-01", "to": "sav-07", "amount": 750 },
+  "idempotency_key": "turn-8812:call-2",
+  "client_session_id": "conv-5f2a",
+  "wait_ms": 3000,
+  "on_behalf_of": {
+    "app_agent": "money-assistant",
+    "end_user": {
+      "id": "u_48213",
+      "email": "dana@example.com",
+      "display": "Dana K.",
+      "roles": ["retail_customer"],
+      "tenant": "example-bank-retail"
+    },
+    "token": "eyJhbGciOiJSUzI1NiIs…"
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `app_agent` | Which of the application's agents is acting. Optional. The embedding program resolves it. |
+| `end_user.id` | The application's own id for the end user (≤ 256 characters). Required when `end_user` is present. |
+| `end_user.email`, `display` | For display and audit. Optional. |
+| `end_user.roles` | Up to 32 roles of ≤ 64 characters each, for rules to match on. |
+| `end_user.tenant` | The end user's organization inside the application (≤ 128 characters). This is not the Atryum tenant. |
+| `token` | The end user's sign-in token, for the embedding program's decider to verify. It is never stored or logged. |
+| `wait_ms` | How long the decision may take: default 3000, at most 10000. After that, a call that needs a person is held, and the answer says so. |
+
+A malformed block gets `400` with code `invalid_on_behalf_of` and the `field` that's wrong. Values are refused, never trimmed.
+
+### What changes for an end user's calls
+
+- **Idempotency keys** are unique per end user, so two end users of one application can send the same key, and one end user's redelivery still returns the first call.
+- **Client sessions** are per end user, so two end users sending the same `client_session_id` get separate sessions.
+- **The response** echoes the end user's id as `user_id`, and nothing else about them.
+- **`approval`** carries the decider's `code` (for example `review_opened` or `aa_unavailable`), the `review_id` of a held call, and its `route` (who decides it).
+
+### On the MCP proxy
+
+Send the same details as headers on each request: `X-Atryum-App-Agent`, `X-Atryum-End-User`, `X-Atryum-End-User-Email`, `X-Atryum-End-User-Roles` (comma-separated), `X-Atryum-End-User-Tenant`, `X-Atryum-End-User-Token` and `X-Atryum-Wait-Ms`.
+
+A held `tools/call` for an end user waits at most `wait_ms`. It then returns an error result, `Held for review <id>; retry the same call after it is approved.`, and the review stays open. After approval, the application sends the identical call again.
+
+### For embedding programs
+
+- `ToolCall.Asserted` holds the end user, with `Kind: "app"`. `By` is the credential's agent and is never read from the request.
+- `DecisionDeadline(ctx)` is when the application stops waiting.
+- `WithAssertionRejected` receives each refused claim, for your audit record.
+- `RedactAssertedIdentity` removes one end user's details from their invocations and event payloads. Find them with `EndUserKey`.

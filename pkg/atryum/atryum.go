@@ -119,7 +119,7 @@ func agentValidator(cfg config.Config, o options) (*auth.Validator, error) {
 	if o.issuerResolver != nil {
 		v = v.WithIssuerResolver(secureIssuers(o.issuerResolver))
 	}
-	return v, nil
+	return v.WithCapabilityResolver(o.capabilityResolver), nil
 }
 
 // secureIssuers refuses a resolved issuer whose keys would come over plain
@@ -500,8 +500,14 @@ func runServer(args []string, o options) error {
 	if o.stuckReports {
 		handler.EnableStuckReports()
 	}
+	if o.assertionRejected != nil {
+		handler.SetAssertionRejected(o.assertionRejected)
+	}
 	for _, register := range o.extraRoutes {
 		handler.AddExtraRoutes(register)
+	}
+	for _, register := range o.agentRoutes {
+		handler.AddAgentRoutes(register)
 	}
 	for _, register := range o.authenticatedRoutes {
 		handler.AddAuthenticatedRoutes(register)
@@ -726,7 +732,7 @@ func (a *managedAuditAdapter) Create(ctx context.Context, inv invocation.Invocat
 }
 
 func (a *managedAuditAdapter) GetByIdempotencyKey(ctx context.Context, agentID, key string) (invocation.Invocation, error) {
-	return a.inv.GetByIdempotencyKey(ctx, agentID, key)
+	return a.inv.GetByIdempotencyKey(ctx, agentID, "", key) // managed-agent calls have no end user
 }
 
 func (a *managedAuditAdapter) CreateEvent(ctx context.Context, evt invocation.Event) error {

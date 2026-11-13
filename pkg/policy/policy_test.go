@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	"reflect"
 	"strings"
 	"testing"
@@ -562,5 +563,75 @@ func TestEvaluateLeavesTheAccountEmptyWithoutAJudgeRule(t *testing.T) {
 	got := Evaluate(context.Background(), rules, nil, Call{Tool: "sql"}, nil)
 	if got.Judge != nil || got.JudgeErr != nil {
 		t.Errorf("got Judge=%+v JudgeErr=%v, want both nil", got.Judge, got.JudgeErr)
+	}
+}
+
+// has and has_any match multi-valued facts (an application's end user's
+// roles): the fact is the list, and anything else never matches.
+func TestHasOperators(t *testing.T) {
+	roles := []string{"retail_customer", "support_lead"}
+	for _, tc := range []struct {
+		name string
+		cond Cond
+		fact any
+		want bool
+	}{
+		{"has a role", c("facts.end_user.roles", "has", "support_lead"), roles, true},
+		{"has not a role", c("facts.end_user.roles", "has", "admin"), roles, false},
+		{"has on []any", c("facts.end_user.roles", "has", "a"), []any{"a", "b"}, true},
+		{"has on a scalar fact", c("facts.end_user.roles", "has", "a"), "a", false},
+		{"has on an empty list", c("facts.end_user.roles", "has", "a"), []string{}, false},
+		{"has_any shares one", c("facts.end_user.roles", "has_any", []string{"admin", "support_lead"}), roles, true},
+		{"has_any shares none", c("facts.end_user.roles", "has_any", []string{"admin", "owner"}), roles, false},
+		{"has_any value not a list", c("facts.end_user.roles", "has_any", "support_lead"), roles, false},
+		{"has_any fact not a list", c("facts.end_user.roles", "has_any", []string{"a"}), "a", false},
+		{"has_any empty value", c("facts.end_user.roles", "has_any", []string{}), roles, false},
+		{"has compares text", c("facts.n", "has", 2), []any{json.Number("2"), 3}, true},
+	} {
+		got := condOK(tc.cond, Call{Facts: map[string]any{"end_user": map[string]any{"roles": tc.fact}, "n": tc.fact}})
+		if got != tc.want {
+			t.Errorf("%s: condOK(%+v, %v) = %v, want %v", tc.name, tc.cond, tc.fact, got, tc.want)
+		}
+	}
+	// A missing fact satisfies neither.
+	for _, op := range []string{"has", "has_any"} {
+		if condOK(c("facts.end_user.roles", op, []string{"a"}), Call{}) {
+			t.Errorf("%s matched a missing fact", op)
+		}
+	}
+}
+
+// Property: for random role lists, has(x) is exactly membership and
+// has_any(xs) is exactly a non-empty intersection.
+func TestHasOperatorsProperty(t *testing.T) {
+	r := rand.New(rand.NewSource(10))
+	pool := []string{"a", "b", "c", "d", "e"}
+	pick := func() []string {
+		var out []string
+		for _, p := range pool {
+			if r.Intn(2) == 0 {
+				out = append(out, p)
+			}
+		}
+		return out
+	}
+	for i := 0; i < 500; i++ {
+		have, want := pick(), pick()
+		call := Call{Facts: map[string]any{"roles": have}}
+		member := map[string]bool{}
+		for _, h := range have {
+			member[h] = true
+		}
+		anyShared := false
+		for _, w := range want {
+			anyShared = anyShared || member[w]
+		}
+		if got := condOK(c("facts.roles", "has_any", want), call); got != anyShared {
+			t.Fatalf("has_any(%v) on %v = %v, want %v", want, have, got, anyShared)
+		}
+		x := pool[r.Intn(len(pool))]
+		if got := condOK(c("facts.roles", "has", x), call); got != member[x] {
+			t.Fatalf("has(%q) on %v = %v, want %v", x, have, got, member[x])
+		}
 	}
 }

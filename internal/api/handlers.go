@@ -180,6 +180,9 @@ type clientInfoSnapshot struct {
 }
 
 type Handler struct {
+	// assertionRejected records a call that claimed an end user without the
+	// "app" capability (see SetAssertionRejected). Optional.
+	assertionRejected     func(ctx context.Context, r AssertionRejection) error
 	svc                   service
 	serverSvc             serverService
 	policyRegistry        *policy.Registry
@@ -233,12 +236,25 @@ type Handler struct {
 	// middleware so embedding programs can mount routes that require a
 	// logged-in principal (see pkg/atryum WithAuthenticatedRoutes).
 	authenticatedRoutes []func(mux *http.ServeMux, authenticate func(http.Handler) http.Handler)
+	// agentRoutes are like authenticatedRoutes but behind the agent routes'
+	// authentication (an agent key or agent token, as on
+	// /api/v1/external/*); see AddAgentRoutes.
+	agentRoutes []func(mux *http.ServeMux, authenticate func(http.Handler) http.Handler)
 	// externalDecider: see UseExternalDecider.
 	externalDecider bool
 	// requireAgentIdentity: see RequireAgentIdentity.
 	requireAgentIdentity bool
 	// stuckReports: see EnableStuckReports.
 	stuckReports bool
+}
+
+// AddAgentRoutes registers a callback that may mount routes wrapped in the
+// agent routes' authentication: the verified agent identity (with its
+// capabilities) is then in the request's context (auth.IdentityFromContext).
+func (h *Handler) AddAgentRoutes(register func(mux *http.ServeMux, authenticate func(http.Handler) http.Handler)) {
+	if register != nil {
+		h.agentRoutes = append(h.agentRoutes, register)
+	}
 }
 
 // AddAuthenticatedRoutes registers a callback that may mount routes wrapped in
@@ -1200,6 +1216,9 @@ func (h *Handler) Routes() http.Handler {
 		for _, register := range h.extraRoutes {
 			register(mux)
 		}
+		for _, register := range h.agentRoutes {
+			register(mux, h.agentRuntimeHandler)
+		}
 		return mux
 	}
 	operatorAuthMW := auth.OperatorMiddleware(h.authValidator, h.apiKeyAuth, auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug}, h.userProvisioner)
@@ -1262,6 +1281,9 @@ func (h *Handler) Routes() http.Handler {
 	}
 	for _, register := range h.authenticatedRoutes {
 		register(mux, operatorAuthMW)
+	}
+	for _, register := range h.agentRoutes {
+		register(mux, h.agentRuntimeHandler)
 	}
 	return mux
 }
@@ -1905,6 +1927,16 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 		toolReq := invocation.CreateInvocationRequest{Server: server, Tool: params.Name, Input: params.Arguments}
 		if requestID != "" {
 			toolReq.RequestID = stringPtr(requestID)
+		}
+		// An application acting for an end user names them in headers; only
+		// a credential with the "app" capability may.
+		if o, wait := onBehalfOfFromHeaders(r.Header); o != nil {
+			asserted, refusal := h.checkOnBehalfOf(r, o)
+			if refusal != nil {
+				h.writeRPCError(w, req.ID, -32001, refusal.code+": "+refusal.message)
+				return
+			}
+			toolReq.Asserted, toolReq.WaitMS = asserted, wait
 		}
 		// Carry forward the harness-reported clientInfo captured at
 		// `initialize` time on this same session. Lets the invocations UI
@@ -4466,6 +4498,11 @@ func (h *Handler) externalInvocations(w http.ResponseWriter, r *http.Request) {
 	// actually show up in the wild. If patterns emerge, plumb through a
 	// real user_agent column and capture here.
 	h.debugf("external submit user-agent=%q", r.Header.Get("User-Agent"))
+	// Never trust identity fields from the body: only the handlers set them.
+	req.Asserted, req.GatewayCheckKey = nil, ""
+	if !h.assertOnBehalfOf(w, r, &req) {
+		return
+	}
 
 	resp, err := h.svc.Submit(r.Context(), req)
 	if err != nil {

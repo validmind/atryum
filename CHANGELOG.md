@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- An application can act for its end users. A credential with the new `app`
+  capability may send `on_behalf_of` (`app_agent`, `end_user{id, email,
+  display, roles, tenant}`, `token`) on `POST /api/v1/external/invocations`,
+  or the matching `X-Atryum-End-User*` headers on the MCP proxy. Any other
+  credential gets `403 not_an_asserter`, reported through the new
+  `WithAssertionRejected`. A malformed block gets `400 invalid_on_behalf_of`
+  with the `field`.
+- The end user reaches an embedder's decider as `ToolCall.Asserted` (`Kind`
+  `"app"`, `Email`, `Roles`, `EUTenant`, `AppAgent`, and `Token`, which is
+  never stored). Invocations keep them in new `asserted_*` columns (migration
+  036). `wait_ms` (default 3000, max 10000) becomes `DecisionDeadline`.
+- `Decision.Code` and `Decision.Route`, returned with `review_id` on
+  `approval` (`approval.code`, `approval.review_id`, `approval.route`).
+- `WithCapabilityResolver` gives IdP-token identities capabilities (API keys
+  keep theirs in `api_keys.capabilities`).
+- `RedactAssertedIdentity` and `EndUserKey` remove one end user's details from
+  their invocations and event payloads.
+- `pkg/policy`: the `has` and `has_any` operators, for multi-valued facts such
+  as an end user's roles.
+- From spec 007, the pieces gateways and applications share:
+  `api_keys.capabilities`, `AssertedIdentity`, the `asserted_*` invocation
+  columns, and `DecisionDeadline` (migration 035).
+
+### Changed
+
+- Idempotency keys and client sessions are scoped per end user when a call
+  carries one. Calls without an end user behave as before.
+- A held MCP `tools/call` for an application's end user answers after
+  `wait_ms` with a "held for review" result and leaves the review open.
+  Before, it waited for the person.
+
 ## [0.10.0] - 2026-11-12
 
 ### Added

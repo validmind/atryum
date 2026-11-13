@@ -79,6 +79,42 @@ func TestPostgresTenantIdempotencyKeysPerTenant(t *testing.T) {
 	}
 }
 
+// One application's end users may reuse an idempotency key: the key is
+// unique per tenant, agent and end user, and redaction stays in its tenant.
+func TestPostgresEndUserIdempotencyAndRedaction(t *testing.T) {
+	db := openTenantTestDB(t)
+	repo := NewInvocationRepoWithDialect(db, DialectPostgres)
+	key := "turn-1"
+	a := tenant.With(context.Background(), "bank-a")
+	b := tenant.With(context.Background(), "bank-b")
+	create := func(ctx context.Context, id, user string) error {
+		t := "t-a"
+		asserted := (&invocation.OnBehalfOf{EndUser: &invocation.EndUser{ID: user, Tenant: &t}}).Asserted("app-bank")
+		inv := invocation.Invocation{InvocationID: id, IdempotencyKey: &key, AgentID: strPtr("app-bank"), Tool: "transfer", Status: "pending", Input: []byte(`{}`), SubmittedAt: time.Now().UTC(), Asserted: asserted}
+		return repo.Create(ctx, inv)
+	}
+	if err := create(a, "inv-1", "u_1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := create(a, "inv-2", "u_2"); err != nil {
+		t.Fatalf("another end user reusing the key: %v", err)
+	}
+	if err := create(b, "inv-3", "u_1"); err != nil {
+		t.Fatalf("another tenant's end user reusing the key: %v", err)
+	}
+	if err := create(a, "inv-4", "u_1"); err == nil {
+		t.Fatal("the same end user reused a key for a second invocation")
+	}
+	userKey := invocation.EndUserKey("app-bank", "t-a", true, "u_1")
+	if n, err := RedactAssertedIdentity(a, db, DialectPostgres, "app-bank", userKey); err != nil || n != 1 {
+		t.Fatalf("redacted %d, %v; want bank-a's one row", n, err)
+	}
+	got, err := repo.Get(b, "inv-3")
+	if err != nil || got.Asserted == nil || got.Asserted.UserID != "u_1" {
+		t.Fatalf("bank-a's redaction reached bank-b: %+v %v", got.Asserted, err)
+	}
+}
+
 // A prepared statement runs for the tenant on its call's context, not the
 // one its connection was last set to.
 func TestPostgresTenantPreparedStatement(t *testing.T) {
