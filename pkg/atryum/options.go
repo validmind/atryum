@@ -356,7 +356,10 @@ type IssuerResolver = auth.IssuerResolver
 //
 // Under WithRequestTenant, ctx names the request's tenant, and f must
 // answer for that tenant alone so one tenant's issuer never verifies
-// another's tokens. With f set, WithRequireAgentAuth no longer needs an
+// another's tokens. Atryum tells tenants apart only by the token's issuer
+// and audience, so no two tenants may share both: the embedder must refuse
+// to register an issuer and audience another tenant already has, or either
+// tenant's agent tokens verify in the other. With f set, WithRequireAgentAuth no longer needs an
 // [[auth]] issuer at startup.
 func WithIssuerResolver(f IssuerResolver) Option {
 	return func(o *options) { o.issuerResolver = f }

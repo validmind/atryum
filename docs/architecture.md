@@ -345,7 +345,9 @@ connection only the rows of the tenant in its `app.tenant_id` setting.
   while Atryum runs, set `WithIssuerResolver`: a token whose `iss` no
   `[[auth]]` block names is looked up through it, for the request's tenant.
   `[[auth]]` wins for its own issuers, a resolver error refuses the token, and
-  signing keys are cached per tenant and JWKS URL.
+  signing keys are cached per tenant and JWKS URL. No two tenants may share an
+  issuer and audience, since a token carries nothing else to tell them apart:
+  the embedding program refuses to register a duplicate.
 - The config file's `[[upstreams]]` belong to `default`. Another tenant uses
   only the servers stored for it.
 - Open any pool of your own on Atryum's tables with `atryum.OpenPostgres`, which
