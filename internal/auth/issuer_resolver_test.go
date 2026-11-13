@@ -3,7 +3,10 @@ package auth
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	jwt "github.com/golang-jwt/jwt/v5"
 
@@ -67,6 +70,7 @@ func TestIssuerResolver(t *testing.T) {
 			"other issuer":   func(c *Config) { c.Issuer = "https://other.example" },
 			"other audience": func(c *Config) { c.Audience = "not-atryum" },
 			"no audience":    func(c *Config) { c.Audience = "" },
+			"no JWKS URL":    func(c *Config) { c.JWKSURL = "" },
 		} {
 			v := (*Validator)(nil).WithIssuerResolver(func(context.Context, string) (Config, bool, error) {
 				c := Config{Enabled: true, Issuer: runtimeIssuer, Audience: "atryum", JWKSURL: idp.jwksURL()}
@@ -139,6 +143,58 @@ func TestIssuerResolver(t *testing.T) {
 		}
 		if _, err := v.Validate(ctxB, a.sign(t, runtimeClaims(runtimeIssuer))); err == nil {
 			t.Fatal("tenant a's token verified as tenant b")
+		}
+	})
+
+	t.Run("a changed JWKS URL takes effect", func(t *testing.T) {
+		// Same tenant and issuer; the issuer moves its keys to a new URL.
+		old, rotated := newTestIdP(t), newTestIdP(t)
+		current := old
+		v := (*Validator)(nil).WithIssuerResolver(func(_ context.Context, issuer string) (Config, bool, error) {
+			return Config{Enabled: true, Issuer: issuer, Audience: "atryum", JWKSURL: current.jwksURL()}, true, nil
+		})
+		if _, err := v.Validate(ctx, old.sign(t, runtimeClaims(runtimeIssuer))); err != nil {
+			t.Fatalf("before the change: %v", err)
+		}
+		current = rotated
+		if _, err := v.Validate(ctx, rotated.sign(t, runtimeClaims(runtimeIssuer))); err != nil {
+			t.Fatalf("after the change: %v", err)
+		}
+	})
+
+	t.Run("one tenant's slow issuer doesn't delay another's", func(t *testing.T) {
+		// Tenant b's issuer has no JWKS URL and its discovery endpoint hangs.
+		// Discovery would run under the validator's lock and stall tenant a;
+		// a resolved config without a JWKS URL is refused instead.
+		slow := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { time.Sleep(2 * time.Second) }))
+		t.Cleanup(slow.Close)
+		a := newTestIdP(t)
+		v := (*Validator)(nil).WithIssuerResolver(func(ctx context.Context, issuer string) (Config, bool, error) {
+			if tenant.From(ctx) == "b" {
+				return Config{Enabled: true, Issuer: issuer, Audience: "atryum"}, true, nil
+			}
+			return Config{Enabled: true, Issuer: issuer, Audience: "atryum", JWKSURL: a.jwksURL()}, true, nil
+		})
+		ctxA := tenant.With(ctx, "a")
+		tokenA := a.sign(t, runtimeClaims(runtimeIssuer))
+		if _, err := v.Validate(ctxA, tokenA); err != nil {
+			t.Fatalf("tenant a: %v", err)
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, err := v.Validate(tenant.With(ctx, "b"), a.sign(t, runtimeClaims(slow.URL)))
+			done <- err
+		}()
+		time.Sleep(50 * time.Millisecond)
+		start := time.Now()
+		if _, err := v.Validate(ctxA, tokenA); err != nil {
+			t.Fatalf("tenant a, b in flight: %v", err)
+		}
+		if d := time.Since(start); d > 500*time.Millisecond {
+			t.Fatalf("tenant a took %v while tenant b's issuer hung", d)
+		}
+		if err := <-done; err == nil {
+			t.Fatal("tenant b's issuer without a JWKS URL verified")
 		}
 	})
 }

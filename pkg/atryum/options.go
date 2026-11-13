@@ -344,8 +344,9 @@ type IssuerResolver = auth.IssuerResolver
 // WithIssuerResolver lets agent-token issuers be added while Atryum runs.
 // A token whose iss no [[auth]] block names is looked up through f, and
 // verified against the config f returns as an [[auth]] block would be:
-// Enabled must be true, the token's audience must match, and the Issuer and
-// JWKSURL must be https (plain http only on loopback). The issuer never
+// Enabled must be true, the token's audience must match, JWKSURL must be set
+// (no OIDC discovery for runtime issuers), and the Issuer and JWKSURL must be
+// https (plain http only on loopback). The issuer never
 // allows operator login (AdminEnabled is ignored); that stays on [[auth]].
 //
 // [[auth]] wins for its own issuers: f is never asked about them. An error

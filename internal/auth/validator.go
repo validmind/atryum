@@ -108,8 +108,10 @@ func newValidator(configs []Config, client *http.Client) *Validator {
 // IssuerResolver looks up an agent-token issuer that isn't in the static
 // [[auth]] list, for the tenant ctx acts for (pkg/tenant). It returns
 // ok=false for an issuer it doesn't know. The config is used as an [[auth]]
-// block would be (Enabled must be true), except that it never allows
-// operator login: AdminEnabled is ignored.
+// block would be (Enabled must be true), except that it must name its
+// JWKSURL (no discovery, which runs under the validator's lock, so one
+// tenant's slow issuer would stall every tenant) and never allows operator
+// login: AdminEnabled is ignored.
 type IssuerResolver func(ctx context.Context, issuer string) (cfg Config, ok bool, err error)
 
 // WithIssuerResolver makes v also accept agent tokens from issuers resolve
@@ -373,7 +375,7 @@ func (v *Validator) configFor(ctx context.Context, iss string, aud any) (Config,
 		return Config{}, "", &ValidationError{Result: ResultInvalid, Description: "cannot resolve issuer"}
 	}
 	cfg = cfg.Normalized()
-	if !ok || !cfg.Enabled || cfg.Issuer != iss || cfg.Audience == "" || !audienceMatches(aud, cfg.Audience) {
+	if !ok || !cfg.Enabled || cfg.Issuer != iss || cfg.Audience == "" || cfg.JWKSURL == "" || !audienceMatches(aud, cfg.Audience) {
 		return Config{}, "", notAllowed
 	}
 	cfg.AdminEnabled = false // agent tokens only: operator login stays on [[auth]]

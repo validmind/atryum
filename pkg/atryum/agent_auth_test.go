@@ -2,7 +2,10 @@ package atryum
 
 import (
 	"context"
+	"errors"
 	"testing"
+
+	jwt "github.com/golang-jwt/jwt/v5"
 
 	"github.com/validmind/atryum/internal/auth"
 	"github.com/validmind/atryum/internal/config"
@@ -74,6 +77,27 @@ func TestSecureIssuers(t *testing.T) {
 		_, ok, err := f(context.Background(), tc.cfg.Issuer)
 		if ok != tc.wantOK || (err == nil) != tc.wantOK {
 			t.Errorf("%s: ok = %v, err = %v", name, ok, err)
+		}
+	}
+}
+
+// Main wires the resolver through secureIssuers: a resolved issuer on plain
+// http (off loopback) is refused before any key is fetched.
+func TestAgentValidatorRefusesHTTPIssuers(t *testing.T) {
+	for name, cfg := range map[string]AuthConfig{
+		"http issuer": {Enabled: true, Issuer: "http://idp.bank", Audience: "aa", JWKSURL: "https://idp.bank/jwks"},
+		"http jwks":   {Enabled: true, Issuer: "https://idp.bank", Audience: "aa", JWKSURL: "http://idp.bank/jwks"},
+	} {
+		o := buildOptions([]Option{WithIssuerResolver(func(context.Context, string) (AuthConfig, bool, error) { return cfg, true, nil })})
+		v, err := agentValidator(config.Config{}, o)
+		if err != nil {
+			t.Fatalf("%s: agentValidator: %v", name, err)
+		}
+		token, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"iss": cfg.Issuer, "aud": "aa"}).SignedString([]byte("k"))
+		_, err = v.Validate(context.Background(), token)
+		var ve *auth.ValidationError
+		if !errors.As(err, &ve) || ve.Description != "cannot resolve issuer" {
+			t.Errorf("%s: err = %v, want the resolver refusal", name, err)
 		}
 	}
 }

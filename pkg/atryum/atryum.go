@@ -109,6 +109,19 @@ func checkAgentAuth(cfg config.Config, issuerResolver bool) error {
 	return nil
 }
 
+// agentValidator builds the token validator from [[auth]] and, when set, the
+// issuer resolver, whose issuers must be https (secureIssuers).
+func agentValidator(cfg config.Config, o options) (*auth.Validator, error) {
+	v, err := auth.NewValidator(cfg.Auth, nil)
+	if err != nil {
+		return nil, fmt.Errorf("auth: %w", err)
+	}
+	if o.issuerResolver != nil {
+		v = v.WithIssuerResolver(secureIssuers(o.issuerResolver))
+	}
+	return v, nil
+}
+
 // secureIssuers refuses a resolved issuer whose keys would come over plain
 // http, as checkAgentAuth does for [[auth]].
 func secureIssuers(f IssuerResolver) IssuerResolver {
@@ -494,12 +507,9 @@ func runServer(args []string, o options) error {
 		handler.AddAuthenticatedRoutes(register)
 	}
 
-	authValidator, err := auth.NewValidator(cfg.Auth, nil)
+	authValidator, err := agentValidator(cfg, o)
 	if err != nil {
-		return fmt.Errorf("auth: %w", err)
-	}
-	if o.issuerResolver != nil {
-		authValidator = authValidator.WithIssuerResolver(secureIssuers(o.issuerResolver))
+		return err
 	}
 	if authValidator != nil {
 		handler.SetAuthValidator(authValidator)
