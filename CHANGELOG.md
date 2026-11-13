@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `WithIssuerResolver` lets an embedding program add agent-token issuers while
+  Atryum runs. A token whose `iss` no `[[auth]]` block names is looked up
+  through it, with the request's tenant on the context, and verified against
+  the config it returns as an `[[auth]]` block would be (enabled, matching
+  audience, https issuer and JWKS URL), except that the JWKS URL is required:
+  runtime issuers never use OIDC discovery. `[[auth]]` wins for its own issuers,
+  an error from the resolver refuses the token (401), and a resolved issuer
+  never allows operator login. Signing keys are cached per tenant, issuer and
+  JWKS URL. With a resolver set, `WithRequireAgentAuth` no longer needs an
+  `[[auth]]` issuer at startup. `AuthConfig` aliases the `[[auth]]` fields.
+
 ## [0.9.0] - 2026-11-10
 
 ### Added

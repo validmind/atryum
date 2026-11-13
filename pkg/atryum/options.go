@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"net/http"
 
+	"github.com/validmind/atryum/internal/auth"
 	"github.com/validmind/atryum/internal/invocation"
 	"github.com/validmind/atryum/internal/store"
 	"github.com/validmind/atryum/pkg/authz"
@@ -93,6 +94,7 @@ type options struct {
 	upstreamCredentials UpstreamCredentials
 	requestTenant       RequestTenant
 	tenants             func(context.Context) ([]string, error)
+	issuerResolver      IssuerResolver
 }
 
 type extensionMigrations struct {
@@ -329,4 +331,36 @@ func WithRequestTenant(f RequestTenant) Option {
 // tenant.Default. f runs with a context that names tenant.Default.
 func WithTenants(f func(ctx context.Context) ([]string, error)) Option {
 	return func(o *options) { o.tenants = f }
+}
+
+// AuthConfig is one agent-token issuer: the fields of an [[auth]] block.
+type AuthConfig = auth.Config
+
+// IssuerResolver returns the config for an agent-token issuer that isn't in
+// [[auth]], for the tenant ctx acts for (tenant.From), and ok=false for an
+// issuer that tenant doesn't have. See WithIssuerResolver.
+type IssuerResolver = auth.IssuerResolver
+
+// WithIssuerResolver lets agent-token issuers be added while Atryum runs.
+// A token whose iss no [[auth]] block names is looked up through f, and
+// verified against the config f returns as an [[auth]] block would be:
+// Enabled must be true, the token's audience must match, JWKSURL must be set
+// (no OIDC discovery for runtime issuers), and the Issuer and JWKSURL must be
+// https (plain http only on loopback). The issuer never
+// allows operator login (AdminEnabled is ignored); that stays on [[auth]].
+//
+// [[auth]] wins for its own issuers: f is never asked about them. An error
+// from f refuses the token (401) and is logged. f runs on every agent
+// request with such a token, so a slow lookup should cache; the signing
+// keys are cached per tenant, issuer and JWKS URL.
+//
+// Under WithRequestTenant, ctx names the request's tenant, and f must
+// answer for that tenant alone so one tenant's issuer never verifies
+// another's tokens. Atryum tells tenants apart only by the token's issuer
+// and audience, so no two tenants may share both: the embedder must refuse
+// to register an issuer and audience another tenant already has, or either
+// tenant's agent tokens verify in the other. With f set, WithRequireAgentAuth no longer needs an
+// [[auth]] issuer at startup.
+func WithIssuerResolver(f IssuerResolver) Option {
+	return func(o *options) { o.issuerResolver = f }
 }
