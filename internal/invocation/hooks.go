@@ -41,6 +41,25 @@ type ToolCall struct {
 	SessionID    string          `json:"session_id,omitempty"`
 	// Auth is how the caller proved AgentID.
 	Auth Auth `json:"auth"`
+	// Asserted is who an MCP gateway (a key with the "asserter" capability,
+	// see auth.CapabilityAsserter) says the call is for. Nil on every other
+	// path. AgentID stays the gateway's own registered agent; Asserted.AgentID
+	// is recorded, never used to resolve the agent.
+	Asserted *AssertedIdentity `json:"asserted,omitempty"`
+}
+
+// AssertedIdentity is the identity a trusted gateway vouches for on one call.
+// By is set by Atryum from the gateway's credential, never from a request
+// body; any field may be empty when the gateway did not send it.
+type AssertedIdentity struct {
+	UserID      string `json:"user_id,omitempty"`
+	UserType    string `json:"user_type,omitempty"`
+	UserDisplay string `json:"user_display,omitempty"`
+	AgentID     string `json:"agent_id,omitempty"`
+	SessionID   string `json:"session_id,omitempty"`
+	By          string `json:"by"`
+	// Vendor is the gateway kind (truefoundry, kuadrant, generic).
+	Vendor string `json:"vendor,omitempty"`
 }
 
 // Auth is how a caller authenticated. Method is "jwt" (an IdP token, Issuer
@@ -393,4 +412,21 @@ func unmarshalExact(b []byte, v any) error {
 	d := json.NewDecoder(bytes.NewReader(b))
 	d.UseNumber()
 	return d.Decode(v)
+}
+
+type decisionDeadlineKey struct{}
+
+// WithDecisionDeadline tells the decider when its caller (an MCP gateway with
+// a few seconds' timeout) stops waiting. It is a value, not a context
+// deadline, so the decision can still be recorded after the caller has gone:
+// a decider bounds its slow steps (the judge) by it and, when the time is too
+// short, sends the call to a person rather than answering late.
+func WithDecisionDeadline(ctx context.Context, t time.Time) context.Context {
+	return context.WithValue(ctx, decisionDeadlineKey{}, t)
+}
+
+// DecisionDeadline reports the deadline WithDecisionDeadline set, if any.
+func DecisionDeadline(ctx context.Context) (time.Time, bool) {
+	t, ok := ctx.Value(decisionDeadlineKey{}).(time.Time)
+	return t, ok
 }

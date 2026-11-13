@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
@@ -23,6 +24,11 @@ type APIKey struct {
 	LastUsedAt *time.Time
 	RevokedAt  *time.Time
 	RevokedBy  string
+	// Capabilities are extra rights (auth.Capability*), e.g. "asserter" for
+	// an MCP gateway. Stored comma-separated.
+	Capabilities []string
+	// GatewayVendor names the gateway a key belongs to (display only).
+	GatewayVendor string
 }
 
 // Active reports whether the key itself is usable at time now (ignores the
@@ -54,6 +60,7 @@ func NewAPIKeysRepoWithDialect(db *sql.DB, dialect Dialect) *APIKeysRepo {
 var apiKeyColumns = []string{
 	"id", "agent_id", "created_by", "name", "key_hash", "key_prefix",
 	"created_at", "expires_at", "last_used_at", "revoked_at", "revoked_by",
+	"capabilities", "gateway_vendor",
 }
 
 // Create persists a new key row. The caller has already generated the token
@@ -68,7 +75,8 @@ func (r *APIKeysRepo) Create(ctx context.Context, key APIKey) (APIKey, error) {
 	query, args, err := r.sb.Insert("api_keys").
 		Columns(apiKeyColumns...).
 		Values(key.ID, key.AgentID, emptyToNil(key.CreatedBy), key.Name, key.KeyHash, key.KeyPrefix,
-			key.CreatedAt, nullableTime(key.ExpiresAt), nil, nil, nil).
+			key.CreatedAt, nullableTime(key.ExpiresAt), nil, nil, nil,
+			joinCapabilities(key.Capabilities), emptyToNil(key.GatewayVendor)).
 		ToSql()
 	if err != nil {
 		return APIKey{}, err
@@ -228,12 +236,14 @@ func (r *APIKeysRepo) list(ctx context.Context, query string, args ...any) ([]AP
 
 func scanAPIKey(row interface{ Scan(dest ...any) error }) (APIKey, error) {
 	var k APIKey
-	var createdBy, revokedBy sql.NullString
+	var createdBy, revokedBy, capabilities, gatewayVendor sql.NullString
 	var expires, lastUsed, revoked sql.NullTime
 	if err := row.Scan(&k.ID, &k.AgentID, &createdBy, &k.Name, &k.KeyHash, &k.KeyPrefix,
-		&k.CreatedAt, &expires, &lastUsed, &revoked, &revokedBy); err != nil {
+		&k.CreatedAt, &expires, &lastUsed, &revoked, &revokedBy, &capabilities, &gatewayVendor); err != nil {
 		return APIKey{}, err
 	}
+	k.Capabilities = splitCapabilities(capabilities.String)
+	k.GatewayVendor = gatewayVendor.String
 	k.CreatedBy = createdBy.String
 	k.RevokedBy = revokedBy.String
 	if expires.Valid {
@@ -249,6 +259,28 @@ func scanAPIKey(row interface{ Scan(dest ...any) error }) (APIKey, error) {
 		k.RevokedAt = &t
 	}
 	return k, nil
+}
+
+// joinCapabilities stores capabilities as a comma-separated list.
+func joinCapabilities(caps []string) string {
+	out := make([]string, 0, len(caps))
+	for _, c := range caps {
+		if c = strings.TrimSpace(c); c != "" {
+			out = append(out, c)
+		}
+	}
+	return strings.Join(out, ",")
+}
+
+// splitCapabilities is joinCapabilities' inverse.
+func splitCapabilities(s string) []string {
+	var out []string
+	for _, c := range strings.Split(s, ",") {
+		if c = strings.TrimSpace(c); c != "" {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 func nullableTime(t *time.Time) any {

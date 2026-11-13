@@ -41,6 +41,23 @@ type Identity struct {
 	KeyID string
 	// UserID is the user who issued the key, when known.
 	UserID string
+	// Capabilities are extra rights the credential holds (api_keys only);
+	// see Capability*.
+	Capabilities []string
+}
+
+// CapabilityAsserter lets a key call /api/v1/gateway/* and assert which human
+// (and sub-agent) a tool call is made for. Only gateways hold it.
+const CapabilityAsserter = "asserter"
+
+// HasCapability reports whether the identity holds capability c.
+func (id Identity) HasCapability(c string) bool {
+	for _, have := range id.Capabilities {
+		if have == c {
+			return true
+		}
+	}
+	return false
 }
 
 // Result classifies a validation outcome.

@@ -28,6 +28,7 @@ import (
 
 	"github.com/validmind/atryum/internal/auth"
 	backendclient "github.com/validmind/atryum/internal/backend"
+	"github.com/validmind/atryum/internal/gateway"
 	"github.com/validmind/atryum/internal/invocation"
 	"github.com/validmind/atryum/internal/invocation/policy"
 	"github.com/validmind/atryum/internal/managedagents"
@@ -239,6 +240,8 @@ type Handler struct {
 	requireAgentIdentity bool
 	// stuckReports: see EnableStuckReports.
 	stuckReports bool
+	// gateway serves /api/v1/gateway/* (MCP gateways asking for verdicts).
+	gateway http.Handler
 }
 
 // AddAuthenticatedRoutes registers a callback that may mount routes wrapped in
@@ -1177,6 +1180,18 @@ func (h *Handler) UseExternalDecider() { h.externalDecider = true }
 // is recorded (Service.ReportStuck) and authorizes nothing.
 func (h *Handler) EnableStuckReports() { h.stuckReports = true }
 
+// SetGateway mounts g at /api/v1/gateway/ behind the agent-runtime auth
+// (and, for Kuadrant, the key-in-path rewrite). g checks the asserter
+// capability itself.
+func (h *Handler) SetGateway(g http.Handler) { h.gateway = g }
+
+func (h *Handler) mountGateway(mux *http.ServeMux) {
+	if h.gateway == nil {
+		return
+	}
+	mux.Handle(gateway.Prefix, gateway.PathTokenToBearer(h.agentRuntimeHandler(h.gateway)))
+}
+
 var atryumReportStuckMCPTool = annotatedTool{
 	Name:        invocation.StuckReportTool,
 	Description: "Report that you cannot finish your task without crossing a boundary of your authority (a denied call, a rule you must not break, a missing approval). This only records the report for a person; it authorizes nothing. Stop the task after reporting. Arguments: task (what you were asked to do), boundary (what stops you), detail (optional: what you tried and what a person needs to do).",
@@ -1197,6 +1212,7 @@ func (h *Handler) Routes() http.Handler {
 		mux.Handle("/api/v1/external/invocations", h.agentRuntimeHandler(http.HandlerFunc(h.externalInvocations)))
 		mux.Handle("/api/v1/external/invocations/", h.agentRuntimeHandler(http.HandlerFunc(h.externalInvocationDetail)))
 		mux.Handle("/api/v1/external/sessions", h.agentRuntimeHandler(http.HandlerFunc(h.externalSessions)))
+		h.mountGateway(mux)
 		for _, register := range h.extraRoutes {
 			register(mux)
 		}
@@ -1245,6 +1261,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("/api/v1/external/invocations", h.agentRuntimeHandler(http.HandlerFunc(h.externalInvocations)))
 	mux.Handle("/api/v1/external/invocations/", h.agentRuntimeHandler(http.HandlerFunc(h.externalInvocationDetail)))
 	mux.Handle("/api/v1/external/sessions", h.agentRuntimeHandler(http.HandlerFunc(h.externalSessions)))
+	h.mountGateway(mux)
 	mux.Handle("/api/v1/external/plans", h.agentRuntimeHandler(http.HandlerFunc(h.externalPlans)))
 	mux.Handle("/api/v1/external/plans/", h.agentRuntimeHandler(http.HandlerFunc(h.externalPlanDetail)))
 	mux.Handle("/api/v1/plans", operator(h.reviewPlans))

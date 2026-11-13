@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"net/http"
 
+	"github.com/validmind/atryum/internal/gateway"
 	"github.com/validmind/atryum/internal/invocation"
 	"github.com/validmind/atryum/internal/store"
 	"github.com/validmind/atryum/pkg/authz"
@@ -18,6 +19,8 @@ type (
 	Decider = invocation.Decider
 	// ToolCall is the call a Decider is asked about.
 	ToolCall = invocation.ToolCall
+	// AssertedIdentity is who an MCP gateway vouched for on a ToolCall.
+	AssertedIdentity = invocation.AssertedIdentity
 	// Decision is a Decider's result.
 	Decision = invocation.Decision
 	// Explanation is a Decider's account of a decision (Decision.Explanation,
@@ -61,6 +64,11 @@ type ResolvePending func(ctx context.Context, tx *sql.Tx, invocationID string, a
 // ErrNotPending is wrapped by ResolvePending when the call is no longer pending.
 var ErrNotPending = invocation.ErrNotPending
 
+// DecisionDeadline reports when the caller of this decision (an MCP gateway
+// with a short timeout) stops waiting, if it set one. A decider bounds its
+// slow steps by it; see invocation.WithDecisionDeadline.
+var DecisionDeadline = invocation.DecisionDeadline
+
 // ErrIdempotencyConflict is returned (HTTP 409 on the API) when an agent
 // reuses an idempotency key for a different request. Keys are scoped per
 // agent, so another agent's key never conflicts.
@@ -88,6 +96,7 @@ type options struct {
 	databaseURL         string
 	requireAgentAuth    bool
 	stuckReports        bool
+	gateway             GatewayOptions
 	resolveHooks        []func(ResolvePending)
 	dbPool              DBPool
 	upstreamCredentials UpstreamCredentials
@@ -235,6 +244,19 @@ func (o options) agentAPIKeysEnabled() bool {
 // short acknowledgement. The server in the MCP path must be a configured one.
 func WithStuckReports() Option {
 	return func(o *options) { o.stuckReports = true }
+}
+
+// GatewayOptions configure /api/v1/gateway/*, where MCP gateways (TrueFoundry,
+// Red Hat / Kuadrant) ask for a verdict before each tool call. The routes are
+// always mounted; only agent API keys with the "asserter" capability may call
+// them.
+type GatewayOptions = gateway.Options
+
+// WithGateway supplies the review link a held gateway call returns and a sink
+// for gateway events that have no invocation (a rejected key, a check that
+// failed closed).
+func WithGateway(g GatewayOptions) Option {
+	return func(o *options) { o.gateway = g }
 }
 
 // DBPool sizes the PostgreSQL connection pool; see WithDBPool.

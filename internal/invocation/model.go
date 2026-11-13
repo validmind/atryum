@@ -64,13 +64,18 @@ type Invocation struct {
 	ClientName    *string `json:"client_name,omitempty"`
 	ClientVersion *string `json:"client_version,omitempty"`
 	// Auth records how the caller authenticated; empty fields when unknown.
-	Auth        Auth       `json:"auth"`
-	Input       []byte     `json:"-"`
-	Response    []byte     `json:"-"`
-	Error       []byte     `json:"-"`
-	Summary     *string    `json:"summary,omitempty"`
-	SubmittedAt time.Time  `json:"submitted_at"`
-	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	Auth Auth `json:"auth"`
+	// Asserted is the identity an MCP gateway vouched for (nil otherwise).
+	Asserted *AssertedIdentity `json:"asserted,omitempty"`
+	// GatewayCheckKey groups identical gateway checks (same gateway, user,
+	// server, tool and canonical arguments); empty off the gateway path.
+	GatewayCheckKey string     `json:"-"`
+	Input           []byte     `json:"-"`
+	Response        []byte     `json:"-"`
+	Error           []byte     `json:"-"`
+	Summary         *string    `json:"summary,omitempty"`
+	SubmittedAt     time.Time  `json:"submitted_at"`
+	CompletedAt     *time.Time `json:"completed_at,omitempty"`
 }
 
 type Event struct {
@@ -91,8 +96,10 @@ type InvocationListFilter struct {
 	PlanID     string   // filters to invocations linked to one approved plan
 	SessionID  string   // filters to invocations belonging to one external session
 	ClientName string
-	StartDate  *time.Time
-	EndDate    *time.Time
+	// GatewayCheckKey filters to gateway invocations with this check key.
+	GatewayCheckKey string
+	StartDate       *time.Time
+	EndDate         *time.Time
 }
 
 type EventListFilter struct {
@@ -173,6 +180,11 @@ type ExternalSubmitRequest struct {
 	// via the agents.agent_ids array. A verified OAuth identity in the
 	// request context always wins. Optional.
 	AgentID string `json:"agent_id,omitempty"`
+	// Asserted and GatewayCheckKey are set only by the gateway handler,
+	// after it has checked the caller's key holds the asserter capability.
+	// They are never read from a request body.
+	Asserted        *AssertedIdentity `json:"-"`
+	GatewayCheckKey string            `json:"-"`
 }
 
 // ExternalExecutionUpdate is sent by the external executor to report on a
@@ -217,6 +229,12 @@ type InvocationResponse struct {
 	Result      json.RawMessage `json:"result,omitempty"`
 	Error       json.RawMessage `json:"error,omitempty"`
 	Summary     string          `json:"summary,omitempty"`
+	// Asserted is the identity an MCP gateway vouched for, when the call
+	// came through one; UserID is then Asserted.UserID.
+	Asserted *AssertedIdentity `json:"asserted,omitempty"`
+	// Decision is the embedder decider's result for this submit, when one
+	// ran. In-process only (the gateway handler maps it to a verdict).
+	Decision *Decision `json:"-"`
 }
 
 type InvocationListResponse struct {
