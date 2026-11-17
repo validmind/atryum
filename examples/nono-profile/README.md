@@ -1,7 +1,24 @@
 # Atryum hooks inside a nono sandbox
 
 A [nono](https://nono.sh) profile that lets a sandboxed Claude Code keep
-talking to Atryum.
+talking to Atryum. **This is the recommended way to run a hook-gated agent.**
+It keeps the hook script read-only to the agent, so the agent can't rewrite the
+gate that reviews its tool calls. Combine it with Atryum's self-protection (on
+by default) and, on macOS and Linux, the managed hook install
+(`sudo atryum hooks install --managed ... claude-code`). See "Keeping an agent
+from changing its own gate" in the main README.
+
+Check that the profile also keeps the hook's registration out of reach.
+`claude-local` extends the stock `claude` profile, which lets Claude Code write
+its own config directory:
+
+```sh
+nono why --profile claude-local --path ~/.claude/settings.json --op write
+```
+
+If that answers `ALLOWED`, the agent can still edit the file that registers
+the hook. Use the managed install, which registers the hook in a root-owned
+file, or change your copy of the profile so that path isn't writable.
 
 Every other directory under `examples/` shows how to wire an agent *into*
 Atryum. This one is about what happens when something else is already

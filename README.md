@@ -86,6 +86,29 @@ When inbound auth is configured, all agent runtime surfaces require OAuth bearer
 
 The Settings UI can also select a default ValidMind agent record. AI Evaluation uses that record when an incoming runtime agent ID is missing or does not map to a synced agent, allowing local no-auth runs to evaluate against a known charter without adding TOML.
 
+## Keeping an agent from changing its own gate
+
+A hook only gates an agent while the hook is installed and unmodified. The stock install (`atryum setup claude`, `atryum hooks install ...`) writes the hook script and agent key under `~/.atryum` and registers the hook in the harness's user settings (`~/.claude/settings.json`, `~/.cursor/hooks.json`, `~/.codex/hooks.json`), all owned by the user the agent runs as. Three layers keep the agent from switching its own gate off. Use all three where you can.
+
+1. **Self-protection (on by default).** Before plans, rules, policy or an external decider see a tool call, Atryum holds it for a person if its arguments name one of the gate's files:
+   - `.atryum` (the default home, or another such as `~/.atryum-b`)
+   - Claude Code settings: a `settings*.json` under a `.claude*` directory, `managed-settings.json` and `managed-settings.d/`, or the text `disableAllHooks`
+   - `.cursor/hooks.json`, `.codex/hooks.json`, `.codex/config.toml`
+   - `~/.config/amp/plugins`, `~/.pi/agent/extensions`
+   - the directories a managed install writes (below)
+
+   It applies to hook-submitted calls and to MCP proxy calls to servers on this machine (stdio, or HTTP on a loopback address), so an approve-everything rule can't let one through. On the hook path, tools that change nothing (`Read`, `Glob`, `Grep`, `LS`, `WebSearch`, `WebFetch`, `TodoWrite`, `Task`) aren't checked, and `Write`/`Edit`/`MultiEdit`/`NotebookEdit` are checked on their target path, plus their content when the target is a script. The files are a table of [`pkg/policy`](pkg/policy/) rules and each argument is compared the way that package compares everything: as sent, then with case, spaces, `%XX` escapes and invisible characters cleaned up, then with path detours and Windows spellings tidied.
+
+   The held call shows in the review UI labelled **Self-protection**. A person approves it (the change was intended) or denies it, and the label stays on the call afterwards. No rule or judge can approve it. A hold is only as strong as the sign-in on the review API: if that API is open to the agent (no admin-enabled `[[auth]]` block), the agent could approve its own call, so Atryum warns at startup; enable admin auth or set `action = "deny"`. With an external decider there is no review UI, so such calls are always denied.
+
+   Configure it under `[self_protection]`: `action = "deny"` refuses such calls outright instead of holding them (a good fit for unattended agents, which would otherwise wait for the hold to time out), `extra_paths` adds paths (a custom `ATRYUM_HOME` or `CLAUDE_CONFIG_DIR` that isn't named `.atryum*` / `.claude*`), and `enabled = false` turns it off.
+
+   **Limits.** It reads text and does not interpret shell. These get past it: shell quoting or escapes inside a name (`.atr''yum`), variables, globs, encoded commands, a command that removes or renames a whole parent directory (`rm -rf ~/.claude`), and a non-script file written now and run later. It also can't tell a mention from a change, so a commit message, PR body or `grep` that names these paths is held too. Treat it as a floor, not a sandbox.
+2. **Install the hook where the agent can't write (Claude Code).** `sudo atryum hooks install --managed --url https://atryum.example claude-code` writes the hook script built into the `atryum` binary to a root-owned directory and registers it in Claude Code's managed settings (`managed-settings.d/atryum.json` under `/Library/Application Support/ClaudeCode` on macOS, `/etc/claude-code` on Linux). Claude Code always runs managed hooks, and a user or project `disableAllHooks` can't turn them off. The hook is set to block the call if it can't start (`onFailure`, Claude Code 2.1.295 or later). Each user still runs `atryum setup claude` for their agent key, then `atryum hooks uninstall --yes claude-code` to drop the user-level copy. Not available on WSL, where Claude Code documents `/etc/claude-code` as user-writable, or for Cursor and Codex.
+
+   The hook still runs as the user, in the user's environment, with the `node` binary found at install time (`--node` to choose). The install pins that path and clears `NODE_OPTIONS`, and warns when `node` isn't root-owned, as with a Homebrew or nvm install. An agent that can replace that binary or change the environment Claude Code starts in can still interfere, which is what the sandbox is for.
+3. **Run the agent in a sandbox.** [`examples/nono-profile`](examples/nono-profile/) runs Claude Code under [nono](https://nono.sh) with `~/.atryum/hooks` read-only to the agent. This is the recommended way to deploy, not just a compatibility setting.
+
 ## UI and privileged API authentication
 
 Authentication for the UI and the review/operator APIs is optional. When no `[[auth]]` block has `admin_enabled = true`, the UI and those privileged APIs remain open. When one or more blocks are admin-enabled, Atryum requires a browser OIDC access token for review/operator API calls and accepts tokens from any admin-enabled issuer. The upstream MCP OAuth callback at `/api/v1/mcp/oauth/callback` remains public so external identity providers can complete browser redirects.

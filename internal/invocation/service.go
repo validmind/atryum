@@ -67,20 +67,31 @@ const dispositionContinue policy.Disposition = "continue"
 const dispositionAIEscalated policy.Disposition = "ai_escalated"
 
 // humanDecisionStatus returns the approval status string to write when a human
-// approves or denies an invocation. If the invocation was AI-escalated the composite
-// statuses ("ai_escalated_approved" / "ai_escalated_denied") preserve the origin so
-// the UI can show both badges.
+// approves or denies an invocation. If the invocation was AI-escalated or held by
+// self-protection, the composite statuses ("ai_escalated_approved",
+// "self_protection_escalated_denied", ...) preserve the origin so the UI can show
+// both badges and the audit trail keeps why a person was asked.
 func humanDecisionStatus(current *Approval, approved bool) string {
-	if current != nil && current.Status == "ai_escalated" {
+	if current != nil && (current.Status == "ai_escalated" || current.Status == "self_protection_escalated") {
 		if approved {
-			return "ai_escalated_approved"
+			return current.Status + "_approved"
 		}
-		return "ai_escalated_denied"
+		return current.Status + "_denied"
 	}
 	if approved {
 		return "approved"
 	}
 	return "denied"
+}
+
+// humanDecisionReason is the approval reason to write when a person decides.
+// A self-protection hold keeps its own reason, so the record still says why a
+// person was asked; every other decision is recorded as "human".
+func humanDecisionReason(current *Approval) *string {
+	if current != nil && current.Status == "self_protection_escalated" && current.Reason != nil {
+		return current.Reason
+	}
+	return stringPtr("human")
 }
 
 func newApproval(status, reason string, confidence *float64) *Approval {
@@ -262,6 +273,7 @@ type Service struct {
 	inTx            TxRunner      // nil = each write commits on its own
 	decider         Decider       // nil = rules, plans and policy decide
 	hook            EventHook     // nil = no hook
+	selfProtection  SelfProtection
 
 	toolCatalogMu sync.Mutex
 	toolCatalog   map[string]toolCatalogEntry
@@ -293,7 +305,17 @@ func NewService(
 		approvalPoll:   250 * time.Millisecond,
 		wakePoll:       2 * time.Second,
 		toolCatalog:    make(map[string]toolCatalogEntry),
+		selfProtection: DefaultSelfProtection(),
 	}
+}
+
+// SetSelfProtection replaces the self-protection check (enabled, holding
+// calls for a person, by default). See self_protection.go.
+func (s *Service) SetSelfProtection(p SelfProtection) {
+	if p.Action != SelfProtectionDeny {
+		p.Action = SelfProtectionHuman
+	}
+	s.selfProtection = p
 }
 
 // SetInvocationSummarizer installs the optional backend summarizer used to
@@ -420,6 +442,14 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	span.SetAttributes(attribute.String("atryum.invocation.id", inv.InvocationID))
 	if agentID != "" {
 		span.SetAttributes(attribute.String("atryum.agent.id", agentID))
+	}
+
+	// A call that would change the agent's own gate is settled before plans,
+	// rules, policy or a decider can approve it (see self_protection.go).
+	if upstreamIsLocal(upstream) {
+		if target := s.selfProtection.Match(req.Tool, inputJSON, false); target != "" {
+			return s.selfProtectProxy(ctx, inv, upstream, req, target, now)
+		}
 	}
 
 	// An approved plan grants a scoped pass. On this MCP proxy path the
@@ -1467,7 +1497,7 @@ func (s *Service) resolvePending(ctx context.Context, invocationID string, appro
 		inv.Status = StatusApproved
 		inv.Approval = &Approval{
 			Status:     humanDecisionStatus(inv.Approval, true),
-			Reason:     stringPtr("human"),
+			Reason:     humanDecisionReason(inv.Approval),
 			ActorID:    stringPtrIfNotEmpty(actorID),
 			DecisionAt: timePtr(now),
 		}
@@ -1484,7 +1514,7 @@ func (s *Service) resolvePending(ctx context.Context, invocationID string, appro
 	inv.CompletedAt = &now
 	inv.Approval = &Approval{
 		Status:     humanDecisionStatus(inv.Approval, false),
-		Reason:     stringPtr("human"),
+		Reason:     humanDecisionReason(inv.Approval),
 		ActorID:    stringPtrIfNotEmpty(actorID),
 		DecisionAt: timePtr(now),
 	}
@@ -1639,6 +1669,12 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	}
 	if sessionID != "" {
 		_ = s.sessions.TouchSession(ctx, sessionID, now.Add(externalSessionTTL)) // best-effort last-seen/expiry bump
+	}
+
+	// A call that would change the agent's own gate is settled before plans,
+	// rules or a decider can approve it (see self_protection.go).
+	if target := s.selfProtection.Match(req.Tool, inputJSON, true); target != "" {
+		return s.selfProtectExternal(ctx, inv, source, agentID, req.RequestID, target, now)
 	}
 
 	// An approved plan grants a scoped pass. The association is implicit —

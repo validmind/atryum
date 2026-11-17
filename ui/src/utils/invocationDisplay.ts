@@ -45,6 +45,22 @@ export const getDisposition = (
   const tags: DispositionInfo[] = inv.plan_id
     ? [{ label: 'Plan', color: 'cyan' }]
     : [];
+  // Self-protection: the call named Atryum's own hook files or settings.
+  if (approvalStatus === 'self_protection_denied')
+    return [{ label: 'Self-protection', color: 'red' }];
+  if (approvalStatus === 'self_protection_escalated')
+    return [
+      { label: 'Self-protection', color: 'red' },
+      { label: 'Awaiting Human', color: 'orange' },
+    ];
+  if (
+    approvalStatus === 'self_protection_escalated_approved' ||
+    approvalStatus === 'self_protection_escalated_denied'
+  )
+    return [
+      { label: 'Self-protection', color: 'red' },
+      { label: 'Human', color: 'blue' },
+    ];
   if (approvalStatus === 'plan_approved')
     return tags.length > 0 ? tags : [{ label: 'Plan', color: 'cyan' }];
   if (reason.startsWith('ai_evaluation'))
@@ -436,6 +452,31 @@ function resolveDecisionSteps(
       { text: escalatedDeferText, variant: 'defer' },
       ...undecidedSteps(inv),
     ];
+  }
+  if (disposition === 'self_protection_denied') {
+    return [
+      {
+        text: "Denied by self-protection: the call names Atryum's own hook files or settings",
+        variant: 'deny',
+      },
+    ];
+  }
+  if (disposition === 'self_protection_escalated') {
+    const heldText =
+      "Held by self-protection: the call names Atryum's own hook files or settings";
+    if (approvalStatus === 'self_protection_escalated_approved') {
+      return [
+        { text: heldText, variant: 'defer' },
+        { text: 'Approved by human', variant: 'approve', actor },
+      ];
+    }
+    if (approvalStatus === 'self_protection_escalated_denied') {
+      return [
+        { text: heldText, variant: 'defer' },
+        { text: 'Denied by human', variant: 'deny', actor },
+      ];
+    }
+    return [{ text: heldText, variant: 'defer' }, ...undecidedSteps(inv)];
   }
   if (disposition === 'human' || disposition === 'workflow') {
     const deferText =

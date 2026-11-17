@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 
@@ -34,6 +35,26 @@ type Config struct {
 	OTEL OTELConfig `toml:"otel"`
 	// Plans bounds the lifetime of approved agent preapproval plans.
 	Plans PlansConfig `toml:"plans"`
+	// SelfProtection keeps an agent from changing the hook that gates it.
+	SelfProtection SelfProtectionConfig `toml:"self_protection"`
+}
+
+// SelfProtectionConfig configures the built-in check that settles any tool
+// call whose arguments name Atryum's own hook files (~/.atryum) or a
+// harness's hook settings (.claude/settings*.json, .cursor/hooks.json,
+// .codex/hooks.json, .codex/config.toml) before rules or plans see it.
+type SelfProtectionConfig struct {
+	// Enabled defaults to true; set false to turn the check off.
+	Enabled *bool `toml:"enabled"`
+	// Action is "human" (default: hold for a person) or "deny".
+	Action string `toml:"action"`
+	// ExtraPaths adds path fragments to protect, e.g. a custom ATRYUM_HOME.
+	ExtraPaths []string `toml:"extra_paths"`
+}
+
+// IsEnabled reports whether self-protection is on (the default).
+func (c SelfProtectionConfig) IsEnabled() bool {
+	return c.Enabled == nil || *c.Enabled
 }
 
 // OTELConfig configures OpenTelemetry trace export over OTLP. When Enabled is
@@ -248,6 +269,14 @@ func Load(path string) (Config, error) {
 	cfg.applyManagedAgentsEnv()
 	if err := cfg.Plans.normalize(); err != nil {
 		return cfg, err
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.SelfProtection.Action)) {
+	case "", "human":
+		cfg.SelfProtection.Action = "human"
+	case "deny":
+		cfg.SelfProtection.Action = "deny"
+	default:
+		return cfg, fmt.Errorf("self_protection.action must be \"deny\" or \"human\", got %q", cfg.SelfProtection.Action)
 	}
 	return cfg, nil
 }

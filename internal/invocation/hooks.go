@@ -83,7 +83,9 @@ type Decision struct {
 	Explanation *Explanation `json:"explanation,omitempty"`
 }
 
-// Decider replaces Atryum's rules, plans and default policy for every call.
+// Decider replaces Atryum's rules, plans and default policy for every call,
+// except one that self-protection settles first (see self_protection.go):
+// such a call is denied or held without the decider being asked.
 type Decider func(ctx context.Context, call ToolCall) (Decision, error)
 
 // Change is one durable change to an invocation. Type is the Atryum event
@@ -109,7 +111,8 @@ type TxRunner func(ctx context.Context, fn func(ctx context.Context, tx *sql.Tx)
 func (s *Service) SetTx(run TxRunner) { s.inTx = run }
 
 // SetDecider hands every decision to d. Rules, plans and the default policy
-// are skipped; a decider error denies the call.
+// are skipped; a decider error denies the call. Self-protection still runs
+// first, so d never sees a call that names the agent's own hook files.
 func (s *Service) SetDecider(d Decider) { s.decider = d }
 
 // DecisionWaker announces decisions recorded by any process.

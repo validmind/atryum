@@ -179,6 +179,12 @@ func WithDatabase(hook func(db *sql.DB, usePostgres bool)) Option {
 // notify, deny, or pending with a review ID. Atryum's own rules, plans and
 // default policy are skipped, a decider error denies the call, and only the
 // agent-facing routes are mounted: no operator API and no UI.
+//
+// One kind of call never reaches d: a call that names the agent's own hook
+// files or hook settings is denied first by self-protection (see
+// [self_protection] in the config). Without a decider such a call is held
+// for a person by default; with one there is no UI to release it from, so it
+// is always denied.
 func WithDecider(d Decider) Option {
 	return func(o *options) { o.decider = d }
 }

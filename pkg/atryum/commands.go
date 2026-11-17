@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	sharedagenthook "github.com/validmind/atryum/examples/shared-agent-hook"
 	"github.com/validmind/atryum/internal/version"
 	"io"
 	"os"
@@ -495,11 +496,18 @@ func runHooks(args []string) error {
 	fs.SetOutput(io.Discard)
 	autoYes := fs.Bool("y", false, "auto-confirm")
 	autoYesLong := fs.Bool("yes", false, "auto-confirm")
-	if err := fs.Parse(args); err != nil {
+	managed := fs.Bool("managed", false, "install into Claude Code's managed settings")
+	managedURL := fs.String("url", "", "Atryum server URL for a managed install")
+	tokenCommand := fs.String("token-command", "", "token command for a managed install")
+	allowInsecure := fs.Bool("allow-insecure-http", false, "allow a plain-http Atryum URL")
+	nodePath := fs.String("node", "", "path to node for a managed install")
+	// Accept flags before, between or after the action and target, as the
+	// usage examples show.
+	remaining, err := parseInterspersed(fs, args)
+	if err != nil {
 		return errors.New(hooksUsage())
 	}
 
-	remaining := fs.Args()
 	if len(remaining) == 0 {
 		return errors.New("missing action and target. tell me exactly what you want, for example:\n" + hooksUsage())
 	}
@@ -519,6 +527,22 @@ func runHooks(args []string) error {
 		return fmt.Errorf("unknown hooks target %q\n%s", target, hooksUsage())
 	}
 
+	if *managed && target != "claude-code" {
+		return fmt.Errorf("--managed is available for claude-code only; for %s, run the agent in a sandbox that makes ~/.atryum and its hooks file read-only (see examples/nono-profile)", target)
+	}
+	if !*managed {
+		var stray []string
+		fs.Visit(func(f *flag.Flag) {
+			switch f.Name {
+			case "url", "token-command", "allow-insecure-http", "node":
+				stray = append(stray, "--"+f.Name)
+			}
+		})
+		if len(stray) > 0 {
+			return fmt.Errorf("%s only applies with --managed\n%s", strings.Join(stray, ", "), hooksUsage())
+		}
+	}
+
 	confirmed := *autoYes || *autoYesLong
 	if !confirmed {
 		reader := bufio.NewReader(os.Stdin)
@@ -531,6 +555,12 @@ func runHooks(args []string) error {
 		}
 	}
 
+	if *managed {
+		if action == "install" {
+			return installManagedClaudeHooks(managedInstallOptions{URL: *managedURL, TokenCommand: *tokenCommand, AllowInsecure: *allowInsecure, Node: *nodePath}, os.Stdout)
+		}
+		return uninstallManagedClaudeHooks(os.Stdout)
+	}
 	if action == "install" {
 		return installHooks(target)
 	}
@@ -538,7 +568,7 @@ func runHooks(args []string) error {
 }
 
 func hooksUsage() string {
-	return strings.TrimSpace(`usage: atryum hooks [install|uninstall] [-y|--yes] [cursor|claude-code|codex|amp|pi]
+	return strings.TrimSpace(`usage: atryum hooks [install|uninstall] [-y|--yes] [--managed --url URL] [cursor|claude-code|codex|amp|pi]
 
 Commands:
   install    Install Atryum hook/plugin files and add hook commands when needed.
@@ -554,6 +584,19 @@ Targets:
 The hook script and its state live under ~/.atryum, or under $ATRYUM_HOME when
 set; hook commands are written with that location baked in.
 
+Those files are writable by the agent's own user. To put the Claude Code hook
+where the agent can't change it, install it as an administrator with
+--managed: the hook goes into Claude Code's managed settings
+(managed-settings.d/atryum.json) and the script into a root-owned directory.
+Each user still needs an agent key (atryum setup claude). macOS and Linux only.
+
+Managed flags (claude-code only):
+  --managed               install or uninstall the managed copy (needs sudo)
+  --url URL               Atryum server URL (or ATRYUM_URL)
+  --token-command CMD     how the hook gets its key (default: cat "$HOME/.atryum/agent-key")
+  --node PATH             node binary the hook runs with (default: node found on PATH)
+  --allow-insecure-http   allow a plain-http URL to a non-loopback host
+
 Examples:
   atryum hooks install cursor
   atryum hooks install claude-code
@@ -561,6 +604,7 @@ Examples:
   atryum hooks install amp
   atryum hooks install pi
   atryum hooks uninstall --yes claude-code
+  sudo atryum hooks install --managed --url https://atryum.example claude-code
   atryum hooks --help`)
 }
 
@@ -755,7 +799,15 @@ func resolveHookScript() ([]byte, error) {
 		}
 	}
 
-	return nil, errors.New("could not locate examples/shared-agent-hook/atryum-hook.mjs")
+	// A released binary has no source tree beside it: use the copy built in.
+	return embeddedHookScript(), nil
+}
+
+// embeddedHookScript is the hook script compiled into the binary. A managed
+// (root) install uses only this copy, never a file from the working
+// directory, which the agent may be able to write.
+func embeddedHookScript() []byte {
+	return append([]byte(nil), sharedagenthook.Script...)
 }
 
 func installAgentPlugin(target string) error {
@@ -890,12 +942,19 @@ func writeJSONMap(path string, value map[string]any) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	raw, err := json.MarshalIndent(value, "", "  ")
+	raw, err := marshalJSONMap(value)
 	if err != nil {
 		return err
 	}
-	raw = append(raw, '\n')
 	return os.WriteFile(path, raw, 0o644)
+}
+
+func marshalJSONMap(value map[string]any) ([]byte, error) {
+	raw, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(raw, '\n'), nil
 }
 
 func applyInstallHookConfig(settings map[string]any, target string) {

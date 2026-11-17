@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Self-protection: a tool call whose arguments name the files a hook
+  install keeps its gate in is held for a person before plans, rules, policy
+  or an external decider see it, and no rule or judge can approve it. Those are `.atryum` homes, Claude Code settings
+  (`settings*.json` under a `.claude*` directory, `managed-settings`,
+  `disableAllHooks`), `.cursor/hooks.json`, `.codex/hooks.json`,
+  `.codex/config.toml`, and the Amp plugin and Pi extension directories. It
+  covers hook-submitted calls and MCP proxy calls to servers on this machine.
+  Tools that change nothing are skipped, and file-write tools are checked on
+  their target path (plus content for scripts). The files are `pkg/policy`
+  rules, so arguments are compared with that package's cleanup of case,
+  escapes and path detours. The review UI labels these calls
+  **Self-protection**, before and after a person decides. Configure under
+  `[self_protection]`: `action = "deny"` (refuse outright; always used with
+  an external decider), `extra_paths`, `enabled = false`. Atryum warns at
+  startup when calls are held but the review API has no sign-in. It reads
+  text and does not interpret shell; the README lists what gets past it.
+- `atryum hooks install --managed --url URL claude-code` (run with sudo)
+  registers the Claude Code hook in Claude Code's managed settings
+  (`managed-settings.d/atryum.json`) and writes the hook script built into
+  the binary to a root-owned directory, so the agent can't remove the
+  registration or rewrite the script. It pins `node`'s path (`--node`),
+  clears `NODE_OPTIONS`, and sets `onFailure: block` on the PreToolUse hook
+  (Claude Code 2.1.295 or later). macOS and Linux; refused on WSL.
+  `--managed` with `uninstall` removes it.
+- The hook script is built into the `atryum` binary, so
+  `atryum hooks install` and `atryum setup claude` work from any directory.
+
+### Fixed
+
+- `atryum hooks` accepts flags after the action and target
+  (`atryum hooks uninstall --yes claude-code` failed with "too many
+  arguments").
+
 ## [0.10.0] - 2026-11-12
 
 ### Added

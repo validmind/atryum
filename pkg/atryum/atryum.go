@@ -438,6 +438,22 @@ func runServer(args []string, o options) error {
 	service := invocation.NewService(invRepo, eventRepo, resolver, client, policyRegistry, time.Duration(cfg.Defaults.RequestTimeoutSeconds)*time.Second, rulesRepo, invAgents, invEvaluator, &syncSettingsAdapter{repo: agentSyncSettingsRepo})
 	service.SetPlanStore(plansRepo, planEventsRepo, localEvaluator, planStatusPollOrigins(cfg.Server))
 	service.SetPlanTTLBounds(cfg.Plans.DefaultTTLSeconds, cfg.Plans.MaxTTLSeconds)
+	selfProtectionAction := cfg.SelfProtection.Action
+	if o.decider != nil {
+		// An external decider mounts no operator API or UI, so nobody could
+		// release a held call: deny instead.
+		selfProtectionAction = "deny"
+	}
+	service.SetSelfProtection(invocation.SelfProtection{
+		Enabled:    cfg.SelfProtection.IsEnabled(),
+		Action:     invocation.SelfProtectionAction(selfProtectionAction),
+		ExtraPaths: cfg.SelfProtection.ExtraPaths,
+	})
+	if cfg.SelfProtection.IsEnabled() {
+		log.Printf("self-protection on: tool calls that name Atryum's hook files or hook settings are %s", map[string]string{"deny": "denied", "human": "held for a person"}[selfProtectionAction])
+	} else {
+		log.Printf("WARNING: self_protection.enabled = false: an agent's tool calls can change the hook that gates them")
+	}
 	if backendClient != nil {
 		service.SetInvocationSummarizer(&summaryAdapter{client: backendClient})
 	}
@@ -517,6 +533,10 @@ func runServer(args []string, o options) error {
 		log.Printf("inbound auth enabled (%d issuer(s), runtime issuers %t)", len(authValidator.Configs()), o.issuerResolver != nil)
 	} else {
 		log.Printf("inbound auth disabled (no [[auth]] section configured)")
+	}
+	if cfg.SelfProtection.IsEnabled() && selfProtectionAction == "human" && (authValidator == nil || !authValidator.AdminEnabled()) {
+		// A hold is only as strong as the sign-in on the API that releases it.
+		log.Printf("WARNING: self-protection holds calls for a person, but the review API has no sign-in (no admin-enabled [[auth]] block): an agent that can reach it could approve its own call. Enable admin auth, or set [self_protection] action = \"deny\"")
 	}
 	handler.SetAPIKeyAuth(cfg.APIKey)
 	if cfg.APIKey.Enabled() {
