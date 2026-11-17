@@ -182,8 +182,9 @@ func WithDatabase(hook func(db *sql.DB, usePostgres bool)) Option {
 //
 // One kind of call never reaches d: a call that names the agent's own hook
 // files or hook settings is denied first by self-protection (see
-// [self_protection] in the config). Because there is no UI to release a held
-// call, self_protection.action = "human" is treated as "deny" with a decider.
+// [self_protection] in the config). Without a decider such a call is held
+// for a person by default; with one there is no UI to release it from, so it
+// is always denied.
 func WithDecider(d Decider) Option {
 	return func(o *options) { o.decider = d }
 }

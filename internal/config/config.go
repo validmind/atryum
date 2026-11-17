@@ -46,7 +46,7 @@ type Config struct {
 type SelfProtectionConfig struct {
 	// Enabled defaults to true; set false to turn the check off.
 	Enabled *bool `toml:"enabled"`
-	// Action is "deny" (default) or "human" (hold for a person).
+	// Action is "human" (default: hold for a person) or "deny".
 	Action string `toml:"action"`
 	// ExtraPaths adds path fragments to protect, e.g. a custom ATRYUM_HOME.
 	ExtraPaths []string `toml:"extra_paths"`
@@ -271,10 +271,10 @@ func Load(path string) (Config, error) {
 		return cfg, err
 	}
 	switch strings.ToLower(strings.TrimSpace(cfg.SelfProtection.Action)) {
-	case "", "deny":
-		cfg.SelfProtection.Action = "deny"
-	case "human":
+	case "", "human":
 		cfg.SelfProtection.Action = "human"
+	case "deny":
+		cfg.SelfProtection.Action = "deny"
 	default:
 		return cfg, fmt.Errorf("self_protection.action must be \"deny\" or \"human\", got %q", cfg.SelfProtection.Action)
 	}

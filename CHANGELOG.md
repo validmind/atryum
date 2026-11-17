@@ -10,8 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Self-protection: a tool call whose arguments name the files a hook
-  install keeps its gate in is denied before plans, rules, policy or an
-  external decider see it. Those are `.atryum` homes, Claude Code settings
+  install keeps its gate in is held for a person before plans, rules, policy
+  or an external decider see it, and no rule or judge can approve it. Those are `.atryum` homes, Claude Code settings
   (`settings*.json` under a `.claude*` directory, `managed-settings`,
   `disableAllHooks`), `.cursor/hooks.json`, `.codex/hooks.json`,
   `.codex/config.toml`, and the Amp plugin and Pi extension directories. It
@@ -19,9 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Tools that change nothing are skipped, and file-write tools are checked on
   their target path (plus content for scripts). The files are `pkg/policy`
   rules, so arguments are compared with that package's cleanup of case,
-  escapes and path detours. Configure under `[self_protection]`:
-  `action = "human"`, `extra_paths`, `enabled = false`. It reads text and
-  does not interpret shell; the README lists what gets past it.
+  escapes and path detours. The review UI labels these calls
+  **Self-protection**, before and after a person decides. Configure under
+  `[self_protection]`: `action = "deny"` (refuse outright; always used with
+  an external decider), `extra_paths`, `enabled = false`. Atryum warns at
+  startup when calls are held but the review API has no sign-in. It reads
+  text and does not interpret shell; the README lists what gets past it.
 - `atryum hooks install --managed --url URL claude-code` (run with sudo)
   registers the Claude Code hook in Claude Code's managed settings
   (`managed-settings.d/atryum.json`) and writes the hook script built into

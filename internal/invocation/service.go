@@ -67,20 +67,31 @@ const dispositionContinue policy.Disposition = "continue"
 const dispositionAIEscalated policy.Disposition = "ai_escalated"
 
 // humanDecisionStatus returns the approval status string to write when a human
-// approves or denies an invocation. If the invocation was AI-escalated the composite
-// statuses ("ai_escalated_approved" / "ai_escalated_denied") preserve the origin so
-// the UI can show both badges.
+// approves or denies an invocation. If the invocation was AI-escalated or held by
+// self-protection, the composite statuses ("ai_escalated_approved",
+// "self_protection_escalated_denied", ...) preserve the origin so the UI can show
+// both badges and the audit trail keeps why a person was asked.
 func humanDecisionStatus(current *Approval, approved bool) string {
-	if current != nil && current.Status == "ai_escalated" {
+	if current != nil && (current.Status == "ai_escalated" || current.Status == "self_protection_escalated") {
 		if approved {
-			return "ai_escalated_approved"
+			return current.Status + "_approved"
 		}
-		return "ai_escalated_denied"
+		return current.Status + "_denied"
 	}
 	if approved {
 		return "approved"
 	}
 	return "denied"
+}
+
+// humanDecisionReason is the approval reason to write when a person decides.
+// A self-protection hold keeps its own reason, so the record still says why a
+// person was asked; every other decision is recorded as "human".
+func humanDecisionReason(current *Approval) *string {
+	if current != nil && current.Status == "self_protection_escalated" && current.Reason != nil {
+		return current.Reason
+	}
+	return stringPtr("human")
 }
 
 func newApproval(status, reason string, confidence *float64) *Approval {
@@ -298,11 +309,11 @@ func NewService(
 	}
 }
 
-// SetSelfProtection replaces the self-protection check (enabled and denying
-// by default). See self_protection.go.
+// SetSelfProtection replaces the self-protection check (enabled, holding
+// calls for a person, by default). See self_protection.go.
 func (s *Service) SetSelfProtection(p SelfProtection) {
-	if p.Action != SelfProtectionHuman {
-		p.Action = SelfProtectionDeny
+	if p.Action != SelfProtectionDeny {
+		p.Action = SelfProtectionHuman
 	}
 	s.selfProtection = p
 }
@@ -1486,7 +1497,7 @@ func (s *Service) resolvePending(ctx context.Context, invocationID string, appro
 		inv.Status = StatusApproved
 		inv.Approval = &Approval{
 			Status:     humanDecisionStatus(inv.Approval, true),
-			Reason:     stringPtr("human"),
+			Reason:     humanDecisionReason(inv.Approval),
 			ActorID:    stringPtrIfNotEmpty(actorID),
 			DecisionAt: timePtr(now),
 		}
@@ -1503,7 +1514,7 @@ func (s *Service) resolvePending(ctx context.Context, invocationID string, appro
 	inv.CompletedAt = &now
 	inv.Approval = &Approval{
 		Status:     humanDecisionStatus(inv.Approval, false),
-		Reason:     stringPtr("human"),
+		Reason:     humanDecisionReason(inv.Approval),
 		ActorID:    stringPtrIfNotEmpty(actorID),
 		DecisionAt: timePtr(now),
 	}

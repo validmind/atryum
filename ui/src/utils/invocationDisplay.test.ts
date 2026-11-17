@@ -22,4 +22,19 @@ describe('getDisposition', () => {
       } as Parameters<typeof getDisposition>[0]).map((d) => d.label),
     ).toEqual(['Self-protection', 'Awaiting Human']);
   });
+
+  it('keeps the self-protection label after a person decides', () => {
+    for (const status of [
+      'self_protection_escalated_approved',
+      'self_protection_escalated_denied',
+    ]) {
+      expect(
+        getDisposition({
+          status: 'approved',
+          approval: { status, reason: 'human' },
+          plan_id: null,
+        } as Parameters<typeof getDisposition>[0]).map((d) => d.label),
+      ).toEqual(['Self-protection', 'Human']);
+    }
+  });
 });

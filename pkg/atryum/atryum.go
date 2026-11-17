@@ -439,10 +439,9 @@ func runServer(args []string, o options) error {
 	service.SetPlanStore(plansRepo, planEventsRepo, localEvaluator, planStatusPollOrigins(cfg.Server))
 	service.SetPlanTTLBounds(cfg.Plans.DefaultTTLSeconds, cfg.Plans.MaxTTLSeconds)
 	selfProtectionAction := cfg.SelfProtection.Action
-	if o.decider != nil && selfProtectionAction == "human" {
+	if o.decider != nil {
 		// An external decider mounts no operator API or UI, so nobody could
-		// release a held call.
-		log.Printf("self_protection.action = \"human\" needs Atryum's review UI, which an external decider replaces: using \"deny\"")
+		// release a held call: deny instead.
 		selfProtectionAction = "deny"
 	}
 	service.SetSelfProtection(invocation.SelfProtection{
@@ -534,6 +533,10 @@ func runServer(args []string, o options) error {
 		log.Printf("inbound auth enabled (%d issuer(s), runtime issuers %t)", len(authValidator.Configs()), o.issuerResolver != nil)
 	} else {
 		log.Printf("inbound auth disabled (no [[auth]] section configured)")
+	}
+	if cfg.SelfProtection.IsEnabled() && selfProtectionAction == "human" && (authValidator == nil || !authValidator.AdminEnabled()) {
+		// A hold is only as strong as the sign-in on the API that releases it.
+		log.Printf("WARNING: self-protection holds calls for a person, but the review API has no sign-in (no admin-enabled [[auth]] block): an agent that can reach it could approve its own call. Enable admin auth, or set [self_protection] action = \"deny\"")
 	}
 	handler.SetAPIKeyAuth(cfg.APIKey)
 	if cfg.APIKey.Enabled() {

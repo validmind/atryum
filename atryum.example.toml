@@ -112,7 +112,7 @@ api_key = ""          # Anthropic API key created in that workspace
 # When either field is empty, the reporting endpoints refuse every request with
 # 503. Review and operator endpoints fall through to Bearer-token validation
 # instead.
-# Self-protection: Atryum denies any tool call whose arguments name its own
+# Self-protection: Atryum holds for a person any tool call whose arguments name its own
 # hook files (.atryum) or a harness's hook settings (.claude*/settings*.json,
 # managed-settings, disableAllHooks, .cursor/hooks.json, .codex/hooks.json,
 # .codex/config.toml, the Amp plugin and Pi extension directories) before
@@ -120,7 +120,9 @@ api_key = ""          # Anthropic API key created in that workspace
 # changing its own gate" in the README for what it does not catch.
 # [self_protection]
 # enabled = true
-# action = "deny"          # or "human" to hold such calls for a person
+# action = "human"         # hold such calls for a person (default), or "deny"
+#                          # to refuse them outright. Use "deny" when the
+#                          # review API has no sign-in or agents run unattended.
 # extra_paths = []         # e.g. ["/opt/agent-home"] for a custom ATRYUM_HOME
 #                          # or CLAUDE_CONFIG_DIR
 

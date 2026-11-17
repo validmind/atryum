@@ -32,8 +32,8 @@ atryum setup claude                          # signs in, saves ~/.atryum/agent-k
 atryum hooks uninstall --yes claude-code     # drop the user-level copy
 ```
 
-Atryum's self-protection (on by default) also denies tool calls that name
-`~/.atryum` or `.claude/settings*.json`, and running Claude Code in the
+Atryum's self-protection (on by default) also holds for a person any tool
+call that names `~/.atryum` or `.claude/settings*.json`, and running Claude Code in the
 [nono sandbox](../nono-profile/) keeps the hook script read-only to the agent.
 See "Keeping an agent from changing its own gate" in the main README.
 

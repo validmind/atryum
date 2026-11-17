@@ -30,7 +30,7 @@ import (
 // policy.Evaluate, so the text is compared the way that package compares
 // everything: as sent, then cleaned up (case, spaces, %XX escapes, invisible
 // characters), then with paths tidied (detours, Windows spellings). A call
-// that names a protected file is denied, or held for a person.
+// that names a protected file is held for a person, or denied outright.
 //
 // The check reads text. It does not interpret shell: quoting, escapes,
 // variables, globs, encoded commands, or a command that removes a whole
@@ -42,10 +42,14 @@ import (
 type SelfProtectionAction string
 
 const (
-	// SelfProtectionDeny refuses the call outright (the default).
-	SelfProtectionDeny SelfProtectionAction = "deny"
-	// SelfProtectionHuman holds the call for a person to approve.
+	// SelfProtectionHuman holds the call for a person to approve or deny
+	// (the default): the agent can't change its gate on its own say-so, but
+	// a person can let an intended change through. It is only as strong as
+	// the review UI's sign-in; where an agent could reach an open operator
+	// API and approve its own call, use SelfProtectionDeny.
 	SelfProtectionHuman SelfProtectionAction = "human"
+	// SelfProtectionDeny refuses the call outright.
+	SelfProtectionDeny SelfProtectionAction = "deny"
 )
 
 // SelfProtection configures the check. The zero value is disabled; use
@@ -59,9 +63,9 @@ type SelfProtection struct {
 	ExtraPaths []string
 }
 
-// DefaultSelfProtection is enabled and denies.
+// DefaultSelfProtection is enabled and holds calls for a person.
 func DefaultSelfProtection() SelfProtection {
-	return SelfProtection{Enabled: true, Action: SelfProtectionDeny}
+	return SelfProtection{Enabled: true, Action: SelfProtectionHuman}
 }
 
 // readOnlyTools are harness tools that change nothing on disk: they read, or
@@ -253,13 +257,12 @@ func upstreamIsLocal(upstream mcp.Upstream) bool {
 }
 
 // selfProtectionReason is the explanation stored on the invocation and shown
-// to the agent.
+// to the reviewer and the agent.
 func selfProtectionReason(target string, action SelfProtectionAction) string {
-	verb := "blocked"
 	if action == SelfProtectionHuman {
-		verb = "held for a person"
+		return fmt.Sprintf("This call names Atryum's own hook files or hook settings (%s). An agent may not change the gate that reviews its tool calls on its own, so a person has to approve it.", target)
 	}
-	return fmt.Sprintf("This call names Atryum's own hook files or hook settings (%s), so it was %s: an agent may not change the gate that reviews its tool calls. If the change is intended, make it yourself, outside the agent.", target, verb)
+	return fmt.Sprintf("This call names Atryum's own hook files or hook settings (%s), so it was blocked: an agent may not change the gate that reviews its tool calls. If the change is intended, make it yourself, outside the agent.", target)
 }
 
 // selfProtectProxy settles an MCP-proxy call that targets the gate: denied,
