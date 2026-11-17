@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or, for a stdio server, an `env` entry with a blank value. Set
   `clear_auth_token: true` to remove the bearer token; leave a header or env
   key out to remove it. Before, an omitted `auth_token` cleared the token.
+- Stored credentials stay with the destination they were saved for. A save
+  that points an HTTP server's base URL at another host, or changes a stdio
+  server's command or args, is refused while it leaves a stored value blank;
+  enter the value again or remove it. Stored OAuth tokens are dropped when the
+  host changes. A credential stored under one mode (HTTP or stdio) is not
+  reused after the server switches mode.
 
 ## [0.10.0] - 2026-11-12
 

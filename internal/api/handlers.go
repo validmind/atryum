@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -4218,6 +4219,11 @@ func (s *ServerOperatorService) Upsert(ctx context.Context, name string, req Ope
 	if err := refuseCredentialsForNewHost(existing, upstream, req, hostMoved); err != nil {
 		return OperatorServer{}, err
 	}
+	// The same goes for a stdio server's environment: it belongs to the
+	// command it was saved for.
+	if err := refuseEnvForNewCommand(existing, upstream); err != nil {
+		return OperatorServer{}, err
+	}
 	keepStoredCredentials(&upstream, existing, req.ClearAuthToken)
 
 	// OAuth fields from the request body win, except client_secret which
@@ -4358,6 +4364,38 @@ func refuseCredentialsForNewHost(existing, next mcp.Upstream, req OperatorServer
 		return nil
 	}
 	return fmt.Errorf("the new URL points to a different host than the one these stored credentials were saved for; enter them again (or clear them) to use the new host: %s", strings.Join(reused, ", "))
+}
+
+// stdioCommandChanged reports whether an existing stdio server is being
+// pointed at a different program: its command or arguments changed. For a
+// stdio server those are the destination its environment values go to, as
+// the base URL is for an HTTP server's credentials.
+func stdioCommandChanged(existing, next mcp.Upstream) bool {
+	if existing.Mode != mcp.UpstreamModeStdio || next.Mode != mcp.UpstreamModeStdio {
+		return false
+	}
+	return strings.TrimSpace(existing.Command) != strings.TrimSpace(next.Command) ||
+		!slices.Equal(existing.Args, next.Args)
+}
+
+// refuseEnvForNewCommand rejects an update that changes a stdio server's
+// command or arguments while leaving a stored environment value blank, which
+// would otherwise hand the stored value to the new program.
+func refuseEnvForNewCommand(existing, next mcp.Upstream) error {
+	if !stdioCommandChanged(existing, next) {
+		return nil
+	}
+	var reused []string
+	for key, value := range next.Env {
+		if strings.TrimSpace(value) == "" && strings.TrimSpace(existing.Env[key]) != "" {
+			reused = append(reused, "env "+key)
+		}
+	}
+	if len(reused) == 0 {
+		return nil
+	}
+	sort.Strings(reused)
+	return fmt.Errorf("the command or arguments changed from the ones these stored environment values were saved for; enter them again (or remove them) to use the new command: %s", strings.Join(reused, ", "))
 }
 
 func (s *ServerOperatorService) validateEndpointSlugAvailable(ctx context.Context, serverName string, slug string) error {
@@ -5098,19 +5136,25 @@ func (h *Handler) externalInvocationDetail(w http.ResponseWriter, r *http.Reques
 
 // keepStoredCredentials fills secrets the request left empty from the stored
 // server, so saving a server without re-entering its credentials keeps them.
-// Stored env is carried over only for stdio servers: for an HTTP server, env
-// is the storage encoding of its custom headers, which are merged by name.
+// Each kind is carried over only when the server keeps its mode: the bearer
+// token and header values from HTTP to HTTP, env values from stdio to stdio
+// (for an HTTP server, env is the storage encoding of its custom headers,
+// which are merged by name). A credential stored under the other mode is
+// never reused.
 func keepStoredCredentials(upstream *mcp.Upstream, existing mcp.Upstream, clearAuthToken bool) {
+	bothHTTP := upstream.Mode == mcp.UpstreamModeHTTP && existing.Mode == mcp.UpstreamModeHTTP
 	if clearAuthToken {
 		upstream.AuthToken = ""
-	} else if strings.TrimSpace(upstream.AuthToken) == "" && upstream.Mode == mcp.UpstreamModeHTTP {
+	} else if strings.TrimSpace(upstream.AuthToken) == "" && bothHTTP {
 		upstream.AuthToken = existing.AuthToken
 	}
 
 	if len(upstream.AuthHeaders) > 0 {
 		stored := make(map[string]string, len(existing.AuthHeaders))
-		for _, header := range existing.AuthHeaders {
-			stored[strings.ToLower(strings.TrimSpace(header.Name))] = header.Value
+		if bothHTTP {
+			for _, header := range existing.AuthHeaders {
+				stored[strings.ToLower(strings.TrimSpace(header.Name))] = header.Value
+			}
 		}
 		merged := make([]mcp.AuthHeader, 0, len(upstream.AuthHeaders))
 		for _, header := range upstream.AuthHeaders {

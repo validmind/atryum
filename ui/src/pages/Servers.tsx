@@ -110,6 +110,15 @@ const urlOrigin = (raw: string): string => {
   }
 };
 
+// sameArgs reports whether the Args text parses to the stored args.
+const sameArgs = (text: string, stored: string[]): boolean => {
+  try {
+    return JSON.stringify(JSON.parse(text)) === JSON.stringify(stored);
+  } catch {
+    return false;
+  }
+};
+
 const serverToInput = (s: Server): ServerInput => ({
   name: s.name,
   mode: s.mode,
@@ -346,6 +355,15 @@ const Servers: React.FC = () => {
     form.mode === 'http' &&
     !!currentServer?.base_url &&
     urlOrigin(form.base_url ?? '') !== urlOrigin(currentServer.base_url);
+  // A stdio server's env values likewise stay with the command they were
+  // saved for.
+  const commandChanged =
+    !isCreating &&
+    form.mode === 'stdio' &&
+    currentServer?.mode === 'stdio' &&
+    ((form.command ?? '').trim() !== (currentServer.command ?? '').trim() ||
+      !sameArgs(argsText, currentServer.args ?? []));
+  const hasStoredEnv = Object.keys(currentServer?.env ?? {}).length > 0;
   const hasStoredCredentials =
     !!currentServer?.has_auth_token ||
     (currentServer?.auth_headers ?? []).some((h) => h.has_value) ||
@@ -863,10 +881,17 @@ const Servers: React.FC = () => {
                           onChange={(e) => setEnvText(e.target.value)}
                           placeholder='{"MY_VAR": "value"}'
                         />
-                        {!isCreating && (
-                          <Text fontSize="xs" color="gray.600" mt={1}>
-                            Stored values are hidden. Leave a value as "" to keep it.
+                        {commandChanged && hasStoredEnv ? (
+                          <Text fontSize="xs" color="orange.600" mt={1}>
+                            The command or args changed. Stored values only go to the command they
+                            were saved for, so enter each value again (or remove it) before saving.
                           </Text>
+                        ) : (
+                          !isCreating && (
+                            <Text fontSize="xs" color="gray.600" mt={1}>
+                              Stored values are hidden. Leave a value as "" to keep it.
+                            </Text>
+                          )
                         )}
                       </FormControl>
                     </>
