@@ -4212,6 +4212,12 @@ func (s *ServerOperatorService) Upsert(ctx context.Context, name string, req Ope
 		Env:          cloneEnv(req.Env),
 		Enabled:      enabled,
 	}
+	// Stored credentials belong to the host they were saved for. When the
+	// base URL moves to another origin, refuse to carry them over silently.
+	hostMoved := upstreamOriginChanged(existing, upstream)
+	if err := refuseCredentialsForNewHost(existing, upstream, req, hostMoved); err != nil {
+		return OperatorServer{}, err
+	}
 	keepStoredCredentials(&upstream, existing, req.ClearAuthToken)
 
 	// OAuth fields from the request body win, except client_secret which
@@ -4232,6 +4238,20 @@ func (s *ServerOperatorService) Upsert(ctx context.Context, name string, req Ope
 	if upstream.OAuthClientID != "" && upstream.OAuthClientID != existing.OAuthClientID {
 		upstream.OAuthClientRegistration = mcp.ClientRegistrationPreshared
 	}
+	if hostMoved && upstream.OAuthClientRegistration != mcp.ClientRegistrationPreshared &&
+		upstream.OAuthClientID == existing.OAuthClientID {
+		// A dynamically registered client (and the endpoints discovered
+		// for it) belongs to the old host's authorization server: drop it
+		// so the next connect discovers and registers against the new one.
+		upstream.OAuthClientID = ""
+		upstream.OAuthClientSecret = ""
+		if upstream.OAuthAuthorizeURL == existing.OAuthAuthorizeURL {
+			upstream.OAuthAuthorizeURL = ""
+		}
+		if upstream.OAuthTokenURL == existing.OAuthTokenURL {
+			upstream.OAuthTokenURL = ""
+		}
+	}
 	if upstream.OAuthClientID == "" {
 		// Cleared — drop provenance so a re-discovery on next save can
 		// pick the right registration mode again.
@@ -4249,7 +4269,95 @@ func (s *ServerOperatorService) Upsert(ctx context.Context, name string, req Ope
 	if err := s.repo.UpsertServer(ctx, upstream); err != nil {
 		return OperatorServer{}, err
 	}
+	if hostMoved && s.oauthRepo != nil {
+		// The stored OAuth access/refresh tokens were issued for the old
+		// host; they would otherwise be sent to the new one. Reconnecting
+		// gets tokens for the new host.
+		if _, err := s.oauthRepo.GetCredential(ctx, serverName); err == nil {
+			if err := s.oauthRepo.DeleteCredential(ctx, serverName); err != nil {
+				return OperatorServer{}, fmt.Errorf("remove OAuth credential for the old host: %w", err)
+			}
+			upstream.Status.AuthStatus = mcp.AuthStatusReauthNeeded
+			upstream.Status.ReauthNeeded = true
+			action := "base URL changed host: reconnect to authorize the new host"
+			upstream.Status.ActionRequired = &action
+			if err := s.repo.UpdateServerStatus(ctx, serverName, upstream.Status); err != nil {
+				return OperatorServer{}, err
+			}
+		}
+	}
 	return s.operatorViewWithGrantedScopes(ctx, upstream), nil
+}
+
+// upstreamOrigin returns scheme://host:port for an HTTP base URL, with the
+// default port filled in, or "" when it can't be parsed.
+func upstreamOrigin(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	scheme := strings.ToLower(u.Scheme)
+	port := u.Port()
+	if port == "" {
+		switch scheme {
+		case "https":
+			port = "443"
+		case "http":
+			port = "80"
+		}
+	}
+	return scheme + "://" + strings.ToLower(u.Hostname()) + ":" + port
+}
+
+// upstreamOriginChanged reports whether an existing HTTP server is being
+// pointed at a different origin (scheme, host or port).
+func upstreamOriginChanged(existing, next mcp.Upstream) bool {
+	if existing.Mode != mcp.UpstreamModeHTTP || next.Mode != mcp.UpstreamModeHTTP {
+		return false
+	}
+	if strings.TrimSpace(existing.BaseURL) == "" {
+		return false
+	}
+	return upstreamOrigin(existing.BaseURL) != upstreamOrigin(next.BaseURL)
+}
+
+// refuseCredentialsForNewHost rejects an update that would reuse a stored
+// credential (left blank in the request) with a different host than the one
+// it was saved for: a moved base URL for the bearer token and header values,
+// or a moved base URL or token URL for a pre-shared OAuth client secret.
+func refuseCredentialsForNewHost(existing, next mcp.Upstream, req OperatorServerUpsertRequest, hostMoved bool) error {
+	var reused []string
+	if hostMoved {
+		if strings.TrimSpace(req.AuthToken) == "" && !req.ClearAuthToken && strings.TrimSpace(existing.AuthToken) != "" {
+			reused = append(reused, "bearer token")
+		}
+		stored := make(map[string]bool, len(existing.AuthHeaders))
+		for _, h := range existing.AuthHeaders {
+			if strings.TrimSpace(h.Value) != "" {
+				stored[strings.ToLower(strings.TrimSpace(h.Name))] = true
+			}
+		}
+		for _, h := range req.AuthHeaders {
+			name := strings.TrimSpace(h.Name)
+			if name != "" && strings.TrimSpace(h.Value) == "" && stored[strings.ToLower(name)] {
+				reused = append(reused, "header "+name)
+			}
+		}
+	}
+	if existing.OAuthClientRegistration == mcp.ClientRegistrationPreshared &&
+		strings.TrimSpace(existing.OAuthClientSecret) != "" &&
+		strings.TrimSpace(req.OAuthClientSecret) == "" {
+		reqTokenURL := strings.TrimSpace(req.OAuthTokenURL)
+		tokenURLMoved := reqTokenURL != "" && strings.TrimSpace(existing.OAuthTokenURL) != "" &&
+			upstreamOrigin(reqTokenURL) != upstreamOrigin(existing.OAuthTokenURL)
+		if hostMoved || tokenURLMoved {
+			reused = append(reused, "OAuth client secret")
+		}
+	}
+	if len(reused) == 0 {
+		return nil
+	}
+	return fmt.Errorf("the new URL points to a different host than the one these stored credentials were saved for; enter them again (or clear them) to use the new host: %s", strings.Join(reused, ", "))
 }
 
 func (s *ServerOperatorService) validateEndpointSlugAvailable(ctx context.Context, serverName string, slug string) error {

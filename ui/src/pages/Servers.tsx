@@ -98,6 +98,18 @@ const EMPTY_FORM: ServerInput = {
   oauth_scopes: '',
 };
 
+// urlOrigin returns scheme://host:port (default port filled in), or '' when
+// the value isn't a URL yet.
+const urlOrigin = (raw: string): string => {
+  try {
+    const u = new URL(raw.trim());
+    const port = u.port || (u.protocol === 'https:' ? '443' : u.protocol === 'http:' ? '80' : '');
+    return `${u.protocol}//${u.hostname.toLowerCase()}:${port}`;
+  } catch {
+    return '';
+  }
+};
+
 const serverToInput = (s: Server): ServerInput => ({
   name: s.name,
   mode: s.mode,
@@ -327,6 +339,17 @@ const Servers: React.FC = () => {
     testServer.isLoading;
 
   const currentServer = servers.find((s) => s.name === selectedName);
+  // Stored credentials only work with the host they were saved for: the
+  // server refuses to reuse them once the base URL points somewhere else.
+  const hostChanged =
+    !isCreating &&
+    form.mode === 'http' &&
+    !!currentServer?.base_url &&
+    urlOrigin(form.base_url ?? '') !== urlOrigin(currentServer.base_url);
+  const hasStoredCredentials =
+    !!currentServer?.has_auth_token ||
+    (currentServer?.auth_headers ?? []).some((h) => h.has_value) ||
+    !!currentServer?.has_oauth_client_secret;
   const { hasCopied, onCopy } = useClipboard(
     currentServer ? endpointLabel(currentServer) : '',
   );
@@ -558,6 +581,13 @@ const Servers: React.FC = () => {
                           value={form.base_url ?? ''}
                           onChange={(e) => setForm((f) => ({ ...f, base_url: e.target.value }))}
                         />
+                        {hostChanged && hasStoredCredentials && (
+                          <Text fontSize="xs" color="orange.600" mt={1}>
+                            This is a different host. Stored credentials only work with the host they
+                            were saved for, so enter the bearer token and header values again (or
+                            clear them) before saving. An OAuth connection will need to reconnect.
+                          </Text>
+                        )}
                       </FormControl>
                       <FormControl>
                         <FormLabel fontSize="sm">Timeout (seconds)</FormLabel>
@@ -602,7 +632,11 @@ const Servers: React.FC = () => {
                                 type="password"
                                 autoComplete="new-password"
                                 placeholder={
-                                  hasStoredToken && !form.clear_auth_token ? '••••••• (unchanged)' : 'sk-…'
+                                  hasStoredToken && !form.clear_auth_token
+                                    ? hostChanged
+                                      ? 'Enter again for the new host'
+                                      : '••••••• (unchanged)'
+                                    : 'sk-…'
                                 }
                                 value={form.auth_token ?? ''}
                                 isDisabled={!!form.clear_auth_token}
@@ -646,7 +680,13 @@ const Servers: React.FC = () => {
                                 size="sm"
                                 type="password"
                                 autoComplete="new-password"
-                                placeholder={header.has_value ? '••••••• (unchanged)' : 'value'}
+                                placeholder={
+                                  header.has_value
+                                    ? hostChanged
+                                      ? 'Enter again for the new host'
+                                      : '••••••• (unchanged)'
+                                    : 'value'
+                                }
                                 value={header.value}
                                 onChange={(e) =>
                                   setForm((f) => {
