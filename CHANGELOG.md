@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Upstream MCP server credentials are write-only in the operator API, like
+  the OAuth client secret already was. Server responses carry
+  `has_auth_token`, `auth_headers[].has_value` and `env` keys with blank
+  values in place of the bearer token, custom header values and env values.
+  The Servers page shows stored credentials as unchanged placeholders.
+- Saving a server keeps stored credentials the request leaves empty: a blank
+  `auth_token`, an `auth_headers` entry with a blank value (matched by name),
+  or, for a stdio server, an `env` entry with a blank value. Set
+  `clear_auth_token: true` to remove the bearer token; leave a header or env
+  key out to remove it. Before, an omitted `auth_token` cleared the token.
+
 ## [0.10.0] - 2026-11-12
 
 ### Added

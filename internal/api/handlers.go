@@ -297,35 +297,41 @@ type DenyRequest struct {
 	ActorID    string             `json:"actor_id,omitempty"`
 }
 
+// OperatorServer is the operator API's view of an upstream MCP server.
+//
+// Upstream credentials are write-only: the bearer token, custom header values
+// and env values are never returned. HasAuthToken, AuthHeaders[].HasValue and
+// the keys of Env say what is stored, the same way HasOAuthClientSecret does
+// for the OAuth client secret.
 type OperatorServer struct {
-	Name                    string            `json:"name"`
-	EndpointSlug            string            `json:"endpoint_slug"`
-	EndpointURL             string            `json:"endpoint_url,omitempty"`
-	Mode                    string            `json:"mode"`
-	BaseURL                 string            `json:"base_url,omitempty"`
-	AuthToken               string            `json:"auth_token,omitempty"`
-	AuthHeaders             []mcp.AuthHeader  `json:"auth_headers,omitempty"`
-	TimeoutSeconds          int               `json:"timeout_seconds"`
-	Command                 string            `json:"command,omitempty"`
-	Args                    []string          `json:"args,omitempty"`
-	Env                     map[string]string `json:"env,omitempty"`
-	Enabled                 bool              `json:"enabled"`
-	AuthType                string            `json:"auth_type"`
-	ConnectionStatus        string            `json:"connection_status"`
-	AuthStatus              string            `json:"auth_status"`
-	ReauthNeeded            bool              `json:"reauth_needed"`
-	LastCheckedAt           *time.Time        `json:"last_checked_at,omitempty"`
-	LastCheckOK             bool              `json:"last_check_ok"`
-	LastErrorSummary        *string           `json:"last_error_summary,omitempty"`
-	ActionRequired          *string           `json:"action_required,omitempty"`
-	OAuthProviderID         string            `json:"oauth_provider_id,omitempty"`
-	OAuthProviderLabel      string            `json:"oauth_provider_label,omitempty"`
-	OAuthClientRegistration string            `json:"oauth_client_registration,omitempty"`
-	OAuthClientID           string            `json:"oauth_client_id,omitempty"`
-	OAuthAuthorizeURL       string            `json:"oauth_authorize_url,omitempty"`
-	OAuthTokenURL           string            `json:"oauth_token_url,omitempty"`
-	OAuthScopes             string            `json:"oauth_scopes,omitempty"`
-	HasOAuthClientSecret    bool              `json:"has_oauth_client_secret,omitempty"`
+	Name                    string               `json:"name"`
+	EndpointSlug            string               `json:"endpoint_slug"`
+	EndpointURL             string               `json:"endpoint_url,omitempty"`
+	Mode                    string               `json:"mode"`
+	BaseURL                 string               `json:"base_url,omitempty"`
+	HasAuthToken            bool                 `json:"has_auth_token"`
+	AuthHeaders             []OperatorAuthHeader `json:"auth_headers,omitempty"`
+	TimeoutSeconds          int                  `json:"timeout_seconds"`
+	Command                 string               `json:"command,omitempty"`
+	Args                    []string             `json:"args,omitempty"`
+	Env                     map[string]string    `json:"env,omitempty"`
+	Enabled                 bool                 `json:"enabled"`
+	AuthType                string               `json:"auth_type"`
+	ConnectionStatus        string               `json:"connection_status"`
+	AuthStatus              string               `json:"auth_status"`
+	ReauthNeeded            bool                 `json:"reauth_needed"`
+	LastCheckedAt           *time.Time           `json:"last_checked_at,omitempty"`
+	LastCheckOK             bool                 `json:"last_check_ok"`
+	LastErrorSummary        *string              `json:"last_error_summary,omitempty"`
+	ActionRequired          *string              `json:"action_required,omitempty"`
+	OAuthProviderID         string               `json:"oauth_provider_id,omitempty"`
+	OAuthProviderLabel      string               `json:"oauth_provider_label,omitempty"`
+	OAuthClientRegistration string               `json:"oauth_client_registration,omitempty"`
+	OAuthClientID           string               `json:"oauth_client_id,omitempty"`
+	OAuthAuthorizeURL       string               `json:"oauth_authorize_url,omitempty"`
+	OAuthTokenURL           string               `json:"oauth_token_url,omitempty"`
+	OAuthScopes             string               `json:"oauth_scopes,omitempty"`
+	HasOAuthClientSecret    bool                 `json:"has_oauth_client_secret,omitempty"`
 	// OAuthGrantedScopes is what the authorization server actually issued
 	// on the most recent token exchange (read from oauth_credentials.scope).
 	// Distinct from OAuthScopes, which is what we *request* in the next
@@ -334,11 +340,25 @@ type OperatorServer struct {
 	OAuthGrantedScopes string `json:"oauth_granted_scopes,omitempty"`
 }
 
+// OperatorAuthHeader is a custom header as the operator API returns it. Value
+// is always empty; HasValue says whether one is stored.
+type OperatorAuthHeader struct {
+	Name     string `json:"name"`
+	Value    string `json:"value"`
+	HasValue bool   `json:"has_value"`
+}
+
+// OperatorServerUpsertRequest creates or replaces a server. Because the API
+// never returns stored credentials, an empty secret means "keep what is
+// stored": an empty auth_token, an auth_headers entry with an empty value, or
+// (for stdio servers) an env entry with an empty value. ClearAuthToken removes
+// the stored bearer token; leaving a header or env key out removes it.
 type OperatorServerUpsertRequest struct {
 	Name              string            `json:"name,omitempty"`
 	Mode              string            `json:"mode"`
 	BaseURL           string            `json:"base_url,omitempty"`
 	AuthToken         string            `json:"auth_token,omitempty"`
+	ClearAuthToken    bool              `json:"clear_auth_token,omitempty"`
 	AuthHeaders       []mcp.AuthHeader  `json:"auth_headers,omitempty"`
 	TimeoutSeconds    int               `json:"timeout_seconds,omitempty"`
 	Command           string            `json:"command,omitempty"`
@@ -4167,9 +4187,9 @@ func (s *ServerOperatorService) Upsert(ctx context.Context, name string, req Ope
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 	}
-	// Load any existing row so we can preserve OAuth fields the form
-	// chose not to re-send (notably client_secret, which is never echoed
-	// back to the browser).
+	// Load any existing row so we can preserve secrets the caller chose not
+	// to re-send. None of them are echoed back by the operator API, so an
+	// empty value means "keep the stored one".
 	existing, _ := s.repo.GetServerAny(ctx, serverName)
 	endpointSlug := existing.EndpointSlug
 	if endpointSlug == "" {
@@ -4192,6 +4212,7 @@ func (s *ServerOperatorService) Upsert(ctx context.Context, name string, req Ope
 		Env:          cloneEnv(req.Env),
 		Enabled:      enabled,
 	}
+	keepStoredCredentials(&upstream, existing, req.ClearAuthToken)
 
 	// OAuth fields from the request body win, except client_secret which
 	// uses an empty-means-unchanged semantic (the form never receives the
@@ -4967,12 +4988,77 @@ func (h *Handler) externalInvocationDetail(w http.ResponseWriter, r *http.Reques
 	}
 }
 
+// keepStoredCredentials fills secrets the request left empty from the stored
+// server, so saving a server without re-entering its credentials keeps them.
+// Stored env is carried over only for stdio servers: for an HTTP server, env
+// is the storage encoding of its custom headers, which are merged by name.
+func keepStoredCredentials(upstream *mcp.Upstream, existing mcp.Upstream, clearAuthToken bool) {
+	if clearAuthToken {
+		upstream.AuthToken = ""
+	} else if strings.TrimSpace(upstream.AuthToken) == "" && upstream.Mode == mcp.UpstreamModeHTTP {
+		upstream.AuthToken = existing.AuthToken
+	}
+
+	if len(upstream.AuthHeaders) > 0 {
+		stored := make(map[string]string, len(existing.AuthHeaders))
+		for _, header := range existing.AuthHeaders {
+			stored[strings.ToLower(strings.TrimSpace(header.Name))] = header.Value
+		}
+		merged := make([]mcp.AuthHeader, 0, len(upstream.AuthHeaders))
+		for _, header := range upstream.AuthHeaders {
+			name := strings.TrimSpace(header.Name)
+			value := header.Value
+			if strings.TrimSpace(value) == "" {
+				value = stored[strings.ToLower(name)]
+			}
+			if name == "" || strings.TrimSpace(value) == "" {
+				continue
+			}
+			merged = append(merged, mcp.AuthHeader{Name: name, Value: value})
+		}
+		upstream.AuthHeaders = merged
+	}
+
+	if upstream.Mode == mcp.UpstreamModeStdio && existing.Mode == mcp.UpstreamModeStdio {
+		for key, value := range upstream.Env {
+			if strings.TrimSpace(value) == "" {
+				if storedValue, ok := existing.Env[key]; ok {
+					upstream.Env[key] = storedValue
+				}
+			}
+		}
+	}
+}
+
+func toOperatorAuthHeaders(headers []mcp.AuthHeader) []OperatorAuthHeader {
+	if len(headers) == 0 {
+		return nil
+	}
+	out := make([]OperatorAuthHeader, 0, len(headers))
+	for _, header := range headers {
+		out = append(out, OperatorAuthHeader{Name: header.Name, HasValue: strings.TrimSpace(header.Value) != ""})
+	}
+	return out
+}
+
+// redactEnv returns env's keys with every value blanked.
+func redactEnv(env map[string]string) map[string]string {
+	if len(env) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(env))
+	for key := range env {
+		out[key] = ""
+	}
+	return out
+}
+
 func toOperatorServer(upstream mcp.Upstream) OperatorServer {
 	endpointSlug := upstream.EndpointSlug
 	if endpointSlug == "" {
 		endpointSlug = mcp.EndpointSlug(upstream.Name)
 	}
-	return OperatorServer{Name: upstream.Name, EndpointSlug: endpointSlug, Mode: string(upstream.Mode), BaseURL: upstream.BaseURL, AuthToken: upstream.AuthToken, AuthHeaders: append([]mcp.AuthHeader(nil), upstream.AuthHeaders...), TimeoutSeconds: int(upstream.Timeout / time.Second), Command: upstream.Command, Args: append([]string(nil), upstream.Args...), Env: cloneEnv(upstream.Env), Enabled: upstream.Enabled, AuthType: string(upstream.Status.AuthType), ConnectionStatus: string(upstream.Status.ConnectionStatus), AuthStatus: string(upstream.Status.AuthStatus), ReauthNeeded: upstream.Status.ReauthNeeded, LastCheckedAt: upstream.Status.LastCheckedAt, LastCheckOK: upstream.Status.LastCheckOK, LastErrorSummary: upstream.Status.LastErrorSummary, ActionRequired: upstream.Status.ActionRequired, OAuthProviderID: upstream.OAuthProviderID, OAuthProviderLabel: upstream.OAuthProviderLabel, OAuthClientRegistration: string(upstream.OAuthClientRegistration), OAuthClientID: upstream.OAuthClientID, OAuthAuthorizeURL: upstream.OAuthAuthorizeURL, OAuthTokenURL: upstream.OAuthTokenURL, OAuthScopes: upstream.OAuthScopes, HasOAuthClientSecret: strings.TrimSpace(upstream.OAuthClientSecret) != ""}
+	return OperatorServer{Name: upstream.Name, EndpointSlug: endpointSlug, Mode: string(upstream.Mode), BaseURL: upstream.BaseURL, HasAuthToken: strings.TrimSpace(upstream.AuthToken) != "", AuthHeaders: toOperatorAuthHeaders(upstream.AuthHeaders), TimeoutSeconds: int(upstream.Timeout / time.Second), Command: upstream.Command, Args: append([]string(nil), upstream.Args...), Env: redactEnv(upstream.Env), Enabled: upstream.Enabled, AuthType: string(upstream.Status.AuthType), ConnectionStatus: string(upstream.Status.ConnectionStatus), AuthStatus: string(upstream.Status.AuthStatus), ReauthNeeded: upstream.Status.ReauthNeeded, LastCheckedAt: upstream.Status.LastCheckedAt, LastCheckOK: upstream.Status.LastCheckOK, LastErrorSummary: upstream.Status.LastErrorSummary, ActionRequired: upstream.Status.ActionRequired, OAuthProviderID: upstream.OAuthProviderID, OAuthProviderLabel: upstream.OAuthProviderLabel, OAuthClientRegistration: string(upstream.OAuthClientRegistration), OAuthClientID: upstream.OAuthClientID, OAuthAuthorizeURL: upstream.OAuthAuthorizeURL, OAuthTokenURL: upstream.OAuthTokenURL, OAuthScopes: upstream.OAuthScopes, HasOAuthClientSecret: strings.TrimSpace(upstream.OAuthClientSecret) != ""}
 }
 
 func validateUpstream(upstream mcp.Upstream) error {

@@ -103,8 +103,11 @@ const serverToInput = (s: Server): ServerInput => ({
   mode: s.mode,
   base_url: s.base_url ?? '',
   timeout_seconds: s.timeout_seconds ?? 30,
-  auth_token: s.auth_token ?? '',
-  auth_headers: s.auth_headers ?? [],
+  // Secrets are write-only: the API never returns them, so the form starts
+  // blank and an empty value on save keeps the stored one.
+  auth_token: '',
+  clear_auth_token: false,
+  auth_headers: (s.auth_headers ?? []).map((h) => ({ ...h, value: '' })),
   command: s.command ?? '',
   args: s.args ?? [],
   env: s.env ?? {},
@@ -210,6 +213,18 @@ const Servers: React.FC = () => {
     }
   };
 
+  // Drop typed secrets from form state once saved; the response says which
+  // ones are now stored.
+  const clearSecretFields = (saved: Server) => {
+    setForm((f) => ({
+      ...f,
+      auth_token: '',
+      clear_auth_token: false,
+      auth_headers: (saved.auth_headers ?? []).map((h) => ({ ...h, value: '' })),
+    }));
+    setEnvText(JSON.stringify(saved.env ?? {}, null, 2));
+  };
+
   const handleSave = async () => {
     try {
       const payload: ServerInput = {
@@ -218,11 +233,14 @@ const Servers: React.FC = () => {
         env: form.mode === 'stdio' ? parseEnv() : {},
         auth_headers:
           form.mode === 'http'
-            ? (form.auth_headers ?? []).filter((h) => h.name.trim() && h.value.trim())
+            ? (form.auth_headers ?? [])
+                .filter((h) => h.name.trim() && (h.value.trim() || h.has_value))
+                .map(({ name, value }) => ({ name, value }))
             : [],
       };
       if (isCreating) {
         const saved = await createServer.mutateAsync(payload);
+        clearSecretFields(saved);
         setSelectedName(saved.name);
         setIsCreating(false);
         const endpoint = endpointLabel(saved);
@@ -234,6 +252,7 @@ const Servers: React.FC = () => {
         });
       } else {
         const saved = await updateServer.mutateAsync({ name: selectedName!, input: payload });
+        clearSecretFields(saved);
         const endpoint = endpointLabel(saved);
         setStatusMsg({
           text: endpoint
@@ -566,17 +585,43 @@ const Servers: React.FC = () => {
                           providerID === 'oauth_dcr' ||
                           providerID === 'oauth_metadata';
                         if (isOAuthManaged) return null;
+                        const hasStoredToken = !isCreating && !!currentServer?.has_auth_token;
                         return (
-                          <FormControl>
-                            <FormLabel fontSize="sm">Bearer Token</FormLabel>
-                            <Input
-                              size="sm"
-                              type="password"
-                              placeholder="sk-…"
-                              value={form.auth_token ?? ''}
-                              onChange={(e) => setForm((f) => ({ ...f, auth_token: e.target.value }))}
-                            />
-                          </FormControl>
+                          <Box>
+                            <FormControl>
+                              <FormLabel fontSize="sm">
+                                Bearer Token
+                                {hasStoredToken && (
+                                  <Text as="span" color="gray.500" ml={1} fontWeight="normal">
+                                    (leave blank to keep stored value)
+                                  </Text>
+                                )}
+                              </FormLabel>
+                              <Input
+                                size="sm"
+                                type="password"
+                                autoComplete="new-password"
+                                placeholder={
+                                  hasStoredToken && !form.clear_auth_token ? '••••••• (unchanged)' : 'sk-…'
+                                }
+                                value={form.auth_token ?? ''}
+                                isDisabled={!!form.clear_auth_token}
+                                onChange={(e) => setForm((f) => ({ ...f, auth_token: e.target.value }))}
+                              />
+                            </FormControl>
+                            {hasStoredToken && (
+                              <Checkbox
+                                mt={2}
+                                size="sm"
+                                isChecked={!!form.clear_auth_token}
+                                onChange={(e) =>
+                                  setForm((f) => ({ ...f, clear_auth_token: e.target.checked, auth_token: '' }))
+                                }
+                              >
+                                Remove stored token
+                              </Checkbox>
+                            )}
+                          </Box>
                         );
                       })()}
 
@@ -600,7 +645,8 @@ const Servers: React.FC = () => {
                               <Input
                                 size="sm"
                                 type="password"
-                                placeholder="value"
+                                autoComplete="new-password"
+                                placeholder={header.has_value ? '••••••• (unchanged)' : 'value'}
                                 value={header.value}
                                 onChange={(e) =>
                                   setForm((f) => {
@@ -777,6 +823,11 @@ const Servers: React.FC = () => {
                           onChange={(e) => setEnvText(e.target.value)}
                           placeholder='{"MY_VAR": "value"}'
                         />
+                        {!isCreating && (
+                          <Text fontSize="xs" color="gray.600" mt={1}>
+                            Stored values are hidden. Leave a value as "" to keep it.
+                          </Text>
+                        )}
                       </FormControl>
                     </>
                   )}
