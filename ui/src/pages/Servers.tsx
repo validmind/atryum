@@ -119,6 +119,53 @@ const sameArgs = (text: string, stored: string[]): boolean => {
   }
 };
 
+// headerKey is how the server matches a stored header value to a header row:
+// by trimmed, case-insensitive name. A value stays with the name it was saved
+// under, so renaming a header leaves its stored value behind.
+export const headerKey = (name: string): string => name.trim().toLowerCase();
+
+// storedHeaderKeys returns the header names the server holds a value for.
+export const storedHeaderKeys = (server?: Server): Set<string> =>
+  new Set(
+    (server?.auth_headers ?? []).filter((h) => h.has_value).map((h) => headerKey(h.name)),
+  );
+
+// isRenamedWithoutValue reports a row that was loaded with a stored value,
+// has since been renamed, and has no new value typed in. Saved as it is, the
+// server would drop the header and the stored value with it.
+export const isRenamedWithoutValue = (header: AuthHeader, stored: Set<string>): boolean =>
+  !!header.has_value &&
+  !!header.name.trim() &&
+  !header.value.trim() &&
+  !stored.has(headerKey(header.name));
+
+// headersToSave keeps the rows that have a name and either a typed value or
+// a value stored under that name (sent blank, which keeps it).
+export const headersToSave = (
+  headers: AuthHeader[],
+  stored: Set<string>,
+): Array<{ name: string; value: string }> =>
+  headers
+    .filter((h) => h.name.trim() && (h.value.trim() || stored.has(headerKey(h.name))))
+    .map(({ name, value }) => ({ name, value }));
+
+// clientSecretMoved reports whether a stored pre-shared OAuth client secret
+// has to be entered again: the server refuses a blank one once the base URL
+// host or the token URL host changes.
+export const clientSecretMoved = (
+  server: Server | undefined,
+  tokenUrl: string,
+  hostChanged: boolean,
+): boolean => {
+  if (!server?.has_oauth_client_secret || server.oauth_client_registration !== 'preshared') {
+    return false;
+  }
+  const stored = (server.oauth_token_url ?? '').trim();
+  const next = tokenUrl.trim();
+  const tokenUrlChanged = !!next && !!stored && urlOrigin(next) !== urlOrigin(stored);
+  return hostChanged || tokenUrlChanged;
+};
+
 const serverToInput = (s: Server): ServerInput => ({
   name: s.name,
   mode: s.mode,
@@ -179,6 +226,10 @@ const Servers: React.FC = () => {
   });
 
   const servers = data?.items ?? [];
+  const currentServer = servers.find((s) => s.name === selectedName);
+  // A header row keeps a stored value only while its name still matches one
+  // of these.
+  const storedHeaders = storedHeaderKeys(currentServer);
 
   const loadServer = (server: Server) => {
     setSelectedName(server.name);
@@ -248,16 +299,22 @@ const Servers: React.FC = () => {
 
   const handleSave = async () => {
     try {
+      if (form.mode === 'http') {
+        const renamed = (form.auth_headers ?? []).find((h) =>
+          isRenamedWithoutValue(h, storedHeaders),
+        );
+        if (renamed) {
+          throw new Error(
+            `Enter a value for header "${renamed.name.trim()}". A stored value stays with the header name it was saved under, so it does not follow a rename.`,
+          );
+        }
+      }
       const payload: ServerInput = {
         ...form,
         args: form.mode === 'stdio' ? parseArgs() : [],
         env: form.mode === 'stdio' ? parseEnv() : {},
         auth_headers:
-          form.mode === 'http'
-            ? (form.auth_headers ?? [])
-                .filter((h) => h.name.trim() && (h.value.trim() || h.has_value))
-                .map(({ name, value }) => ({ name, value }))
-            : [],
+          form.mode === 'http' ? headersToSave(form.auth_headers ?? [], storedHeaders) : [],
       };
       if (isCreating) {
         const saved = await createServer.mutateAsync(payload);
@@ -347,7 +404,6 @@ const Servers: React.FC = () => {
     removeServer.isLoading ||
     testServer.isLoading;
 
-  const currentServer = servers.find((s) => s.name === selectedName);
   // Stored credentials only work with the host they were saved for: the
   // server refuses to reuse them once the base URL points somewhere else.
   const hostChanged =
@@ -364,6 +420,9 @@ const Servers: React.FC = () => {
     ((form.command ?? '').trim() !== (currentServer.command ?? '').trim() ||
       !sameArgs(argsText, currentServer.args ?? []));
   const hasStoredEnv = Object.keys(currentServer?.env ?? {}).length > 0;
+  // A pre-shared OAuth client secret also stays with its host.
+  const secretMoved =
+    !isCreating && clientSecretMoved(currentServer, form.oauth_token_url ?? '', hostChanged);
   const hasStoredCredentials =
     !!currentServer?.has_auth_token ||
     (currentServer?.auth_headers ?? []).some((h) => h.has_value) ||
@@ -604,6 +663,13 @@ const Servers: React.FC = () => {
                             This is a different host. Stored credentials only work with the host they
                             were saved for, so enter the bearer token and header values again (or
                             clear them) before saving. An OAuth connection will need to reconnect.
+                            {secretMoved && (
+                              <>
+                                {' '}
+                                Enter the OAuth client secret again too, under Manual OAuth
+                                configuration.
+                              </>
+                            )}
                           </Text>
                         )}
                       </FormControl>
@@ -639,7 +705,7 @@ const Servers: React.FC = () => {
                             <FormControl>
                               <FormLabel fontSize="sm">
                                 Bearer Token
-                                {hasStoredToken && (
+                                {hasStoredToken && !hostChanged && !form.clear_auth_token && (
                                   <Text as="span" color="gray.500" ml={1} fontWeight="normal">
                                     (leave blank to keep stored value)
                                   </Text>
@@ -681,49 +747,57 @@ const Servers: React.FC = () => {
                         <FormLabel fontSize="sm">Custom Headers</FormLabel>
                         <Stack spacing={2}>
                           {(form.auth_headers ?? []).map((header, idx) => (
-                            <HStack key={idx} spacing={2}>
-                              <Input
-                                size="sm"
-                                placeholder="X-API-KEY"
-                                value={header.name}
-                                onChange={(e) =>
-                                  setForm((f) => {
-                                    const next = [...(f.auth_headers ?? [])];
-                                    next[idx] = { ...next[idx], name: e.target.value };
-                                    return { ...f, auth_headers: next };
-                                  })
-                                }
-                              />
-                              <Input
-                                size="sm"
-                                type="password"
-                                autoComplete="new-password"
-                                placeholder={
-                                  header.has_value
-                                    ? hostChanged
-                                      ? 'Enter again for the new host'
-                                      : '••••••• (unchanged)'
-                                    : 'value'
-                                }
-                                value={header.value}
-                                onChange={(e) =>
-                                  setForm((f) => {
-                                    const next = [...(f.auth_headers ?? [])];
-                                    next[idx] = { ...next[idx], value: e.target.value };
-                                    return { ...f, auth_headers: next };
-                                  })
-                                }
-                              />
-                              <CloseButton
-                                size="sm"
-                                onClick={() =>
-                                  setForm((f) => ({
-                                    ...f,
-                                    auth_headers: (f.auth_headers ?? []).filter((_, i) => i !== idx),
-                                  }))
-                                }
-                              />
-                            </HStack>
+                            <Box key={idx}>
+                              <HStack spacing={2}>
+                                <Input
+                                  size="sm"
+                                  placeholder="X-API-KEY"
+                                  value={header.name}
+                                  onChange={(e) =>
+                                    setForm((f) => {
+                                      const next = [...(f.auth_headers ?? [])];
+                                      next[idx] = { ...next[idx], name: e.target.value };
+                                      return { ...f, auth_headers: next };
+                                    })
+                                  }
+                                />
+                                <Input
+                                  size="sm"
+                                  type="password"
+                                  autoComplete="new-password"
+                                  placeholder={
+                                    storedHeaders.has(headerKey(header.name))
+                                      ? hostChanged
+                                        ? 'Enter again for the new host'
+                                        : '••••••• (unchanged)'
+                                      : 'value'
+                                  }
+                                  value={header.value}
+                                  onChange={(e) =>
+                                    setForm((f) => {
+                                      const next = [...(f.auth_headers ?? [])];
+                                      next[idx] = { ...next[idx], value: e.target.value };
+                                      return { ...f, auth_headers: next };
+                                    })
+                                  }
+                                />
+                                <CloseButton
+                                  size="sm"
+                                  onClick={() =>
+                                    setForm((f) => ({
+                                      ...f,
+                                      auth_headers: (f.auth_headers ?? []).filter((_, i) => i !== idx),
+                                    }))
+                                  }
+                                />
+                              </HStack>
+                              {isRenamedWithoutValue(header, storedHeaders) && (
+                                <Text fontSize="xs" color="orange.600" mt={1}>
+                                  The stored value stays with the old header name. Enter the value
+                                  again for this name before saving.
+                                </Text>
+                              )}
+                            </Box>
                           ))}
                           <Button
                             size="xs"
@@ -764,7 +838,7 @@ const Servers: React.FC = () => {
                           <FormControl>
                             <FormLabel fontSize="sm">
                               Client Secret
-                              {currentServer?.has_oauth_client_secret && (
+                              {currentServer?.has_oauth_client_secret && !secretMoved && (
                                 <Text as="span" color="gray.500" ml={1} fontWeight="normal">
                                   (leave blank to keep stored value)
                                 </Text>
@@ -773,10 +847,22 @@ const Servers: React.FC = () => {
                             <Input
                               size="sm"
                               type="password"
-                              placeholder={currentServer?.has_oauth_client_secret ? '••••••• (unchanged)' : ''}
+                              placeholder={
+                                !currentServer?.has_oauth_client_secret
+                                  ? ''
+                                  : secretMoved
+                                    ? 'Enter again for the new host'
+                                    : '••••••• (unchanged)'
+                              }
                               value={form.oauth_client_secret ?? ''}
                               onChange={(e) => setForm((f) => ({ ...f, oauth_client_secret: e.target.value }))}
                             />
+                            {secretMoved && (
+                              <Text fontSize="xs" color="orange.600" mt={1}>
+                                The host changed. A stored client secret only goes to the host it was
+                                saved for, so enter it again before saving.
+                              </Text>
+                            )}
                           </FormControl>
                           <FormControl>
                             <FormLabel fontSize="sm">Authorize URL</FormLabel>

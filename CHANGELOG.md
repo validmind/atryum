@@ -13,7 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the OAuth client secret already was. Server responses carry
   `has_auth_token`, `auth_headers[].has_value` and `env` keys with blank
   values in place of the bearer token, custom header values and env values.
-  The Servers page shows stored credentials as unchanged placeholders.
+  The Servers page shows stored credentials as unchanged placeholders. A
+  stored header value is matched by the header's name, so the page asks for
+  the value again when a stored header is renamed instead of saving it
+  without one.
 - Saving a server keeps stored credentials the request leaves empty: a blank
   `auth_token`, an `auth_headers` entry with a blank value (matched by name),
   or, for a stdio server, an `env` entry with a blank value. Set
