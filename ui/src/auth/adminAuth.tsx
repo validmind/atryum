@@ -15,6 +15,7 @@ import {
   FormLabel,
   Heading,
   Image,
+  Input,
   Select,
   Spinner,
   Stack,
@@ -41,9 +42,28 @@ export interface AdminAuthProviderMetadata {
 
 interface AdminAuthConfig {
   providers: AdminAuthProviderMetadata[];
+  // True when no login provider is configured and the server guards its
+  // operator API with the operator token instead.
+  operator_token_required?: boolean;
 }
 
-type AuthStatus = 'loading' | 'disabled' | 'authenticated' | 'unauthenticated' | 'error';
+type AuthStatus =
+  | 'loading'
+  | 'disabled'
+  | 'operatorToken'
+  | 'authenticated'
+  | 'unauthenticated'
+  | 'error';
+
+// hasOperatorSession reports whether this browser already holds the operator
+// cookie (set by the sign-in link or the token form). The cookie is HttpOnly,
+// so the only way to tell is to ask the API.
+const hasOperatorSession = async (): Promise<boolean> => {
+  const res = await fetch('/api/v1/me', { headers: { Accept: 'application/json' } });
+  if (res.status === 401) return false;
+  if (!res.ok) throw new Error(`session check failed (${res.status})`);
+  return true;
+};
 
 interface AdminAuthContextValue {
   status: AuthStatus;
@@ -202,6 +222,81 @@ const SignInScreen: React.FC<{
   </Center>
 );
 
+const OperatorTokenScreen: React.FC<{ onSignedIn: () => void }> = ({ onSignedIn }) => {
+  const [token, setToken] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/v1/auth/operator-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: token.trim() }),
+      });
+      if (res.status === 401) {
+        setError('That token does not match this Atryum server.');
+        return;
+      }
+      if (!res.ok) {
+        setError(`Sign in failed (${res.status}).`);
+        return;
+      }
+      setToken('');
+      onSignedIn();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Sign in failed.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Center minH="100vh" bg="background.page" px={6}>
+      <Box w="full" maxW="420px">
+        <Stack gap={8}>
+          <Stack gap={4} align="center">
+            <Image src={atryumLogo} alt="Atryum" h="56px" objectFit="contain" />
+            <Heading size="md" color="text.heading">
+              Atryum
+            </Heading>
+          </Stack>
+          <Stack as="form" gap={4} onSubmit={(event) => void submit(event)}>
+            <Text color="text.secondary">
+              This server has no identity provider configured, so it is protected by an
+              operator token. Open the sign-in link Atryum printed when it started, or
+              paste the token from the file it names.
+            </Text>
+            <FormControl>
+              <FormLabel color="text.base" htmlFor="operator-token">
+                Operator token
+              </FormLabel>
+              <Input
+                id="operator-token"
+                type="password"
+                autoComplete="off"
+                value={token}
+                onChange={(event) => setToken(event.target.value)}
+              />
+            </FormControl>
+            {error ? <Text color="text.error">{error}</Text> : null}
+            <Button
+              type="submit"
+              variant="primary"
+              isLoading={submitting}
+              isDisabled={!token.trim()}>
+              Sign in
+            </Button>
+          </Stack>
+        </Stack>
+      </Box>
+    </Center>
+  );
+};
+
 export const AdminAuthProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
@@ -246,7 +341,11 @@ export const AdminAuthProvider: React.FC<{ children: React.ReactNode }> = ({
         if (configuredProviders.length === 0) {
           activeManager = null;
           activeUser = null;
-          setStatus('disabled');
+          if (config.operator_token_required && !(await hasOperatorSession())) {
+            if (!cancelled) setStatus('operatorToken');
+            return;
+          }
+          if (!cancelled) setStatus('disabled');
           return;
         }
         const storedId = window.localStorage.getItem(SELECTED_PROVIDER_KEY);
@@ -359,6 +458,9 @@ export const AdminAuthProvider: React.FC<{ children: React.ReactNode }> = ({
   }
 
   if (status === 'loading') return <LoadingScreen />;
+  if (status === 'operatorToken') {
+    return <OperatorTokenScreen onSignedIn={() => setStatus('disabled')} />;
+  }
   if (status === 'error') {
     return (
       <SignInScreen

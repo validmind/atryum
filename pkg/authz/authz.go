@@ -30,6 +30,9 @@ const (
 	// MethodNone means inbound auth is disabled for this deployment; the
 	// request carries a synthetic admin principal.
 	MethodNone Method = "none"
+	// MethodOperatorToken is the per-instance operator token that guards the
+	// UI and operator API when no [[auth]] block is admin-enabled.
+	MethodOperatorToken Method = "operator_token"
 )
 
 // Principal is the authenticated human (or trusted machine) behind an

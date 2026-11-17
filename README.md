@@ -88,7 +88,9 @@ The Settings UI can also select a default ValidMind agent record. AI Evaluation 
 
 ## UI and privileged API authentication
 
-Authentication for the UI and the review/operator APIs is optional. When no `[[auth]]` block has `admin_enabled = true`, the UI and those privileged APIs remain open. When one or more blocks are admin-enabled, Atryum requires a browser OIDC access token for review/operator API calls and accepts tokens from any admin-enabled issuer. The upstream MCP OAuth callback at `/api/v1/mcp/oauth/callback` remains public so external identity providers can complete browser redirects.
+When no `[[auth]]` block has `admin_enabled = true`, the UI and the review/operator APIs are protected by an **operator token**. On first start Atryum generates a random token, saves it with mode `0600` to `atryum-operator-token` beside the SQLite database (or the path in `[server] operator_token_file`), and logs a sign-in link (`http://localhost:8080/ui/?token=...`). Opening that link stores the token in an `HttpOnly`, `SameSite=Strict` cookie; the UI also accepts the token on its sign-in screen. API clients send it as `Authorization: Bearer <token>`, the CLI reads it from `ATRYUM_OPERATOR_TOKEN`, and the `[api_key]` machine key keeps working. To choose the token yourself, set `[server] operator_token` or `ATRYUM_OPERATOR_TOKEN`; it is then never logged. To keep the old open behaviour (for example behind your own authenticating proxy), set `[server] operator_api_open = true` or `ATRYUM_OPERATOR_API_OPEN=true`.
+
+When one or more blocks are admin-enabled, Atryum requires a browser OIDC access token for review/operator API calls and accepts tokens from any admin-enabled issuer. The upstream MCP OAuth callback at `/api/v1/mcp/oauth/callback` remains public so external identity providers can complete browser redirects.
 
 Admin auth reuses the same issuer/audience/JWKS validation as agent auth, then checks the admin claim configured on the matched `[[auth]]` block. This means different IdPs can use different admin claims at the same time.
 
