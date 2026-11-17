@@ -18,18 +18,22 @@ and Linux, install it as an administrator instead:
 sudo atryum hooks install --managed --url https://atryum.example claude-code
 ```
 
-This writes the hook script to a root-owned directory and registers it in
-Claude Code's managed settings (`managed-settings.d/atryum.json`). Claude Code
-always runs managed hooks, and `disableAllHooks` in user or project settings
-can't turn them off. Then, as each user:
+This writes the hook script built into the `atryum` binary to a root-owned
+directory and registers it in Claude Code's managed settings
+(`managed-settings.d/atryum.json`). Claude Code always runs managed hooks, and
+`disableAllHooks` in user or project settings can't turn them off. The hook is
+set to block a call when it can't start (Claude Code 2.1.295 or later). If
+`sudo` can't find `node`, pass `--node /path/to/node`; the install warns when
+that binary isn't root-owned, because the agent could then replace it. Then,
+as each user:
 
 ```sh
 atryum setup claude                          # signs in, saves ~/.atryum/agent-key
 atryum hooks uninstall --yes claude-code     # drop the user-level copy
 ```
 
-Atryum's self-protection (on by default) also denies tool calls that would
-edit `~/.atryum` or `.claude/settings*.json`, and running Claude Code in the
+Atryum's self-protection (on by default) also denies tool calls that name
+`~/.atryum` or `.claude/settings*.json`, and running Claude Code in the
 [nono sandbox](../nono-profile/) keeps the hook script read-only to the agent.
 See "Keeping an agent from changing its own gate" in the main README.
 

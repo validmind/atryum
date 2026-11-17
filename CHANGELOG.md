@@ -9,20 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Self-protection: a tool call whose arguments name Atryum's own hook files
-  (`~/.atryum`, or another `.atryum*` home) or a harness's hook settings
-  (`.claude/settings*.json`, Claude Code's `managed-settings.json`,
-  `.cursor/hooks.json`, `.codex/hooks.json`, `.codex/config.toml`), or that
-  contains `disableAllHooks`, is denied before plans, rules, policy or an
-  external decider see it. This covers hook-submitted calls and MCP proxy
-  calls. Read-only tools are skipped, and file-write tools are checked on
-  their target path (plus content for scripts). Configure under
-  `[self_protection]`: `action = "human"`, `extra_paths`, `enabled = false`.
+- Self-protection: a tool call whose arguments name the files a hook
+  install keeps its gate in is denied before plans, rules, policy or an
+  external decider see it. Those are `.atryum` homes, Claude Code settings
+  (`settings*.json` under a `.claude*` directory, `managed-settings`,
+  `disableAllHooks`), `.cursor/hooks.json`, `.codex/hooks.json`,
+  `.codex/config.toml`, and the Amp plugin and Pi extension directories. It
+  covers hook-submitted calls and MCP proxy calls to servers on this machine.
+  Tools that change nothing are skipped, and file-write tools are checked on
+  their target path (plus content for scripts). The files are `pkg/policy`
+  rules, so arguments are compared with that package's cleanup of case,
+  escapes and path detours. Configure under `[self_protection]`:
+  `action = "human"`, `extra_paths`, `enabled = false`. It reads text and
+  does not interpret shell; the README lists what gets past it.
 - `atryum hooks install --managed --url URL claude-code` (run with sudo)
   registers the Claude Code hook in Claude Code's managed settings
-  (`managed-settings.d/atryum.json`) and puts the hook script in a root-owned
-  directory, so the agent can't remove or rewrite it. macOS and Linux;
-  refused on WSL. `--managed` with `uninstall` removes it.
+  (`managed-settings.d/atryum.json`) and writes the hook script built into
+  the binary to a root-owned directory, so the agent can't remove the
+  registration or rewrite the script. It pins `node`'s path (`--node`),
+  clears `NODE_OPTIONS`, and sets `onFailure: block` on the PreToolUse hook
+  (Claude Code 2.1.295 or later). macOS and Linux; refused on WSL.
+  `--managed` with `uninstall` removes it.
+- The hook script is built into the `atryum` binary, so
+  `atryum hooks install` and `atryum setup claude` work from any directory.
 
 ### Fixed
 

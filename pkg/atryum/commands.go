@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	sharedagenthook "github.com/validmind/atryum/examples/shared-agent-hook"
 	"github.com/validmind/atryum/internal/version"
 	"io"
 	"os"
@@ -499,13 +500,14 @@ func runHooks(args []string) error {
 	managedURL := fs.String("url", "", "Atryum server URL for a managed install")
 	tokenCommand := fs.String("token-command", "", "token command for a managed install")
 	allowInsecure := fs.Bool("allow-insecure-http", false, "allow a plain-http Atryum URL")
+	nodePath := fs.String("node", "", "path to node for a managed install")
 	// Accept flags before, between or after the action and target, as the
 	// usage examples show.
-	if err := fs.Parse(flagsFirst(args, map[string]bool{"url": true, "token-command": true})); err != nil {
+	remaining, err := parseInterspersed(fs, args)
+	if err != nil {
 		return errors.New(hooksUsage())
 	}
 
-	remaining := fs.Args()
 	if len(remaining) == 0 {
 		return errors.New("missing action and target. tell me exactly what you want, for example:\n" + hooksUsage())
 	}
@@ -528,6 +530,18 @@ func runHooks(args []string) error {
 	if *managed && target != "claude-code" {
 		return fmt.Errorf("--managed is available for claude-code only; for %s, run the agent in a sandbox that makes ~/.atryum and its hooks file read-only (see examples/nono-profile)", target)
 	}
+	if !*managed {
+		var stray []string
+		fs.Visit(func(f *flag.Flag) {
+			switch f.Name {
+			case "url", "token-command", "allow-insecure-http", "node":
+				stray = append(stray, "--"+f.Name)
+			}
+		})
+		if len(stray) > 0 {
+			return fmt.Errorf("%s only applies with --managed\n%s", strings.Join(stray, ", "), hooksUsage())
+		}
+	}
 
 	confirmed := *autoYes || *autoYesLong
 	if !confirmed {
@@ -543,7 +557,7 @@ func runHooks(args []string) error {
 
 	if *managed {
 		if action == "install" {
-			return installManagedClaudeHooks(managedInstallOptions{URL: *managedURL, TokenCommand: *tokenCommand, AllowInsecure: *allowInsecure}, os.Stdout)
+			return installManagedClaudeHooks(managedInstallOptions{URL: *managedURL, TokenCommand: *tokenCommand, AllowInsecure: *allowInsecure, Node: *nodePath}, os.Stdout)
 		}
 		return uninstallManagedClaudeHooks(os.Stdout)
 	}
@@ -551,31 +565,6 @@ func runHooks(args []string) error {
 		return installHooks(target)
 	}
 	return uninstallHooks(target)
-}
-
-// flagsFirst moves flag arguments ahead of positional ones so the standard
-// flag package (which stops at the first positional) sees them wherever they
-// were typed. valueFlags names the flags that take a separate value.
-func flagsFirst(args []string, valueFlags map[string]bool) []string {
-	var flags, positional []string
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "--" {
-			positional = append(positional, args[i+1:]...)
-			break
-		}
-		if !strings.HasPrefix(arg, "-") || arg == "-" {
-			positional = append(positional, arg)
-			continue
-		}
-		flags = append(flags, arg)
-		name := strings.TrimLeft(arg, "-")
-		if !strings.Contains(name, "=") && valueFlags[name] && i+1 < len(args) {
-			flags = append(flags, args[i+1])
-			i++
-		}
-	}
-	return append(flags, positional...)
 }
 
 func hooksUsage() string {
@@ -605,6 +594,7 @@ Managed flags (claude-code only):
   --managed               install or uninstall the managed copy (needs sudo)
   --url URL               Atryum server URL (or ATRYUM_URL)
   --token-command CMD     how the hook gets its key (default: cat "$HOME/.atryum/agent-key")
+  --node PATH             node binary the hook runs with (default: node found on PATH)
   --allow-insecure-http   allow a plain-http URL to a non-loopback host
 
 Examples:
@@ -809,7 +799,15 @@ func resolveHookScript() ([]byte, error) {
 		}
 	}
 
-	return nil, errors.New("could not locate examples/shared-agent-hook/atryum-hook.mjs")
+	// A released binary has no source tree beside it: use the copy built in.
+	return embeddedHookScript(), nil
+}
+
+// embeddedHookScript is the hook script compiled into the binary. A managed
+// (root) install uses only this copy, never a file from the working
+// directory, which the agent may be able to write.
+func embeddedHookScript() []byte {
+	return append([]byte(nil), sharedagenthook.Script...)
 }
 
 func installAgentPlugin(target string) error {
@@ -944,12 +942,19 @@ func writeJSONMap(path string, value map[string]any) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	raw, err := json.MarshalIndent(value, "", "  ")
+	raw, err := marshalJSONMap(value)
 	if err != nil {
 		return err
 	}
-	raw = append(raw, '\n')
 	return os.WriteFile(path, raw, 0o644)
+}
+
+func marshalJSONMap(value map[string]any) ([]byte, error) {
+	raw, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(raw, '\n'), nil
 }
 
 func applyInstallHookConfig(settings map[string]any, target string) {

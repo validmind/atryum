@@ -435,8 +435,10 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 
 	// A call that would change the agent's own gate is settled before plans,
 	// rules, policy or a decider can approve it (see self_protection.go).
-	if target := s.selfProtection.Match(req.Tool, inputJSON); target != "" {
-		return s.selfProtectProxy(ctx, inv, upstream, req, target, now)
+	if upstreamIsLocal(upstream) {
+		if target := s.selfProtection.Match(req.Tool, inputJSON, false); target != "" {
+			return s.selfProtectProxy(ctx, inv, upstream, req, target, now)
+		}
 	}
 
 	// An approved plan grants a scoped pass. On this MCP proxy path the
@@ -1660,7 +1662,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 
 	// A call that would change the agent's own gate is settled before plans,
 	// rules or a decider can approve it (see self_protection.go).
-	if target := s.selfProtection.Match(req.Tool, inputJSON); target != "" {
+	if target := s.selfProtection.Match(req.Tool, inputJSON, true); target != "" {
 		return s.selfProtectExternal(ctx, inv, source, agentID, req.RequestID, target, now)
 	}
 

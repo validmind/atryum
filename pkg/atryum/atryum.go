@@ -438,13 +438,20 @@ func runServer(args []string, o options) error {
 	service := invocation.NewService(invRepo, eventRepo, resolver, client, policyRegistry, time.Duration(cfg.Defaults.RequestTimeoutSeconds)*time.Second, rulesRepo, invAgents, invEvaluator, &syncSettingsAdapter{repo: agentSyncSettingsRepo})
 	service.SetPlanStore(plansRepo, planEventsRepo, localEvaluator, planStatusPollOrigins(cfg.Server))
 	service.SetPlanTTLBounds(cfg.Plans.DefaultTTLSeconds, cfg.Plans.MaxTTLSeconds)
+	selfProtectionAction := cfg.SelfProtection.Action
+	if o.decider != nil && selfProtectionAction == "human" {
+		// An external decider mounts no operator API or UI, so nobody could
+		// release a held call.
+		log.Printf("self_protection.action = \"human\" needs Atryum's review UI, which an external decider replaces: using \"deny\"")
+		selfProtectionAction = "deny"
+	}
 	service.SetSelfProtection(invocation.SelfProtection{
 		Enabled:    cfg.SelfProtection.IsEnabled(),
-		Action:     invocation.SelfProtectionAction(cfg.SelfProtection.Action),
+		Action:     invocation.SelfProtectionAction(selfProtectionAction),
 		ExtraPaths: cfg.SelfProtection.ExtraPaths,
 	})
 	if cfg.SelfProtection.IsEnabled() {
-		log.Printf("self-protection on: tool calls that touch Atryum's hook files or hook settings are %s", map[string]string{"deny": "denied", "human": "held for a person"}[cfg.SelfProtection.Action])
+		log.Printf("self-protection on: tool calls that name Atryum's hook files or hook settings are %s", map[string]string{"deny": "denied", "human": "held for a person"}[selfProtectionAction])
 	} else {
 		log.Printf("WARNING: self_protection.enabled = false: an agent's tool calls can change the hook that gates them")
 	}
