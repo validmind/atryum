@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now require an operator token instead of being open. Atryum generates the
   token on first start, saves it (mode 0600) to `atryum-operator-token`
   beside the SQLite database (`[server] operator_token_file` to move it), and
-  logs a sign-in link. The link stores the token in an HttpOnly, SameSite=Strict
+  logs a sign-in link on that first start only (later starts log just the
+  token file path). The link stores the token in an HttpOnly, SameSite=Strict
   cookie; the UI also has a token sign-in screen, API clients send
   `Authorization: Bearer <token>`, and the CLI reads `ATRYUM_OPERATOR_TOKEN`.
   The `[api_key]` machine key is still accepted. Set `[server] operator_token`

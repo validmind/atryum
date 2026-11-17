@@ -267,8 +267,8 @@ const OperatorTokenScreen: React.FC<{ onSignedIn: () => void }> = ({ onSignedIn 
           <Stack as="form" gap={4} onSubmit={(event) => void submit(event)}>
             <Text color="text.secondary">
               This server has no identity provider configured, so it is protected by an
-              operator token. Open the sign-in link Atryum printed when it started, or
-              paste the token from the file it names.
+              operator token. Open the sign-in link Atryum printed when it first started, or
+              paste the token from the file its startup log names.
             </Text>
             <FormControl>
               <FormLabel color="text.base" htmlFor="operator-token">

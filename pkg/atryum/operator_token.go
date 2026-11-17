@@ -109,22 +109,24 @@ func operatorSignInURL(server config.ServerConfig, token string) string {
 	return operatorBaseURL(server) + "/ui/?token=" + token
 }
 
-// logOperatorTokenNotice tells the operator how to sign in. A token the
-// operator configured is never printed; a generated or stored one is, once,
-// as a sign-in link, because nobody else knows it yet.
+// logOperatorTokenNotice tells the operator how to sign in. The token is
+// printed exactly once, as a sign-in link, on the start that generates it,
+// because nobody else knows it yet. A token the operator configured is never
+// printed, and neither is a stored one on later starts: the token is long
+// lived, so repeating it would leave the credential in every log the process
+// ever writes. Those starts name the token file instead.
 func logOperatorTokenNotice(server config.ServerConfig, token string, source operatorTokenSource, path string) {
-	switch source {
-	case operatorTokenFromConfig:
+	if source == operatorTokenFromConfig {
 		log.Printf("operator API requires the configured operator token (no admin-enabled [[auth]] block); open %s/ui/ and enter it, or send it as Authorization: Bearer", operatorBaseURL(server))
-	default:
-		verb := "loaded from"
-		if source == operatorTokenGenerated {
-			verb = "generated and saved to"
-		}
-		if abs, err := filepath.Abs(path); err == nil {
-			path = abs
-		}
-		log.Printf("operator API requires the operator token (no admin-enabled [[auth]] block); token %s %s", verb, path)
-		log.Printf("sign in to the UI at: %s", operatorSignInURL(server, token))
+		return
 	}
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	if source == operatorTokenGenerated {
+		log.Printf("operator API requires the operator token (no admin-enabled [[auth]] block); token generated and saved to %s", path)
+		log.Printf("sign in to the UI at: %s (printed this once; later starts name only the token file)", operatorSignInURL(server, token))
+		return
+	}
+	log.Printf("operator API requires the operator token (no admin-enabled [[auth]] block); token loaded from %s; open %s/ui/ and enter it, or send it as Authorization: Bearer", path, operatorBaseURL(server))
 }

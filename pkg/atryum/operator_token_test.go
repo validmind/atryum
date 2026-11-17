@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -83,6 +84,45 @@ func TestOperatorSignInURL(t *testing.T) {
 		if got := operatorSignInURL(tc.server, "t"); got != tc.want {
 			t.Fatalf("operatorSignInURL(%+v) = %q, want %q", tc.server, got, tc.want)
 		}
+	}
+}
+
+// The token is a long-lived admin credential, so only the start that generates
+// it may print it; later starts and configured tokens must keep it out of logs.
+func TestLogOperatorTokenNoticePrintsTheTokenOnlyWhenGenerated(t *testing.T) {
+	const token = "s3cret-operator-token"
+	server := config.ServerConfig{ListenAddr: ":8080"}
+	path := filepath.Join(t.TempDir(), operatorTokenFileName)
+	cases := []struct {
+		name      string
+		source    operatorTokenSource
+		wantToken bool
+		wantPath  bool
+	}{
+		{"generated", operatorTokenGenerated, true, true},
+		{"loaded from file", operatorTokenFromFile, false, true},
+		{"configured", operatorTokenFromConfig, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			prev := log.Writer()
+			log.SetOutput(&buf)
+			defer log.SetOutput(prev)
+
+			logOperatorTokenNotice(server, token, tc.source, path)
+
+			out := buf.String()
+			if got := strings.Contains(out, token); got != tc.wantToken {
+				t.Fatalf("token printed = %v, want %v; log:\n%s", got, tc.wantToken, out)
+			}
+			if got := strings.Contains(out, path); got != tc.wantPath {
+				t.Fatalf("token file path printed = %v, want %v; log:\n%s", got, tc.wantPath, out)
+			}
+			if !strings.Contains(out, "http://localhost:8080/ui/") {
+				t.Fatalf("log does not say where to sign in:\n%s", out)
+			}
+		})
 	}
 }
 

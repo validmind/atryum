@@ -1457,7 +1457,7 @@ func (h *Handler) operatorTokenSession(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// operatorTokenLink handles the sign-in link Atryum prints at startup
+// operatorTokenLink handles the sign-in link Atryum prints on its first start
 // (/ui/?token=...): a matching token is stored in the operator cookie and the
 // browser is redirected to the same page without the token in its URL.
 func (h *Handler) operatorTokenLink(next http.Handler) http.Handler {

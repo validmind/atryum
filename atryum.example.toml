@@ -19,7 +19,8 @@ log_level = "info"
 # With no admin-enabled [[auth]] block, the UI and review/operator APIs require
 # an operator token. Leave operator_token empty to have Atryum generate one on
 # first start, save it (mode 0600) to operator_token_file (default:
-# atryum-operator-token beside database_path), and log a sign-in link.
+# atryum-operator-token beside database_path), and log a sign-in link. The link
+# is logged on that first start only; later starts log just the file path.
 # ATRYUM_OPERATOR_TOKEN overrides operator_token.
 # operator_token = ""
 # operator_token_file = ""
