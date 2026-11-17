@@ -8,6 +8,33 @@ the tool, while Atryum mediates approval and stores the audit trail.
 
 ## Install
 
+### Recommended: where the agent can't change it
+
+The manual install below puts the hook script and its registration in files
+the agent's own user can edit, so an agent could remove its own gate. On macOS
+and Linux, install it as an administrator instead:
+
+```sh
+sudo atryum hooks install --managed --url https://atryum.example claude-code
+```
+
+This writes the hook script to a root-owned directory and registers it in
+Claude Code's managed settings (`managed-settings.d/atryum.json`). Claude Code
+always runs managed hooks, and `disableAllHooks` in user or project settings
+can't turn them off. Then, as each user:
+
+```sh
+atryum setup claude                          # signs in, saves ~/.atryum/agent-key
+atryum hooks uninstall --yes claude-code     # drop the user-level copy
+```
+
+Atryum's self-protection (on by default) also denies tool calls that would
+edit `~/.atryum` or `.claude/settings*.json`, and running Claude Code in the
+[nono sandbox](../nono-profile/) keeps the hook script read-only to the agent.
+See "Keeping an agent from changing its own gate" in the main README.
+
+### Manual install
+
 Copy the shared hook somewhere stable:
 
 ```sh

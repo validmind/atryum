@@ -45,6 +45,13 @@ export const getDisposition = (
   const tags: DispositionInfo[] = inv.plan_id
     ? [{ label: 'Plan', color: 'cyan' }]
     : [];
+  if (approvalStatus === 'self_protection_denied')
+    return [{ label: 'Self-protection', color: 'red' }];
+  if (approvalStatus === 'self_protection_escalated')
+    return [
+      { label: 'Self-protection', color: 'red' },
+      { label: 'Awaiting Human', color: 'orange' },
+    ];
   if (approvalStatus === 'plan_approved')
     return tags.length > 0 ? tags : [{ label: 'Plan', color: 'cyan' }];
   if (reason.startsWith('ai_evaluation'))

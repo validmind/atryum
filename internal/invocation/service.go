@@ -262,6 +262,7 @@ type Service struct {
 	inTx            TxRunner      // nil = each write commits on its own
 	decider         Decider       // nil = rules, plans and policy decide
 	hook            EventHook     // nil = no hook
+	selfProtection  SelfProtection
 
 	toolCatalogMu sync.Mutex
 	toolCatalog   map[string]toolCatalogEntry
@@ -293,7 +294,17 @@ func NewService(
 		approvalPoll:   250 * time.Millisecond,
 		wakePoll:       2 * time.Second,
 		toolCatalog:    make(map[string]toolCatalogEntry),
+		selfProtection: DefaultSelfProtection(),
 	}
+}
+
+// SetSelfProtection replaces the self-protection check (enabled and denying
+// by default). See self_protection.go.
+func (s *Service) SetSelfProtection(p SelfProtection) {
+	if p.Action != SelfProtectionHuman {
+		p.Action = SelfProtectionDeny
+	}
+	s.selfProtection = p
 }
 
 // SetInvocationSummarizer installs the optional backend summarizer used to
@@ -420,6 +431,12 @@ func (s *Service) Invoke(ctx context.Context, req CreateInvocationRequest) (Invo
 	span.SetAttributes(attribute.String("atryum.invocation.id", inv.InvocationID))
 	if agentID != "" {
 		span.SetAttributes(attribute.String("atryum.agent.id", agentID))
+	}
+
+	// A call that would change the agent's own gate is settled before plans,
+	// rules, policy or a decider can approve it (see self_protection.go).
+	if target := s.selfProtection.Match(req.Tool, inputJSON); target != "" {
+		return s.selfProtectProxy(ctx, inv, upstream, req, target, now)
 	}
 
 	// An approved plan grants a scoped pass. On this MCP proxy path the
@@ -1639,6 +1656,12 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	}
 	if sessionID != "" {
 		_ = s.sessions.TouchSession(ctx, sessionID, now.Add(externalSessionTTL)) // best-effort last-seen/expiry bump
+	}
+
+	// A call that would change the agent's own gate is settled before plans,
+	// rules or a decider can approve it (see self_protection.go).
+	if target := s.selfProtection.Match(req.Tool, inputJSON); target != "" {
+		return s.selfProtectExternal(ctx, inv, source, agentID, req.RequestID, target, now)
 	}
 
 	// An approved plan grants a scoped pass. The association is implicit —

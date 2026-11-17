@@ -495,7 +495,13 @@ func runHooks(args []string) error {
 	fs.SetOutput(io.Discard)
 	autoYes := fs.Bool("y", false, "auto-confirm")
 	autoYesLong := fs.Bool("yes", false, "auto-confirm")
-	if err := fs.Parse(args); err != nil {
+	managed := fs.Bool("managed", false, "install into Claude Code's managed settings")
+	managedURL := fs.String("url", "", "Atryum server URL for a managed install")
+	tokenCommand := fs.String("token-command", "", "token command for a managed install")
+	allowInsecure := fs.Bool("allow-insecure-http", false, "allow a plain-http Atryum URL")
+	// Accept flags before, between or after the action and target, as the
+	// usage examples show.
+	if err := fs.Parse(flagsFirst(args, map[string]bool{"url": true, "token-command": true})); err != nil {
 		return errors.New(hooksUsage())
 	}
 
@@ -519,6 +525,10 @@ func runHooks(args []string) error {
 		return fmt.Errorf("unknown hooks target %q\n%s", target, hooksUsage())
 	}
 
+	if *managed && target != "claude-code" {
+		return fmt.Errorf("--managed is available for claude-code only; for %s, run the agent in a sandbox that makes ~/.atryum and its hooks file read-only (see examples/nono-profile)", target)
+	}
+
 	confirmed := *autoYes || *autoYesLong
 	if !confirmed {
 		reader := bufio.NewReader(os.Stdin)
@@ -531,14 +541,45 @@ func runHooks(args []string) error {
 		}
 	}
 
+	if *managed {
+		if action == "install" {
+			return installManagedClaudeHooks(managedInstallOptions{URL: *managedURL, TokenCommand: *tokenCommand, AllowInsecure: *allowInsecure}, os.Stdout)
+		}
+		return uninstallManagedClaudeHooks(os.Stdout)
+	}
 	if action == "install" {
 		return installHooks(target)
 	}
 	return uninstallHooks(target)
 }
 
+// flagsFirst moves flag arguments ahead of positional ones so the standard
+// flag package (which stops at the first positional) sees them wherever they
+// were typed. valueFlags names the flags that take a separate value.
+func flagsFirst(args []string, valueFlags map[string]bool) []string {
+	var flags, positional []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			positional = append(positional, args[i+1:]...)
+			break
+		}
+		if !strings.HasPrefix(arg, "-") || arg == "-" {
+			positional = append(positional, arg)
+			continue
+		}
+		flags = append(flags, arg)
+		name := strings.TrimLeft(arg, "-")
+		if !strings.Contains(name, "=") && valueFlags[name] && i+1 < len(args) {
+			flags = append(flags, args[i+1])
+			i++
+		}
+	}
+	return append(flags, positional...)
+}
+
 func hooksUsage() string {
-	return strings.TrimSpace(`usage: atryum hooks [install|uninstall] [-y|--yes] [cursor|claude-code|codex|amp|pi]
+	return strings.TrimSpace(`usage: atryum hooks [install|uninstall] [-y|--yes] [--managed --url URL] [cursor|claude-code|codex|amp|pi]
 
 Commands:
   install    Install Atryum hook/plugin files and add hook commands when needed.
@@ -554,6 +595,18 @@ Targets:
 The hook script and its state live under ~/.atryum, or under $ATRYUM_HOME when
 set; hook commands are written with that location baked in.
 
+Those files are writable by the agent's own user. To put the Claude Code hook
+where the agent can't change it, install it as an administrator with
+--managed: the hook goes into Claude Code's managed settings
+(managed-settings.d/atryum.json) and the script into a root-owned directory.
+Each user still needs an agent key (atryum setup claude). macOS and Linux only.
+
+Managed flags (claude-code only):
+  --managed               install or uninstall the managed copy (needs sudo)
+  --url URL               Atryum server URL (or ATRYUM_URL)
+  --token-command CMD     how the hook gets its key (default: cat "$HOME/.atryum/agent-key")
+  --allow-insecure-http   allow a plain-http URL to a non-loopback host
+
 Examples:
   atryum hooks install cursor
   atryum hooks install claude-code
@@ -561,6 +614,7 @@ Examples:
   atryum hooks install amp
   atryum hooks install pi
   atryum hooks uninstall --yes claude-code
+  sudo atryum hooks install --managed --url https://atryum.example claude-code
   atryum hooks --help`)
 }
 

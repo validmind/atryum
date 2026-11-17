@@ -438,6 +438,16 @@ func runServer(args []string, o options) error {
 	service := invocation.NewService(invRepo, eventRepo, resolver, client, policyRegistry, time.Duration(cfg.Defaults.RequestTimeoutSeconds)*time.Second, rulesRepo, invAgents, invEvaluator, &syncSettingsAdapter{repo: agentSyncSettingsRepo})
 	service.SetPlanStore(plansRepo, planEventsRepo, localEvaluator, planStatusPollOrigins(cfg.Server))
 	service.SetPlanTTLBounds(cfg.Plans.DefaultTTLSeconds, cfg.Plans.MaxTTLSeconds)
+	service.SetSelfProtection(invocation.SelfProtection{
+		Enabled:    cfg.SelfProtection.IsEnabled(),
+		Action:     invocation.SelfProtectionAction(cfg.SelfProtection.Action),
+		ExtraPaths: cfg.SelfProtection.ExtraPaths,
+	})
+	if cfg.SelfProtection.IsEnabled() {
+		log.Printf("self-protection on: tool calls that touch Atryum's hook files or hook settings are %s", map[string]string{"deny": "denied", "human": "held for a person"}[cfg.SelfProtection.Action])
+	} else {
+		log.Printf("WARNING: self_protection.enabled = false: an agent's tool calls can change the hook that gates them")
+	}
 	if backendClient != nil {
 		service.SetInvocationSummarizer(&summaryAdapter{client: backendClient})
 	}

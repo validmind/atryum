@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Self-protection: a tool call whose arguments name Atryum's own hook files
+  (`~/.atryum`, or another `.atryum*` home) or a harness's hook settings
+  (`.claude/settings*.json`, Claude Code's `managed-settings.json`,
+  `.cursor/hooks.json`, `.codex/hooks.json`, `.codex/config.toml`), or that
+  contains `disableAllHooks`, is denied before plans, rules, policy or an
+  external decider see it. This covers hook-submitted calls and MCP proxy
+  calls. Read-only tools are skipped, and file-write tools are checked on
+  their target path (plus content for scripts). Configure under
+  `[self_protection]`: `action = "human"`, `extra_paths`, `enabled = false`.
+- `atryum hooks install --managed --url URL claude-code` (run with sudo)
+  registers the Claude Code hook in Claude Code's managed settings
+  (`managed-settings.d/atryum.json`) and puts the hook script in a root-owned
+  directory, so the agent can't remove or rewrite it. macOS and Linux;
+  refused on WSL. `--managed` with `uninstall` removes it.
+
+### Fixed
+
+- `atryum hooks` accepts flags after the action and target
+  (`atryum hooks uninstall --yes claude-code` failed with "too many
+  arguments").
+
 ## [0.10.0] - 2026-11-12
 
 ### Added
