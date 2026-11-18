@@ -147,7 +147,10 @@ export type ServerMode = 'http' | 'stdio';
 
 export interface AuthHeader {
   name: string;
+  // Write-only: the API returns '' here and sets has_value when a value is
+  // stored. Send '' to keep the stored value.
   value: string;
+  has_value?: boolean;
 }
 
 export interface Server {
@@ -161,10 +164,12 @@ export interface Server {
   enabled: boolean;
   base_url?: string;
   timeout_seconds?: number;
-  auth_token?: string;
+  // The bearer token itself is never returned.
+  has_auth_token?: boolean;
   auth_headers?: AuthHeader[];
   command?: string;
   args?: string[];
+  // Keys only: values are always returned as ''.
   env?: Record<string, string>;
   oauth_provider_id?: string;
   oauth_provider_label?: string;
@@ -188,10 +193,13 @@ export interface ServerInput {
   enabled: boolean;
   base_url?: string;
   timeout_seconds?: number;
+  // Write-only. '' keeps the stored token; set clear_auth_token to remove it.
   auth_token?: string;
+  clear_auth_token?: boolean;
   auth_headers?: AuthHeader[];
   command?: string;
   args?: string[];
+  // For stdio servers, a '' value keeps the stored value for that key.
   env?: Record<string, string>;
   oauth_client_id?: string;
   oauth_client_secret?: string;

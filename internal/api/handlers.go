@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -298,35 +299,41 @@ type DenyRequest struct {
 	ActorID    string             `json:"actor_id,omitempty"`
 }
 
+// OperatorServer is the operator API's view of an upstream MCP server.
+//
+// Upstream credentials are write-only: the bearer token, custom header values
+// and env values are never returned. HasAuthToken, AuthHeaders[].HasValue and
+// the keys of Env say what is stored, the same way HasOAuthClientSecret does
+// for the OAuth client secret.
 type OperatorServer struct {
-	Name                    string            `json:"name"`
-	EndpointSlug            string            `json:"endpoint_slug"`
-	EndpointURL             string            `json:"endpoint_url,omitempty"`
-	Mode                    string            `json:"mode"`
-	BaseURL                 string            `json:"base_url,omitempty"`
-	AuthToken               string            `json:"auth_token,omitempty"`
-	AuthHeaders             []mcp.AuthHeader  `json:"auth_headers,omitempty"`
-	TimeoutSeconds          int               `json:"timeout_seconds"`
-	Command                 string            `json:"command,omitempty"`
-	Args                    []string          `json:"args,omitempty"`
-	Env                     map[string]string `json:"env,omitempty"`
-	Enabled                 bool              `json:"enabled"`
-	AuthType                string            `json:"auth_type"`
-	ConnectionStatus        string            `json:"connection_status"`
-	AuthStatus              string            `json:"auth_status"`
-	ReauthNeeded            bool              `json:"reauth_needed"`
-	LastCheckedAt           *time.Time        `json:"last_checked_at,omitempty"`
-	LastCheckOK             bool              `json:"last_check_ok"`
-	LastErrorSummary        *string           `json:"last_error_summary,omitempty"`
-	ActionRequired          *string           `json:"action_required,omitempty"`
-	OAuthProviderID         string            `json:"oauth_provider_id,omitempty"`
-	OAuthProviderLabel      string            `json:"oauth_provider_label,omitempty"`
-	OAuthClientRegistration string            `json:"oauth_client_registration,omitempty"`
-	OAuthClientID           string            `json:"oauth_client_id,omitempty"`
-	OAuthAuthorizeURL       string            `json:"oauth_authorize_url,omitempty"`
-	OAuthTokenURL           string            `json:"oauth_token_url,omitempty"`
-	OAuthScopes             string            `json:"oauth_scopes,omitempty"`
-	HasOAuthClientSecret    bool              `json:"has_oauth_client_secret,omitempty"`
+	Name                    string               `json:"name"`
+	EndpointSlug            string               `json:"endpoint_slug"`
+	EndpointURL             string               `json:"endpoint_url,omitempty"`
+	Mode                    string               `json:"mode"`
+	BaseURL                 string               `json:"base_url,omitempty"`
+	HasAuthToken            bool                 `json:"has_auth_token"`
+	AuthHeaders             []OperatorAuthHeader `json:"auth_headers,omitempty"`
+	TimeoutSeconds          int                  `json:"timeout_seconds"`
+	Command                 string               `json:"command,omitempty"`
+	Args                    []string             `json:"args,omitempty"`
+	Env                     map[string]string    `json:"env,omitempty"`
+	Enabled                 bool                 `json:"enabled"`
+	AuthType                string               `json:"auth_type"`
+	ConnectionStatus        string               `json:"connection_status"`
+	AuthStatus              string               `json:"auth_status"`
+	ReauthNeeded            bool                 `json:"reauth_needed"`
+	LastCheckedAt           *time.Time           `json:"last_checked_at,omitempty"`
+	LastCheckOK             bool                 `json:"last_check_ok"`
+	LastErrorSummary        *string              `json:"last_error_summary,omitempty"`
+	ActionRequired          *string              `json:"action_required,omitempty"`
+	OAuthProviderID         string               `json:"oauth_provider_id,omitempty"`
+	OAuthProviderLabel      string               `json:"oauth_provider_label,omitempty"`
+	OAuthClientRegistration string               `json:"oauth_client_registration,omitempty"`
+	OAuthClientID           string               `json:"oauth_client_id,omitempty"`
+	OAuthAuthorizeURL       string               `json:"oauth_authorize_url,omitempty"`
+	OAuthTokenURL           string               `json:"oauth_token_url,omitempty"`
+	OAuthScopes             string               `json:"oauth_scopes,omitempty"`
+	HasOAuthClientSecret    bool                 `json:"has_oauth_client_secret,omitempty"`
 	// OAuthGrantedScopes is what the authorization server actually issued
 	// on the most recent token exchange (read from oauth_credentials.scope).
 	// Distinct from OAuthScopes, which is what we *request* in the next
@@ -335,11 +342,25 @@ type OperatorServer struct {
 	OAuthGrantedScopes string `json:"oauth_granted_scopes,omitempty"`
 }
 
+// OperatorAuthHeader is a custom header as the operator API returns it. Value
+// is always empty; HasValue says whether one is stored.
+type OperatorAuthHeader struct {
+	Name     string `json:"name"`
+	Value    string `json:"value"`
+	HasValue bool   `json:"has_value"`
+}
+
+// OperatorServerUpsertRequest creates or replaces a server. Because the API
+// never returns stored credentials, an empty secret means "keep what is
+// stored": an empty auth_token, an auth_headers entry with an empty value, or
+// (for stdio servers) an env entry with an empty value. ClearAuthToken removes
+// the stored bearer token; leaving a header or env key out removes it.
 type OperatorServerUpsertRequest struct {
 	Name              string            `json:"name,omitempty"`
 	Mode              string            `json:"mode"`
 	BaseURL           string            `json:"base_url,omitempty"`
 	AuthToken         string            `json:"auth_token,omitempty"`
+	ClearAuthToken    bool              `json:"clear_auth_token,omitempty"`
 	AuthHeaders       []mcp.AuthHeader  `json:"auth_headers,omitempty"`
 	TimeoutSeconds    int               `json:"timeout_seconds,omitempty"`
 	Command           string            `json:"command,omitempty"`
@@ -4243,9 +4264,9 @@ func (s *ServerOperatorService) Upsert(ctx context.Context, name string, req Ope
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 	}
-	// Load any existing row so we can preserve OAuth fields the form
-	// chose not to re-send (notably client_secret, which is never echoed
-	// back to the browser).
+	// Load any existing row so we can preserve secrets the caller chose not
+	// to re-send. None of them are echoed back by the operator API, so an
+	// empty value means "keep the stored one".
 	existing, _ := s.repo.GetServerAny(ctx, serverName)
 	endpointSlug := existing.EndpointSlug
 	if endpointSlug == "" {
@@ -4268,6 +4289,18 @@ func (s *ServerOperatorService) Upsert(ctx context.Context, name string, req Ope
 		Env:          cloneEnv(req.Env),
 		Enabled:      enabled,
 	}
+	// Stored credentials belong to the host they were saved for. When the
+	// base URL moves to another origin, refuse to carry them over silently.
+	hostMoved := upstreamOriginChanged(existing, upstream)
+	if err := refuseCredentialsForNewHost(existing, upstream, req, hostMoved); err != nil {
+		return OperatorServer{}, err
+	}
+	// The same goes for a stdio server's environment: it belongs to the
+	// command it was saved for.
+	if err := refuseEnvForNewCommand(existing, upstream); err != nil {
+		return OperatorServer{}, err
+	}
+	keepStoredCredentials(&upstream, existing, req.ClearAuthToken)
 
 	// OAuth fields from the request body win, except client_secret which
 	// uses an empty-means-unchanged semantic (the form never receives the
@@ -4287,6 +4320,20 @@ func (s *ServerOperatorService) Upsert(ctx context.Context, name string, req Ope
 	if upstream.OAuthClientID != "" && upstream.OAuthClientID != existing.OAuthClientID {
 		upstream.OAuthClientRegistration = mcp.ClientRegistrationPreshared
 	}
+	if hostMoved && upstream.OAuthClientRegistration != mcp.ClientRegistrationPreshared &&
+		upstream.OAuthClientID == existing.OAuthClientID {
+		// A dynamically registered client (and the endpoints discovered
+		// for it) belongs to the old host's authorization server: drop it
+		// so the next connect discovers and registers against the new one.
+		upstream.OAuthClientID = ""
+		upstream.OAuthClientSecret = ""
+		if upstream.OAuthAuthorizeURL == existing.OAuthAuthorizeURL {
+			upstream.OAuthAuthorizeURL = ""
+		}
+		if upstream.OAuthTokenURL == existing.OAuthTokenURL {
+			upstream.OAuthTokenURL = ""
+		}
+	}
 	if upstream.OAuthClientID == "" {
 		// Cleared — drop provenance so a re-discovery on next save can
 		// pick the right registration mode again.
@@ -4304,7 +4351,127 @@ func (s *ServerOperatorService) Upsert(ctx context.Context, name string, req Ope
 	if err := s.repo.UpsertServer(ctx, upstream); err != nil {
 		return OperatorServer{}, err
 	}
+	if hostMoved && s.oauthRepo != nil {
+		// The stored OAuth access/refresh tokens were issued for the old
+		// host; they would otherwise be sent to the new one. Reconnecting
+		// gets tokens for the new host.
+		if _, err := s.oauthRepo.GetCredential(ctx, serverName); err == nil {
+			if err := s.oauthRepo.DeleteCredential(ctx, serverName); err != nil {
+				return OperatorServer{}, fmt.Errorf("remove OAuth credential for the old host: %w", err)
+			}
+			upstream.Status.AuthStatus = mcp.AuthStatusReauthNeeded
+			upstream.Status.ReauthNeeded = true
+			action := "base URL changed host: reconnect to authorize the new host"
+			upstream.Status.ActionRequired = &action
+			if err := s.repo.UpdateServerStatus(ctx, serverName, upstream.Status); err != nil {
+				return OperatorServer{}, err
+			}
+		}
+	}
 	return s.operatorViewWithGrantedScopes(ctx, upstream), nil
+}
+
+// upstreamOrigin returns scheme://host:port for an HTTP base URL, with the
+// default port filled in, or "" when it can't be parsed.
+func upstreamOrigin(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	scheme := strings.ToLower(u.Scheme)
+	port := u.Port()
+	if port == "" {
+		switch scheme {
+		case "https":
+			port = "443"
+		case "http":
+			port = "80"
+		}
+	}
+	return scheme + "://" + strings.ToLower(u.Hostname()) + ":" + port
+}
+
+// upstreamOriginChanged reports whether an existing HTTP server is being
+// pointed at a different origin (scheme, host or port).
+func upstreamOriginChanged(existing, next mcp.Upstream) bool {
+	if existing.Mode != mcp.UpstreamModeHTTP || next.Mode != mcp.UpstreamModeHTTP {
+		return false
+	}
+	if strings.TrimSpace(existing.BaseURL) == "" {
+		return false
+	}
+	return upstreamOrigin(existing.BaseURL) != upstreamOrigin(next.BaseURL)
+}
+
+// refuseCredentialsForNewHost rejects an update that would reuse a stored
+// credential (left blank in the request) with a different host than the one
+// it was saved for: a moved base URL for the bearer token and header values,
+// or a moved base URL or token URL for a pre-shared OAuth client secret.
+func refuseCredentialsForNewHost(existing, next mcp.Upstream, req OperatorServerUpsertRequest, hostMoved bool) error {
+	var reused []string
+	if hostMoved {
+		if strings.TrimSpace(req.AuthToken) == "" && !req.ClearAuthToken && strings.TrimSpace(existing.AuthToken) != "" {
+			reused = append(reused, "bearer token")
+		}
+		stored := make(map[string]bool, len(existing.AuthHeaders))
+		for _, h := range existing.AuthHeaders {
+			if strings.TrimSpace(h.Value) != "" {
+				stored[strings.ToLower(strings.TrimSpace(h.Name))] = true
+			}
+		}
+		for _, h := range req.AuthHeaders {
+			name := strings.TrimSpace(h.Name)
+			if name != "" && strings.TrimSpace(h.Value) == "" && stored[strings.ToLower(name)] {
+				reused = append(reused, "header "+name)
+			}
+		}
+	}
+	if existing.OAuthClientRegistration == mcp.ClientRegistrationPreshared &&
+		strings.TrimSpace(existing.OAuthClientSecret) != "" &&
+		strings.TrimSpace(req.OAuthClientSecret) == "" {
+		reqTokenURL := strings.TrimSpace(req.OAuthTokenURL)
+		tokenURLMoved := reqTokenURL != "" && strings.TrimSpace(existing.OAuthTokenURL) != "" &&
+			upstreamOrigin(reqTokenURL) != upstreamOrigin(existing.OAuthTokenURL)
+		if hostMoved || tokenURLMoved {
+			reused = append(reused, "OAuth client secret")
+		}
+	}
+	if len(reused) == 0 {
+		return nil
+	}
+	return fmt.Errorf("the new URL points to a different host than the one these stored credentials were saved for; enter them again (or clear them) to use the new host: %s", strings.Join(reused, ", "))
+}
+
+// stdioCommandChanged reports whether an existing stdio server is being
+// pointed at a different program: its command or arguments changed. For a
+// stdio server those are the destination its environment values go to, as
+// the base URL is for an HTTP server's credentials.
+func stdioCommandChanged(existing, next mcp.Upstream) bool {
+	if existing.Mode != mcp.UpstreamModeStdio || next.Mode != mcp.UpstreamModeStdio {
+		return false
+	}
+	return strings.TrimSpace(existing.Command) != strings.TrimSpace(next.Command) ||
+		!slices.Equal(existing.Args, next.Args)
+}
+
+// refuseEnvForNewCommand rejects an update that changes a stdio server's
+// command or arguments while leaving a stored environment value blank, which
+// would otherwise hand the stored value to the new program.
+func refuseEnvForNewCommand(existing, next mcp.Upstream) error {
+	if !stdioCommandChanged(existing, next) {
+		return nil
+	}
+	var reused []string
+	for key, value := range next.Env {
+		if strings.TrimSpace(value) == "" && strings.TrimSpace(existing.Env[key]) != "" {
+			reused = append(reused, "env "+key)
+		}
+	}
+	if len(reused) == 0 {
+		return nil
+	}
+	sort.Strings(reused)
+	return fmt.Errorf("the command or arguments changed from the ones these stored environment values were saved for; enter them again (or remove them) to use the new command: %s", strings.Join(reused, ", "))
 }
 
 func (s *ServerOperatorService) validateEndpointSlugAvailable(ctx context.Context, serverName string, slug string) error {
@@ -5043,12 +5210,83 @@ func (h *Handler) externalInvocationDetail(w http.ResponseWriter, r *http.Reques
 	}
 }
 
+// keepStoredCredentials fills secrets the request left empty from the stored
+// server, so saving a server without re-entering its credentials keeps them.
+// Each kind is carried over only when the server keeps its mode: the bearer
+// token and header values from HTTP to HTTP, env values from stdio to stdio
+// (for an HTTP server, env is the storage encoding of its custom headers,
+// which are merged by name). A credential stored under the other mode is
+// never reused.
+func keepStoredCredentials(upstream *mcp.Upstream, existing mcp.Upstream, clearAuthToken bool) {
+	bothHTTP := upstream.Mode == mcp.UpstreamModeHTTP && existing.Mode == mcp.UpstreamModeHTTP
+	if clearAuthToken {
+		upstream.AuthToken = ""
+	} else if strings.TrimSpace(upstream.AuthToken) == "" && bothHTTP {
+		upstream.AuthToken = existing.AuthToken
+	}
+
+	if len(upstream.AuthHeaders) > 0 {
+		stored := make(map[string]string, len(existing.AuthHeaders))
+		if bothHTTP {
+			for _, header := range existing.AuthHeaders {
+				stored[strings.ToLower(strings.TrimSpace(header.Name))] = header.Value
+			}
+		}
+		merged := make([]mcp.AuthHeader, 0, len(upstream.AuthHeaders))
+		for _, header := range upstream.AuthHeaders {
+			name := strings.TrimSpace(header.Name)
+			value := header.Value
+			if strings.TrimSpace(value) == "" {
+				value = stored[strings.ToLower(name)]
+			}
+			if name == "" || strings.TrimSpace(value) == "" {
+				continue
+			}
+			merged = append(merged, mcp.AuthHeader{Name: name, Value: value})
+		}
+		upstream.AuthHeaders = merged
+	}
+
+	if upstream.Mode == mcp.UpstreamModeStdio && existing.Mode == mcp.UpstreamModeStdio {
+		for key, value := range upstream.Env {
+			if strings.TrimSpace(value) == "" {
+				if storedValue, ok := existing.Env[key]; ok {
+					upstream.Env[key] = storedValue
+				}
+			}
+		}
+	}
+}
+
+func toOperatorAuthHeaders(headers []mcp.AuthHeader) []OperatorAuthHeader {
+	if len(headers) == 0 {
+		return nil
+	}
+	out := make([]OperatorAuthHeader, 0, len(headers))
+	for _, header := range headers {
+		out = append(out, OperatorAuthHeader{Name: header.Name, HasValue: strings.TrimSpace(header.Value) != ""})
+	}
+	return out
+}
+
+// redactEnv returns env's keys with every value blanked.
+func redactEnv(env map[string]string) map[string]string {
+	if len(env) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(env))
+	for key := range env {
+		out[key] = ""
+	}
+	return out
+}
+
 func toOperatorServer(upstream mcp.Upstream) OperatorServer {
 	endpointSlug := upstream.EndpointSlug
 	if endpointSlug == "" {
 		endpointSlug = mcp.EndpointSlug(upstream.Name)
 	}
-	return OperatorServer{Name: upstream.Name, EndpointSlug: endpointSlug, Mode: string(upstream.Mode), BaseURL: upstream.BaseURL, AuthToken: upstream.AuthToken, AuthHeaders: append([]mcp.AuthHeader(nil), upstream.AuthHeaders...), TimeoutSeconds: int(upstream.Timeout / time.Second), Command: upstream.Command, Args: append([]string(nil), upstream.Args...), Env: cloneEnv(upstream.Env), Enabled: upstream.Enabled, AuthType: string(upstream.Status.AuthType), ConnectionStatus: string(upstream.Status.ConnectionStatus), AuthStatus: string(upstream.Status.AuthStatus), ReauthNeeded: upstream.Status.ReauthNeeded, LastCheckedAt: upstream.Status.LastCheckedAt, LastCheckOK: upstream.Status.LastCheckOK, LastErrorSummary: upstream.Status.LastErrorSummary, ActionRequired: upstream.Status.ActionRequired, OAuthProviderID: upstream.OAuthProviderID, OAuthProviderLabel: upstream.OAuthProviderLabel, OAuthClientRegistration: string(upstream.OAuthClientRegistration), OAuthClientID: upstream.OAuthClientID, OAuthAuthorizeURL: upstream.OAuthAuthorizeURL, OAuthTokenURL: upstream.OAuthTokenURL, OAuthScopes: upstream.OAuthScopes, HasOAuthClientSecret: strings.TrimSpace(upstream.OAuthClientSecret) != ""}
+	return OperatorServer{Name: upstream.Name, EndpointSlug: endpointSlug, Mode: string(upstream.Mode), BaseURL: upstream.BaseURL, HasAuthToken: strings.TrimSpace(upstream.AuthToken) != "", AuthHeaders: toOperatorAuthHeaders(upstream.AuthHeaders), TimeoutSeconds: int(upstream.Timeout / time.Second), Command: upstream.Command, Args: append([]string(nil), upstream.Args...), Env: redactEnv(upstream.Env), Enabled: upstream.Enabled, AuthType: string(upstream.Status.AuthType), ConnectionStatus: string(upstream.Status.ConnectionStatus), AuthStatus: string(upstream.Status.AuthStatus), ReauthNeeded: upstream.Status.ReauthNeeded, LastCheckedAt: upstream.Status.LastCheckedAt, LastCheckOK: upstream.Status.LastCheckOK, LastErrorSummary: upstream.Status.LastErrorSummary, ActionRequired: upstream.Status.ActionRequired, OAuthProviderID: upstream.OAuthProviderID, OAuthProviderLabel: upstream.OAuthProviderLabel, OAuthClientRegistration: string(upstream.OAuthClientRegistration), OAuthClientID: upstream.OAuthClientID, OAuthAuthorizeURL: upstream.OAuthAuthorizeURL, OAuthTokenURL: upstream.OAuthTokenURL, OAuthScopes: upstream.OAuthScopes, HasOAuthClientSecret: strings.TrimSpace(upstream.OAuthClientSecret) != ""}
 }
 
 func validateUpstream(upstream mcp.Upstream) error {

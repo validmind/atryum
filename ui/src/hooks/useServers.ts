@@ -28,10 +28,13 @@ export const useUpdateServer = () => {
     ({ name, input }: { name: string; input: ServerInput }) =>
       serversApi.update(name, input),
     {
-      onSuccess: (_data, { name }) => {
-        queryClient.invalidateQueries(SERVERS_KEY);
-        queryClient.invalidateQueries([SERVER_DETAIL_KEY, name]);
-      },
+      // Returned so a save resolves only once the list is fresh: the Servers
+      // page reads which header values are stored from it.
+      onSuccess: (_data, { name }) =>
+        Promise.all([
+          queryClient.invalidateQueries(SERVERS_KEY),
+          queryClient.invalidateQueries([SERVER_DETAIL_KEY, name]),
+        ]),
     },
   );
 };
