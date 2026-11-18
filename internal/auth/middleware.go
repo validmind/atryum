@@ -30,6 +30,11 @@ type MiddlewareOptions struct {
 	SkipVerify bool
 	// DebugLogIdentity logs the extracted identity after successful validation.
 	DebugLogIdentity bool
+	// OperatorToken, when set, guards the operator API in a deployment with
+	// no admin-enabled [[auth]] block: a request must present it (as a
+	// Bearer token or the operator cookie) or the machine key. Empty keeps
+	// the historical open behaviour. Ignored when admin auth is enabled.
+	OperatorToken string
 	// KeyResolver, when set, authenticates first-party API keys (bearer
 	// tokens starting with AgentKeyPrefix). Keys work with or without an IdP
 	// validator: in a no-auth deployment they are opportunistic (a request
@@ -141,16 +146,29 @@ var ErrUserDisabled = errors.New("user is disabled")
 //     handler's job (see RequireAdmin and authz.Authorizer); this middleware
 //     only rejects invalid tokens and disabled users.
 //
-//  3. Auth disabled (v nil, no login-enabled issuer, or SkipVerify): every
-//     request carries a synthetic admin principal so downstream checks stay
-//     uniform.
+//  3. No login-enabled issuer, with opts.OperatorToken set: the request must
+//     present the operator token (Bearer header or operator cookie) or the
+//     machine key, and then carries an admin principal.
+//
+//  4. Auth disabled (v nil or no login-enabled issuer, and no operator token;
+//     or SkipVerify): every request carries a synthetic admin principal so
+//     downstream checks stay uniform.
 func OperatorMiddleware(v *Validator, apiKeyCfg APIKeyConfig, opts MiddlewareOptions, provisioner UserProvisioner) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		if v == nil || !v.AdminEnabled() || opts.SkipVerify {
+		if opts.SkipVerify {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				p := authz.Principal{Role: authz.RoleAdmin, Method: authz.MethodNone}
 				next.ServeHTTP(w, r.WithContext(authz.WithPrincipal(r.Context(), p)))
 			})
+		}
+		if v == nil || !v.AdminEnabled() {
+			if opts.OperatorToken == "" {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					p := authz.Principal{Role: authz.RoleAdmin, Method: authz.MethodNone}
+					next.ServeHTTP(w, r.WithContext(authz.WithPrincipal(r.Context(), p)))
+				})
+			}
+			return operatorTokenGuard(apiKeyCfg, opts, next)
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Machine-key fast path: if the caller sends matching API key/secret
@@ -369,4 +387,95 @@ func errorCodeOrDefault(code string, status int) string {
 		return "insufficient_scope"
 	}
 	return "invalid_token"
+}
+
+// OperatorTokenCookie is the cookie that carries the operator token for the
+// browser UI. It is HttpOnly and SameSite=Strict, so page scripts cannot read
+// it and other sites cannot send it.
+const OperatorTokenCookie = "atryum_operator_token"
+
+// OperatorTokenMatches reports whether candidate equals token, in constant
+// time. An empty token never matches.
+func OperatorTokenMatches(candidate, token string) bool {
+	if token == "" || candidate == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(candidate), []byte(token)) == 1
+}
+
+// SetOperatorTokenCookie stores token in the operator cookie. Secure is set
+// when the request arrived over TLS (directly or per X-Forwarded-Proto).
+func SetOperatorTokenCookie(w http.ResponseWriter, r *http.Request, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     OperatorTokenCookie,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   requestIsHTTPS(r),
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+// ClearOperatorTokenCookie removes the operator cookie.
+func ClearOperatorTokenCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     OperatorTokenCookie,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   requestIsHTTPS(r),
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+func requestIsHTTPS(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")
+}
+
+// operatorTokenGuard admits a request that presents the machine key, the
+// operator token as a Bearer token, or the operator cookie.
+func operatorTokenGuard(apiKeyCfg APIKeyConfig, opts MiddlewareOptions, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		admit := func(method authz.Method) {
+			if opts.DebugLogIdentity {
+				log.Printf("[auth] valid_operator_credential method=%s path=%s remote=%s via=%s", r.Method, r.URL.Path, r.RemoteAddr, method)
+			}
+			p := authz.Principal{Role: authz.RoleAdmin, Method: method}
+			next.ServeHTTP(w, r.WithContext(authz.WithPrincipal(r.Context(), p)))
+		}
+
+		gotKey := strings.TrimSpace(r.Header.Get(apiKeyHeader))
+		gotSecret := strings.TrimSpace(r.Header.Get(apiSecretHeader))
+		if gotKey != "" || gotSecret != "" {
+			if apiKeyCfg.Enabled() &&
+				subtle.ConstantTimeCompare([]byte(gotKey), []byte(apiKeyCfg.Key)) == 1 &&
+				subtle.ConstantTimeCompare([]byte(gotSecret), []byte(apiKeyCfg.Secret)) == 1 {
+				admit(authz.MethodMachineKey)
+				return
+			}
+			logAuthFailure(r, "invalid_token", "invalid api key credentials", "")
+			writeAPIKeyError(w, http.StatusUnauthorized, "invalid api key credentials")
+			return
+		}
+
+		if header := strings.TrimSpace(r.Header.Get("Authorization")); header != "" {
+			if strings.HasPrefix(strings.ToLower(header), "bearer ") &&
+				OperatorTokenMatches(strings.TrimSpace(header[len("Bearer "):]), opts.OperatorToken) {
+				admit(authz.MethodOperatorToken)
+				return
+			}
+			logAuthFailure(r, "invalid_token", "invalid operator token", "")
+			writeAPIKeyError(w, http.StatusUnauthorized, "invalid operator token")
+			return
+		}
+
+		if cookie, err := r.Cookie(OperatorTokenCookie); err == nil && OperatorTokenMatches(cookie.Value, opts.OperatorToken) {
+			admit(authz.MethodOperatorToken)
+			return
+		}
+
+		logAuthFailure(r, "invalid_token", "missing operator token", "")
+		writeAPIKeyError(w, http.StatusUnauthorized, "operator token required")
+	})
 }

@@ -55,8 +55,9 @@ func resolveServerURL(flagValue string) string {
 }
 
 // sessionFor returns a client for server whose bearer token comes from the
-// stored login, refreshed when expired. In a no-auth deployment (the server
-// advertises no login providers) requests go out without a token.
+// stored login, refreshed when expired. In a deployment with no login
+// providers, requests carry ATRYUM_OPERATOR_TOKEN when the server requires
+// its operator token, and no token otherwise.
 func sessionFor(ctx context.Context, server string, io cliIO, loginIfNeeded bool) (*atryumClient, error) {
 	client := newAtryumClient(server, nil)
 	cfg, err := client.authConfig(ctx)
@@ -64,7 +65,14 @@ func sessionFor(ctx context.Context, server string, io cliIO, loginIfNeeded bool
 		return nil, fmt.Errorf("cannot reach %s: %w", server, err)
 	}
 	if len(cfg.Providers) == 0 {
-		return client, nil // no-auth deployment
+		if !cfg.OperatorTokenRequired {
+			return client, nil // open no-auth deployment
+		}
+		token := strings.TrimSpace(os.Getenv("ATRYUM_OPERATOR_TOKEN"))
+		if token == "" {
+			return nil, fmt.Errorf("%s requires its operator token: set ATRYUM_OPERATOR_TOKEN (the server prints where it keeps it at startup)", server)
+		}
+		return newAtryumClient(server, func(context.Context) (string, error) { return token, nil }), nil
 	}
 	store, _, err := loadCredentials()
 	if err != nil {

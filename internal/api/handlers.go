@@ -197,6 +197,7 @@ type Handler struct {
 	staticHTTP            http.Handler
 	debug                 bool
 	authDebugSkip         bool
+	operatorToken         string
 	authValidator         *auth.Validator
 	apiKeyAuth            auth.APIKeyConfig
 
@@ -1011,6 +1012,9 @@ type invocationStreamEnvelope struct {
 
 type AuthConfigResponse struct {
 	Providers []AuthProvider `json:"providers"`
+	// OperatorTokenRequired is true when no login provider is configured and
+	// the operator API is guarded by the operator token instead.
+	OperatorTokenRequired bool `json:"operator_token_required,omitempty"`
 }
 
 type AuthProvider struct {
@@ -1046,6 +1050,24 @@ func NewHandler(svc service, serverSvc serverService, policyRegistry *policy.Reg
 // /mcp/ anonymous.
 func (h *Handler) SetAuthValidator(v *auth.Validator) {
 	h.authValidator = v
+}
+
+// RequireOperatorToken guards the UI's API calls and the review/operator API
+// with token when no [[auth]] block is admin-enabled. Requests must present
+// the token (Bearer header or the operator cookie) or the machine key. An
+// empty token leaves those surfaces open. It has no effect once admin auth is
+// enabled, which then governs them.
+func (h *Handler) RequireOperatorToken(token string) {
+	h.operatorToken = token
+}
+
+// operatorTokenActive reports whether the operator token is what guards the
+// operator API (no admin auth, no debug skip, a token set).
+func (h *Handler) operatorTokenActive() bool {
+	if h.operatorToken == "" || h.authDebugSkip {
+		return false
+	}
+	return h.authValidator == nil || !h.authValidator.AdminEnabled()
 }
 
 func (h *Handler) SetAuthDebugSkipVerify(enabled bool) {
@@ -1159,7 +1181,7 @@ func (h *Handler) authConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	resp := AuthConfigResponse{Providers: []AuthProvider{}}
+	resp := AuthConfigResponse{Providers: []AuthProvider{}, OperatorTokenRequired: h.operatorTokenActive()}
 	if h.authValidator == nil {
 		writeJSON(w, http.StatusOK, resp)
 		return
@@ -1223,7 +1245,7 @@ func (h *Handler) Routes() http.Handler {
 		}
 		return mux
 	}
-	operatorAuthMW := auth.OperatorMiddleware(h.authValidator, h.apiKeyAuth, auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug}, h.userProvisioner)
+	operatorAuthMW := auth.OperatorMiddleware(h.authValidator, h.apiKeyAuth, auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug, OperatorToken: h.operatorToken}, h.userProvisioner)
 	// operator: authenticated + admin role (the historical operator API).
 	operator := func(fn http.HandlerFunc) http.Handler {
 		return operatorAuthMW(auth.RequireAdmin(fn))
@@ -1236,6 +1258,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("/mcp/", mcpHandler)
 	mux.Handle("/api/v1/invocations", h.agentRuntimeHandler(http.HandlerFunc(h.invocations)))
 	mux.HandleFunc("/api/v1/auth/config", h.authConfig)
+	mux.HandleFunc("/api/v1/auth/operator-token", h.operatorTokenSession)
 	mux.Handle("/api/v1/review/invocations", operator(h.reviewInvocations))
 	mux.Handle("/api/v1/review/invocations/stream", operator(h.reviewInvocationStream))
 	mux.Handle("/api/v1/review/invocations/", operator(h.reviewInvocationDetail))
@@ -1276,7 +1299,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.Handle("/invocations/", apiKeyMW(http.HandlerFunc(h.invocationsByAgentID)))
 	mux.Handle("/models/", apiKeyMW(http.HandlerFunc(h.invocationsByVMCUID)))
 	mux.HandleFunc("/ui", h.uiIndex)
-	mux.Handle("/ui/", http.StripPrefix("/ui/", h.spaFileServer()))
+	mux.Handle("/ui/", h.operatorTokenLink(http.StripPrefix("/ui/", h.spaFileServer())))
 	mux.HandleFunc("/", h.root)
 	for _, register := range h.extraRoutes {
 		register(mux)
@@ -1422,6 +1445,59 @@ func (h *Handler) root(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) mcpRootNotFound(w http.ResponseWriter, _ *http.Request) {
 	writeError(w, http.StatusNotFound, "MCP server name is required; use /mcp/{server}")
+}
+
+// operatorTokenSession signs the browser in with the operator token (POST
+// {"token": "..."}) or out (DELETE). Signing in stores the token in an
+// HttpOnly, SameSite=Strict cookie that the operator API accepts.
+func (h *Handler) operatorTokenSession(w http.ResponseWriter, r *http.Request) {
+	if !h.operatorTokenActive() {
+		writeError(w, http.StatusNotFound, "operator token sign-in is not enabled")
+		return
+	}
+	switch r.Method {
+	case http.MethodPost:
+		var body struct {
+			Token string `json:"token"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if !auth.OperatorTokenMatches(strings.TrimSpace(body.Token), h.operatorToken) {
+			writeError(w, http.StatusUnauthorized, "invalid operator token")
+			return
+		}
+		auth.SetOperatorTokenCookie(w, r, h.operatorToken)
+		w.WriteHeader(http.StatusNoContent)
+	case http.MethodDelete:
+		auth.ClearOperatorTokenCookie(w, r)
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+// operatorTokenLink handles the sign-in link Atryum prints on its first start
+// (/ui/?token=...): a matching token is stored in the operator cookie and the
+// browser is redirected to the same page without the token in its URL.
+func (h *Handler) operatorTokenLink(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := r.URL.Query().Get("token")
+		if token == "" || !h.operatorTokenActive() {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if auth.OperatorTokenMatches(token, h.operatorToken) {
+			auth.SetOperatorTokenCookie(w, r, h.operatorToken)
+		}
+		clean := *r.URL
+		q := clean.Query()
+		q.Del("token")
+		clean.RawQuery = q.Encode()
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		http.Redirect(w, r, clean.RequestURI(), http.StatusFound)
+	})
 }
 
 func (h *Handler) uiIndex(w http.ResponseWriter, r *http.Request) {
