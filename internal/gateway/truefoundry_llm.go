@@ -22,8 +22,9 @@ import (
 // The last needs the guardrail's operation set to Mutate. The gateway waits
 // about five seconds.
 //
-// Checked against a live gateway on 2026-11-17 (TestTrueFoundryLLMRealPayloadShape
-// and TestTrueFoundryLLMResponsesRoute hold the bodies it sent):
+// Checked against a live gateway on 2026-11-17 and 2026-11-18
+// (TestTrueFoundryLLMRealPayloadShape and TestTrueFoundryLLMResponsesRoute
+// hold the bodies it sent):
 //
 //   - responseBody carries the model's tool calls (choices[].message.tool_calls,
 //     or output[] items on the Responses route), and a Mutate guardrail's
@@ -33,11 +34,19 @@ import (
 //     streamed request that carries tools, unless the guardrail's config
 //     says {"on_stream": "allow"}.
 //   - The person is context.user (an opaque subjectId, their email as
-//     subjectSlug); context.claims carries the verified JWT. A session ID
-//     arrives only if the caller sends X-TFY-METADATA: {"session_id": "…"};
-//     the gateway sends no request ID.
-//   - config echoes the guardrail integration, including the headers the
-//     customer set (so the key AA issued): capture mode redacts them.
+//     subjectSlug); context.claims carries the verified JWT. A caller using a
+//     virtual account's token arrives as that account (subjectType
+//     "virtualaccount", its name as subjectSlug); no other agent identity is
+//     sent. A session ID arrives only if the caller sends
+//     X-TFY-METADATA: {"session_id": "…"}; the gateway sends no request ID.
+//   - config echoes the guardrail integration, including any Headers the
+//     customer set: a key put there reaches AA in every body (capture mode
+//     redacts it). Put the key in the integration's Auth Data (bearer-auth)
+//     instead: it then arrives only as the Authorization header.
+//   - The gateway waits for a guardrail as long as the tenant's one guardrail
+//     timeout (5 s by default, per TrueFoundry; 15 s on the tenant tested).
+//     On a timeout, Enforce refuses the request and Enforce But Ignore On
+//     Error sends the response on unchecked. Mutate guardrails run in turn.
 //   - A refusal reaches the caller as HTTP 400 "guardrail_checks_failed";
 //     the message returned here is under guardrail_checks in that body, not
 //     in its top-level message. An unreachable guardrail set to Enforce is

@@ -460,6 +460,12 @@ func TestTrueFoundryLLMHooks(t *testing.T) {
 	if a := svc.submits[0]; a.Asserted.UserID != "u-1" || a.Asserted.Vendor != "truefoundry" || a.ClientSessionID != "s-9" || a.ClientName != "truefoundry-llm-gateway" {
 		t.Fatalf("submit = %+v asserted=%+v", a, a.Asserted)
 	}
+	// A caller using a virtual account's token arrives as that account.
+	va := `"context":{"user":{"subjectId":"qr6q-va","subjectSlug":"support-agent","subjectType":"virtualaccount","tenantName":"acme-dev","roles":[]},"metadata":{"session_id":"s-va"}}`
+	tfy("output", `{"requestBody":`+request+`,"responseBody":`+strings.ReplaceAll(response, "call_2", "call_va")+`,"config":{},`+va+`}`)
+	if a := svc.submits[len(svc.submits)-1].Asserted; a.UserID != "qr6q-va" || a.UserType != "virtualaccount" || a.UserDisplay != "support-agent" {
+		t.Fatalf("virtual account: asserted=%+v", a)
+	}
 	// A guardrail that can only validate refuses the whole response.
 	tfy("output", `{"requestBody":`+request+`,"responseBody":`+strings.ReplaceAll(response, "call_2", "call_3")+`,"config":{"operation":"validate"},`+ctx+`}`)
 	if out["verdict"] != false || out["transformed"] != nil || !strings.Contains(out["message"].(string), "No destructive SQL.") {

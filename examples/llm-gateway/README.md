@@ -25,7 +25,7 @@ The gateway shows Atryum two things:
 | [`mockmodel/`](mockmodel/main.go) | A stand-in model that answers from a fixed script, so the walkthrough needs no API key. It streams when asked, with tool-call arguments in small fragments; `-pause 60ms` slows the stream down enough to watch. |
 | [`agent/`](agent/main.go) | The smallest useful agent: it asks the model, runs the tools it is told to, and repeats. It knows nothing about Atryum. `-stream` makes it ask for streamed answers, as coding agents do. |
 
-TrueFoundry's AI Gateway needs no code: its guardrail hooks call `/api/v1/gateway/truefoundry/llm/input` and `/api/v1/gateway/truefoundry/llm/output` directly (see `internal/gateway/truefoundry_llm.go`). Add them as two custom guardrails (operation Mutate, strategy Enforce) and attach both with a guardrail policy for the models your agents use. This was run against a live TrueFoundry gateway on 2026-11-17; the same file lists what that run settled.
+TrueFoundry's AI Gateway needs no code: its guardrail hooks call `/api/v1/gateway/truefoundry/llm/input` and `/api/v1/gateway/truefoundry/llm/output` directly (see `internal/gateway/truefoundry_llm.go`). Add them as two custom guardrails (operation Mutate, strategy Enforce, the key under Auth Data as Custom Bearer Auth rather than in Headers, which TrueFoundry copies into every request body) and attach both with a guardrail policy for the models your agents use. Don't use Enforce But Ignore On Error: on a timeout it sends the response on unchecked. This was run against a live TrueFoundry gateway on 2026-11-17 and 2026-11-18; the same file lists what those runs settled.
 
 ## Run the walkthrough
 
