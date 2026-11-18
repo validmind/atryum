@@ -104,6 +104,10 @@ type Result struct {
 	ReviewURL    string `json:"review_url,omitempty"`
 	InvocationID string `json:"invocation_id,omitempty"`
 	Code         string `json:"code"`
+	// dispatch is set on an allow whose invocation is still "approved": it
+	// is marked running only once the answer reaches the gateway in time
+	// (decideCall), never for an answer the gateway stopped waiting for.
+	dispatch bool
 }
 
 // outcome is how a call the model proposed turned out, read from the tool
@@ -231,8 +235,16 @@ func (h *Handler) decideCall(ctx context.Context, gw caller, c toolCall) (res Re
 	defer timer.Stop()
 	select {
 	case res = <-done:
+		if res.dispatch {
+			// The gateway hears this allow, so the agent receives the call.
+			if _, err := h.svc.RecordExecution(context.WithoutCancel(ctx), res.InvocationID, invocation.ExternalExecutionUpdate{ExecutionStatus: "running"}); err != nil {
+				slog.Warn("gateway: could not mark an allowed call running", "invocation_id", res.InvocationID, "error", err)
+			}
+		}
 		return res
 	case <-timer.C:
+		// A decision that lands after this stays as decided (an allow stays
+		// "approved", never "running"): the agent was told it may not run it.
 		return h.unavailable(ctx, gw, c, "no decision within the gateway's timeout")
 	}
 }
@@ -273,7 +285,7 @@ func (h *Handler) decide(ctx context.Context, gw caller, c toolCall) Result {
 		Tool:                   c.tool,
 		Input:                  args,
 		Description:            "Proposed by the model; read from its response at the AI gateway",
-		ClientSessionID:        c.sessionID,
+		ClientSessionID:        personalSession(c.sessionID, asserted.UserID),
 		ClientName:             clientName(gw),
 		Asserted:               asserted,
 		GatewayCheckKey:        key,
@@ -281,7 +293,12 @@ func (h *Handler) decide(ctx context.Context, gw caller, c toolCall) Result {
 		SessionContextMessages: c.sessionContextMessages,
 	}
 	if id := strings.TrimSpace(c.callID); id != "" {
-		req.IdempotencyKey = &id
+		// Call IDs are only unique within one conversation (some models
+		// number them call_0, call_1 on every turn), and one gateway agent
+		// serves every person: the idempotency key is the person's and the
+		// session's, so one person's call never replays another's decision.
+		idem := callKey(asserted.UserID, c.sessionID, id)
+		req.IdempotencyKey = &idem
 		req.RequestID = &id
 	}
 	resp, err := h.svc.Submit(ctx, req)
@@ -309,13 +326,9 @@ func (h *Handler) verdictFor(ctx context.Context, resp invocation.InvocationResp
 	}
 	switch resp.Status {
 	case invocation.StatusApproved, invocation.StatusExecuting:
-		// Mark it dispatched, so the record shows the gateway ran it.
-		if resp.Status == invocation.StatusApproved {
-			if _, err := h.svc.RecordExecution(ctx, resp.InvocationID, invocation.ExternalExecutionUpdate{ExecutionStatus: "running"}); err != nil {
-				slog.Warn("gateway: could not mark an allowed call running", "invocation_id", resp.InvocationID, "error", err)
-			}
-		}
-		return Result{Verdict: VerdictAllow, Code: CodeAllow, InvocationID: resp.InvocationID, Reason: reason}
+		// decideCall marks an approved call running once the gateway has the
+		// answer, so the record shows the gateway ran it.
+		return Result{Verdict: VerdictAllow, Code: CodeAllow, InvocationID: resp.InvocationID, Reason: reason, dispatch: resp.Status == invocation.StatusApproved}
 	case invocation.StatusDenied:
 		if reason == "" {
 			reason = "Denied by Agent Authority."
@@ -434,6 +447,29 @@ func CheckKey(tenantID, gatewayAgentID, userID, server, tool string, rawArgs jso
 		h.Write([]byte{0})
 	}
 	return "gck_" + hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// callKey is the idempotency key of a model's call ID: the call ID within
+// one person's session at one gateway agent.
+func callKey(userID, sessionID, callID string) string {
+	h := sha256.New()
+	for _, part := range []string{userID, sessionID, callID} {
+		h.Write([]byte(part))
+		h.Write([]byte{0})
+	}
+	return "gcall_" + hex.EncodeToString(h.Sum(nil))[:32]
+}
+
+// personalSession is the session a gateway's call is grouped under: the
+// session ID the gateway sent, per person. Callers often choose session IDs
+// themselves (TrueFoundry's X-TFY-METADATA), so two people sending the same
+// ID must not share a session, its history or the judge's view of it.
+func personalSession(sessionID, userID string) string {
+	sessionID, userID = strings.TrimSpace(sessionID), strings.TrimSpace(userID)
+	if sessionID == "" || userID == "" {
+		return sessionID
+	}
+	return sessionID + ":" + userID
 }
 
 // canonicalJSON encodes v with sorted object keys, no insignificant

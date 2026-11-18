@@ -55,7 +55,7 @@ func TestInvocationAssertedIdentityRoundTrip(t *testing.T) {
 	repo := NewInvocationRepo(db)
 	now := time.Now().UTC().Truncate(time.Second)
 
-	asserted := &invocation.AssertedIdentity{UserID: "emma@acme.com", UserType: "user", UserDisplay: "Emma Ruiz", AgentID: "support-bot", SessionID: "sess-1", By: "gw-truefoundry"}
+	asserted := &invocation.AssertedIdentity{UserID: "emma@acme.com", UserType: "user", UserDisplay: "Emma Ruiz", AgentID: "support-bot", SessionID: "sess-1", By: "gw-truefoundry", Vendor: "truefoundry"}
 	gw := invocation.Invocation{InvocationID: "inv_gw", Tool: "close_ticket", Status: invocation.StatusReceived, Input: []byte(`{}`), SubmittedAt: now, Asserted: asserted, GatewayCheckKey: "gck-1"}
 	if err := repo.Create(ctx, gw); err != nil {
 		t.Fatalf("Create gateway invocation: %v", err)

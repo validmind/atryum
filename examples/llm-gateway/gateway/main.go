@@ -64,15 +64,27 @@ type gateway struct {
 }
 
 // formats maps the model APIs this gateway checks to Atryum's name for each.
-// Every other path (model lists, token counting) is passed straight through.
 var formats = map[string]string{
 	"/v1/messages":         "anthropic",
 	"/v1/chat/completions": "openai_chat",
 	"/v1/responses":        "openai_responses",
 }
 
-// who is sent with every check. A real gateway knows these from its own
-// sign-in; this one reads headers so the walkthrough can set them.
+// passThrough lists the only other requests sent on to the model provider:
+// ones that cannot carry a tool call. Anything else is refused, because a
+// path this gateway does not check could return one unchecked (fetching a
+// background response with GET /v1/responses/{id}, or batch results).
+var passThrough = map[string]bool{
+	"GET /v1/models":                 true,
+	"POST /v1/messages/count_tokens": true,
+}
+
+// who is sent with every check.
+//
+// WALKTHROUGH ONLY: this gateway reads who the call is for from headers the
+// agent sets, so the walkthrough can name Emma. The agent can write any name
+// there. A real gateway takes the person, agent and session from its own
+// sign-in (the caller's verified key or token), never from the request.
 type who struct {
 	User      *principal `json:"user,omitempty"`
 	Agent     *principal `json:"agent,omitempty"`
@@ -98,6 +110,10 @@ func identity(r *http.Request) who {
 func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	format := formats[r.URL.Path]
 	if format == "" || r.Method != http.MethodPost {
+		if !passThrough[r.Method+" "+r.URL.Path] && !(r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/models/")) {
+			http.Error(w, "this gateway does not pass "+r.Method+" "+r.URL.Path+" on: Agent Authority could not check the tool calls in its answer", http.StatusNotFound)
+			return
+		}
 		g.passThrough.ServeHTTP(w, r)
 		return
 	}

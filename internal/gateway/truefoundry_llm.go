@@ -54,9 +54,18 @@ import (
 //   - A new guardrail group can take several minutes before the gateway
 //     finds it; until then every call it covers fails with 403 or 404.
 //
-// Guardrail config read here: {"operation": "validate"} when the guardrail
-// cannot rewrite (a response with a withheld call is then refused whole), and
-// {"on_stream": "allow"}.
+// Guardrail config read here: {"operation": "mutate"} on a guardrail whose
+// operation is Mutate, so a response with a withheld call is rewritten;
+// without it (TrueFoundry does not send the operation) that response is
+// refused whole, which is safe under Validate too. And {"on_stream": "allow"}.
+
+// trueFoundryMutates reports whether the guardrail's config says it may
+// rewrite. What a Validate guardrail does with a rewritten body is not
+// known, and it may pass the original, withheld call included: rewrite only
+// when told the guardrail is Mutate.
+func trueFoundryMutates(cfg map[string]any) bool {
+	return strings.EqualFold(stringAt(cfg, "operation"), "mutate")
+}
 
 // trueFoundryBudgetMS is how long a decision may take: the gateway waits
 // about five seconds.
@@ -121,7 +130,7 @@ func (h *Handler) serveTrueFoundryLLMInput(w http.ResponseWriter, r *http.Reques
 	switch {
 	case res.Request == nil:
 		writeJSON(w, http.StatusOK, tfyLLMResponse{Verdict: false, Message: res.Reason})
-	case res.Changed && stringAt(cfg, "operation") != "validate":
+	case res.Changed && trueFoundryMutates(cfg):
 		writeJSON(w, http.StatusOK, tfyLLMResponse{Verdict: true, Transformed: true, Result: res.Request})
 	case res.Changed:
 		writeJSON(w, http.StatusOK, tfyLLMResponse{Verdict: false, Message: withheldSummary("This request asks the model provider to run tools Agent Authority does not allow", res.Tools)})
@@ -153,7 +162,7 @@ func (h *Handler) serveTrueFoundryLLMOutput(w http.ResponseWriter, r *http.Reque
 	switch {
 	case res.Response == nil:
 		writeJSON(w, http.StatusOK, tfyLLMResponse{Verdict: false, Message: res.Reason})
-	case res.Changed && stringAt(trueFoundryConfig(req), "operation") != "validate":
+	case res.Changed && trueFoundryMutates(trueFoundryConfig(req)):
 		writeJSON(w, http.StatusOK, tfyLLMResponse{Verdict: true, Transformed: true, Result: res.Response})
 	case res.Changed:
 		writeJSON(w, http.StatusOK, tfyLLMResponse{Verdict: false, Message: withheldSummary("Agent Authority did not allow every tool call in this response", res.Calls)})

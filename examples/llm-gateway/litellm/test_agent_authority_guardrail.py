@@ -273,3 +273,48 @@ class StreamedRequestTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UnknownCallTypeTest(unittest.IsolatedAsyncioTestCase):
+    async def test_a_call_type_it_cannot_read_is_refused_when_it_offers_tools(self):
+        g = guardrail()
+        asked = fake_aa(g, {"verdict": "allow", "request": {}})
+        data = {"model": "gemini", "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+                "tools": [{"functionDeclarations": [{"name": "export_customer_data"}]}]}
+        with self.assertRaises(HTTPException) as refused:
+            await g.async_pre_call_hook(None, None, data, "agenerate_content")
+        self.assertEqual(refused.exception.status_code, 400)
+        self.assertEqual(asked, [])
+
+    async def test_a_call_type_without_tools_passes(self):
+        g = guardrail()
+        fake_aa(g, {})
+        data = {"model": "text-embedding", "input": "hi"}
+        self.assertIs(await g.async_pre_call_hook(None, None, data, "aembedding"), data)
+
+    async def test_a_response_it_cannot_read_is_withheld_when_tools_were_offered(self):
+        g = guardrail()
+        fake_aa(g, {})
+
+        class GenerateContentResponse:  # a type the guardrail does not know
+            pass
+
+        with self.assertRaises(HTTPException) as refused:
+            await g.async_post_call_success_hook({"tools": TOOLS}, None, GenerateContentResponse())
+        self.assertEqual(refused.exception.status_code, 403)
+
+
+class WhoTest(unittest.IsolatedAsyncioTestCase):
+    async def test_the_person_comes_from_the_key_never_from_end_user_id(self):
+        from agent_authority_guardrail import _who
+
+        class Key:
+            user_id = None
+            end_user_id = "alice"  # LiteLLM copies this from the request body
+            key_alias = "support-bot"
+            team_alias = None
+
+        self.assertNotIn("user", _who(Key(), {"user": "alice"}))
+        Key.user_id = "bob"
+        self.assertEqual(_who(Key(), {})["user"]["id"], "bob")
+

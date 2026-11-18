@@ -32,9 +32,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Completions and Anthropic Messages), passing the model's words on as they
   arrive and holding everything from the first tool call until Atryum has
   decided it.
+- One gateway agent serves many people, and models reuse call IDs: a call ID
+  is matched only within the person and session the gateway named, both when
+  a call is submitted and when its tool result arrives, and a gateway's
+  session is kept per person. A body that is not a whole response (or
+  request) in the format named, or in any format Atryum reads when none is
+  named, is refused rather than read as having no calls. A call is recorded
+  as running only when its allow reached the gateway in time. The
+  TrueFoundry routes rewrite a response only when the guardrail's config says
+  `{"operation": "mutate"}`; otherwise a response with a withheld call is
+  refused whole.
 - Migration 035 adds key capabilities, the asserted identity of a call, and
   the key that finds a repeat of a held call. Migration 036 indexes
-  `invocations.request_id`.
+  `invocations.request_id`. Migration 037 stores which kind of gateway
+  asserted a call's identity.
 
 ### Changed
 

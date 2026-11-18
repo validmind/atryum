@@ -198,7 +198,7 @@ func TestOutputDecidesEachCallAndWithholdsTheDeniedOne(t *testing.T) {
 		byTool[s.Tool] = s
 	}
 	got := byTool["get_ticket"]
-	if got.RequestID == nil || *got.RequestID != "toolu_A" || got.Source != "zendesk" || got.ClientName != "generic-llm-gateway" || got.Asserted.UserID != "emma" || got.ClientSessionID != "s-1" || !strings.Contains(got.SessionContext, "Refund ticket 7 in full") {
+	if got.RequestID == nil || *got.RequestID != "toolu_A" || got.Source != "zendesk" || got.ClientName != "generic-llm-gateway" || got.Asserted.UserID != "emma" || got.ClientSessionID != "s-1:emma" || !strings.Contains(got.SessionContext, "Refund ticket 7 in full") {
 		t.Fatalf("submit = %+v", got)
 	}
 	if svc.status("inv_1") == invocation.StatusApproved && svc.status("inv_2") == invocation.StatusApproved {
@@ -452,12 +452,12 @@ func TestTrueFoundryLLMHooks(t *testing.T) {
 		out = nil // a fresh map: Unmarshal keeps the keys of an old one
 		postLLM(t, h, "/api/v1/gateway/truefoundry/llm/"+hook, raw(body), &out)
 	}
-	tfy("output", `{"requestBody":`+request+`,"responseBody":`+response+`,"config":{},`+ctx+`}`)
+	tfy("output", `{"requestBody":`+request+`,"responseBody":`+response+`,"config":{"operation":"mutate"},`+ctx+`}`)
 	result, _ := json.Marshal(out["result"])
 	if out["verdict"] != true || out["transformed"] != true || strings.Contains(string(result), "call_2") || !strings.Contains(string(result), "No destructive SQL.") {
 		t.Fatalf("mutate: got %v", out)
 	}
-	if a := svc.submits[0]; a.Asserted.UserID != "u-1" || a.Asserted.Vendor != "truefoundry" || a.ClientSessionID != "s-9" || a.ClientName != "truefoundry-llm-gateway" {
+	if a := svc.submits[0]; a.Asserted.UserID != "u-1" || a.Asserted.Vendor != "truefoundry" || a.ClientSessionID != "s-9:u-1" || a.ClientName != "truefoundry-llm-gateway" {
 		t.Fatalf("submit = %+v asserted=%+v", a, a.Asserted)
 	}
 	// A caller using a virtual account's token arrives as that account.
@@ -465,6 +465,13 @@ func TestTrueFoundryLLMHooks(t *testing.T) {
 	tfy("output", `{"requestBody":`+request+`,"responseBody":`+strings.ReplaceAll(response, "call_2", "call_va")+`,"config":{},`+va+`}`)
 	if a := svc.submits[len(svc.submits)-1].Asserted; a.UserID != "qr6q-va" || a.UserType != "virtualaccount" || a.UserDisplay != "support-agent" {
 		t.Fatalf("virtual account: asserted=%+v", a)
+	}
+	// Without "operation": "mutate" in its config (TrueFoundry does not send
+	// the guardrail's operation), a response with a withheld call is refused
+	// whole: a Validate guardrail might pass the original.
+	tfy("output", `{"requestBody":`+request+`,"responseBody":`+strings.ReplaceAll(response, "call_2", "call_4")+`,"config":{},`+ctx+`}`)
+	if out["verdict"] != false || out["transformed"] != nil || !strings.Contains(out["message"].(string), "No destructive SQL.") {
+		t.Fatalf("no operation: got %v", out)
 	}
 	// A guardrail that can only validate refuses the whole response.
 	tfy("output", `{"requestBody":`+request+`,"responseBody":`+strings.ReplaceAll(response, "call_2", "call_3")+`,"config":{"operation":"validate"},`+ctx+`}`)
@@ -504,7 +511,7 @@ func TestTrueFoundryLLMHooks(t *testing.T) {
 func TestTrueFoundryLLMRealPayloadShape(t *testing.T) {
 	svc := &llmService{byTool: map[string]invocation.Status{"export_customer_data": invocation.StatusDenied}, reasons: map[string]string{"export_customer_data": "Customer records never leave the company."}}
 	h, _ := newLLMHandler(svc)
-	rest := `,"config":{"url":"https://aa.example/api/v1/gateway/truefoundry/llm/output","headers":{"Authorization":"Bearer atr_x"}},` +
+	rest := `,"config":{"url":"https://aa.example/api/v1/gateway/truefoundry/llm/output","headers":{"Authorization":"Bearer atr_x"},"operation":"mutate"},` +
 		`"context":{"user":{"subjectId":"cjaysov9examplesubjectid","subjectSlug":"pat@example.com","subjectType":"user","tenantName":"acme-dev",` +
 		`"teams":[{"name":"everyone","id":"hrdzexampleteamid"}],"roles":["tenant-admin","member"]},` +
 		`"metadata":{"session_id":"support-chat-1","tfy_gateway_region":"EU","tfy_gateway_zone":"LHR"}}}`
@@ -549,7 +556,7 @@ func TestTrueFoundryLLMRealPayloadShape(t *testing.T) {
 	}
 	for _, s := range svc.submits {
 		a := s.Asserted
-		if a.UserID != "cjaysov9examplesubjectid" || a.UserDisplay != "pat@example.com" || a.UserType != "user" || s.ClientSessionID != "support-chat-1" || s.ClientName != "truefoundry-llm-gateway" {
+		if a.UserID != "cjaysov9examplesubjectid" || a.UserDisplay != "pat@example.com" || a.UserType != "user" || s.ClientSessionID != "support-chat-1:cjaysov9examplesubjectid" || a.SessionID != "support-chat-1" || s.ClientName != "truefoundry-llm-gateway" {
 			t.Fatalf("submit for %s: asserted=%+v session=%q client=%q", s.Tool, a, s.ClientSessionID, s.ClientName)
 		}
 	}
@@ -578,7 +585,7 @@ func TestTrueFoundryLLMRealPayloadShape(t *testing.T) {
 func TestTrueFoundryLLMResponsesRoute(t *testing.T) {
 	svc := &llmService{byTool: map[string]invocation.Status{"export_customer_data": invocation.StatusDenied}, reasons: map[string]string{"export_customer_data": "Customer records never leave the company."}}
 	h, _ := newLLMHandler(svc)
-	rest := `,"config":{},"context":{"user":{"subjectId":"u-1","subjectType":"user","subjectSlug":"pat@example.com"},"metadata":{}}}`
+	rest := `,"config":{"operation":"mutate"},"context":{"user":{"subjectId":"u-1","subjectType":"user","subjectSlug":"pat@example.com"},"metadata":{}}}`
 	request := `{"model":"openai/gpt","stream":false,"input":"Look up ticket 7 and export all customers.","tools":[` +
 		`{"type":"function","name":"get_ticket","parameters":{"type":"object"}},{"type":"function","name":"export_customer_data","parameters":{"type":"object"}}]}`
 	response := `{"id":"resp_0a0f","object":"response","status":"completed","model":"gpt","output":[` +
@@ -651,4 +658,37 @@ func mustObject(t *testing.T, s string) map[string]any {
 		t.Fatalf("%v: %s", err, s)
 	}
 	return m
+}
+
+// Read in the wrong format a body shows no calls, and every call in it would
+// pass: a body that is not the format it was named as, or not a whole
+// response, is refused.
+func TestABodyInTheWrongFormatIsRefused(t *testing.T) {
+	h, _ := newLLMHandler(&llmService{})
+	responses := `{"object":"response","output":[{"type":"function_call","call_id":"call_1","name":"refund_payment","arguments":"{\"amount\":900}"}]}`
+	chat := `{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"refund_payment","arguments":"{}"}}]}}]}`
+	for name, in := range map[string]LLMOutput{
+		"openai named, Responses body":  {Format: "openai", Response: raw(responses)},
+		"anthropic named, Chat body":    {Format: "anthropic", Response: raw(chat)},
+		"anthropic named, stream event": {Format: "anthropic", Response: raw(`{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"refund_payment","input":{}}}`)},
+		"Bedrock Converse, no format":   {Response: raw(`{"output":{"message":{"content":[{"toolUse":{"toolUseId":"t1","name":"refund_payment","input":{}}}]}},"stopReason":"tool_use"}`)},
+		"Chat stream chunk, no format":  {Response: raw(`{"object":"chat.completion.chunk","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"refund_payment","arguments":"{}"}}]}}]}`)},
+		"Chat stream chunk, named":      {Format: "openai_chat", Response: raw(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"refund_payment","arguments":"{}"}}]}}]}`)},
+	} {
+		var out LLMOutputResult
+		postLLM(t, h, "/api/v1/gateway/llm/output", in, &out)
+		if out.Verdict != VerdictDeny || out.Code != CodeUnreadableResponse || out.Response != nil {
+			t.Errorf("%s: got %+v, want deny unreadable", name, out)
+		}
+	}
+	for name, in := range map[string]LLMInput{
+		"anthropic named, Responses request":       {Format: "anthropic", Request: raw(`{"model":"m","input":"hi","tools":[{"type":"web_search"}]}`)},
+		"openai_responses named, Messages request": {Format: "openai_responses", Request: raw(`{"model":"m","system":"x","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"web_search_20250305","name":"web_search"}]}`)},
+	} {
+		var out LLMInputResult
+		postLLM(t, h, "/api/v1/gateway/llm/input", in, &out)
+		if out.Verdict != VerdictDeny || out.Code != CodeUnreadableRequest || out.Request != nil {
+			t.Errorf("%s: got %+v, want deny unreadable", name, out)
+		}
+	}
 }

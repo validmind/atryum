@@ -90,6 +90,12 @@ class AgentAuthorityGuardrail(CustomGuardrail):
     async def async_pre_call_hook(self, user_api_key_dict, cache, data: dict, call_type):
         fmt = FORMATS.get(call_type)
         if fmt is None:
+            if _declares_tools(data):
+                # A call type this guardrail cannot read (Gemini's
+                # generateContent, realtime, websockets, batches): its tool
+                # calls would reach the agent unchecked.
+                _refuse(400, f"Agent Authority cannot check the tool calls of a {call_type} request at this "
+                             "gateway. Use /v1/chat/completions, /v1/messages or /v1/responses.")
             return data  # embeddings, images, ...: no tools to govern
         if data.get("stream") and _declares_tools(data) and self.on_stream != "allow":
             if self.on_stream == "refuse" or fmt not in COLLECTED_STREAMS:
@@ -113,6 +119,10 @@ class AgentAuthorityGuardrail(CustomGuardrail):
     async def async_post_call_success_hook(self, data: dict, user_api_key_dict, response):
         fmt = _format_of(response)
         if fmt is None:
+            if _declares_tools(data):
+                # A response this guardrail cannot read may carry tool calls.
+                _refuse(403, f"Agent Authority cannot check the tool calls in a {type(response).__name__} "
+                             "response at this gateway; it was withheld.")
             return response
         body = response if isinstance(response, dict) else response.model_dump()
         request = {k: data[k] for k in REQUEST_FIELDS if k in data}
@@ -479,7 +489,9 @@ def _block_events(index: int, block: dict) -> list:
 
 
 def _declares_tools(data: dict) -> bool:
-    return bool(data.get("tools") or data.get("functions") or data.get("mcp_servers"))
+    config = data.get("config") if isinstance(data.get("config"), dict) else {}
+    return bool(data.get("tools") or data.get("functions") or data.get("mcp_servers")
+                or data.get("tool_config") or data.get("toolConfig") or config.get("tools"))
 
 
 def _format_of(response: Any) -> Optional[str]:
@@ -500,7 +512,10 @@ def _who(user_api_key_dict: Any, data: dict) -> dict:
     Never read from the request body: an agent could write any name there.
     """
     out: dict = {}
-    user = getattr(user_api_key_dict, "user_id", None) or getattr(user_api_key_dict, "end_user_id", None)
+    # user_id only: LiteLLM fills end_user_id from the request ("user",
+    # metadata.user_id, customer headers) without checking it by default, so
+    # a caller could name anyone there.
+    user = getattr(user_api_key_dict, "user_id", None)
     if user:
         out["user"] = {"id": str(user), "type": "user"}
     alias = getattr(user_api_key_dict, "key_alias", None) or getattr(user_api_key_dict, "team_alias", None)

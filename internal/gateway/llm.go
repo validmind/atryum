@@ -182,8 +182,12 @@ func (h *Handler) CheckOutput(ctx context.Context, gw caller, in LLMOutput) LLMO
 	}
 	if format == "" {
 		if format = detectResponseFormat(resp); format == "" {
-			return unreadable("it is not an Anthropic Messages, OpenAI Chat Completions or OpenAI Responses response; name the format")
+			return unreadable("it is not a whole Anthropic Messages, OpenAI Chat Completions or OpenAI Responses response (collect a stream before sending it)")
 		}
+	} else if !isResponseFormat(format, resp) {
+		// Read in the wrong format a response shows no calls, and every call
+		// in it would pass.
+		return unreadable(fmt.Sprintf("it is not a whole %s response, the format it was sent as (collect a stream before sending it)", format))
 	}
 	for _, name := range providerCalls(format, resp) {
 		h.event(ctx, EventProviderToolRan, map[string]any{"agent_id": gw.AgentID, "vendor": gw.Vendor, "tool": name, "server": ProviderServer, "reason": "The model provider ran this tool itself; it never passed the agent."})
@@ -284,13 +288,17 @@ func (h *Handler) CheckInput(ctx context.Context, gw caller, in LLMInput) LLMInp
 	}
 	if format == "" {
 		format = detectRequestFormat(req)
+	} else if signal := requestFormatSignal(req); signal != "" && signal != format {
+		// Read in the wrong format a request shows neither its tool results
+		// nor the provider tools it asks for.
+		return unreadable(fmt.Sprintf("it is a %s request, not %s, the format it was sent as", signal, format))
 	}
 	out := LLMInputResult{Verdict: VerdictAllow, Code: CodeAllow, Request: in.Request, Outcomes: []OutcomeReport{}, Tools: []CallVerdict{}}
 
 	// The tool has already run: nothing here may hold the request up, and a
 	// failure to record never refuses it.
 	for _, o := range toolOutcomes(format, req) {
-		out.Outcomes = append(out.Outcomes, h.recordModelOutcome(ctx, gw, o))
+		out.Outcomes = append(out.Outcomes, h.recordModelOutcome(ctx, gw, o, in.User, in.SessionID))
 	}
 
 	tools := providerTools(format, req)
@@ -329,31 +337,37 @@ func (h *Handler) CheckInput(ctx context.Context, gw caller, in LLMInput) LLMInp
 
 // recordModelOutcome attaches one tool result to the call it answers, found
 // by the model's call ID (stored as the invocation's request ID at llm/output).
-func (h *Handler) recordModelOutcome(ctx context.Context, gw caller, o toolOutcome) OutcomeReport {
+func (h *Handler) recordModelOutcome(ctx context.Context, gw caller, o toolOutcome, user *Principal, sessionID string) OutcomeReport {
 	report := OutcomeReport{CallID: o.CallID, Status: CodeUnknownOutcome}
 	if o.CallID == "" {
 		return report
 	}
-	// The running call with this ID first: a model that reuses call IDs from
-	// turn to turn has older, finished calls under the same one.
-	filter := invocation.InvocationListFilter{RequestID: o.CallID, AgentIDs: []string{gw.AgentID}, Status: string(invocation.StatusExecuting), Limit: 1}
-	list, err := h.svc.List(ctx, filter)
-	if err == nil && len(list.Items) == 0 {
+	userID := ""
+	if user != nil {
+		userID = strings.TrimSpace(user.ID)
+	}
+	// Call IDs are only unique within one conversation, and one gateway agent
+	// serves every person: only a call of this person's, in this session,
+	// can be the one this result answers. The running call with this ID
+	// first: a model that reuses call IDs from turn to turn has older,
+	// finished calls under the same one.
+	filter := invocation.InvocationListFilter{RequestID: o.CallID, AgentIDs: []string{gw.AgentID}, Status: string(invocation.StatusExecuting), Limit: outcomeCandidates}
+	inv, found, err := h.ownCall(ctx, filter, userID, sessionID)
+	if err == nil && !found {
 		filter.Status = ""
-		list, err = h.svc.List(ctx, filter)
+		inv, found, err = h.ownCall(ctx, filter, userID, sessionID)
 	}
 	if err != nil {
 		h.event(ctx, EventOutcomeUnrecorded, map[string]any{"agent_id": gw.AgentID, "vendor": gw.Vendor, "call_id": o.CallID, "reason": err.Error()})
 		return report
 	}
-	if len(list.Items) == 0 {
+	if !found {
 		report.Status = "unchecked"
 		if h.firstReport("unchecked:" + gw.AgentID + ":" + o.CallID) {
 			h.event(ctx, EventUncheckedToolResult, map[string]any{"agent_id": gw.AgentID, "vendor": gw.Vendor, "call_id": o.CallID, "reason": "A tool result reached the model for a call Agent Authority never saw: the response that proposed it did not pass llm/output."})
 		}
 		return report
 	}
-	inv := list.Items[0]
 	report.InvocationID = inv.InvocationID
 	switch inv.Status {
 	case invocation.StatusDenied, invocation.StatusPendingApproval:
@@ -377,6 +391,29 @@ func (h *Handler) recordModelOutcome(ctx context.Context, gw caller, o toolOutco
 	}
 	h.record(ctx, gw, done)
 	return report
+}
+
+// outcomeCandidates bounds the calls with one call ID read to find the
+// person's own: newest first, so an older conversation's never wins.
+const outcomeCandidates = 50
+
+// ownCall is the newest call in filter made for userID in sessionID, the
+// identity and session the gateway asserted when the call was decided.
+func (h *Handler) ownCall(ctx context.Context, filter invocation.InvocationListFilter, userID, sessionID string) (invocation.InvocationResponse, bool, error) {
+	list, err := h.svc.List(ctx, filter)
+	if err != nil {
+		return invocation.InvocationResponse{}, false, err
+	}
+	for _, inv := range list.Items {
+		a := inv.Asserted
+		if a == nil {
+			continue
+		}
+		if a.UserID == userID && strings.TrimSpace(a.SessionID) == strings.TrimSpace(sessionID) {
+			return inv, true, nil
+		}
+	}
+	return invocation.InvocationResponse{}, false, nil
 }
 
 // decideProviderTool answers "may this request ask the provider to run this

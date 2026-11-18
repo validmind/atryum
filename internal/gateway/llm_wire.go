@@ -69,17 +69,45 @@ func normalizeFormat(s string) (string, bool) {
 	return "", false
 }
 
-// detectResponseFormat recognises a model response by its shape.
+// detectResponseFormat recognises a whole model response by its shape, or
+// returns "" for anything else: a streamed chunk or event, another
+// provider's format, an error. Reading a body in the wrong format finds no
+// calls and would pass every one, so "" is refused wherever tools are in
+// play.
 func detectResponseFormat(resp map[string]any) string {
-	switch {
-	case resp["choices"] != nil:
-		return FormatOpenAIChat
-	case resp["output"] != nil || stringAt(resp, "object") == "response":
-		return FormatOpenAIResponses
-	case stringAt(resp, "type") == "message" || (resp["content"] != nil && stringAt(resp, "role") == "assistant"):
-		return FormatAnthropic
+	for _, f := range []string{FormatOpenAIChat, FormatOpenAIResponses, FormatAnthropic} {
+		if isResponseFormat(f, resp) {
+			return f
+		}
 	}
 	return ""
+}
+
+// isResponseFormat reports whether resp is a whole response in format f.
+func isResponseFormat(f string, resp map[string]any) bool {
+	switch f {
+	case FormatOpenAIChat:
+		choices, ok := resp["choices"].([]any)
+		if !ok || stringAt(resp, "object") == "chat.completion.chunk" {
+			return false
+		}
+		for _, ch := range choices {
+			if asMap(ch)["delta"] != nil { // a streamed chunk
+				return false
+			}
+		}
+		return true
+	case FormatOpenAIResponses:
+		_, isList := resp["output"].([]any)
+		if resp["output"] != nil && !isList { // Bedrock Converse's output is an object
+			return false
+		}
+		return isList || stringAt(resp, "object") == "response"
+	case FormatAnthropic:
+		_, isList := resp["content"].([]any)
+		return isList && (stringAt(resp, "type") == "message" || (resp["type"] == nil && stringAt(resp, "role") == "assistant"))
+	}
+	return false
 }
 
 // detectRequestFormat recognises a request by its shape. Chat Completions and
@@ -87,6 +115,15 @@ func detectResponseFormat(resp map[string]any) string {
 // tool results; a request with none of those has nothing for Agent Authority
 // to read in either format, so Chat Completions is the answer for it.
 func detectRequestFormat(req map[string]any) string {
+	if f := requestFormatSignal(req); f != "" {
+		return f
+	}
+	return FormatOpenAIChat
+}
+
+// requestFormatSignal is the format a request's shape shows for certain, or
+// "" when nothing in it tells Chat Completions and Messages apart.
+func requestFormatSignal(req map[string]any) string {
 	if req["input"] != nil && req["messages"] == nil {
 		return FormatOpenAIResponses
 	}
@@ -121,7 +158,7 @@ func detectRequestFormat(req map[string]any) string {
 			}
 		}
 	}
-	return FormatOpenAIChat
+	return ""
 }
 
 // ---- The model's tool calls, in a response ---------------------------------
