@@ -1,7 +1,8 @@
 """Tests for the guardrail's handling of streamed answers.
 
-They need LiteLLM installed, so run them where the proxy runs, for example
-in the LiteLLM image with this folder mounted at /cfg:
+They need LiteLLM installed (CI's "LiteLLM guardrail" job pip-installs the
+pinned version), or run them where the proxy runs, for example in the
+LiteLLM image with this folder mounted at /cfg:
 
     docker exec -e PYTHONPATH=/cfg -e PYTHONDONTWRITEBYTECODE=1 <container> \
         python -m unittest discover -s /cfg -p 'test_*.py' -v
@@ -318,3 +319,41 @@ class WhoTest(unittest.IsolatedAsyncioTestCase):
         Key.user_id = "bob"
         self.assertEqual(_who(Key(), {})["user"]["id"], "bob")
 
+
+
+class ReviewFixesTest(unittest.IsolatedAsyncioTestCase):
+    async def test_two_whole_calls_at_one_index_are_two_calls(self):
+        # LiteLLM numbers tool calls that come with no index from 0 in every
+        # chunk: two calls arriving whole in two chunks share index 0.
+        g = guardrail()
+        asked = fake_aa(g, lambda payload: {"response": payload["response"], "changed": False})
+        chunks = [chat_chunk({"tool_calls": [{"index": 0, "id": "call_a", "type": "function",
+                                               "function": {"name": "get_ticket", "arguments": '{"ticket_id":7}'}}]}),
+                  chat_chunk({"tool_calls": [{"index": 0, "id": "call_b", "type": "function",
+                                               "function": {"name": "export_customer_data", "arguments": '{"scope":"all"}'}}]}),
+                  chat_chunk({}, finish="tool_calls")]
+        await run(g, chunks, {"tools": TOOLS, "stream": True})
+        sent = asked[0][1]["response"]["choices"][0]["message"]["tool_calls"]
+        self.assertEqual([(c["id"], c["function"]["name"], c["function"]["arguments"]) for c in sent],
+                         [("call_a", "get_ticket", '{"ticket_id":7}'), ("call_b", "export_customer_data", '{"scope":"all"}')])
+
+    async def test_a_stream_with_a_tool_call_is_checked_when_the_request_lists_none(self):
+        # Tools can come from a stored prompt or LiteLLM's prompt management.
+        g = guardrail()
+        asked = fake_aa(g, withhold_export)
+        out, _ = await run(g, chat_stream(), {"stream": True})
+        self.assertEqual(len(asked), 1)
+        self.assertEqual([name for _, name, _ in chat_calls(out) if name], ["get_ticket"])
+
+    async def test_a_key_with_no_user_is_its_own_person(self):
+        from agent_authority_guardrail import _who
+
+        class Key:
+            user_id = None
+            end_user_id = "mallory"
+            token = "8f2c0d"
+            key_alias = "support-bot"
+            team_alias = None
+
+        self.assertEqual(_who(Key(), {"user": "mallory"})["user"],
+                         {"id": "litellm-key:8f2c0d", "type": "api_key", "display": "support-bot"})

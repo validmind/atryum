@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 )
 
@@ -204,17 +205,29 @@ func chatCall(tc map[string]any) modelCall {
 	return newModelCall(stringAt(tc, "id"), stringAt(fn, "name"), fn["arguments"])
 }
 
-// responsesCall reads one Responses output item. An item the agent must run
-// carries a call_id (function_call, custom_tool_call, computer_call,
-// local_shell_call, shell_call, apply_patch_call); one the provider already
-// ran (web_search_call, mcp_call, …) has only its own id.
+// agentCallKinds are the Responses output items the agent runs. Every other
+// *_call item (web_search_call, mcp_call, code_interpreter_call, …) the
+// provider already ran.
+var agentCallKinds = map[string]bool{
+	"function_call": true, "custom_tool_call": true, "computer_call": true,
+	"local_shell_call": true, "shell_call": true, "apply_patch_call": true,
+}
+
+// responsesCall reads one Responses output item. An item the agent runs
+// carries a call_id; one without it can't be told apart from another and is
+// unreadable, so it is withheld rather than passed as a provider's.
 func responsesCall(item map[string]any) (modelCall, bool) {
 	kind := stringAt(item, "type")
 	id := stringAt(item, "call_id")
-	if id == "" || !strings.HasSuffix(kind, "_call") {
+	if !agentCallKinds[kind] && (id == "" || !strings.HasSuffix(kind, "_call")) {
 		return modelCall{}, false
 	}
 	name := firstNonEmpty(stringAt(item, "name"), strings.TrimSuffix(kind, "_call"))
+	if id == "" {
+		c := newModelCall("", name, nil)
+		c.Unreadable = "it has no call_id"
+		return c, true
+	}
 	var args any
 	switch {
 	case item["arguments"] != nil:
@@ -425,6 +438,58 @@ func toolOutcomes(format string, req map[string]any) []toolOutcome {
 	return out
 }
 
+// requestCalls lists the calls the model proposed in a request's history,
+// by ID (a later turn's call wins for a reused ID). A tool result is matched
+// to the call it sits beside.
+func requestCalls(format string, req map[string]any) map[string]modelCall {
+	out := map[string]modelCall{}
+	switch format {
+	case FormatAnthropic:
+		for _, m := range listAt(req, "messages") {
+			if !isAssistantMessage(asMap(m)) {
+				continue
+			}
+			for _, b := range listAt(asMap(m), "content") {
+				if blk := asMap(b); stringAt(blk, "type") == "tool_use" {
+					out[stringAt(blk, "id")] = newModelCall(stringAt(blk, "id"), stringAt(blk, "name"), blk["input"])
+				}
+			}
+		}
+	case FormatOpenAIChat:
+		for _, m := range listAt(req, "messages") {
+			msg := asMap(m)
+			if !isAssistantMessage(msg) {
+				continue
+			}
+			for _, tc := range listAt(msg, "tool_calls") {
+				c := chatCall(asMap(tc))
+				out[c.ID] = c
+			}
+		}
+	case FormatOpenAIResponses:
+		for _, it := range listAt(req, "input") {
+			if c, ok := responsesCall(asMap(it)); ok && c.ID != "" {
+				out[c.ID] = c
+			}
+		}
+	}
+	delete(out, "")
+	return out
+}
+
+// sameArguments reports whether two argument objects are equal as values
+// (key order and whitespace aside).
+func sameArguments(a, b json.RawMessage) bool {
+	x, errA := parseArguments(a)
+	y, errB := parseArguments(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	cx, errA := canonicalJSON(x)
+	cy, errB := canonicalJSON(y)
+	return errA == nil && errB == nil && bytes.Equal(cx, cy)
+}
+
 func newOutcome(callID string, failed bool, content any) toolOutcome {
 	raw, _ := encodeJSON(map[string]any{"content": content})
 	return toolOutcome{CallID: callID, Failed: failed, Content: raw}
@@ -565,9 +630,12 @@ func filterList(m map[string]any, key string, keep func(map[string]any) bool) {
 	m[key] = kept
 }
 
-// declaresTools reports whether a request gives the model any tool to call.
+// declaresTools reports whether a request gives the model any tool to call,
+// or may: Bedrock Converse lists them under toolConfig, and a stored
+// Responses prompt (prompt.id) can carry tools the request doesn't show.
 func declaresTools(req map[string]any) bool {
-	return len(listAt(req, "tools")) > 0 || len(listAt(req, "functions")) > 0 || len(listAt(req, "mcp_servers")) > 0
+	return len(listAt(req, "tools")) > 0 || len(listAt(req, "functions")) > 0 || len(listAt(req, "mcp_servers")) > 0 ||
+		req["toolConfig"] != nil || req["tool_config"] != nil || mapAt(req, "prompt") != nil
 }
 
 // ---- What the person asked, for the judge ----------------------------------
@@ -643,6 +711,9 @@ func decodeObject(raw json.RawMessage) (map[string]any, error) {
 	var m map[string]any
 	if err := dec.Decode(&m); err != nil || m == nil {
 		return nil, fmt.Errorf("not a JSON object")
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF { // one object, nothing after it
+		return nil, fmt.Errorf("not a single JSON object")
 	}
 	return m, nil
 }

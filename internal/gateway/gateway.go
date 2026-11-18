@@ -17,8 +17,10 @@
 // Gateways wait only seconds and some let a request through when their
 // policy check errors. So every answer after authentication is HTTP 200, any
 // failure is a deny ("fail closed"), and a call that needs a person is
-// answered at once with "block" and a review link; the approval then lets
-// one identical retry through.
+// answered at once with "block" and a review link. Letting the approved
+// call's retry through (a new call ID, the same tool, arguments and person)
+// is the embedding program's decider's job: Agent Authority does it. Atryum
+// alone also has no way to give a key the asserter capability.
 package gateway
 
 import (
@@ -28,6 +30,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -84,7 +87,11 @@ type Principal struct {
 type toolCall struct {
 	// callID is the model's own ID for the call; it becomes the invocation's
 	// request ID, which is how the call's result is found later.
-	callID     string
+	callID string
+	// responseID is the model response's own ID (msg_…, chatcmpl-…, resp_…)
+	// or the gateway's ID for the request: a call is replayed only for a
+	// retry of the same response.
+	responseID string
 	tool       string
 	server     string
 	arguments  json.RawMessage
@@ -134,6 +141,10 @@ type Options struct {
 	// OnEvent records gateway events that have no invocation of their own
 	// (a rejected asserter, a check that failed closed). Best-effort.
 	OnEvent func(ctx context.Context, kind string, payload map[string]any)
+	// Capture lets ?capture=1 on the TrueFoundry routes log a request's whole
+	// body (credentials redacted), to learn a gateway's real payload. The
+	// body is a conversation, so it is off unless the operator turns it on.
+	Capture bool
 }
 
 // Handler serves /api/v1/gateway/*. Mount it behind the agent-runtime auth
@@ -221,7 +232,7 @@ func (h *Handler) decideCall(ctx context.Context, gw caller, c toolCall) (res Re
 		defer func() {
 			if p := recover(); p != nil {
 				slog.Error("gateway check panicked; failing closed", "panic", p)
-				done <- h.unavailable(ctx, gw, c, fmt.Sprintf("internal error: %v", p))
+				done <- h.unavailable(ctx, gw, c, "internal error", fmt.Errorf("panic: %v", p))
 			}
 		}()
 		// The decision is recorded even if the gateway stops waiting: a
@@ -245,7 +256,7 @@ func (h *Handler) decideCall(ctx context.Context, gw caller, c toolCall) (res Re
 	case <-timer.C:
 		// A decision that lands after this stays as decided (an allow stays
 		// "approved", never "running"): the agent was told it may not run it.
-		return h.unavailable(ctx, gw, c, "no decision within the gateway's timeout")
+		return h.unavailable(ctx, gw, c, "no decision within the gateway's timeout", nil)
 	}
 }
 
@@ -273,7 +284,7 @@ func (h *Handler) decide(ctx context.Context, gw caller, c toolCall) Result {
 	// A repeat of a call that is still waiting for a person gets the same
 	// review back, not a second one.
 	if pending, err := h.svc.List(ctx, invocation.InvocationListFilter{GatewayCheckKey: key, Status: string(invocation.StatusPendingApproval), AgentIDs: []string{gw.AgentID}, Limit: 1}); err != nil {
-		return h.unavailable(ctx, gw, c, "could not look up open reviews: "+err.Error())
+		return h.unavailable(ctx, gw, c, "could not look up open reviews", err)
 	} else if len(pending.Items) > 0 {
 		inv := pending.Items[0]
 		url := h.link(ctx, inv.InvocationID, "")
@@ -293,13 +304,16 @@ func (h *Handler) decide(ctx context.Context, gw caller, c toolCall) Result {
 		SessionContextMessages: c.sessionContextMessages,
 	}
 	if id := strings.TrimSpace(c.callID); id != "" {
-		// Call IDs are only unique within one conversation (some models
-		// number them call_0, call_1 on every turn), and one gateway agent
-		// serves every person: the idempotency key is the person's and the
-		// session's, so one person's call never replays another's decision.
-		idem := callKey(asserted.UserID, c.sessionID, id)
-		req.IdempotencyKey = &idem
 		req.RequestID = &id
+		// Call IDs are only unique within one response (some models number
+		// them call_0, call_1 on every turn), and one gateway agent serves
+		// every person and sub-agent: only a retry of the same response, for
+		// the same person, sub-agent and session, replays a decision. Without
+		// the response's ID every proposal is decided and recorded on its own.
+		if rid := strings.TrimSpace(c.responseID); rid != "" {
+			idem := callKey(asserted.UserID, asserted.AgentID, c.sessionID, rid, id)
+			req.IdempotencyKey = &idem
+		}
 	}
 	resp, err := h.svc.Submit(ctx, req)
 	// Some models number their calls from zero on every turn ("call_0"), so
@@ -310,7 +324,7 @@ func (h *Handler) decide(ctx context.Context, gw caller, c toolCall) Result {
 		resp, err = h.svc.Submit(ctx, req)
 	}
 	if err != nil {
-		return h.unavailable(ctx, gw, c, "could not record the call: "+err.Error())
+		return h.unavailable(ctx, gw, c, "could not record the call", err)
 	}
 	return h.verdictFor(ctx, resp)
 }
@@ -368,10 +382,19 @@ func (h *Handler) link(ctx context.Context, invocationID, reviewID string) strin
 }
 
 // unavailable is the fail-closed answer.
-func (h *Handler) unavailable(ctx context.Context, gw caller, c toolCall, why string) Result {
-	slog.Warn("gateway check failed closed", "gateway", gw.AgentID, "tool", c.tool, "reason", why)
-	h.event(ctx, EventCheckFailed, map[string]any{"agent_id": gw.AgentID, "vendor": gw.Vendor, "tool": c.tool, "server": c.server, "reason": why})
-	return Result{Verdict: VerdictDeny, Code: CodeUnavailable, Reason: "Agent Authority unavailable: " + why}
+// The reason is a fixed sentence: it becomes the text the agent, the model
+// and the person read in place of the call. The cause (a database error, a
+// panic) goes only to the log and the gateway.check_failed event.
+func (h *Handler) unavailable(ctx context.Context, gw caller, c toolCall, why string, cause error) Result {
+	payload := map[string]any{"agent_id": gw.AgentID, "vendor": gw.Vendor, "tool": c.tool, "server": c.server, "reason": why}
+	if cause != nil {
+		payload["error"] = cause.Error()
+		slog.Warn("gateway check failed closed", "gateway", gw.AgentID, "tool", c.tool, "reason", why, "error", cause)
+	} else {
+		slog.Warn("gateway check failed closed", "gateway", gw.AgentID, "tool", c.tool, "reason", why)
+	}
+	h.event(ctx, EventCheckFailed, payload)
+	return Result{Verdict: VerdictDeny, Code: CodeUnavailable, Reason: "Agent Authority unavailable: " + why + "."}
 }
 
 func unreadable(why string) Result {
@@ -426,6 +449,11 @@ func parseArguments(raw json.RawMessage) (map[string]any, error) {
 	if err := dec.Decode(&args); err != nil || args == nil {
 		return nil, fmt.Errorf("arguments must be a JSON object")
 	}
+	// Two objects back to back (a stream that merged two calls) would be
+	// decided on the first while the agent runs something else.
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return nil, fmt.Errorf("arguments must be one JSON object, with nothing after it")
+	}
 	return args, nil
 }
 
@@ -450,10 +478,11 @@ func CheckKey(tenantID, gatewayAgentID, userID, server, tool string, rawArgs jso
 }
 
 // callKey is the idempotency key of a model's call ID: the call ID within
-// one person's session at one gateway agent.
-func callKey(userID, sessionID, callID string) string {
+// one model response, for one person, sub-agent and session at one gateway
+// agent.
+func callKey(userID, agentID, sessionID, responseID, callID string) string {
 	h := sha256.New()
-	for _, part := range []string{userID, sessionID, callID} {
+	for _, part := range []string{userID, agentID, sessionID, responseID, callID} {
 		h.Write([]byte(part))
 		h.Write([]byte{0})
 	}
@@ -465,7 +494,9 @@ func callKey(userID, sessionID, callID string) string {
 // themselves (TrueFoundry's X-TFY-METADATA), so two people sending the same
 // ID must not share a session, its history or the judge's view of it.
 func personalSession(sessionID, userID string) string {
-	sessionID, userID = strings.TrimSpace(sessionID), strings.TrimSpace(userID)
+	// The caller chooses the session ID: one spelled "s1 · bob" must not land
+	// in bob's session "s1".
+	sessionID, userID = strings.ReplaceAll(strings.TrimSpace(sessionID), " · ", " "), strings.TrimSpace(userID)
 	if sessionID == "" || userID == "" {
 		return sessionID
 	}

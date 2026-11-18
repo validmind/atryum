@@ -26,22 +26,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it. Every answer after authentication is a verdict, and any failure is a
   deny: the routes fail closed. A call held for a person is answered at once
   with a review link, and a repeat of it finds the open review instead of
-  opening another; the approval lets one identical retry through.
+  opening another. These routes need an embedding program such as Agent
+  Authority: it gives a key the asserter capability (Atryum alone has no way
+  to), and its decider lets an approved call's retry through.
 - `examples/llm-gateway` has a reference gateway, a LiteLLM guardrail and a
   walkthrough. Both collect streamed responses (the LiteLLM guardrail for Chat
   Completions and Anthropic Messages), passing the model's words on as they
   arrive and holding everything from the first tool call until Atryum has
   decided it.
-- One gateway agent serves many people, and models reuse call IDs: a call ID
-  is matched only within the person and session the gateway named, both when
-  a call is submitted and when its tool result arrives, and a gateway's
-  session is kept per person. A body that is not a whole response (or
+- One gateway agent serves many people, and models reuse call IDs: a call is
+  replayed only for a retry of the same model response (its ID, or the
+  gateway's request ID) for the same person, sub-agent and session, and is
+  otherwise decided and recorded on its own; a tool result completes only
+  the call it sits beside in the request (same person, session, tool and
+  arguments). A gateway's session is kept per person. A gateway that names
+  no person makes every such caller one person to Atryum: name one. Arguments
+  with anything after the first JSON object, and a Responses call with no
+  call_id, are withheld as unreadable. A body that is not a whole response (or
   request) in the format named, or in any format Atryum reads when none is
   named, is refused rather than read as having no calls. A call is recorded
   as running only when its allow reached the gateway in time. The
   TrueFoundry routes rewrite a response only when the guardrail's config says
   `{"operation": "mutate"}`; otherwise a response with a withheld call is
-  refused whole.
+  refused whole. A request counts as offering tools when it lists them
+  (tools, functions, mcp_servers, toolConfig) or names a stored prompt.
+  Capture mode (`?capture=1`, which logs a TrueFoundry body) works only when
+  the embedding program turns on `GatewayOptions.Capture`. The LiteLLM
+  guardrail collects every stream it can read whatever the request lists,
+  never merges two streamed calls, and records a key with no user as its own
+  person; CI runs its tests against LiteLLM 1.106.6.
 - Migration 035 adds key capabilities, the asserted identity of a call, and
   the key that finds a repeat of a held call. Migration 036 indexes
   `invocations.request_id`. Migration 037 stores which kind of gateway

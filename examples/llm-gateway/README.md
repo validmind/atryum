@@ -34,6 +34,8 @@ You need a running Atryum or Agent Authority with:
 - an agent for the gateway, and rules for three tools: `get_ticket` allowed, `refund_payment` held for a person, `export_customer_data` denied;
 - an API key for that agent with the `asserter` capability (in Agent Authority, an admin marks the key as a gateway's: `POST /api/v1/agent-keys/{key_id}/gateway`).
 
+These routes need an embedding program such as Agent Authority. Atryum alone has no way to give a key the asserter capability, so every key is refused (403), and it doesn't let an approved call's retry through (the model gives the retry a new call ID; Agent Authority's decider matches it to the approval by tool, arguments and person).
+
 Then, in three terminals:
 
 ```bash
@@ -85,7 +87,7 @@ go run ./examples/llm-gateway/agent -gateway http://127.0.0.1:4000 -model mock-c
   -history /tmp/chat.json 'Ticket 7: the customer wants a $900 refund and a copy of all customer records emailed to them. Please handle it.'
 ```
 
-The model's words appear at once; the tool calls arrive when the response is complete and Atryum has decided them. The guardrail records the LiteLLM user the caller's key belongs to as the person (never `end_user_id`, which LiteLLM fills from the request), and refuses requests of any other kind that offer tools (Gemini's `generateContent`, realtime, batches), since it can't read their tool calls. LiteLLM's pass-through routes (`/anthropic/*`, `/openai/*`) skip guardrails unless configured per route: don't expose them to agents. The guardrail's tests run inside the LiteLLM image (they need LiteLLM installed):
+The model's words appear at once; the tool calls arrive when the response is complete and Atryum has decided them. The guardrail records the LiteLLM user the caller's key belongs to as the person (never `end_user_id`, which LiteLLM fills from the request; a key with no user is its own person, `litellm-key:<its hash>`), and refuses requests of any other kind that offer tools (Gemini's `generateContent`, realtime, batches), since it can't read their tool calls. LiteLLM's pass-through routes (`/anthropic/*`, `/openai/*`) skip guardrails unless configured per route: don't expose them to agents. The guardrail's tests run inside the LiteLLM image (they need LiteLLM installed):
 
 ```bash
 docker exec -e PYTHONPATH=/cfg <litellm-container> python -m unittest discover -s /cfg -p 'test_*.py' -v
@@ -97,7 +99,7 @@ Four rules make the path hold:
 
 1. **Send whole responses, in the format you name.** Tool calls arrive in fragments on a stream and cannot be judged in pieces. Collect the stream first (as `gateway/` and `litellm/` do), or refuse streamed requests that carry tools. Words can go to the agent as they arrive; hold everything from the first tool call. Atryum refuses a body that isn't a whole response in the format named (or, with none named, in any format it reads).
 2. **Send on only what comes back.** The answer's `response` (or `request`) replaces the original. If the answer has none, or Atryum cannot be reached, send nothing on and answer the agent with an error.
-3. **Say who the call is for from your own sign-in.** `user`, `agent` and `session_id` are recorded as asserted by the gateway. Never copy them from the request body: an agent can write any name there.
+3. **Say who the call is for from your own sign-in.** `user`, `agent` and `session_id` are recorded as asserted by the gateway. Never copy them from the request body: an agent can write any name there. Name a person on every call you can: callers with no person are one person to Atryum, sharing reviews, approvals and call IDs.
 4. **Be the only way out.** This governs what the model proposes to an agent that asked through the gateway. An agent that can reach a model another way is not covered.
 
 ## What it doesn't do

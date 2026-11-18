@@ -152,14 +152,27 @@ class AgentAuthorityGuardrail(CustomGuardrail):
         """Passes the model's words through as they arrive, holds everything
         from the first tool call on, and sends the rest once Agent Authority
         has decided every call in the finished response."""
-        if not _declares_tools(request_data) or self.on_stream == "allow":
+        if self.on_stream == "allow":
             async for item in response:
                 yield item
             return
+        # Every stream this guardrail can read is collected, whatever the
+        # request lists: tools can come from elsewhere (a stored prompt,
+        # LiteLLM's prompt management). Words still pass at once, and a
+        # stream with no tool call is released without asking.
         collector = None
+        unreadable = False
         async for item in response:
-            if collector is None:
+            if collector is None and not unreadable:
                 collector = _collector_for(item)
+                if collector is None:
+                    if _declares_tools(request_data):
+                        _refuse(400, f"Agent Authority cannot read a {type(item).__name__} stream at this gateway. "
+                                     'Send the request without "stream": true.')
+                    unreadable = True  # no tools on offer: nothing to check
+            if unreadable:
+                yield item
+                continue
             for passed in collector.feed(item):
                 yield passed
         if collector is None:
@@ -167,6 +180,10 @@ class AgentAuthorityGuardrail(CustomGuardrail):
         if collector.failed:  # the provider's stream ended in an error
             if collector.proposed_calls:
                 _refuse(502, "The model's stream failed part-way through a tool call; nothing was sent on.")
+            for held in collector.finish(None):
+                yield held
+            return
+        if not collector.proposed_calls:  # no tool call: nothing to decide
             for held in collector.finish(None):
                 yield held
             return
@@ -190,12 +207,13 @@ class AgentAuthorityGuardrail(CustomGuardrail):
 
 
 def _collector_for(item: Any):
+    """The collector for a stream of item's kind, or None for one this
+    guardrail cannot read."""
     if isinstance(item, ModelResponseStream):
         return _ChatStream()
     if isinstance(item, (bytes, str)):
         return _MessagesStream()
-    _refuse(400, f"Agent Authority cannot read a {type(item).__name__} stream at this gateway. "
-                 'Send the request without "stream": true.')
+    return None
 
 
 def _get(obj: Any, key: str) -> Any:
@@ -260,7 +278,7 @@ class _ChatStream:
 
     def _absorb(self, choice: Any) -> None:
         index = _get(choice, "index") or 0
-        c = self.choices.setdefault(index, {"role": None, "content": None, "tool_calls": {},
+        c = self.choices.setdefault(index, {"role": None, "content": None, "tool_calls": {}, "slot_of": {},
                                             "function_call": None, "finish_reason": None})
         delta = _get(choice, "delta")
         if _get(delta, "role"):
@@ -268,9 +286,16 @@ class _ChatStream:
         if _get(delta, "content"):
             c["content"] = (c["content"] or "") + _get(delta, "content")
         for position, tc in enumerate(_get(delta, "tool_calls") or []):
-            i = _get(tc, "index")
-            slot = c["tool_calls"].setdefault(position if i is None else i,
-                                              {"id": None, "type": "function", "function": {"name": "", "arguments": ""}})
+            i = position if _get(tc, "index") is None else _get(tc, "index")
+            # Slots are numbered in arrival order. A chunk under an index whose
+            # call already has another ID is a new call (LiteLLM numbers calls
+            # with no index from 0 in every chunk): never merge two calls.
+            key = c["slot_of"].get(i)
+            if key is None or (_get(tc, "id") and c["tool_calls"][key]["id"] not in (None, _get(tc, "id"))):
+                key = len(c["tool_calls"])
+                c["slot_of"][i] = key
+                c["tool_calls"][key] = {"id": None, "type": "function", "function": {"name": "", "arguments": ""}}
+            slot = c["tool_calls"][key]
             if _get(tc, "id"):
                 slot["id"] = _get(tc, "id")
             fn = _get(tc, "function")
@@ -514,10 +539,16 @@ def _who(user_api_key_dict: Any, data: dict) -> dict:
     out: dict = {}
     # user_id only: LiteLLM fills end_user_id from the request ("user",
     # metadata.user_id, customer headers) without checking it by default, so
-    # a caller could name anyone there.
+    # a caller could name anyone there. A key with no user (LiteLLM's default
+    # for a generated key) is its own person, by its hash: callers on
+    # different keys never share approvals, reviews or call IDs.
     user = getattr(user_api_key_dict, "user_id", None)
+    token = getattr(user_api_key_dict, "token", None)
     if user:
         out["user"] = {"id": str(user), "type": "user"}
+    elif token:
+        alias = getattr(user_api_key_dict, "key_alias", None)
+        out["user"] = {"id": f"litellm-key:{token}", "type": "api_key", **({"display": str(alias)} if alias else {})}
     alias = getattr(user_api_key_dict, "key_alias", None) or getattr(user_api_key_dict, "team_alias", None)
     if alias:
         out["agent"] = {"id": str(alias)}

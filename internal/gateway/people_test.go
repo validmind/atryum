@@ -121,3 +121,79 @@ func TestAnAllowAfterTheDeadlineIsNotMarkedRunning(t *testing.T) {
 		t.Fatalf("the call the agent was told it may not run is %v, want approved, not executing", got)
 	}
 }
+
+// A call ID is replayed only for a retry of the same model response for the
+// same person, sub-agent and session. Another sub-agent's identical call
+// under a reused ID is decided on its own.
+func TestAReusedCallIDIsDecidedAgainForAnotherSubAgent(t *testing.T) {
+	h, svc := newRealHandler(t, func(_ context.Context, c invocation.ToolCall) (invocation.Decision, error) {
+		if c.Asserted != nil && c.Asserted.AgentID == "support-bot" {
+			return invocation.Decision{Verdict: invocation.VerdictAllow}, nil
+		}
+		return invocation.Decision{Verdict: invocation.VerdictDeny, Reason: "only support-bot may refund"}, nil
+	})
+	body := func(agent string) string {
+		return `{"format":"anthropic","response":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"tool_use","id":"call_0","name":"refund_payment","input":{"id":7}}],"stop_reason":"tool_use"},"user":{"id":"alice"},"agent":{"id":"` + agent + `"}}`
+	}
+	post(t, h, &gatewayKey, "/api/v1/gateway/llm/output", body("support-bot"))
+	_, out := post(t, h, &gatewayKey, "/api/v1/gateway/llm/output", body("intern-bot"))
+	if c := firstCall(t, out); c["verdict"] != VerdictDeny {
+		t.Fatalf("intern-bot got %v from support-bot's decision, want deny", c["verdict"])
+	}
+	if got := calls(t, svc); len(got) != 2 {
+		t.Fatalf("recorded %d calls, want 2", len(got))
+	}
+}
+
+// The same person proposing the same call again, in a new response under a
+// reused ID while the first is unfinished, is decided again; a retry of the
+// same response replays its decision.
+func TestAnIdenticalCallInAnotherResponseIsDecidedAgain(t *testing.T) {
+	var asked int
+	h, svc := newRealHandler(t, func(context.Context, invocation.ToolCall) (invocation.Decision, error) {
+		asked++
+		return invocation.Decision{Verdict: invocation.VerdictAllow}, nil
+	})
+	body := func(response string) string {
+		return `{"format":"anthropic","response":{"id":"` + response + `","type":"message","role":"assistant","content":[{"type":"tool_use","id":"call_0","name":"refund_payment","input":{"id":7}}],"stop_reason":"tool_use"},"user":{"id":"alice"},"session_id":"s-1"}`
+	}
+	post(t, h, &gatewayKey, "/api/v1/gateway/llm/output", body("msg_1"))
+	post(t, h, &gatewayKey, "/api/v1/gateway/llm/output", body("msg_1")) // the gateway retries the same response
+	post(t, h, &gatewayKey, "/api/v1/gateway/llm/output", body("msg_2"))
+	if asked != 2 || len(calls(t, svc)) != 2 {
+		t.Fatalf("decided %d times, recorded %d calls; want 2 and 2 (the retry replays, the new response is decided)", asked, len(calls(t, svc)))
+	}
+}
+
+// With no person or session named, a result completes the call it sits
+// beside in the request's history (same tool and arguments), not whichever
+// call last used the ID.
+func TestAToolResultWithNoPersonNamedCompletesItsOwnCall(t *testing.T) {
+	h, svc := newRealHandler(t, func(context.Context, invocation.ToolCall) (invocation.Decision, error) {
+		return invocation.Decision{Verdict: invocation.VerdictAllow}, nil
+	})
+	out := func(tool, input string) string {
+		return `{"format":"anthropic","response":{"type":"message","role":"assistant","content":[{"type":"tool_use","id":"call_0","name":"` + tool + `","input":` + input + `}],"stop_reason":"tool_use"}}`
+	}
+	post(t, h, &gatewayKey, "/api/v1/gateway/llm/output", out("read_file", `{"path":"alice.txt"}`))
+	post(t, h, &gatewayKey, "/api/v1/gateway/llm/output", out("transfer", `{"to":"x"}`))
+	post(t, h, &gatewayKey, "/api/v1/gateway/llm/input", `{"format":"anthropic","request":{"model":"m","messages":[`+
+		`{"role":"assistant","content":[{"type":"tool_use","id":"call_0","name":"read_file","input":{"path":"alice.txt"}}]},`+
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_0","content":"ALICE FILE CONTENTS"}]}]}}`)
+	for _, inv := range calls(t, svc) {
+		switch {
+		case inv.ToolName == "transfer" && inv.Status != invocation.StatusExecuting:
+			t.Errorf("the other caller's transfer is %s, want still executing", inv.Status)
+		case inv.ToolName == "read_file" && inv.Status != invocation.StatusSucceeded:
+			t.Errorf("read_file is %s, want succeeded with its own result", inv.Status)
+		}
+	}
+}
+
+// A caller with no person can't steer into a person's session by spelling
+// its session ID like one.
+func TestASessionIDSpelledLikeAPersonsIsNotTheirs(t *testing.T) {
+	if personalSession("s1 · bob", "") == personalSession("s1", "bob") {
+		t.Fatal(`"s1 · bob" with no person joined bob's session "s1"`)
+	}
+}

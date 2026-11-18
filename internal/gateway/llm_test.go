@@ -38,7 +38,8 @@ func (s *llmService) Submit(_ context.Context, req invocation.ExternalSubmitRequ
 	if !ok {
 		status = invocation.StatusApproved
 	}
-	inv := invocation.InvocationResponse{InvocationID: fmt.Sprintf("inv_%d", len(s.invs)+1), ToolName: req.Tool, Status: status, RequestID: req.RequestID, Asserted: req.Asserted}
+	input, _ := json.Marshal(req.Input)
+	inv := invocation.InvocationResponse{InvocationID: fmt.Sprintf("inv_%d", len(s.invs)+1), ToolName: req.Tool, Status: status, RequestID: req.RequestID, Asserted: req.Asserted, Input: input}
 	if reason := s.reasons[req.Tool]; reason != "" {
 		inv.Decision = &invocation.Decision{Reason: reason, ReviewID: "rev_" + req.Tool}
 	}
@@ -60,7 +61,8 @@ func (s *llmService) List(_ context.Context, f invocation.InvocationListFilter) 
 		case f.Status != "" && string(inv.Status) != f.Status,
 			f.RequestID != "" && (inv.RequestID == nil || *inv.RequestID != f.RequestID),
 			f.GatewayCheckKey != "" && s.keys[inv.InvocationID] != f.GatewayCheckKey,
-			f.ClientName != "" && s.clients[inv.InvocationID] != f.ClientName:
+			f.ClientName != "" && s.clients[inv.InvocationID] != f.ClientName,
+			f.Tool != "" && inv.ToolName != f.Tool:
 			continue
 		}
 		out = append(out, inv)
@@ -319,7 +321,7 @@ func TestOutputFailsClosed(t *testing.T) {
 func TestReusedCallIDIsANewCall(t *testing.T) {
 	svc := &llmService{conflict: true}
 	h, _ := newLLMHandler(svc)
-	body := `{"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[{"id":"call_0","type":"function","function":{"name":"ls","arguments":"{}"}}]}}]}`
+	body := `{"id":"chatcmpl-1","choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[{"id":"call_0","type":"function","function":{"name":"ls","arguments":"{}"}}]}}]}`
 	var out LLMOutputResult
 	postLLM(t, h, "/api/v1/gateway/llm/output", LLMOutput{Response: raw(body)}, &out)
 	if out.Verdict != VerdictAllow || len(svc.submits) != 2 || svc.submits[1].IdempotencyKey != nil || svc.submits[1].RequestID == nil {
@@ -690,5 +692,47 @@ func TestABodyInTheWrongFormatIsRefused(t *testing.T) {
 		if out.Verdict != VerdictDeny || out.Code != CodeUnreadableRequest || out.Request != nil {
 			t.Errorf("%s: got %+v, want deny unreadable", name, out)
 		}
+	}
+}
+
+// A call Atryum can't read exactly is withheld, never passed: arguments with
+// a second object after the first (a stream that merged two calls), and a
+// Responses call item with no call_id.
+func TestACallItCannotReadExactlyIsWithheld(t *testing.T) {
+	svc := &llmService{}
+	h, _ := newLLMHandler(svc)
+	for name, body := range map[string]string{
+		"two objects in one call's arguments": `{"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[{"id":"call_b","type":"function","function":{"name":"get_ticket","arguments":"{\"ticket_id\":7}{\"scope\":\"all\"}"}}]}}]}`,
+		"a Responses call with no call_id":    `{"object":"response","output":[{"type":"function_call","id":"fc_1","name":"export_customer_data","arguments":"{}"}]}`,
+	} {
+		var out LLMOutputResult
+		postLLM(t, h, "/api/v1/gateway/llm/output", LLMOutput{Response: raw(body)}, &out)
+		if out.Verdict != VerdictDeny || !out.Changed || len(out.Calls) != 1 || out.Calls[0].Code != CodeUnreadableArguments {
+			t.Errorf("%s: got %+v %s", name, out, out.Response)
+		}
+		if strings.Contains(string(out.Response), `"function_call"`) || strings.Contains(string(out.Response), `"tool_calls"`) {
+			t.Errorf("%s: the call is still in the response: %s", name, out.Response)
+		}
+	}
+	if len(svc.submits) != 0 {
+		t.Fatalf("an unreadable call was decided: %+v", svc.submits)
+	}
+}
+
+// Tools a request gets from elsewhere count as tools: a Bedrock Converse
+// request's toolConfig, and a stored Responses prompt.
+func TestTrueFoundryCountsToolsFromElsewhere(t *testing.T) {
+	h, _ := newLLMHandler(&llmService{})
+	ctx := `"context":{"user":{"subjectId":"u-1","subjectType":"user"}}`
+	var out map[string]any
+	postLLM(t, h, "/api/v1/gateway/truefoundry/llm/output", raw(`{"requestBody":{"toolConfig":{"tools":[{"toolSpec":{"name":"export_customer_data"}}]},"messages":[]},`+
+		`"responseBody":{"output":{"message":{"content":[{"toolUse":{"toolUseId":"t1","name":"export_customer_data","input":{}}}]}},"stopReason":"tool_use"},"config":{},`+ctx+`}`), &out)
+	if out["verdict"] != false {
+		t.Errorf("a Converse response with a tool call passed: %v", out)
+	}
+	out = nil
+	postLLM(t, h, "/api/v1/gateway/truefoundry/llm/input", raw(`{"requestBody":{"stream":true,"prompt":{"id":"pmpt_123"},"input":"hi"},"config":{},`+ctx+`}`), &out)
+	if out["verdict"] != false {
+		t.Errorf("a streamed request on a stored prompt passed: %v", out)
 	}
 }

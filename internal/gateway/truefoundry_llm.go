@@ -114,7 +114,7 @@ func (h *Handler) serveTrueFoundryLLMInput(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	if capture(r, body) {
+	if h.opts.Capture && capture(r, body) {
 		writeJSON(w, http.StatusOK, tfyLLMResponse{Verdict: false, Message: "Agent Authority capture mode: request refused while its payload is recorded."})
 		return
 	}
@@ -144,7 +144,7 @@ func (h *Handler) serveTrueFoundryLLMOutput(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	if capture(r, body) {
+	if h.opts.Capture && capture(r, body) {
 		writeJSON(w, http.StatusOK, tfyLLMResponse{Verdict: false, Message: "Agent Authority capture mode: response withheld while its payload is recorded."})
 		return
 	}

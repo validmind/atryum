@@ -205,6 +205,9 @@ func (h *Handler) CheckOutput(ctx context.Context, gw caller, in LLMOutput) LLMO
 		excerpt, excerptN = humanExcerpt(format, req)
 	}
 
+	// A retry of this same response replays its decisions; another response
+	// that reuses a call ID (call_0 on every turn) is decided afresh.
+	responseID := firstNonEmpty(stringAt(resp, "id"), strings.TrimSpace(in.GatewayRequestID))
 	verdicts := make([]CallVerdict, len(calls))
 	var wg sync.WaitGroup
 	for i, c := range calls {
@@ -219,7 +222,7 @@ func (h *Handler) CheckOutput(ctx context.Context, gw caller, in LLMOutput) LLMO
 			go func() {
 				defer wg.Done()
 				verdicts[i].Result = h.decideCall(ctx, gw, toolCall{
-					callID: c.ID, tool: c.Tool, server: c.Server, arguments: c.Arguments,
+					callID: c.ID, responseID: responseID, tool: c.Tool, server: c.Server, arguments: c.Arguments,
 					user: in.User, agent: in.Agent, sessionID: in.SessionID, deadlineMS: in.DeadlineMS,
 					sessionContext: excerpt, sessionContextMessages: excerptN,
 				})
@@ -297,8 +300,10 @@ func (h *Handler) CheckInput(ctx context.Context, gw caller, in LLMInput) LLMInp
 
 	// The tool has already run: nothing here may hold the request up, and a
 	// failure to record never refuses it.
+	proposed := requestCalls(format, req)
 	for _, o := range toolOutcomes(format, req) {
-		out.Outcomes = append(out.Outcomes, h.recordModelOutcome(ctx, gw, o, in.User, in.SessionID))
+		call, known := proposed[o.CallID]
+		out.Outcomes = append(out.Outcomes, h.recordModelOutcome(ctx, gw, o, in.User, in.SessionID, call, known))
 	}
 
 	tools := providerTools(format, req)
@@ -337,7 +342,12 @@ func (h *Handler) CheckInput(ctx context.Context, gw caller, in LLMInput) LLMInp
 
 // recordModelOutcome attaches one tool result to the call it answers, found
 // by the model's call ID (stored as the invocation's request ID at llm/output).
-func (h *Handler) recordModelOutcome(ctx context.Context, gw caller, o toolOutcome, user *Principal, sessionID string) OutcomeReport {
+//
+// call is the model's call with this ID, as the same request's history shows
+// it (known false when the history doesn't carry it): the result answers a
+// call with that tool and those arguments, so a call with the same ID that
+// differs in either is someone else's.
+func (h *Handler) recordModelOutcome(ctx context.Context, gw caller, o toolOutcome, user *Principal, sessionID string, call modelCall, known bool) OutcomeReport {
 	report := OutcomeReport{CallID: o.CallID, Status: CodeUnknownOutcome}
 	if o.CallID == "" {
 		return report
@@ -351,11 +361,18 @@ func (h *Handler) recordModelOutcome(ctx context.Context, gw caller, o toolOutco
 	// can be the one this result answers. The running call with this ID
 	// first: a model that reuses call IDs from turn to turn has older,
 	// finished calls under the same one.
+	// With neither the call it answers in the history nor a person or
+	// session, nothing ties this result to one call: it may still raise the
+	// alarms below, but it completes no call.
+	attributable := known || userID != "" || strings.TrimSpace(sessionID) != ""
 	filter := invocation.InvocationListFilter{RequestID: o.CallID, AgentIDs: []string{gw.AgentID}, Status: string(invocation.StatusExecuting), Limit: outcomeCandidates}
-	inv, found, err := h.ownCall(ctx, filter, userID, sessionID)
+	if known && call.Unreadable == "" {
+		filter.Tool = call.Tool
+	}
+	inv, found, err := h.ownCall(ctx, filter, userID, sessionID, call, known)
 	if err == nil && !found {
 		filter.Status = ""
-		inv, found, err = h.ownCall(ctx, filter, userID, sessionID)
+		inv, found, err = h.ownCall(ctx, filter, userID, sessionID, call, known)
 	}
 	if err != nil {
 		h.event(ctx, EventOutcomeUnrecorded, map[string]any{"agent_id": gw.AgentID, "vendor": gw.Vendor, "call_id": o.CallID, "reason": err.Error()})
@@ -383,6 +400,10 @@ func (h *Handler) recordModelOutcome(ctx context.Context, gw caller, o toolOutco
 		report.Status = "failed"
 		return report
 	}
+	if !attributable {
+		report.Status = "unattributed"
+		return report
+	}
 	report.Status = "completed"
 	done := outcome{invocationID: inv.InvocationID, status: "completed", result: o.Content}
 	if o.Failed {
@@ -399,19 +420,20 @@ const outcomeCandidates = 50
 
 // ownCall is the newest call in filter made for userID in sessionID, the
 // identity and session the gateway asserted when the call was decided.
-func (h *Handler) ownCall(ctx context.Context, filter invocation.InvocationListFilter, userID, sessionID string) (invocation.InvocationResponse, bool, error) {
+func (h *Handler) ownCall(ctx context.Context, filter invocation.InvocationListFilter, userID, sessionID string, call modelCall, known bool) (invocation.InvocationResponse, bool, error) {
 	list, err := h.svc.List(ctx, filter)
 	if err != nil {
 		return invocation.InvocationResponse{}, false, err
 	}
 	for _, inv := range list.Items {
 		a := inv.Asserted
-		if a == nil {
+		if a == nil || a.UserID != userID || strings.TrimSpace(a.SessionID) != strings.TrimSpace(sessionID) {
 			continue
 		}
-		if a.UserID == userID && strings.TrimSpace(a.SessionID) == strings.TrimSpace(sessionID) {
-			return inv, true, nil
+		if known && (inv.ToolName != call.Tool || call.Unreadable != "" || !sameArguments(inv.Input, call.Arguments)) {
+			continue
 		}
+		return inv, true, nil
 	}
 	return invocation.InvocationResponse{}, false, nil
 }

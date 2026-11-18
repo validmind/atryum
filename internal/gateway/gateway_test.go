@@ -160,7 +160,7 @@ func TestAllowedCallIsMarkedRunningAndCarriesAssertedIdentity(t *testing.T) {
 	if a == nil || a.UserID != "emma" || a.UserDisplay != "Emma" || a.AgentID != "support-bot" || a.By != "gw-local" || a.SessionID != "s-1" || a.Vendor != "generic" {
 		t.Fatalf("asserted = %+v", a)
 	}
-	if req.ClientSessionID != "s-1 · emma" || req.ClientName != "generic-llm-gateway" || req.IdempotencyKey == nil || *req.IdempotencyKey != callKey("emma", "s-1", "toolu_1") || req.RequestID == nil || *req.RequestID != "toolu_1" || !strings.HasPrefix(req.GatewayCheckKey, "gck_") {
+	if req.ClientSessionID != "s-1 · emma" || req.ClientName != "generic-llm-gateway" || req.IdempotencyKey != nil || req.RequestID == nil || *req.RequestID != "toolu_1" || !strings.HasPrefix(req.GatewayCheckKey, "gck_") {
 		t.Fatalf("submit = %+v", req)
 	}
 }
