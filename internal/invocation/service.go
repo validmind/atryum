@@ -1630,6 +1630,11 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	if sessionID != "" {
 		inv.SessionID = &sessionID
 	}
+	if req.Asserted != nil {
+		a := *req.Asserted
+		inv.Asserted = &a
+		inv.GatewayCheckKey = req.GatewayCheckKey
+	}
 	if err := s.create(ctx, inv); err != nil {
 		return s.lostCreateRace(ctx, agentID, req.IdempotencyKey, "", req.Tool, inputJSON, err)
 	}
@@ -1858,10 +1863,13 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 // submitDecided finishes Submit when a decider is set: the decision is
 // recorded with the received event and the resulting status in one write.
 func (s *Service) submitDecided(ctx context.Context, inv Invocation, source, agentID, sessionID string, now time.Time) (InvocationResponse, error) {
-	d := s.decide(ctx, ToolCall{InvocationID: inv.InvocationID, Path: "submit", AgentID: agentID, Server: source, Tool: inv.Tool, Arguments: inv.Input, SessionID: sessionID, Auth: inv.Auth})
+	d := s.decide(ctx, ToolCall{InvocationID: inv.InvocationID, Path: "submit", AgentID: agentID, Server: source, Tool: inv.Tool, Arguments: inv.Input, SessionID: sessionID, Auth: inv.Auth, Asserted: inv.Asserted})
 	receivedPayload := map[string]any{"tool": inv.Tool, "upstream": source, "request_id": inv.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "external": true, "decision": d}
 	if agentID != "" {
 		receivedPayload["agent_id"] = agentID
+	}
+	if inv.Asserted != nil {
+		receivedPayload["asserted"] = inv.Asserted
 	}
 	evts := []Event{{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(receivedPayload), CreatedAt: now}}
 	at := time.Now().UTC()
@@ -1884,7 +1892,9 @@ func (s *Service) submitDecided(ctx context.Context, inv Invocation, source, age
 	if err := s.commit(ctx, inv, s.invocations.UpdateResult, evts...); err != nil {
 		return InvocationResponse{}, err
 	}
-	return s.toResponse(inv), nil
+	resp := s.toResponse(inv)
+	resp.Decision = &d
+	return resp, nil
 }
 
 func (s *Service) summarizePendingApproval(ctx context.Context, invocationID string) {
@@ -2227,6 +2237,14 @@ func (s *Service) toResponse(inv Invocation) InvocationResponse {
 	}
 	if len(inv.Error) > 0 {
 		resp.Error = json.RawMessage(inv.Error)
+	}
+	if inv.Asserted != nil {
+		a := *inv.Asserted
+		resp.Asserted = &a
+		if a.UserID != "" {
+			u := a.UserID
+			resp.UserID = &u
+		}
 	}
 	return resp
 }

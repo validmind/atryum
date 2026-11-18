@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- AI gateways: `POST /api/v1/gateway/llm/output` and `POST /api/v1/gateway/llm/input`
+  let a gateway that relays agents' model traffic (LiteLLM, TrueFoundry's AI
+  Gateway, or any that can call a webhook) put Atryum in the path without
+  changing the agents. `llm/output` decides every tool call in a model
+  response (Anthropic Messages, OpenAI Chat Completions or OpenAI Responses)
+  and returns the response with the calls that may not run replaced by a
+  sentence saying why; `llm/input` attaches the tool results in the next
+  request to their calls by the model's call ID, and takes out provider-run
+  tools that are not allowed. TrueFoundry's LLM guardrail hooks are served at
+  `/api/v1/gateway/truefoundry/llm/input` and `.../llm/output`.
+- Gateway keys: the routes take an agent API key with the new `asserter`
+  capability. The key's agent stands for the gateway, and only such a key may
+  say which person (and sub-agent and session) a call is for; that identity
+  is recorded on the invocation as asserted, with the gateway that asserted
+  it. Every answer after authentication is a verdict, and any failure is a
+  deny: the routes fail closed. A call held for a person is answered at once
+  with a review link, and a repeat of it finds the open review instead of
+  opening another; the approval lets one identical retry through.
+- `examples/llm-gateway` has a reference gateway, a LiteLLM guardrail and a
+  walkthrough. Both collect streamed responses (the LiteLLM guardrail for Chat
+  Completions and Anthropic Messages), passing the model's words on as they
+  arrive and holding everything from the first tool call until Atryum has
+  decided it.
+- Migration 035 adds key capabilities, the asserted identity of a call, and
+  the key that finds a repeat of a held call. Migration 036 indexes
+  `invocations.request_id`.
+
 ## [0.10.0] - 2026-11-12
 
 ### Added
