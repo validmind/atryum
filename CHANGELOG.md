@@ -36,6 +36,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the key that finds a repeat of a held call. Migration 036 indexes
   `invocations.request_id`.
 
+### Changed
+
+- With no admin-enabled `[[auth]]` block, the UI and the review/operator APIs
+  now require an operator token instead of being open. Atryum generates the
+  token on first start, saves it (mode 0600) to `atryum-operator-token`
+  beside the SQLite database (`[server] operator_token_file` to move it), and
+  logs a sign-in link on that first start only (later starts log just the
+  token file path). The link stores the token in an HttpOnly, SameSite=Strict
+  cookie; the UI also has a token sign-in screen, API clients send
+  `Authorization: Bearer <token>`, and the CLI reads `ATRYUM_OPERATOR_TOKEN`.
+  The `[api_key]` machine key is still accepted. Set `[server] operator_token`
+  or `ATRYUM_OPERATOR_TOKEN` to choose the token, or
+  `[server] operator_api_open = true` / `ATRYUM_OPERATOR_API_OPEN=true` to keep
+  the previous open behaviour. Deployments with an admin-enabled `[[auth]]`
+  block, `skip_verify`, or an external decider are unaffected.
+- Upstream MCP server credentials are write-only in the operator API, like
+  the OAuth client secret already was. Server responses carry
+  `has_auth_token`, `auth_headers[].has_value` and `env` keys with blank
+  values in place of the bearer token, custom header values and env values.
+  The Servers page shows stored credentials as unchanged placeholders. A
+  stored header value is matched by the header's name, so the page asks for
+  the value again when a stored header is renamed instead of saving it
+  without one.
+- Saving a server keeps stored credentials the request leaves empty: a blank
+  `auth_token`, an `auth_headers` entry with a blank value (matched by name),
+  or, for a stdio server, an `env` entry with a blank value. Set
+  `clear_auth_token: true` to remove the bearer token; leave a header or env
+  key out to remove it. Before, an omitted `auth_token` cleared the token.
+- Stored credentials stay with the destination they were saved for. A save
+  that points an HTTP server's base URL at another host, or changes a stdio
+  server's command or args, is refused while it leaves a stored value blank;
+  enter the value again or remove it. Stored OAuth tokens are dropped when the
+  host changes. A credential stored under one mode (HTTP or stdio) is not
+  reused after the server switches mode.
+
 ## [0.10.0] - 2026-11-12
 
 ### Added

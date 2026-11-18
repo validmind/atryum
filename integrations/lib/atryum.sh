@@ -95,6 +95,7 @@ seed_auto_approve_rules() {
   }'
   curl -fsS -X POST "$ATRYUM_URL/api/v1/rules" \
     -H 'Content-Type: application/json' \
+    -H "Authorization: Bearer ${ATRYUM_OPERATOR_TOKEN:-atryum-integration-operator-token}" \
     -d "$payload" >/dev/null || {
     warn "failed to create auto_approve rule; tailing atryum log:"
     tail -n 20 "$RUN_DIR/atryum.log" >&2 || true
