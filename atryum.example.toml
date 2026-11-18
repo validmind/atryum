@@ -16,6 +16,17 @@ database_path = "./atryum.db"
 # database_url = "postgresql://postgres:password@127.0.0.1:5432/postgres"
 database_url = ""
 log_level = "info"
+# With no admin-enabled [[auth]] block, the UI and review/operator APIs require
+# an operator token. Leave operator_token empty to have Atryum generate one on
+# first start, save it (mode 0600) to operator_token_file (default:
+# atryum-operator-token beside database_path), and log a sign-in link. The link
+# is logged on that first start only; later starts log just the file path.
+# ATRYUM_OPERATOR_TOKEN overrides operator_token.
+# operator_token = ""
+# operator_token_file = ""
+# Set true (or ATRYUM_OPERATOR_API_OPEN=true) to leave the UI and operator API
+# open to anyone who can reach listen_addr, as before.
+# operator_api_open = false
 # PostgreSQL only: held calls wake through LISTEN/NOTIFY. Set false behind
 # PgBouncer in transaction mode (it never delivers notifications); held calls
 # then re-read their row every 250 ms.

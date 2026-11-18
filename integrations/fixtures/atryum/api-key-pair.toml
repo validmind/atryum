@@ -1,6 +1,7 @@
 # PLACEHOLDER — API key pair protects legacy reporting endpoints, not /mcp/.
 
 [server]
+operator_token = "atryum-integration-operator-token"
 listen_addr = ":__ATRYUM_PORT__"
 public_base_url = "http://localhost:__ATRYUM_PORT__"
 database_path = "__RUN_DIR__/atryum.db"

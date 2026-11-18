@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 
@@ -191,6 +192,18 @@ type ServerConfig struct {
 	// DatabasePool sizes the PostgreSQL connection pool; unset fields take
 	// store.DefaultDBPool.
 	DatabasePool DatabasePoolConfig `toml:"database_pool"`
+	// OperatorAPIOpen leaves the UI and the review/operator APIs open to
+	// anyone who can reach the port when no [[auth]] block is admin-enabled.
+	// Off by default: those surfaces then require the operator token.
+	OperatorAPIOpen bool `toml:"operator_api_open"`
+	// OperatorToken is the operator token used when no [[auth]] block is
+	// admin-enabled. When empty, Atryum generates one on first start and
+	// keeps it in OperatorTokenFile.
+	OperatorToken string `toml:"operator_token"`
+	// OperatorTokenFile is where a generated operator token is kept (mode
+	// 0600). Defaults to atryum-operator-token beside the SQLite database,
+	// or in the working directory when database_url is set.
+	OperatorTokenFile string `toml:"operator_token_file"`
 }
 
 type DatabasePoolConfig struct {
@@ -245,11 +258,25 @@ func Load(path string) (Config, error) {
 		return cfg, err
 	}
 	cfg.Backend.ApplyEnv()
+	cfg.Server.applyOperatorEnv()
 	cfg.applyManagedAgentsEnv()
 	if err := cfg.Plans.normalize(); err != nil {
 		return cfg, err
 	}
 	return cfg, nil
+}
+
+// applyOperatorEnv lets ATRYUM_OPERATOR_TOKEN and ATRYUM_OPERATOR_API_OPEN
+// override the TOML values.
+func (c *ServerConfig) applyOperatorEnv() {
+	if value := strings.TrimSpace(os.Getenv("ATRYUM_OPERATOR_TOKEN")); value != "" {
+		c.OperatorToken = value
+	}
+	if value := strings.TrimSpace(os.Getenv("ATRYUM_OPERATOR_API_OPEN")); value != "" {
+		if parsed, err := strconv.ParseBool(value); err == nil {
+			c.OperatorAPIOpen = parsed
+		}
+	}
 }
 
 func (c *BackendConfig) ApplyEnv() {

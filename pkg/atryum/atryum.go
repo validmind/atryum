@@ -532,6 +532,22 @@ func runServer(args []string, o options) error {
 		handler.SetAuthDebugSkipVerify(true)
 		log.Printf("WARNING: inbound auth debug skip_verify enabled; /mcp/ Authorization header is ignored entirely")
 	}
+	// With no admin-enabled [[auth]] block, the UI and operator API are
+	// guarded by an operator token unless operator_api_open opts out. An
+	// external decider mounts no operator API, so it needs no token.
+	adminAuthEnabled := authValidator != nil && authValidator.AdminEnabled()
+	if !adminAuthEnabled && !authDebugSkipVerify && o.decider == nil {
+		if cfg.Server.OperatorAPIOpen {
+			log.Printf("WARNING: operator_api_open is set: the UI and operator API are open to anyone who can reach %s", cfg.Server.ListenAddr)
+		} else {
+			token, source, path, err := resolveOperatorToken(cfg.Server)
+			if err != nil {
+				return err
+			}
+			handler.RequireOperatorToken(token)
+			logOperatorTokenNotice(cfg.Server, token, source, path)
+		}
+	}
 
 	// Optional Claude Managed Agents events bridge. Enabled only when an
 	// Anthropic API key is configured (TOML or env). It watches registered
