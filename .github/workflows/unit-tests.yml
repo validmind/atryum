@@ -6,6 +6,8 @@ on:
     paths:
       - "cmd/**"
       - "internal/**"
+      - "pkg/**"
+      - "examples/**"
       - "go.mod"
       - "go.sum"
       - "Justfile"
@@ -14,6 +16,8 @@ on:
     paths:
       - "cmd/**"
       - "internal/**"
+      - "pkg/**"
+      - "examples/**"
       - "go.mod"
       - "go.sum"
       - "Justfile"
@@ -53,3 +57,24 @@ jobs:
 
       - name: Run unit tests
         run: go test ./...
+
+  # The LiteLLM guardrail in examples/llm-gateway is what customers deploy in
+  # their LiteLLM proxy; its tests need LiteLLM itself, at the version the
+  # example is written against.
+  litellm-guardrail:
+    name: LiteLLM guardrail
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install LiteLLM
+        run: pip install "litellm[proxy]==1.106.6"
+
+      - name: Run the guardrail's tests
+        working-directory: examples/llm-gateway/litellm
+        run: python -m unittest discover -s . -p 'test_*.py' -v

@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- AI gateways: `POST /api/v1/gateway/llm/output` and `POST /api/v1/gateway/llm/input`
+  let a gateway that relays agents' model traffic (LiteLLM, TrueFoundry's AI
+  Gateway, or any that can call a webhook) put Atryum in the path without
+  changing the agents. `llm/output` decides every tool call in a model
+  response (Anthropic Messages, OpenAI Chat Completions or OpenAI Responses)
+  and returns the response with the calls that may not run replaced by a
+  sentence saying why; `llm/input` attaches the tool results in the next
+  request to their calls by the model's call ID, and takes out provider-run
+  tools that are not allowed. TrueFoundry's LLM guardrail hooks are served at
+  `/api/v1/gateway/truefoundry/llm/input` and `.../llm/output`.
+- Gateway keys: the routes take an agent API key with the new `asserter`
+  capability. The key's agent stands for the gateway, and only such a key may
+  say which person (and sub-agent and session) a call is for; that identity
+  is recorded on the invocation as asserted, with the gateway that asserted
+  it. Every answer after authentication is a verdict, and any failure is a
+  deny: the routes fail closed. A call held for a person is answered at once
+  with a review link, and a repeat of it finds the open review instead of
+  opening another. These routes need an embedding program such as Agent
+  Authority: it gives a key the asserter capability (Atryum alone has no way
+  to), and its decider lets an approved call's retry through.
+- `examples/llm-gateway` has a reference gateway, a LiteLLM guardrail and a
+  walkthrough. Both collect streamed responses (the LiteLLM guardrail for Chat
+  Completions and Anthropic Messages), passing the model's words on as they
+  arrive and holding everything from the first tool call until Atryum has
+  decided it.
+- One gateway agent serves many people, and models reuse call IDs: a call is
+  replayed only for a retry of the same model response (its ID, or the
+  gateway's request ID) for the same person, sub-agent and session, and is
+  otherwise decided and recorded on its own; a tool result completes only
+  the call it sits beside in the request (same person, session, tool and
+  arguments). A gateway's session is kept per person. A gateway that names
+  no person makes every such caller one person to Atryum: name one. Arguments
+  with anything after the first JSON object, and a Responses call with no
+  call_id, are withheld as unreadable. A body that is not a whole response (or
+  request) in the format named, or in any format Atryum reads when none is
+  named, is refused rather than read as having no calls. A call is recorded
+  as running only when its allow reached the gateway in time. The
+  TrueFoundry routes rewrite a response only when the guardrail's config says
+  `{"operation": "mutate"}`; otherwise a response with a withheld call is
+  refused whole. A request counts as offering tools when it lists them
+  (tools, functions, mcp_servers, toolConfig) or names a stored prompt.
+  Capture mode (`?capture=1`, which logs a TrueFoundry body) works only when
+  the embedding program turns on `GatewayOptions.Capture`. The LiteLLM
+  guardrail collects every stream it can read whatever the request lists,
+  never merges two streamed calls, and records a key with no user as its own
+  person; CI runs its tests against LiteLLM 1.106.6.
+- Migration 035 adds key capabilities, the asserted identity of a call, and
+  the key that finds a repeat of a held call. Migration 036 indexes
+  `invocations.request_id`. Migration 037 stores which kind of gateway
+  asserted a call's identity.
+
 ### Changed
 
 - With no admin-enabled `[[auth]]` block, the UI and the review/operator APIs

@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/validmind/atryum/internal/auth"
+	"github.com/validmind/atryum/internal/gateway"
 	"github.com/validmind/atryum/internal/invocation"
 	"github.com/validmind/atryum/internal/store"
 	"github.com/validmind/atryum/pkg/authz"
@@ -19,6 +20,8 @@ type (
 	Decider = invocation.Decider
 	// ToolCall is the call a Decider is asked about.
 	ToolCall = invocation.ToolCall
+	// AssertedIdentity is who an AI gateway vouched for on a ToolCall.
+	AssertedIdentity = invocation.AssertedIdentity
 	// Decision is a Decider's result.
 	Decision = invocation.Decision
 	// Explanation is a Decider's account of a decision (Decision.Explanation,
@@ -62,6 +65,11 @@ type ResolvePending func(ctx context.Context, tx *sql.Tx, invocationID string, a
 // ErrNotPending is wrapped by ResolvePending when the call is no longer pending.
 var ErrNotPending = invocation.ErrNotPending
 
+// DecisionDeadline reports when the caller of this decision (an AI gateway
+// with a short timeout) stops waiting, if it set one. A decider bounds its
+// slow steps by it; see invocation.WithDecisionDeadline.
+var DecisionDeadline = invocation.DecisionDeadline
+
 // ErrIdempotencyConflict is returned (HTTP 409 on the API) when an agent
 // reuses an idempotency key for a different request. Keys are scoped per
 // agent, so another agent's key never conflicts.
@@ -89,6 +97,7 @@ type options struct {
 	databaseURL         string
 	requireAgentAuth    bool
 	stuckReports        bool
+	gateway             GatewayOptions
 	resolveHooks        []func(ResolvePending)
 	dbPool              DBPool
 	upstreamCredentials UpstreamCredentials
@@ -238,6 +247,36 @@ func (o options) agentAPIKeysEnabled() bool {
 func WithStuckReports() Option {
 	return func(o *options) { o.stuckReports = true }
 }
+
+// GatewayOptions configure /api/v1/gateway/*, where AI gateways (LiteLLM,
+// TrueFoundry's AI Gateway) show each model response before the agent sees
+// it, and each request before the model does. The routes are always mounted; only agent API keys with the
+// "asserter" capability may call them.
+type GatewayOptions = gateway.Options
+
+// WithGateway supplies the review link a held gateway call returns and a sink
+// for gateway events that have no invocation (a rejected key, a check that
+// failed closed, a tool that ran without a check).
+func WithGateway(g GatewayOptions) Option {
+	return func(o *options) { o.gateway = g }
+}
+
+// The kinds GatewayOptions.OnEvent receives. The first three mean a call was
+// refused or an outcome lost; the last three mean a tool ran, and say how
+// Atryum came to know.
+const (
+	GatewayEventAsserterRejected  = gateway.EventAsserterRejected
+	GatewayEventCheckFailed       = gateway.EventCheckFailed
+	GatewayEventOutcomeUnrecorded = gateway.EventOutcomeUnrecorded
+	// A tool result reached the model for a call that never came through
+	// llm/output: the gateway sent a response on without showing it.
+	GatewayEventUncheckedToolResult = gateway.EventUncheckedToolResult
+	// A tool result reached the model for a call Atryum took out of the
+	// response: the gateway sent the model's original response on.
+	GatewayEventWithheldCallRan = gateway.EventWithheldCallRan
+	// The model provider ran a tool itself (web search, code execution).
+	GatewayEventProviderToolRan = gateway.EventProviderToolRan
+)
 
 // DBPool sizes the PostgreSQL connection pool; see WithDBPool.
 type DBPool = store.DBPool

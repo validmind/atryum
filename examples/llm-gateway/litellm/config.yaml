@@ -1,0 +1,22 @@
+# LiteLLM Proxy with Agent Authority checking every model exchange.
+# The two models point at ../mockmodel; replace them with your providers.
+model_list:
+  - model_name: mock-chat
+    litellm_params:
+      model: openai/mock-model
+      api_base: http://host.docker.internal:4101/v1
+      api_key: unused
+  - model_name: mock-claude
+    litellm_params:
+      model: anthropic/mock-model
+      api_base: http://host.docker.internal:4101
+      api_key: unused
+
+guardrails:
+  - guardrail_name: agent-authority
+    litellm_params:
+      guardrail: agent_authority_guardrail.AgentAuthorityGuardrail
+      mode: [pre_call, post_call]
+      default_on: true
+      api_base: os.environ/AGENT_AUTHORITY_URL
+      api_key: os.environ/AGENT_AUTHORITY_GATEWAY_KEY

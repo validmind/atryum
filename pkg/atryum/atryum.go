@@ -30,6 +30,7 @@ import (
 	"github.com/validmind/atryum/internal/auth"
 	backendclient "github.com/validmind/atryum/internal/backend"
 	"github.com/validmind/atryum/internal/config"
+	"github.com/validmind/atryum/internal/gateway"
 	"github.com/validmind/atryum/internal/invocation"
 	"github.com/validmind/atryum/internal/invocation/policy"
 	"github.com/validmind/atryum/internal/managedagents"
@@ -500,6 +501,7 @@ func runServer(args []string, o options) error {
 	if o.stuckReports {
 		handler.EnableStuckReports()
 	}
+	handler.SetGateway(gateway.New(service, o.gateway))
 	for _, register := range o.extraRoutes {
 		handler.AddExtraRoutes(register)
 	}
