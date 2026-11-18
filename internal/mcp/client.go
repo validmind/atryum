@@ -289,6 +289,14 @@ type InvokeResult struct {
 	StatusCode int
 	Body       []byte
 	Failed     bool
+	// Stream is the intermediate messages the upstream sent before its
+	// response, up to maxRecordedStreamEvents; StreamDropped counts the rest.
+	Stream        []StreamEvent
+	StreamDropped int
+	// UpstreamRequestID and UpstreamSessionID name the upstream request the
+	// result answers, for correlating the audit record with upstream logs.
+	UpstreamRequestID string
+	UpstreamSessionID string
 }
 
 type ForwardResult struct {
@@ -508,7 +516,7 @@ func (c *Client) Invoke(ctx context.Context, upstream Upstream, tool string, inp
 	}()
 	switch upstream.Mode {
 	case UpstreamModeStdio:
-		return c.invokeStdio(ctx, upstream, tool, input)
+		return c.invokeStdio(ctx, upstream, tool, input, requestID)
 	case UpstreamModeHTTP, "":
 		return c.invokeHTTP(ctx, upstream, tool, input, requestID)
 	default:
@@ -700,22 +708,34 @@ func (c *Client) invokeHTTP(ctx context.Context, upstream Upstream, tool string,
 	if err := c.ensureHTTPSession(ctx, upstream); err != nil {
 		return InvokeResult{}, err
 	}
+	stream := newStreamRecorder(ctx)
 	params := map[string]any{"name": tool, "arguments": input}
-	if requestID != nil && *requestID != "" {
-		params["_meta"] = map[string]any{"atryumRequestId": *requestID}
+	if meta := stream.toolCallMeta(requestID); meta != nil {
+		params["_meta"] = meta
 	}
-	body, err := json.Marshal(Envelope{JSONRPC: "2.0", ID: json.RawMessage([]byte("1")), Method: "tools/call", Params: mustRawJSON(params)})
+	upstreamID := json.RawMessage([]byte("1"))
+	body, err := json.Marshal(Envelope{JSONRPC: "2.0", ID: upstreamID, Method: "tools/call", Params: mustRawJSON(params)})
 	if err != nil {
 		return InvokeResult{}, err
 	}
-	result, err := c.doHTTPEnvelopeWithSessionRetry(ctx, upstream, body, DefaultMCPProtocolVersion)
+	onEvent := func(evt sseEvent) {
+		if !stream.observe(evt.Name, evt.Data) {
+			c.debugf("upstream http tools.call dropped stream message server=%s event=%q payload=%s", upstream.Name, evt.Name, truncateForLog(evt.Data, 300))
+		}
+	}
+	finish := func(r InvokeResult, result ForwardResult) InvokeResult {
+		r.Stream, r.StreamDropped = stream.events, stream.dropped
+		r.UpstreamRequestID, r.UpstreamSessionID = string(upstreamID), result.SessionID
+		return r
+	}
+	result, err := c.doHTTPEnvelopeRelayWithSessionRetry(ctx, upstream, body, DefaultMCPProtocolVersion, upstreamID, onEvent)
 	if err != nil {
 		return InvokeResult{}, err
 	}
 	if err := unauthorizedErr(result); err != nil {
 		return InvokeResult{}, err
 	}
-	rpcResp, err := decodeRPCResponse(result, json.RawMessage([]byte("1")))
+	rpcResp, err := decodeRPCResponse(result, upstreamID)
 	if err != nil {
 		return InvokeResult{}, err
 	}
@@ -726,12 +746,12 @@ func (c *Client) invokeHTTP(ctx context.Context, upstream Upstream, tool string,
 				c.debugf("upstream http tools.call session retry init failed server=%s session=%q err=%v", upstream.Name, result.SessionID, retryErr)
 				return InvokeResult{}, retryErr
 			}
-			result, err = c.doHTTPEnvelopeWithSessionRetry(ctx, upstream, body, DefaultMCPProtocolVersion)
+			result, err = c.doHTTPEnvelopeRelayWithSessionRetry(ctx, upstream, body, DefaultMCPProtocolVersion, upstreamID, onEvent)
 			if err != nil {
 				c.debugf("upstream http tools.call session retry transport failed server=%s err=%v", upstream.Name, err)
 				return InvokeResult{}, err
 			}
-			rpcResp, err = decodeRPCResponse(result, json.RawMessage([]byte("1")))
+			rpcResp, err = decodeRPCResponse(result, upstreamID)
 			if err != nil {
 				c.debugf("upstream http tools.call session retry decode failed server=%s status=%d err=%v", upstream.Name, result.StatusCode, err)
 				return InvokeResult{}, err
@@ -740,7 +760,7 @@ func (c *Client) invokeHTTP(ctx context.Context, upstream Upstream, tool string,
 	}
 	if len(rpcResp.Error) > 0 && string(rpcResp.Error) != "null" {
 		c.debugf("upstream http tools.call rpc error server=%s status=%d error=%s", upstream.Name, result.StatusCode, truncateForLog(rpcResp.Error, 600))
-		return InvokeResult{StatusCode: result.StatusCode, Body: rpcResp.Error, Failed: true}, nil
+		return finish(InvokeResult{StatusCode: result.StatusCode, Body: rpcResp.Error, Failed: true}, result), nil
 	}
 	bodyBytes := rpcResp.Result
 	if len(bodyBytes) == 0 || string(bodyBytes) == "null" {
@@ -748,7 +768,7 @@ func (c *Client) invokeHTTP(ctx context.Context, upstream Upstream, tool string,
 	}
 	failed := result.StatusCode >= http.StatusBadRequest || looksLikeToolError(bodyBytes)
 	c.debugf("upstream http tools.call server=%s status=%d failed=%t", upstream.Name, result.StatusCode, failed)
-	return InvokeResult{StatusCode: result.StatusCode, Body: bodyBytes, Failed: failed}, nil
+	return finish(InvokeResult{StatusCode: result.StatusCode, Body: bodyBytes, Failed: failed}, result), nil
 }
 
 func (c *Client) listToolsHTTP(ctx context.Context, upstream Upstream) ([]Tool, error) {
@@ -829,6 +849,14 @@ func (c *Client) doHTTPEnvelopeRaw(ctx context.Context, upstream Upstream, body 
 }
 
 func (c *Client) doHTTPEnvelope(ctx context.Context, upstream Upstream, body []byte, protocolVersion string) (ForwardResult, error) {
+	return c.doHTTPEnvelopeRelay(ctx, upstream, body, protocolVersion, nil, nil)
+}
+
+// doHTTPEnvelopeRelay is doHTTPEnvelope that, given onEvent, reads a
+// successful text/event-stream response as it arrives: each event before the
+// response matching expectedID goes to onEvent, and the result's Body is that
+// response alone, as application/json.
+func (c *Client) doHTTPEnvelopeRelay(ctx context.Context, upstream Upstream, body []byte, protocolVersion string, expectedID json.RawMessage, onEvent func(sseEvent)) (ForwardResult, error) {
 	sessionID := c.getSession(sessionKey(ctx, upstream))
 	effectiveProtocol := protocolVersion
 	if sessionID != "" {
@@ -865,6 +893,13 @@ func (c *Client) doHTTPEnvelope(ctx context.Context, upstream Upstream, body []b
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		return ForwardResult{StatusCode: resp.StatusCode, Body: bodyBytes, ContentType: contentType, ProtocolVersion: resp.Header.Get("MCP-Protocol-Version"), SessionExpired: true, SessionID: sessionID}, nil
 	}
+	if onEvent != nil && resp.StatusCode < http.StatusBadRequest && strings.Contains(strings.ToLower(contentType), "text/event-stream") {
+		payload, err := relaySSEJSONRPCResponse(resp.Body, expectedID, onEvent)
+		if err != nil {
+			return ForwardResult{}, err
+		}
+		return ForwardResult{StatusCode: resp.StatusCode, Body: payload, ContentType: "application/json", ProtocolVersion: resp.Header.Get("MCP-Protocol-Version"), SessionID: sessionID}, nil
+	}
 	respBody := new(bytes.Buffer)
 	_, err = respBody.ReadFrom(resp.Body)
 	if err != nil {
@@ -874,14 +909,18 @@ func (c *Client) doHTTPEnvelope(ctx context.Context, upstream Upstream, body []b
 }
 
 func (c *Client) doHTTPEnvelopeWithSessionRetry(ctx context.Context, upstream Upstream, body []byte, protocolVersion string) (ForwardResult, error) {
-	result, err := c.doHTTPEnvelope(ctx, upstream, body, protocolVersion)
+	return c.doHTTPEnvelopeRelayWithSessionRetry(ctx, upstream, body, protocolVersion, nil, nil)
+}
+
+func (c *Client) doHTTPEnvelopeRelayWithSessionRetry(ctx context.Context, upstream Upstream, body []byte, protocolVersion string, expectedID json.RawMessage, onEvent func(sseEvent)) (ForwardResult, error) {
+	result, err := c.doHTTPEnvelopeRelay(ctx, upstream, body, protocolVersion, expectedID, onEvent)
 	if err != nil || !result.SessionExpired {
 		return result, err
 	}
 	if err := c.reinitializeRequiredHTTPSession(ctx, upstream, result.SessionID); err != nil {
 		return ForwardResult{}, err
 	}
-	return c.doHTTPEnvelope(ctx, upstream, body, protocolVersion)
+	return c.doHTTPEnvelopeRelay(ctx, upstream, body, protocolVersion, expectedID, onEvent)
 }
 
 // sessionKey names an upstream's cached session by tenant and credential
@@ -1114,7 +1153,7 @@ func extractForwardResultErrorDetail(result ForwardResult, expectedID json.RawMe
 	return extractErrorDetail(result.Body)
 }
 
-func (c *Client) invokeStdio(ctx context.Context, upstream Upstream, tool string, input map[string]any) (InvokeResult, error) {
+func (c *Client) invokeStdio(ctx context.Context, upstream Upstream, tool string, input map[string]any, requestID *string) (InvokeResult, error) {
 	if upstream.Command == "" {
 		return InvokeResult{}, fmt.Errorf("stdio upstream %q missing command", upstream.Name)
 	}
@@ -1142,38 +1181,49 @@ func (c *Client) invokeStdio(ctx context.Context, upstream Upstream, tool string
 	}()
 
 	reader := bufio.NewReader(stdout)
-	if err := writeRPC(stdin, c.nextRPCID(), "initialize", map[string]any{
+	initID := c.nextRPCID()
+	if err := writeRPC(stdin, initID, "initialize", map[string]any{
 		"protocolVersion": DefaultMCPProtocolVersion,
 		"clientInfo":      map[string]any{"name": "atryum", "version": version.Version},
 		"capabilities":    map[string]any{},
 	}); err != nil {
 		return InvokeResult{}, err
 	}
-	if _, err := readRPC(reader); err != nil {
+	if _, err := readRPC(reader, initID, nil); err != nil {
 		return InvokeResult{}, err
 	}
 	_ = writeRPC(stdin, c.nextRPCID(), "notifications/initialized", map[string]any{})
-	if err := writeRPC(stdin, c.nextRPCID(), "tools/call", map[string]any{
-		"name":      tool,
-		"arguments": input,
-	}); err != nil {
+	stream := newStreamRecorder(ctx)
+	params := map[string]any{"name": tool, "arguments": input}
+	if meta := stream.toolCallMeta(requestID); meta != nil {
+		params["_meta"] = meta
+	}
+	callID := c.nextRPCID()
+	if err := writeRPC(stdin, callID, "tools/call", params); err != nil {
 		return InvokeResult{}, err
 	}
-	resp, err := readRPC(reader)
+	resp, err := readRPC(reader, callID, func(line []byte) {
+		if !stream.observe("", line) {
+			c.debugf("upstream stdio tools.call dropped message server=%s payload=%s", upstream.Name, truncateForLog(line, 300))
+		}
+	})
 	if err != nil {
 		if stderr.Len() > 0 {
 			return InvokeResult{}, fmt.Errorf("stdio upstream error: %s", strings.TrimSpace(stderr.String()))
 		}
 		return InvokeResult{}, err
 	}
+	result := InvokeResult{StatusCode: http.StatusOK, Stream: stream.events, StreamDropped: stream.dropped, UpstreamRequestID: strconv.FormatInt(callID, 10)}
 	if len(resp.Error) > 0 && string(resp.Error) != "null" {
-		return InvokeResult{StatusCode: http.StatusBadGateway, Body: resp.Error, Failed: true}, nil
+		result.StatusCode, result.Body, result.Failed = http.StatusBadGateway, resp.Error, true
+		return result, nil
 	}
-	body := resp.Result
-	if len(body) == 0 {
-		body = []byte(`{"ok":true}`)
+	result.Body = resp.Result
+	if len(result.Body) == 0 {
+		result.Body = []byte(`{"ok":true}`)
 	}
-	return InvokeResult{StatusCode: http.StatusOK, Body: body, Failed: looksLikeToolError(body)}, nil
+	result.Failed = looksLikeToolError(result.Body)
+	return result, nil
 }
 
 func (c *Client) listToolsStdio(ctx context.Context, upstream Upstream) ([]Tool, error) {
@@ -1203,21 +1253,23 @@ func (c *Client) listToolsStdio(ctx context.Context, upstream Upstream) ([]Tool,
 		_ = cmd.Wait()
 	}()
 	reader := bufio.NewReader(stdout)
-	if err := writeRPC(stdin, c.nextRPCID(), "initialize", map[string]any{
+	initID := c.nextRPCID()
+	if err := writeRPC(stdin, initID, "initialize", map[string]any{
 		"protocolVersion": DefaultMCPProtocolVersion,
 		"clientInfo":      map[string]any{"name": "atryum", "version": version.Version},
 		"capabilities":    map[string]any{},
 	}); err != nil {
 		return nil, err
 	}
-	if _, err := readRPC(reader); err != nil {
+	if _, err := readRPC(reader, initID, nil); err != nil {
 		return nil, err
 	}
 	_ = writeRPC(stdin, c.nextRPCID(), "notifications/initialized", map[string]any{})
-	if err := writeRPC(stdin, c.nextRPCID(), "tools/list", map[string]any{}); err != nil {
+	listID := c.nextRPCID()
+	if err := writeRPC(stdin, listID, "tools/list", map[string]any{}); err != nil {
 		return nil, err
 	}
-	resp, err := readRPC(reader)
+	resp, err := readRPC(reader, listID, nil)
 	if err != nil {
 		if stderr.Len() > 0 {
 			return nil, fmt.Errorf("stdio upstream error: %s", strings.TrimSpace(stderr.String()))
@@ -1413,7 +1465,8 @@ func (c *Client) testStdio(ctx context.Context, upstream Upstream) ConnectionTes
 		_ = cmd.Wait()
 	}()
 	reader := bufio.NewReader(stdout)
-	if err := writeRPC(stdin, c.nextRPCID(), "initialize", map[string]any{
+	initID := c.nextRPCID()
+	if err := writeRPC(stdin, initID, "initialize", map[string]any{
 		"protocolVersion": DefaultMCPProtocolVersion,
 		"clientInfo":      map[string]any{"name": "atryum", "version": version.Version},
 		"capabilities":    map[string]any{},
@@ -1421,7 +1474,7 @@ func (c *Client) testStdio(ctx context.Context, upstream Upstream) ConnectionTes
 		message := err.Error()
 		return ConnectionTestResult{Ok: false, Message: message, ConnectionStatus: ConnectionStatusUnreachable, AuthStatus: AuthStatusUnknown, LastCheckOK: false, LastErrorSummary: &message}
 	}
-	if _, err := readRPC(reader); err != nil {
+	if _, err := readRPC(reader, initID, nil); err != nil {
 		message := err.Error()
 		if stderr.Len() > 0 {
 			message = strings.TrimSpace(stderr.String())
@@ -1434,50 +1487,7 @@ func (c *Client) testStdio(ctx context.Context, upstream Upstream) ConnectionTes
 }
 
 func extractSSEJSONRPCResponse(r io.Reader, expectedID json.RawMessage) ([]byte, error) {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 1024*1024), 4*1024*1024)
-	var dataLines []string
-	flush := func() ([]byte, bool) {
-		if len(dataLines) == 0 {
-			return nil, false
-		}
-		payload := []byte(strings.Join(dataLines, "\n"))
-		dataLines = nil
-		match := classifyJSONRPCResponsePayload(payload, expectedID)
-		if match == jsonRPCResponseIDMatch || match == jsonRPCResponseNullIDError {
-			return payload, true
-		}
-		return nil, false
-	}
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
-			if payload, ok := flush(); ok {
-				return payload, nil
-			}
-			continue
-		}
-		if strings.HasPrefix(line, ":") {
-			continue
-		}
-		field, value, ok := strings.Cut(line, ":")
-		if !ok {
-			field = line
-			value = ""
-		} else if strings.HasPrefix(value, " ") {
-			value = strings.TrimPrefix(value, " ")
-		}
-		if field == "data" {
-			dataLines = append(dataLines, value)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	if payload, ok := flush(); ok {
-		return payload, nil
-	}
-	return nil, fmt.Errorf("no JSON-RPC response in SSE stream")
+	return relaySSEJSONRPCResponse(r, expectedID, nil)
 }
 
 type jsonRPCResponseMatch int
@@ -1686,7 +1696,12 @@ func writeRPC(w interface{ Write([]byte) (int, error) }, id int64, method string
 	return err
 }
 
-func readRPC(reader *bufio.Reader) (rpcResponse, error) {
+// readRPC reads stdio messages until the response to request id. Messages
+// before it are passed to onNotification when it is set, and otherwise
+// skipped: notifications, requests from the server, and responses to other
+// ids alike.
+func readRPC(reader *bufio.Reader, id int64, onNotification func([]byte)) (rpcResponse, error) {
+	expected := json.RawMessage(strconv.FormatInt(id, 10))
 	for {
 		line, err := reader.ReadBytes('\n')
 		if err != nil {
@@ -1700,10 +1715,12 @@ func readRPC(reader *bufio.Reader) (rpcResponse, error) {
 		if err := json.Unmarshal(line, &resp); err != nil {
 			continue
 		}
-		if len(resp.ID) == 0 && len(resp.Result) == 0 && len(resp.Error) == 0 {
-			continue
+		if classifyJSONRPCResponsePayload(line, expected) != jsonRPCResponseNoMatch {
+			return resp, nil
 		}
-		return resp, nil
+		if onNotification != nil {
+			onNotification(line)
+		}
 	}
 }
 
