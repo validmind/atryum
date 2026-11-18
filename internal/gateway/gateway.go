@@ -469,7 +469,9 @@ func personalSession(sessionID, userID string) string {
 	if sessionID == "" || userID == "" {
 		return sessionID
 	}
-	return sessionID + ":" + userID
+	// Not ":", which Agent Authority's console (and its hook) read as
+	// "<session>:<subagent>".
+	return sessionID + " · " + userID
 }
 
 // canonicalJSON encodes v with sorted object keys, no insignificant

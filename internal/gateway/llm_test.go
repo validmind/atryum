@@ -198,7 +198,7 @@ func TestOutputDecidesEachCallAndWithholdsTheDeniedOne(t *testing.T) {
 		byTool[s.Tool] = s
 	}
 	got := byTool["get_ticket"]
-	if got.RequestID == nil || *got.RequestID != "toolu_A" || got.Source != "zendesk" || got.ClientName != "generic-llm-gateway" || got.Asserted.UserID != "emma" || got.ClientSessionID != "s-1:emma" || !strings.Contains(got.SessionContext, "Refund ticket 7 in full") {
+	if got.RequestID == nil || *got.RequestID != "toolu_A" || got.Source != "zendesk" || got.ClientName != "generic-llm-gateway" || got.Asserted.UserID != "emma" || got.ClientSessionID != "s-1 · emma" || !strings.Contains(got.SessionContext, "Refund ticket 7 in full") {
 		t.Fatalf("submit = %+v", got)
 	}
 	if svc.status("inv_1") == invocation.StatusApproved && svc.status("inv_2") == invocation.StatusApproved {
@@ -457,7 +457,7 @@ func TestTrueFoundryLLMHooks(t *testing.T) {
 	if out["verdict"] != true || out["transformed"] != true || strings.Contains(string(result), "call_2") || !strings.Contains(string(result), "No destructive SQL.") {
 		t.Fatalf("mutate: got %v", out)
 	}
-	if a := svc.submits[0]; a.Asserted.UserID != "u-1" || a.Asserted.Vendor != "truefoundry" || a.ClientSessionID != "s-9:u-1" || a.ClientName != "truefoundry-llm-gateway" {
+	if a := svc.submits[0]; a.Asserted.UserID != "u-1" || a.Asserted.Vendor != "truefoundry" || a.ClientSessionID != "s-9 · u-1" || a.ClientName != "truefoundry-llm-gateway" {
 		t.Fatalf("submit = %+v asserted=%+v", a, a.Asserted)
 	}
 	// A caller using a virtual account's token arrives as that account.
@@ -556,7 +556,7 @@ func TestTrueFoundryLLMRealPayloadShape(t *testing.T) {
 	}
 	for _, s := range svc.submits {
 		a := s.Asserted
-		if a.UserID != "cjaysov9examplesubjectid" || a.UserDisplay != "pat@example.com" || a.UserType != "user" || s.ClientSessionID != "support-chat-1:cjaysov9examplesubjectid" || a.SessionID != "support-chat-1" || s.ClientName != "truefoundry-llm-gateway" {
+		if a.UserID != "cjaysov9examplesubjectid" || a.UserDisplay != "pat@example.com" || a.UserType != "user" || s.ClientSessionID != "support-chat-1 · cjaysov9examplesubjectid" || a.SessionID != "support-chat-1" || s.ClientName != "truefoundry-llm-gateway" {
 			t.Fatalf("submit for %s: asserted=%+v session=%q client=%q", s.Tool, a, s.ClientSessionID, s.ClientName)
 		}
 	}
