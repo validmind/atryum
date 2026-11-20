@@ -210,6 +210,7 @@ type Handler struct {
 	apiKeysRepo      apiKeysRepo
 	keyResolver      auth.AgentKeyResolver
 	requestTenant    func(*http.Request) (string, error)
+	agentMiddleware  func(http.Handler) http.Handler
 	authorizer       authz.Authorizer
 	userProvisioner  auth.UserProvisioner
 
@@ -1097,6 +1098,14 @@ func (h *Handler) SetRequestTenant(f func(*http.Request) (string, error)) {
 	h.requestTenant = f
 }
 
+// SetAgentMiddleware wraps every agent runtime route's request in mw once
+// its tenant is placed (SetRequestTenant), before anything authenticates
+// it: mw sees the tenant on the request's context and can answer the
+// request itself, for example to cap each tenant's requests in flight.
+func (h *Handler) SetAgentMiddleware(mw func(http.Handler) http.Handler) {
+	h.agentMiddleware = mw
+}
+
 // SetAuthz installs the operator-API authorizer and the user provisioner
 // consulted by the operator auth middleware. When authorizer is nil the
 // handler falls back to authz.Default over the installed membership store.
@@ -1332,6 +1341,9 @@ func (h *Handler) agentRuntimeHandler(next http.Handler) http.Handler {
 		auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug, KeyResolver: h.keyResolver},
 	)(next)
 	handler = h.noAuthAgentIDHint(handler)
+	if h.agentMiddleware != nil {
+		handler = h.agentMiddleware(handler)
+	}
 	handler = h.withRequestTenant(handler)
 	if h.keyResolver != nil {
 		return handler

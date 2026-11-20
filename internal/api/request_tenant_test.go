@@ -115,3 +115,59 @@ func TestRequestTenantRefusalKeepsTheChallenge(t *testing.T) {
 		t.Fatalf("%d, WWW-Authenticate %q; want 401 with the resource metadata", w.Code, c)
 	}
 }
+
+// SetAgentMiddleware's wrap runs once the request is placed in its tenant
+// and before the key lookup, so it can refuse a tenant's request without
+// the lookup running.
+func TestAgentMiddlewareSeesTheTenant(t *testing.T) {
+	looked := 0
+	keys := countingKeys{keyTenants{"atr_acme": "acme", "atr_bank": "bank"}, &looked}
+	h := &Handler{keyResolver: keys}
+	h.SetRequestTenant(func(r *http.Request) (string, error) {
+		return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer atr_"), nil
+	})
+	var seen []string
+	h.SetAgentMiddleware(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			seen = append(seen, tenant.From(r.Context()))
+			if tenant.From(r.Context()) == "bank" {
+				http.Error(w, "busy", http.StatusTooManyRequests)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	})
+	var ran string
+	route := h.agentRuntimeHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ran = auth.AgentIDFromContext(r.Context())
+	}))
+	for _, c := range []struct {
+		bearer, ran  string
+		code, looked int
+	}{
+		{"atr_acme", "agent-acme", http.StatusOK, 1},
+		{"atr_bank", "", http.StatusTooManyRequests, 0},
+	} {
+		ran, looked = "", 0
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest("POST", "/api/v1/external/invocations", nil)
+		r.Header.Set("Authorization", "Bearer "+c.bearer)
+		route.ServeHTTP(w, r)
+		if w.Code != c.code || ran != c.ran || looked != c.looked {
+			t.Errorf("%s: %d, ran %q, %d lookups; want %d, %q, %d", c.bearer, w.Code, ran, looked, c.code, c.ran, c.looked)
+		}
+	}
+	if strings.Join(seen, ",") != "acme,bank" {
+		t.Errorf("middleware saw tenants %v, want [acme bank]", seen)
+	}
+}
+
+type countingKeys struct {
+	keyTenants
+	n *int
+}
+
+func (k countingKeys) ResolveAgentKey(ctx context.Context, token string) (auth.Identity, error) {
+	*k.n++
+	return k.keyTenants.ResolveAgentKey(ctx, token)
+}
