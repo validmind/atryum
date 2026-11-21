@@ -1099,9 +1099,10 @@ func (h *Handler) SetRequestTenant(f func(*http.Request) (string, error)) {
 }
 
 // SetAgentMiddleware wraps every agent runtime route's request in mw once
-// its tenant is placed (SetRequestTenant), before anything authenticates
-// it: mw sees the tenant on the request's context and can answer the
-// request itself, for example to cap each tenant's requests in flight.
+// it is authenticated: mw sees the tenant (SetRequestTenant) and the agent
+// on the request's context, and can answer the request itself, for example
+// to cap each tenant's requests in flight. A request with a credential that
+// doesn't verify never reaches mw. A second call replaces the first.
 func (h *Handler) SetAgentMiddleware(mw func(http.Handler) http.Handler) {
 	h.agentMiddleware = mw
 }
@@ -1335,15 +1336,15 @@ func (h *Handler) agentRuntimeHandler(next http.Handler) http.Handler {
 			inner.ServeHTTP(w, r)
 		})
 	}
+	if h.agentMiddleware != nil {
+		next = h.agentMiddleware(next)
+	}
 	handler := auth.MiddlewareWithOptions(
 		h.authValidator,
 		"/.well-known/oauth-protected-resource",
 		auth.MiddlewareOptions{SkipVerify: h.authDebugSkip, DebugLogIdentity: h.debug, KeyResolver: h.keyResolver},
 	)(next)
 	handler = h.noAuthAgentIDHint(handler)
-	if h.agentMiddleware != nil {
-		handler = h.agentMiddleware(handler)
-	}
 	handler = h.withRequestTenant(handler)
 	if h.keyResolver != nil {
 		return handler

@@ -327,12 +327,15 @@ func WithRequestTenant(f RequestTenant) Option {
 }
 
 // WithAgentMiddleware wraps every agent route's request (the routes
-// WithRequestTenant covers) in mw, after the request is placed in its
-// tenant and before Atryum authenticates it. mw reads the tenant with
-// tenant.From and may answer the request itself: an embedding program that
-// serves many tenants caps each one's requests in flight with it, so one
-// tenant's burst can't hold every database connection. Without
-// WithRequestTenant, every request runs as tenant.Default.
+// WithRequestTenant covers) in mw, once Atryum has authenticated it. mw
+// reads the tenant with tenant.From and may answer the request itself: an
+// embedding program that serves many tenants caps each one's requests in
+// flight with it, so one tenant's burst can't hold every database
+// connection. A request whose credential doesn't verify never reaches mw,
+// so a caller can't use up a tenant's share by naming it. With
+// WithRequireAgentAuth, only requests with a verified agent identity reach
+// it. Without WithRequestTenant, every request runs as tenant.Default. A
+// second WithAgentMiddleware replaces the first.
 func WithAgentMiddleware(mw func(http.Handler) http.Handler) Option {
 	return func(o *options) { o.agentMiddleware = mw }
 }

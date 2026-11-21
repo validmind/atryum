@@ -116,20 +116,23 @@ func TestRequestTenantRefusalKeepsTheChallenge(t *testing.T) {
 	}
 }
 
-// SetAgentMiddleware's wrap runs once the request is placed in its tenant
-// and before the key lookup, so it can refuse a tenant's request without
-// the lookup running.
-func TestAgentMiddlewareSeesTheTenant(t *testing.T) {
+// SetAgentMiddleware's wrap runs once the request is authenticated: it sees
+// the tenant and the agent, can refuse a tenant's request, and never sees a
+// request whose credential doesn't verify, whatever tenant it was placed in.
+func TestAgentMiddlewareRunsAfterAuth(t *testing.T) {
 	looked := 0
 	keys := countingKeys{keyTenants{"atr_acme": "acme", "atr_bank": "bank"}, &looked}
 	h := &Handler{keyResolver: keys}
 	h.SetRequestTenant(func(r *http.Request) (string, error) {
-		return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer atr_"), nil
+		if r.Header.Get("Authorization") == "Bearer atr_acme" {
+			return "acme", nil
+		}
+		return "bank", nil // atr_bank, and atr_forged naming bank
 	})
 	var seen []string
 	h.SetAgentMiddleware(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			seen = append(seen, tenant.From(r.Context()))
+			seen = append(seen, tenant.From(r.Context())+"/"+auth.AgentIDFromContext(r.Context()))
 			if tenant.From(r.Context()) == "bank" {
 				http.Error(w, "busy", http.StatusTooManyRequests)
 				return
@@ -142,23 +145,27 @@ func TestAgentMiddlewareSeesTheTenant(t *testing.T) {
 		ran = auth.AgentIDFromContext(r.Context())
 	}))
 	for _, c := range []struct {
-		bearer, ran  string
-		code, looked int
+		bearer, ran string
+		code        int
 	}{
-		{"atr_acme", "agent-acme", http.StatusOK, 1},
-		{"atr_bank", "", http.StatusTooManyRequests, 0},
+		{"atr_acme", "agent-acme", http.StatusOK},
+		{"atr_bank", "", http.StatusTooManyRequests},
+		{"atr_forged", "", http.StatusUnauthorized},
 	} {
-		ran, looked = "", 0
+		ran = ""
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest("POST", "/api/v1/external/invocations", nil)
 		r.Header.Set("Authorization", "Bearer "+c.bearer)
 		route.ServeHTTP(w, r)
-		if w.Code != c.code || ran != c.ran || looked != c.looked {
-			t.Errorf("%s: %d, ran %q, %d lookups; want %d, %q, %d", c.bearer, w.Code, ran, looked, c.code, c.ran, c.looked)
+		if w.Code != c.code || ran != c.ran {
+			t.Errorf("%s: %d, ran %q; want %d, %q", c.bearer, w.Code, ran, c.code, c.ran)
 		}
 	}
-	if strings.Join(seen, ",") != "acme,bank" {
-		t.Errorf("middleware saw tenants %v, want [acme bank]", seen)
+	if got := strings.Join(seen, ","); got != "acme/agent-acme,bank/agent-bank" {
+		t.Errorf("middleware saw %q, want acme/agent-acme,bank/agent-bank", got)
+	}
+	if looked != 3 {
+		t.Errorf("%d key lookups, want 3", looked)
 	}
 }
 

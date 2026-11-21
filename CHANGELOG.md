@@ -10,11 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `atryum.WithAgentMiddleware` wraps every agent route's request (the routes
-  `WithRequestTenant` covers) once it is placed in its tenant and before
-  Atryum authenticates it. The middleware reads the tenant with
-  `tenant.From` and may answer the request itself, so an embedding program
-  serving many tenants can cap each one's requests in flight and keep one
-  tenant's burst from holding every database connection.
+  `WithRequestTenant` covers) once Atryum has authenticated it. The
+  middleware reads the tenant with `tenant.From` and may answer the request
+  itself, so an embedding program serving many tenants can cap each one's
+  requests in flight and keep one tenant's burst from holding every database
+  connection. A request whose credential doesn't verify never reaches it.
 
 ### Changed
 
