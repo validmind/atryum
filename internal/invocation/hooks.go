@@ -200,6 +200,58 @@ func (s *Service) updateFrom(from Status) func(context.Context, Invocation) erro
 	}
 }
 
+// defaultRedecideAfter is how long a submitted call may stay received
+// before a retry with its idempotency key decides it again.
+//
+// A call is saved as received before it is decided, and its decision
+// commits moments later. Deciding again sooner would only duplicate a
+// decision that is probably still in flight on a live replica (an LLM judge
+// can take seconds), and a client that retries quickly would multiply the
+// decider's work. Correctness does not rest on it: recordDecision records
+// one decision whoever finishes first. SubmittedAt is the saving replica's
+// clock, so skew between replicas shifts the wait by as much.
+const defaultRedecideAfter = 5 * time.Second
+
+// stranded reports whether inv, the call a retry with its idempotency key
+// found, is still undecided long enough after it was saved that the replica
+// deciding it has presumably died, so the retry should decide it.
+func (s *Service) stranded(inv Invocation) bool {
+	return inv.Status == StatusReceived && time.Since(inv.SubmittedAt) >= s.redecideAfter
+}
+
+// recordDecision commits inv's decision and evts in one transaction, only
+// while the row is still received. Whoever commits first records the call's
+// one decision; the others (a retry that decided it again, or the replica
+// that saved it finishing late) write nothing, and their transaction,
+// events and hook calls with it, rolls back. It returns the response for
+// the decision recorded, and whether it was this one.
+func (s *Service) recordDecision(ctx context.Context, inv Invocation, evts ...Event) (InvocationResponse, bool, error) {
+	err := s.commit(ctx, inv, s.updateFrom(StatusReceived), evts...)
+	if errors.Is(err, ErrInvalidTransition) {
+		cur, getErr := s.invocations.Get(ctx, inv.InvocationID)
+		if getErr != nil {
+			return InvocationResponse{}, false, getErr
+		}
+		return s.toResponse(cur), false, nil
+	}
+	if err != nil {
+		return InvocationResponse{}, false, err
+	}
+	return s.toResponse(inv), true, nil
+}
+
+// recordDenial is recordDecision for a denial, which outlives the request's
+// cancellation and, like commitOrLog, is returned even when it cannot be
+// recorded: the call stays stopped.
+func (s *Service) recordDenial(ctx context.Context, inv Invocation, evts ...Event) InvocationResponse {
+	resp, _, err := s.recordDecision(context.WithoutCancel(ctx), inv, evts...)
+	if err != nil {
+		slog.Error("invocation change NOT recorded", "invocation_id", inv.InvocationID, "status", inv.Status, "error", err)
+		return s.toResponse(inv)
+	}
+	return resp
+}
+
 // decide asks the decider, failing closed to deny on an error, a panic or an
 // unknown verdict.
 func (s *Service) decide(ctx context.Context, call ToolCall) (d Decision) {

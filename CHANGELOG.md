@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A `Submit` call left `received` because the process deciding it died before
+  the decision committed is decided by a retry with its idempotency key, 5
+  seconds or more after it was saved, instead of answering `received` forever.
+  The decision is recorded only while the call is still `received`, so retries
+  racing on several replicas, or the first replica finishing late, record one
+  decision and one set of events, and each caller gets that decision. A
+  decider may be asked more than once for such a call; side effects it has
+  outside Atryum's transaction can repeat. `Invoke` calls are not decided
+  again.
+- On the submit path, `invocation.rule_evaluated` events now commit with the
+  decision they lead to (and reach an event hook with the decided
+  invocation), not one by one before it.
+
 ### Changed
 
 - With no admin-enabled `[[auth]]` block, the UI and the review/operator APIs

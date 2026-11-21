@@ -66,6 +66,14 @@ rejected with `409 Conflict` (`invocation.ErrIdempotencyConflict`) and reveals n
 about the earlier call, and another agent's key never finds that agent's invocation.
 Without verified identity, a key is only as private as the agent ID a caller claims.
 
+A `Submit` call is saved as `received` before it is decided. If its decision never
+commits (the process deciding it died), a retry with its key, 5 seconds or more after
+the call was saved, decides it again. The decision is recorded only while the call is
+still `received`, in the same transaction as its events, so racing retries, or the
+first process finishing late, record one decision and every caller gets that one.
+The decider (or rules and AI evaluation) may be asked more than once for such a call.
+`Invoke` calls are not decided again.
+
 ## Component boundaries
 
 | Package | Responsibility | Must not own |

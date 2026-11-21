@@ -262,6 +262,7 @@ type Service struct {
 	inTx            TxRunner      // nil = each write commits on its own
 	decider         Decider       // nil = rules, plans and policy decide
 	hook            EventHook     // nil = no hook
+	redecideAfter   time.Duration // see stranded
 
 	toolCatalogMu sync.Mutex
 	toolCatalog   map[string]toolCatalogEntry
@@ -292,6 +293,7 @@ func NewService(
 		defaultTimeout: defaultTimeout,
 		approvalPoll:   250 * time.Millisecond,
 		wakePoll:       2 * time.Second,
+		redecideAfter:  defaultRedecideAfter,
 		toolCatalog:    make(map[string]toolCatalogEntry),
 	}
 }
@@ -1092,12 +1094,35 @@ func (s *Service) getOrCreateSession(ctx context.Context, agentID, clientSession
 // carries the tool, the agent-chosen input, the approval disposition, and the
 // recorded output (once the harness reports it via RecordExecution). Returns the
 // formatted history and the number of entries included.
-func (s *Service) buildSessionContext(ctx context.Context, sessionID string) (string, int) {
+func (s *Service) buildSessionContext(ctx context.Context, sessionID, exclude string) (string, int) {
+	limit := maxSessionContextInvocations
+	if exclude != "" {
+		limit++
+	}
 	items, total, err := s.invocations.List(ctx, InvocationListFilter{
 		SessionID: sessionID,
-		Limit:     maxSessionContextInvocations,
+		Limit:     uint64(limit),
 	})
-	if err != nil || len(items) == 0 {
+	if err != nil {
+		return "", 0
+	}
+	// exclude is the call being decided when it is already saved: it is not
+	// its own history.
+	if exclude != "" {
+		kept := make([]Invocation, 0, len(items))
+		for _, item := range items {
+			if item.InvocationID == exclude {
+				total--
+				continue
+			}
+			kept = append(kept, item)
+		}
+		if len(kept) > maxSessionContextInvocations {
+			kept = kept[:maxSessionContextInvocations]
+		}
+		items = kept
+	}
+	if len(items) == 0 {
 		return "", 0
 	}
 	newestFirst := make([]string, 0, len(items))
@@ -1557,6 +1582,9 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	// Upstream is always empty on this path (see below), which also keeps a
 	// key used for an Invoke from matching a Submit.
 	if prior, err := s.priorRequest(ctx, agentID, req.IdempotencyKey, "", req.Tool, inputJSON); err != nil || prior != nil {
+		if err == nil && s.stranded(*prior) {
+			return s.redecideSubmit(ctx, *prior, req, source, agentID, sessionContext, sessionContextMessages)
+		}
 		return prior.response(s), err
 	}
 	agentRec := s.resolveAgentRecord(ctx, agentID)
@@ -1580,7 +1608,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 			return InvocationResponse{}, err
 		}
 		sessionID = sess.ID
-		sessionContext, sessionContextMessages = s.buildSessionContext(ctx, sessionID)
+		sessionContext, sessionContextMessages = s.buildSessionContext(ctx, sessionID, "")
 	case s.sessions != nil && agentID != "" && strings.TrimSpace(req.ClientSessionID) != "":
 		harness := req.ClientName
 		if harness == "" {
@@ -1591,7 +1619,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 			return InvocationResponse{}, err
 		}
 		sessionID = resolved
-		sessionContext, sessionContextMessages = s.buildSessionContext(ctx, sessionID)
+		sessionContext, sessionContextMessages = s.buildSessionContext(ctx, sessionID, "")
 	}
 
 	now := time.Now().UTC()
@@ -1640,7 +1668,30 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	if sessionID != "" {
 		_ = s.sessions.TouchSession(ctx, sessionID, now.Add(externalSessionTTL)) // best-effort last-seen/expiry bump
 	}
+	return s.decideSubmit(ctx, inv, req, source, agentID, agentRec, sessionID, sessionContext, sessionContextMessages, now)
+}
 
+// redecideSubmit decides inv, a submitted call still received, again for a
+// retry with its idempotency key: the replica that saved it died before its
+// decision committed (see stranded). The decision is recorded only while the
+// row is still received, so racing retries, or the first replica finishing
+// late, record it once, and every caller gets the one recorded.
+func (s *Service) redecideSubmit(ctx context.Context, inv Invocation, req ExternalSubmitRequest, source, agentID, sessionContext string, sessionContextMessages int) (InvocationResponse, error) {
+	sessionID := ""
+	if inv.SessionID != nil {
+		sessionID = *inv.SessionID
+		sessionContext, sessionContextMessages = s.buildSessionContext(ctx, sessionID, inv.InvocationID)
+	}
+	slog.Info("deciding a received call again for a retry with its idempotency key",
+		"invocation_id", inv.InvocationID, "submitted_at", inv.SubmittedAt)
+	trace.SpanFromContext(ctx).SetAttributes(attribute.String("atryum.invocation.id", inv.InvocationID), attribute.Bool("atryum.redecided", true))
+	return s.decideSubmit(ctx, inv, req, source, agentID, s.resolveAgentRecord(ctx, agentID), sessionID, sessionContext, sessionContextMessages, inv.SubmittedAt)
+}
+
+// decideSubmit decides inv, saved as received, and records the decision with
+// its events (see recordDecision).
+func (s *Service) decideSubmit(ctx context.Context, inv Invocation, req ExternalSubmitRequest, source, agentID string, agentRec AgentRecord, sessionID, sessionContext string, sessionContextMessages int, now time.Time) (InvocationResponse, error) {
+	span := trace.SpanFromContext(ctx)
 	// An approved plan grants a scoped pass. The association is implicit —
 	// the agent's newest approved plan scoped to this source — because harness
 	// tool-input schemas leave the agent no channel to declare a plan id. A
@@ -1680,12 +1731,10 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 			inv.Status = StatusApproved
 			inv.Approval = newApproval("plan_approved", reason, confidence)
 			planPayload["disposition"] = "plan_approved"
-			if err := s.commit(ctx, inv, s.invocations.UpdateResult,
+			resp, _, err := s.recordDecision(ctx, inv,
 				Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(planPayload), CreatedAt: now},
-				Event{InvocationID: inv.InvocationID, EventType: "invocation.approved", Payload: mustJSON(map[string]any{"plan_id": planID, "auto_approved": true, "auto_reason": reason}), CreatedAt: time.Now().UTC()}); err != nil {
-				return InvocationResponse{}, err
-			}
-			return s.toResponse(inv), nil
+				Event{InvocationID: inv.InvocationID, EventType: "invocation.approved", Payload: mustJSON(map[string]any{"plan_id": planID, "auto_approved": true, "auto_reason": reason}), CreatedAt: time.Now().UTC()})
+			return resp, err
 
 		case planGateDeny:
 			completed := time.Now().UTC()
@@ -1694,23 +1743,22 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 			inv.Approval = newApproval("plan_denied", reason, confidence)
 			inv.Error = deniedError("Tool call denied by the approved plan.", reason, nil)
 			planPayload["disposition"] = "plan_denied"
-			s.commitOrLog(context.WithoutCancel(ctx), inv, s.invocations.UpdateResult,
+			return s.recordDenial(ctx, inv,
 				Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(planPayload), CreatedAt: now},
-				Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"plan_id": planID, "reason": reason, "confidence": confidence}), CreatedAt: completed})
-			return s.toResponse(inv), nil
+				Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"plan_id": planID, "reason": reason, "confidence": confidence}), CreatedAt: completed}), nil
 
 		default: // planGateHuman: adherence unverifiable — straight to a human.
 			inv.Status = StatusPendingApproval
 			inv.Approval = newApproval("plan_escalated", reason, confidence)
 			planPayload["disposition"] = "plan_escalated"
 			planPayload["disposition_reason"] = reason
-			if err := s.commit(ctx, inv, s.invocations.UpdateResult,
+			resp, won, err := s.recordDecision(ctx, inv,
 				Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(planPayload), CreatedAt: now},
-				Event{InvocationID: inv.InvocationID, EventType: "invocation.pending_approval", Payload: mustJSON(planPayload), CreatedAt: time.Now().UTC()}); err != nil {
-				return InvocationResponse{}, err
+				Event{InvocationID: inv.InvocationID, EventType: "invocation.pending_approval", Payload: mustJSON(planPayload), CreatedAt: time.Now().UTC()})
+			if won {
+				s.summarizePendingApproval(ctx, inv.InvocationID)
 			}
-			s.summarizePendingApproval(ctx, inv.InvocationID)
-			return s.toResponse(inv), nil
+			return resp, err
 		}
 	}
 	if s.decider != nil {
@@ -1721,12 +1769,15 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 	var matchedRuleID *string
 	var resolvedAIDecision *policy.Decision
 	var resolvedAIConfidence *float64
+	// The rules' audit events commit with the decision, so a replica whose
+	// decision loses the race (see recordDecision) leaves none of its own.
+	var audit []Event
 	if s.rules != nil {
 		approvalRules, err := s.rules.ListApprovalRules(ctx)
 		if err != nil {
 			slog.Error("failed to load approval rules; failing closed to human review",
 				"error", err, "source", source, "tool", req.Tool)
-			s.emitRuleEvaluatedEvent(ctx, inv, "", "", policy.Decision{Disposition: policy.DispositionHuman, Reason: "rule lookup failed: " + err.Error()}, nil)
+			audit = append(audit, ruleEvaluatedEvent(inv, "", "", policy.Decision{Disposition: policy.DispositionHuman, Reason: "rule lookup failed: " + err.Error()}, nil))
 		} else {
 			for _, rule := range matchRules(approvalRules, source, req.Tool, agentRec.ID) {
 				r := rule
@@ -1736,7 +1787,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 				}
 				if r.Action == RuleActionAIEvaluation {
 					d, conf := s.runAIEvaluation(ctx, &r, source, req.Tool, req.Input, agentID, agentRec, sessionContext, sessionContextMessages)
-					s.emitRuleEvaluatedEvent(ctx, inv, r.ID, r.Action, d, conf)
+					audit = append(audit, ruleEvaluatedEvent(inv, r.ID, r.Action, d, conf))
 					if d.Disposition == dispositionContinue {
 						matchedRuleID = nil
 						ruleDeferred = true
@@ -1749,14 +1800,14 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 					resolvedAIConfidence = conf
 					break
 				}
-				s.emitRuleEvaluatedEvent(ctx, inv, r.ID, r.Action, decisionForRuleAction(r.Action), nil)
+				audit = append(audit, ruleEvaluatedEvent(inv, r.ID, r.Action, decisionForRuleAction(r.Action), nil))
 				ruleAction = r.Action
 				break
 			}
 			// If every matching ai_evaluation rule deferred, the invocation falls
 			// back to human approval below; record that in the audit trail.
 			if ruleDeferred && ruleAction == "" {
-				s.emitAllDeferredFallback(ctx, inv)
+				audit = append(audit, ruleEvaluatedEvent(inv, "", RuleActionAIEvaluation, allDeferredDecision, nil))
 			}
 		}
 	}
@@ -1793,6 +1844,10 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		receivedPayload["disposition"] = ruleAction
 	}
 	received := Event{InvocationID: inv.InvocationID, EventType: "invocation.received", Payload: mustJSON(receivedPayload), CreatedAt: now}
+	// withAudit is the rules' audit events, the received event and evts.
+	withAudit := func(evts ...Event) []Event {
+		return append(append(append([]Event(nil), audit...), received), evts...)
+	}
 
 	switch ruleAction {
 	case RuleActionAutoDeny:
@@ -1801,16 +1856,13 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		inv.CompletedAt = &completed
 		inv.Approval = &Approval{Status: "auto_denied", Reason: stringPtr("matched approval rule (auto_deny)")}
 		inv.Error = deniedError("Tool call denied by an approval rule.", "matched approval rule (auto_deny)", nil)
-		s.commitOrLog(context.WithoutCancel(ctx), inv, s.invocations.UpdateResult, received, Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"reason": "matched approval rule (auto_deny)", "disposition": "never"}), CreatedAt: completed})
-		return s.toResponse(inv), nil
+		return s.recordDenial(ctx, inv, withAudit(Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"reason": "matched approval rule (auto_deny)", "disposition": "never"}), CreatedAt: completed})...), nil
 
 	case RuleActionAutoApprove:
 		inv.Status = StatusApproved
 		inv.Approval = &Approval{Status: "auto_approved", Reason: stringPtr("matched approval rule (auto_approve)")}
-		if err := s.commit(ctx, inv, s.invocations.UpdateResult, received, Event{InvocationID: inv.InvocationID, EventType: "invocation.approved", Payload: mustJSON(map[string]any{"auto_approved": true, "auto_reason": "matched approval rule (auto_approve)"}), CreatedAt: time.Now().UTC()}); err != nil {
-			return InvocationResponse{}, err
-		}
-		return s.toResponse(inv), nil
+		resp, _, err := s.recordDecision(ctx, inv, withAudit(Event{InvocationID: inv.InvocationID, EventType: "invocation.approved", Payload: mustJSON(map[string]any{"auto_approved": true, "auto_reason": "matched approval rule (auto_approve)"}), CreatedAt: time.Now().UTC()})...)
+		return resp, err
 
 	case RuleActionAIEvaluation:
 		// resolvedAIDecision is always populated when ruleAction == RuleActionAIEvaluation
@@ -1824,10 +1876,8 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		if aiDecision.Disposition == policy.DispositionAuto {
 			inv.Status = StatusApproved
 			inv.Approval = newApproval("auto_approved", aiDecision.Reason, resolvedAIConfidence)
-			if err := s.commit(ctx, inv, s.invocations.UpdateResult, received, Event{InvocationID: inv.InvocationID, EventType: "invocation.approved", Payload: mustJSON(map[string]any{"auto_approved": true, "auto_reason": aiDecision.Reason}), CreatedAt: time.Now().UTC()}); err != nil {
-				return InvocationResponse{}, err
-			}
-			return s.toResponse(inv), nil
+			resp, _, err := s.recordDecision(ctx, inv, withAudit(Event{InvocationID: inv.InvocationID, EventType: "invocation.approved", Payload: mustJSON(map[string]any{"auto_approved": true, "auto_reason": aiDecision.Reason}), CreatedAt: time.Now().UTC()})...)
+			return resp, err
 		}
 		if aiDecision.Disposition == policy.DispositionNever {
 			completed := time.Now().UTC()
@@ -1835,8 +1885,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 			inv.CompletedAt = &completed
 			inv.Approval = newApproval("auto_denied", aiDecision.Reason, resolvedAIConfidence)
 			inv.Error = deniedError("Tool call denied by AI evaluation.", aiDecision.Reason, nil)
-			s.commitOrLog(context.WithoutCancel(ctx), inv, s.invocations.UpdateResult, received, Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"reason": aiDecision.Reason, "disposition": "never"}), CreatedAt: completed})
-			return s.toResponse(inv), nil
+			return s.recordDenial(ctx, inv, withAudit(Event{InvocationID: inv.InvocationID, EventType: "invocation.denied", Payload: mustJSON(map[string]any{"reason": aiDecision.Reason, "disposition": "never"}), CreatedAt: completed})...), nil
 		}
 		// Tag AI-escalated invocations before falling through to human approval so the
 		// UI can distinguish them from direct human_approval rules.
@@ -1848,11 +1897,11 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 
 	// Default: human approval required.
 	inv.Status = StatusPendingApproval
-	if err := s.commit(ctx, inv, s.invocations.UpdateResult, received, Event{InvocationID: inv.InvocationID, EventType: "invocation.pending_approval", Payload: mustJSON(receivedPayload), CreatedAt: time.Now().UTC()}); err != nil {
-		return InvocationResponse{}, err
+	resp, won, err := s.recordDecision(ctx, inv, withAudit(Event{InvocationID: inv.InvocationID, EventType: "invocation.pending_approval", Payload: mustJSON(receivedPayload), CreatedAt: time.Now().UTC()})...)
+	if won {
+		s.summarizePendingApproval(ctx, inv.InvocationID)
 	}
-	s.summarizePendingApproval(ctx, inv.InvocationID)
-	return s.toResponse(inv), nil
+	return resp, err
 }
 
 // submitDecided finishes Submit when a decider is set: the decision is
@@ -1881,10 +1930,11 @@ func (s *Service) submitDecided(ctx context.Context, inv Invocation, source, age
 		inv.Status = StatusPendingApproval
 		evts = append(evts, Event{InvocationID: inv.InvocationID, EventType: "invocation.pending_approval", Payload: mustJSON(receivedPayload), CreatedAt: at})
 	}
-	if err := s.commit(ctx, inv, s.invocations.UpdateResult, evts...); err != nil {
-		return InvocationResponse{}, err
+	if d.Verdict == VerdictDeny {
+		return s.recordDenial(ctx, inv, evts...), nil
 	}
-	return s.toResponse(inv), nil
+	resp, _, err := s.recordDecision(ctx, inv, evts...)
+	return resp, err
 }
 
 func (s *Service) summarizePendingApproval(ctx context.Context, invocationID string) {
@@ -2249,10 +2299,13 @@ func decisionForRuleAction(action string) policy.Decision {
 // matching ai_evaluation rules all deferred, and returns the human-approval
 // decision that rule iteration falls back to.
 func (s *Service) emitAllDeferredFallback(ctx context.Context, inv Invocation) policy.Decision {
-	d := policy.Decision{Disposition: policy.DispositionHuman, Reason: "ai_evaluation: all matching rules deferred; falling back to human_approval"}
-	s.emitRuleEvaluatedEvent(ctx, inv, "", RuleActionAIEvaluation, d, nil)
-	return d
+	s.emitRuleEvaluatedEvent(ctx, inv, "", RuleActionAIEvaluation, allDeferredDecision, nil)
+	return allDeferredDecision
 }
+
+// allDeferredDecision is what rule iteration falls back to when every
+// matching ai_evaluation rule deferred.
+var allDeferredDecision = policy.Decision{Disposition: policy.DispositionHuman, Reason: "ai_evaluation: all matching rules deferred; falling back to human_approval"}
 
 // emitRuleEvaluatedEvent records one entry in the per-invocation audit trail for
 // each rule that was evaluated during rule-iteration. disposition is the raw
@@ -2260,6 +2313,11 @@ func (s *Service) emitAllDeferredFallback(ctx context.Context, inv Invocation) p
 // When skipped is true the rule returned "next_rule" / dispositionContinue and
 // rule iteration continued to the next candidate.
 func (s *Service) emitRuleEvaluatedEvent(ctx context.Context, inv Invocation, ruleID, action string, d policy.Decision, conf *float64) {
+	s.commitOrLog(ctx, inv, nil, ruleEvaluatedEvent(inv, ruleID, action, d, conf))
+}
+
+// ruleEvaluatedEvent is the audit event emitRuleEvaluatedEvent records.
+func ruleEvaluatedEvent(inv Invocation, ruleID, action string, d policy.Decision, conf *float64) Event {
 	payload := map[string]any{
 		"rule_id":     ruleID,
 		"action":      action,
@@ -2270,12 +2328,12 @@ func (s *Service) emitRuleEvaluatedEvent(ctx context.Context, inv Invocation, ru
 	if conf != nil {
 		payload["confidence"] = *conf
 	}
-	s.commitOrLog(ctx, inv, nil, Event{
+	return Event{
 		InvocationID: inv.InvocationID,
 		EventType:    "invocation.rule_evaluated",
 		Payload:      mustJSON(payload),
 		CreatedAt:    time.Now().UTC(),
-	})
+	}
 }
 
 func mustJSON(v any) []byte {
