@@ -64,6 +64,10 @@ func (s fakeServerStore) CreateServer(context.Context, Upstream) error {
 	return nil
 }
 
+func (s fakeServerStore) CreateServersIfEmpty(context.Context, []Upstream) error {
+	return nil
+}
+
 func TestEndpointSlug(t *testing.T) {
 	tests := map[string]string{
 		"Slack Local":    "slack-local",
