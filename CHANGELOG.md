@@ -22,6 +22,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decision they lead to (and reach an event hook with the decided
   invocation), not one by one before it.
 
+## [0.11.0] - 2026-11-22
+
+### Added
+
+- `POST /api/v1/external/invocations` accepts an optional `cwd`: the working
+  directory the harness ran the call in, as the harness reports it. Atryum
+  stores it on the invocation (migration 035, `invocations.cwd`) and hands it
+  to an embedding program's decider as `ToolCall.Cwd`, so a decider can
+  resolve a relative path in the call's input. It is not verified, and one
+  longer than 1024 bytes is dropped.
+- `atryum.WithAgentMiddleware` wraps every agent route's request (the routes
+  `WithRequestTenant` covers) once Atryum has authenticated it. The
+  middleware reads the tenant with `tenant.From` and may answer the request
+  itself, so an embedding program serving many tenants can cap each one's
+  requests in flight and keep one tenant's burst from holding every database
+  connection. A request whose credential doesn't verify never reaches it.
+
 ### Changed
 
 - With no admin-enabled `[[auth]]` block, the UI and the review/operator APIs
@@ -678,7 +695,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.0.3] - 2026-06-05
 
-[Unreleased]: https://github.com/validmind/atryum/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/validmind/atryum/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/validmind/atryum/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/validmind/atryum/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/validmind/atryum/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/validmind/atryum/compare/v0.7.0...v0.8.0

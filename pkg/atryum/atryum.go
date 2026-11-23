@@ -483,6 +483,9 @@ func runServer(args []string, o options) error {
 	if o.requestTenant != nil {
 		handler.SetRequestTenant(o.requestTenant)
 	}
+	if o.agentMiddleware != nil {
+		handler.SetAgentMiddleware(o.agentMiddleware)
+	}
 	if o.agentAPIKeysEnabled() {
 		handler.SetAgentKeyResolver(api.NewAgentKeyResolver(apiKeysRepo, agentsRepo))
 	} else {

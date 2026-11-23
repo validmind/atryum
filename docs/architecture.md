@@ -74,6 +74,12 @@ first process finishing late, record one decision and every caller gets that one
 The decider (or rules and AI evaluation) may be asked more than once for such a call.
 `Invoke` calls are not decided again.
 
+A `Submit` caller may also send `cwd`: the working directory the harness ran the call
+in (Claude Code's and Codex's hook input carry it under that name). Atryum doesn't
+verify it. It is stored on the invocation (`invocations.cwd`) and handed to an
+embedding program's decider as `ToolCall.Cwd`, so a relative path in the call's input
+can be resolved. One longer than 1024 bytes is dropped. A proxied call has none.
+
 ## Component boundaries
 
 | Package | Responsibility | Must not own |
