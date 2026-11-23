@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `POST /api/v1/external/invocations` accepts an optional `cwd`: the working
+  directory the harness ran the call in, as the harness reports it. Atryum
+  stores it on the invocation (migration 035, `invocations.cwd`) and hands it
+  to an embedding program's decider as `ToolCall.Cwd`, so a decider can
+  resolve a relative path in the call's input. It is not verified, and one
+  longer than 1024 bytes is dropped.
 - `atryum.WithAgentMiddleware` wraps every agent route's request (the routes
   `WithRequestTenant` covers) once Atryum has authenticated it. The
   middleware reads the tenant with `tenant.From` and may answer the request
