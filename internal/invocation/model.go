@@ -64,7 +64,10 @@ type Invocation struct {
 	ClientName    *string `json:"client_name,omitempty"`
 	ClientVersion *string `json:"client_version,omitempty"`
 	// Auth records how the caller authenticated; empty fields when unknown.
-	Auth        Auth       `json:"auth"`
+	Auth Auth `json:"auth"`
+	// Cwd is the working directory the harness reported for the call (see
+	// ExternalSubmitRequest.Cwd); empty when it reported none.
+	Cwd         string     `json:"cwd,omitempty"`
 	Input       []byte     `json:"-"`
 	Response    []byte     `json:"-"`
 	Error       []byte     `json:"-"`
@@ -139,6 +142,13 @@ type ExternalSubmitRequest struct {
 	// the same key rolls over to a fresh session. This is the preferred path —
 	// the harness never has to mint, persist, or echo an Atryum session id.
 	ClientSessionID string `json:"client_session_id,omitempty"`
+	// Cwd is the working directory the harness ran the call in, as the
+	// harness reported it (Claude Code's and Codex's hook input carry it as
+	// `cwd`). Atryum doesn't verify it: it is recorded with the invocation
+	// and handed to the decider (ToolCall.Cwd) so a relative path in the
+	// call's input can be resolved. Optional; one longer than 1024 bytes is
+	// dropped.
+	Cwd string `json:"cwd,omitempty"`
 	// Deprecated: prefer ClientSessionID (server-side get-or-create). SessionID
 	// is an Atryum-minted session identifier (from the deprecated POST
 	// /api/v1/external/sessions). When set, Atryum reconstructs the judge's

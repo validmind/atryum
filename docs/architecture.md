@@ -66,6 +66,12 @@ rejected with `409 Conflict` (`invocation.ErrIdempotencyConflict`) and reveals n
 about the earlier call, and another agent's key never finds that agent's invocation.
 Without verified identity, a key is only as private as the agent ID a caller claims.
 
+A `Submit` caller may also send `cwd`: the working directory the harness ran the call
+in (Claude Code's and Codex's hook input carry it under that name). Atryum doesn't
+verify it. It is stored on the invocation (`invocations.cwd`) and handed to an
+embedding program's decider as `ToolCall.Cwd`, so a relative path in the call's input
+can be resolved. One longer than 1024 bytes is dropped. A proxied call has none.
+
 ## Component boundaries
 
 | Package | Responsibility | Must not own |

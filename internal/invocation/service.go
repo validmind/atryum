@@ -984,6 +984,9 @@ const externalSessionTTL = 7 * 24 * time.Hour
 const (
 	maxExternalSessionAgentIDChars  = 512
 	maxExternalSessionMetadataChars = 256
+	// maxCwdChars bounds a harness-reported working directory (PATH_MAX on
+	// macOS).
+	maxCwdChars = 1024
 )
 
 // maxSessionContextInvocations bounds how many prior invocations we consider
@@ -1188,6 +1191,16 @@ func truncateContextJSON(text string) string {
 		return "null"
 	}
 	return truncateContextText(text, maxContextJSONChars)
+}
+
+// reportedCwd is a harness-reported working directory as Atryum keeps it:
+// trimmed, and dropped when longer than maxCwdChars, since a path cut short
+// names a different directory and none is better than a wrong one.
+func reportedCwd(cwd string) string {
+	if cwd = strings.TrimSpace(cwd); len(cwd) > maxCwdChars {
+		return ""
+	}
+	return cwd
 }
 
 func truncateContextText(text string, maxRunes int) string {
@@ -1610,6 +1623,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 		Input:       inputJSON,
 		SubmittedAt: now,
 		Auth:        authOf(ctx, agentID),
+		Cwd:         reportedCwd(req.Cwd),
 	}
 	// Prefer explicit ClientName/ClientVersion from the request; fall back
 	// to Source when the caller didn't tell us anything more specific.
@@ -1858,7 +1872,7 @@ func (s *Service) Submit(ctx context.Context, req ExternalSubmitRequest) (Invoca
 // submitDecided finishes Submit when a decider is set: the decision is
 // recorded with the received event and the resulting status in one write.
 func (s *Service) submitDecided(ctx context.Context, inv Invocation, source, agentID, sessionID string, now time.Time) (InvocationResponse, error) {
-	d := s.decide(ctx, ToolCall{InvocationID: inv.InvocationID, Path: "submit", AgentID: agentID, Server: source, Tool: inv.Tool, Arguments: inv.Input, SessionID: sessionID, Auth: inv.Auth})
+	d := s.decide(ctx, ToolCall{InvocationID: inv.InvocationID, Path: "submit", AgentID: agentID, Server: source, Tool: inv.Tool, Arguments: inv.Input, SessionID: sessionID, Cwd: inv.Cwd, Auth: inv.Auth})
 	receivedPayload := map[string]any{"tool": inv.Tool, "upstream": source, "request_id": inv.RequestID, "input": json.RawMessage(inv.Input), "arguments": json.RawMessage(inv.Input), "external": true, "decision": d}
 	if agentID != "" {
 		receivedPayload["agent_id"] = agentID

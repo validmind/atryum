@@ -599,3 +599,36 @@ func TestHeldCallPollPaceFollowsWaker(t *testing.T) {
 		}
 	}
 }
+
+// The working directory a harness reports with a submit reaches the decider
+// (ToolCall.Cwd) and the stored row, trimmed; a submit without one, or with
+// one longer than 1024 bytes, leaves both empty.
+func TestSubmittedCwdReachesDeciderAndRow(t *testing.T) {
+	upstream, _ := fakeMCP(t)
+	db := newSQLiteTestDB(t)
+	svc := newHookedService(t, db, upstream.URL)
+	var decided string
+	svc.SetDecider(func(_ context.Context, c invocation.ToolCall) (invocation.Decision, error) {
+		decided = c.Cwd
+		return invocation.Decision{Verdict: invocation.VerdictAllow}, nil
+	})
+	repo := store.NewInvocationRepo(db)
+	for _, tc := range []struct{ sent, want string }{
+		{" /Users/dev/code/app ", "/Users/dev/code/app"},
+		{"", ""},
+		{"/" + strings.Repeat("a", 1024), ""},
+	} {
+		decided = "unset"
+		resp, err := svc.Submit(context.Background(), invocation.ExternalSubmitRequest{Source: "harness", Tool: "Bash", Input: map[string]any{}, Cwd: tc.sent})
+		if err != nil {
+			t.Fatal(err)
+		}
+		row, err := repo.Get(context.Background(), resp.InvocationID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if decided != tc.want || row.Cwd != tc.want {
+			t.Fatalf("sent %.30q: decider %.30q, row %.30q; want %.30q", tc.sent, decided, row.Cwd, tc.want)
+		}
+	}
+}
