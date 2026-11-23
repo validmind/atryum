@@ -616,6 +616,7 @@ func TestSubmittedCwdReachesDeciderAndRow(t *testing.T) {
 	for _, tc := range []struct{ sent, want string }{
 		{" /Users/dev/code/app ", "/Users/dev/code/app"},
 		{"", ""},
+		{"/" + strings.Repeat("a", 1023), "/" + strings.Repeat("a", 1023)},
 		{"/" + strings.Repeat("a", 1024), ""},
 	} {
 		decided = "unset"

@@ -984,9 +984,9 @@ const externalSessionTTL = 7 * 24 * time.Hour
 const (
 	maxExternalSessionAgentIDChars  = 512
 	maxExternalSessionMetadataChars = 256
-	// maxCwdChars bounds a harness-reported working directory (PATH_MAX on
+	// maxCwdBytes bounds a harness-reported working directory (PATH_MAX on
 	// macOS).
-	maxCwdChars = 1024
+	maxCwdBytes = 1024
 )
 
 // maxSessionContextInvocations bounds how many prior invocations we consider
@@ -1194,10 +1194,10 @@ func truncateContextJSON(text string) string {
 }
 
 // reportedCwd is a harness-reported working directory as Atryum keeps it:
-// trimmed, and dropped when longer than maxCwdChars, since a path cut short
+// trimmed, and dropped when longer than maxCwdBytes, since a path cut short
 // names a different directory and none is better than a wrong one.
 func reportedCwd(cwd string) string {
-	if cwd = strings.TrimSpace(cwd); len(cwd) > maxCwdChars {
+	if cwd = strings.TrimSpace(cwd); len(cwd) > maxCwdBytes {
 		return ""
 	}
 	return cwd
