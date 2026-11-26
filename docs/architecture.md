@@ -71,8 +71,13 @@ commits (the process deciding it died), a retry with its key, 5 seconds or more 
 the call was saved, decides it again. The decision is recorded only while the call is
 still `received`, in the same transaction as its events, so racing retries, or the
 first process finishing late, record one decision and every caller gets that one.
-The decider (or rules and AI evaluation) may be asked more than once for such a call.
-`Invoke` calls are not decided again.
+The decider (or rules and AI evaluation) may be asked more than once for such a call:
+once 5 seconds have passed, every retry that arrives while a decision is still in
+flight asks it again, though only one decision is recorded. `Invoke` calls are not
+decided again. A retry's write waits for the dead process's open transaction on the
+call until Postgres ends that transaction, so deployments running several replicas
+on Postgres should set `idle_in_transaction_session_timeout` (or TCP keepalives) to
+bound that wait.
 
 A `Submit` caller may also send `cwd`: the working directory the harness ran the call
 in (Claude Code's and Codex's hook input carry it under that name). Atryum doesn't

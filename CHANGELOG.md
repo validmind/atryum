@@ -16,8 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   racing on several replicas, or the first replica finishing late, record one
   decision and one set of events, and each caller gets that decision. A
   decider may be asked more than once for such a call; side effects it has
-  outside Atryum's transaction can repeat. `Invoke` calls are not decided
-  again.
+  outside Atryum's transaction can repeat: past the 5 seconds, every retry
+  that arrives while a decision is in flight asks the decider again. `Invoke`
+  calls are not decided again. With replicas on Postgres, set
+  `idle_in_transaction_session_timeout` (or TCP keepalives) so a retry's write
+  doesn't wait indefinitely on the dead replica's open transaction.
+- With a decider, a denial is now recorded past request cancellation (for up
+  to 30 seconds) and returned even when its write fails, as denials from rules
+  already were. Before, a cancelled request left it unrecorded and a failed
+  write returned an error.
 - On the submit path, `invocation.rule_evaluated` events now commit with the
   decision they lead to (and reach an event hook with the decided
   invocation), not one by one before it.

@@ -209,10 +209,13 @@ func (s *Service) updateFrom(from Status) func(context.Context, Invocation) erro
 // A call is saved as received before it is decided, and its decision
 // commits moments later. Deciding again sooner would only duplicate a
 // decision that is probably still in flight on a live replica (an LLM judge
-// can take seconds), and a client that retries quickly would multiply the
-// decider's work. Correctness does not rest on it: recordDecision records
-// one decision whoever finishes first. SubmittedAt is the saving replica's
-// clock, so skew between replicas shifts the wait by as much.
+// can take seconds). The wait counts from when the call was saved, not from
+// the last attempt, so it stops retry storms only within the first 5
+// seconds: past it, each retry that arrives while a decision is still in
+// flight asks the decider again. Correctness does not rest on it:
+// recordDecision records one decision whoever finishes first. SubmittedAt is
+// the saving replica's clock, so skew between replicas shifts the wait by as
+// much.
 const defaultRedecideAfter = 5 * time.Second
 
 // stranded reports whether inv, the call a retry with its idempotency key
@@ -243,11 +246,19 @@ func (s *Service) recordDecision(ctx context.Context, inv Invocation, evts ...Ev
 	return s.toResponse(inv), true, nil
 }
 
+// denialWriteTimeout bounds how long recordDenial waits to write a denial
+// once the request is gone, for example on a row lock held by a dead
+// replica's open transaction, so a denial cannot hold a pooled connection
+// indefinitely.
+const denialWriteTimeout = 30 * time.Second
+
 // recordDenial is recordDecision for a denial, which outlives the request's
-// cancellation and, like commitOrLog, is returned even when it cannot be
-// recorded: the call stays stopped.
+// cancellation (up to denialWriteTimeout) and, like commitOrLog, is returned
+// even when it cannot be recorded: the call stays stopped.
 func (s *Service) recordDenial(ctx context.Context, inv Invocation, evts ...Event) InvocationResponse {
-	resp, _, err := s.recordDecision(context.WithoutCancel(ctx), inv, evts...)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), denialWriteTimeout)
+	defer cancel()
+	resp, _, err := s.recordDecision(ctx, inv, evts...)
 	if err != nil {
 		slog.Error("invocation change NOT recorded", "invocation_id", inv.InvocationID, "status", inv.Status, "error", err)
 		return s.toResponse(inv)
