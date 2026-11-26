@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - On the submit path, `invocation.rule_evaluated` events now commit with the
   decision they lead to (and reach an event hook with the decided
   invocation), not one by one before it.
+- Replicas starting together on an empty Postgres database no longer fail on
+  `duplicate key value violates unique constraint "mcp_servers_pkey"`: saving
+  the configured `[[upstreams]]` runs in one read committed transaction under
+  a per-tenant advisory lock, so one replica saves them and the others find
+  them saved, whatever the database's default isolation level.
 
 ## [0.11.0] - 2026-11-22
 
