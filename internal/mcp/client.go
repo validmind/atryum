@@ -216,6 +216,9 @@ type ServerStore interface {
 	ListServers(ctx context.Context, filter ServerFilter) ([]Upstream, int, error)
 	CountServers(ctx context.Context) (int, error)
 	CreateServer(ctx context.Context, upstream Upstream) error
+	// CreateServersIfEmpty creates upstreams when the context's tenant has
+	// no servers, as one step: replicas calling it together create them once.
+	CreateServersIfEmpty(ctx context.Context, upstreams []Upstream) error
 }
 
 type ServerFilter struct {
@@ -482,23 +485,19 @@ func (r *Resolver) configured(ctx context.Context) map[string]Upstream {
 	return r.bootstrap
 }
 
+// BootstrapIfEmpty saves the configured [[upstreams]] when the database has
+// no servers. Replicas starting together on an empty database can all call
+// it: one saves them, the others find them saved.
 func (r *Resolver) BootstrapIfEmpty(ctx context.Context) error {
 	if r.store == nil {
 		return nil
 	}
-	count, err := r.store.CountServers(ctx)
-	if err != nil {
-		return err
+	configured := r.configured(ctx)
+	upstreams := make([]Upstream, 0, len(configured))
+	for _, upstream := range configured {
+		upstreams = append(upstreams, upstream)
 	}
-	if count > 0 {
-		return nil
-	}
-	for _, upstream := range r.configured(ctx) {
-		if err := r.store.CreateServer(ctx, upstream); err != nil {
-			return err
-		}
-	}
-	return nil
+	return r.store.CreateServersIfEmpty(ctx, upstreams)
 }
 
 func (c *Client) Invoke(ctx context.Context, upstream Upstream, tool string, input map[string]any, requestID *string) (InvokeResult, error) {

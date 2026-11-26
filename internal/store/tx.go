@@ -12,10 +12,16 @@ type txKey struct{}
 // already carries a transaction (see WithTx), fn joins it and the caller
 // commits or rolls back.
 func InTx(ctx context.Context, db *sql.DB, fn func(ctx context.Context, tx *sql.Tx) error) error {
+	return InTxOpts(ctx, db, nil, fn)
+}
+
+// InTxOpts is InTx, beginning a new transaction with opts (nil for the
+// server's defaults). A transaction already in ctx is joined as it is.
+func InTxOpts(ctx context.Context, db *sql.DB, opts *sql.TxOptions, fn func(ctx context.Context, tx *sql.Tx) error) error {
 	if tx, ok := ctx.Value(txKey{}).(*sql.Tx); ok {
 		return fn(ctx, tx)
 	}
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := db.BeginTx(ctx, opts)
 	if err != nil {
 		return err
 	}

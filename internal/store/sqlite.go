@@ -13,6 +13,7 @@ import (
 
 	"github.com/validmind/atryum/internal/invocation"
 	"github.com/validmind/atryum/internal/mcp"
+	"github.com/validmind/atryum/pkg/tenant"
 )
 
 type InvocationRepo struct {
@@ -25,8 +26,9 @@ type EventRepo struct {
 	sb sq.StatementBuilderType
 }
 type ServerRepo struct {
-	db *sql.DB
-	sb sq.StatementBuilderType
+	db       *sql.DB
+	sb       sq.StatementBuilderType
+	postgres bool // CreateServersIfEmpty takes an advisory lock
 }
 type OAuthRepo struct {
 	db *sql.DB
@@ -69,7 +71,7 @@ func NewEventRepoWithDialect(db *sql.DB, dialect Dialect) *EventRepo {
 	return &EventRepo{db: db, sb: statementBuilderForDialect(dialect)}
 }
 func NewServerRepoWithDialect(db *sql.DB, dialect Dialect) *ServerRepo {
-	return &ServerRepo{db: db, sb: statementBuilderForDialect(dialect)}
+	return &ServerRepo{db: db, sb: statementBuilderForDialect(dialect), postgres: dialect == DialectPostgres}
 }
 func NewOAuthRepoWithDialect(db *sql.DB, dialect Dialect) *OAuthRepo {
 	return &OAuthRepo{db: db, sb: statementBuilderForDialect(dialect)}
@@ -267,10 +269,49 @@ func (r *ServerRepo) CountServers(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	var total int
-	if err := r.db.QueryRowContext(ctx, query, args...).Scan(&total); err != nil {
+	if err := conn(ctx, r.db).QueryRowContext(ctx, query, args...).Scan(&total); err != nil {
 		return 0, err
 	}
 	return total, nil
+}
+
+// CreateServersIfEmpty creates upstreams in one transaction when the
+// context's tenant has no servers. On Postgres the transaction first takes an
+// advisory lock for the tenant, held until it ends, so callers on several
+// replicas take turns: the first creates the servers, the rest count them and
+// create none.
+//
+// Taking turns relies on READ COMMITTED: the count must see rows committed
+// while the transaction waited for the lock. Under REPEATABLE READ or
+// SERIALIZABLE the snapshot is taken by the lock statement, before the wait,
+// so a waiting replica would count 0 and fail on the primary key. The
+// transaction is therefore begun at READ COMMITTED whatever the database's
+// default_transaction_isolation is.
+func (r *ServerRepo) CreateServersIfEmpty(ctx context.Context, upstreams []mcp.Upstream) error {
+	if len(upstreams) == 0 {
+		return nil
+	}
+	var opts *sql.TxOptions
+	if r.postgres {
+		opts = &sql.TxOptions{Isolation: sql.LevelReadCommitted}
+	}
+	return InTxOpts(ctx, r.db, opts, func(ctx context.Context, tx *sql.Tx) error {
+		if r.postgres {
+			if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "atryum.bootstrap_servers:"+tenant.From(ctx)); err != nil {
+				return err
+			}
+		}
+		count, err := r.CountServers(ctx)
+		if err != nil || count > 0 {
+			return err
+		}
+		for _, upstream := range upstreams {
+			if err := r.CreateServer(ctx, upstream); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (r *ServerRepo) CreateServer(ctx context.Context, upstream mcp.Upstream) error {
@@ -291,7 +332,7 @@ func (r *ServerRepo) CreateServer(ctx context.Context, upstream mcp.Upstream) er
 	if err != nil {
 		return err
 	}
-	_, err = r.db.ExecContext(ctx, query, args...)
+	_, err = conn(ctx, r.db).ExecContext(ctx, query, args...)
 	return err
 }
 
