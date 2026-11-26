@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Replicas starting together on an empty Postgres database no longer fail on
+  `duplicate key value violates unique constraint "mcp_servers_pkey"`: saving
+  the configured `[[upstreams]]` runs in one read committed transaction under
+  a per-tenant advisory lock, so one replica saves them and the others find
+  them saved, whatever the database's default isolation level.
+
 ## [0.11.0] - 2026-11-22
 
 ### Added
@@ -58,13 +66,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   enter the value again or remove it. Stored OAuth tokens are dropped when the
   host changes. A credential stored under one mode (HTTP or stdio) is not
   reused after the server switches mode.
-
-### Fixed
-
-- Replicas starting together on an empty Postgres database no longer fail on
-  `duplicate key value violates unique constraint "mcp_servers_pkey"`: saving
-  the configured `[[upstreams]]` runs in one transaction under a per-tenant
-  advisory lock, so one replica saves them and the others find them saved.
 
 ## [0.10.0] - 2026-11-12
 

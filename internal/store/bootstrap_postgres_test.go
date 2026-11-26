@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -16,7 +17,7 @@ import (
 
 // Replicas starting together on an empty database each bootstrap the
 // configured [[upstreams]]: one creates them, the rest find them there and
-// start without an error.
+// start without an error, whatever the database's default isolation level.
 func TestPostgresBootstrapReplicasStartTogether(t *testing.T) {
 	if os.Getenv("ATRYUM_POSTGRES_TESTS") != "1" {
 		t.Skip("set ATRYUM_POSTGRES_TESTS=1 to run against local PostgreSQL")
@@ -25,6 +26,30 @@ func TestPostgresBootstrapReplicasStartTogether(t *testing.T) {
 	if dsn == "" {
 		dsn = localPostgresTestDSN
 	}
+	for _, isolation := range []string{"", "repeatable read", "serializable"} {
+		name := isolation
+		if name == "" {
+			name = "server default"
+		}
+		t.Run(name, func(t *testing.T) {
+			dsn := dsn
+			if isolation != "" {
+				dsn = withDSNParam(dsn, "default_transaction_isolation", url.QueryEscape(isolation))
+			}
+			testBootstrapReplicasStartTogether(t, dsn)
+		})
+	}
+}
+
+func withDSNParam(dsn, key, value string) string {
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	return dsn + sep + key + "=" + value
+}
+
+func testBootstrapReplicasStartTogether(t *testing.T, dsn string) {
 	admin, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatal(err)
@@ -35,11 +60,7 @@ func TestPostgresBootstrapReplicasStartTogether(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { admin.Exec(`DROP SCHEMA IF EXISTS ` + schema + ` CASCADE`) })
-	sep := "?"
-	if strings.Contains(dsn, "?") {
-		sep = "&"
-	}
-	dsn += sep + "search_path=" + schema
+	dsn = withDSNParam(dsn, "search_path", schema)
 
 	open := func() *sql.DB {
 		db, err := OpenPostgres(dsn)

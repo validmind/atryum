@@ -280,11 +280,22 @@ func (r *ServerRepo) CountServers(ctx context.Context) (int, error) {
 // advisory lock for the tenant, held until it ends, so callers on several
 // replicas take turns: the first creates the servers, the rest count them and
 // create none.
+//
+// Taking turns relies on READ COMMITTED: the count must see rows committed
+// while the transaction waited for the lock. Under REPEATABLE READ or
+// SERIALIZABLE the snapshot is taken by the lock statement, before the wait,
+// so a waiting replica would count 0 and fail on the primary key. The
+// transaction is therefore begun at READ COMMITTED whatever the database's
+// default_transaction_isolation is.
 func (r *ServerRepo) CreateServersIfEmpty(ctx context.Context, upstreams []mcp.Upstream) error {
 	if len(upstreams) == 0 {
 		return nil
 	}
-	return InTx(ctx, r.db, func(ctx context.Context, tx *sql.Tx) error {
+	var opts *sql.TxOptions
+	if r.postgres {
+		opts = &sql.TxOptions{Isolation: sql.LevelReadCommitted}
+	}
+	return InTxOpts(ctx, r.db, opts, func(ctx context.Context, tx *sql.Tx) error {
 		if r.postgres {
 			if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "atryum.bootstrap_servers:"+tenant.From(ctx)); err != nil {
 				return err
