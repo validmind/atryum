@@ -39,6 +39,9 @@ type ToolCall struct {
 	Tool         string          `json:"tool"`
 	Arguments    json.RawMessage `json:"arguments"`
 	SessionID    string          `json:"session_id,omitempty"`
+	// Cwd is the working directory the harness reported for a submitted
+	// call, unverified; empty when it reported none, and for a proxied call.
+	Cwd string `json:"cwd,omitempty"`
 	// Auth is how the caller proved AgentID.
 	Auth Auth `json:"auth"`
 }

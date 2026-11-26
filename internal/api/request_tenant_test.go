@@ -115,3 +115,66 @@ func TestRequestTenantRefusalKeepsTheChallenge(t *testing.T) {
 		t.Fatalf("%d, WWW-Authenticate %q; want 401 with the resource metadata", w.Code, c)
 	}
 }
+
+// SetAgentMiddleware's wrap runs once the request is authenticated: it sees
+// the tenant and the agent, can refuse a tenant's request, and never sees a
+// request whose credential doesn't verify, whatever tenant it was placed in.
+func TestAgentMiddlewareRunsAfterAuth(t *testing.T) {
+	looked := 0
+	keys := countingKeys{keyTenants{"atr_acme": "acme", "atr_bank": "bank"}, &looked}
+	h := &Handler{keyResolver: keys}
+	h.SetRequestTenant(func(r *http.Request) (string, error) {
+		if r.Header.Get("Authorization") == "Bearer atr_acme" {
+			return "acme", nil
+		}
+		return "bank", nil // atr_bank, and atr_forged naming bank
+	})
+	var seen []string
+	h.SetAgentMiddleware(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			seen = append(seen, tenant.From(r.Context())+"/"+auth.AgentIDFromContext(r.Context()))
+			if tenant.From(r.Context()) == "bank" {
+				http.Error(w, "busy", http.StatusTooManyRequests)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	})
+	var ran string
+	route := h.agentRuntimeHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ran = auth.AgentIDFromContext(r.Context())
+	}))
+	for _, c := range []struct {
+		bearer, ran string
+		code        int
+	}{
+		{"atr_acme", "agent-acme", http.StatusOK},
+		{"atr_bank", "", http.StatusTooManyRequests},
+		{"atr_forged", "", http.StatusUnauthorized},
+	} {
+		ran = ""
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest("POST", "/api/v1/external/invocations", nil)
+		r.Header.Set("Authorization", "Bearer "+c.bearer)
+		route.ServeHTTP(w, r)
+		if w.Code != c.code || ran != c.ran {
+			t.Errorf("%s: %d, ran %q; want %d, %q", c.bearer, w.Code, ran, c.code, c.ran)
+		}
+	}
+	if got := strings.Join(seen, ","); got != "acme/agent-acme,bank/agent-bank" {
+		t.Errorf("middleware saw %q, want acme/agent-acme,bank/agent-bank", got)
+	}
+	if looked != 3 {
+		t.Errorf("%d key lookups, want 3", looked)
+	}
+}
+
+type countingKeys struct {
+	keyTenants
+	n *int
+}
+
+func (k countingKeys) ResolveAgentKey(ctx context.Context, token string) (auth.Identity, error) {
+	*k.n++
+	return k.keyTenants.ResolveAgentKey(ctx, token)
+}
