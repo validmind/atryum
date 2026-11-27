@@ -72,11 +72,13 @@ while IFS= read -r line; do
     continue
   fi
   if [[ "$line" == *'"method":"initialize"'* ]]; then
-    printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"fake-shortcut","version":"0.1.0"},"capabilities":{}}}'
+    id=$(sed -E 's/.*"id":([0-9]+).*/\1/' <<<"$line")
+    printf '{"jsonrpc":"2.0","id":%s,"result":{"serverInfo":{"name":"fake-shortcut","version":"0.1.0"},"capabilities":{}}}\n' "$id"
   elif [[ "$line" == *'"method":"notifications/initialized"'* ]]; then
     continue
   elif [[ "$line" == *'"method":"tools/call"'* ]]; then
-    printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"ok"}]}}'
+    id=$(sed -E 's/.*"id":([0-9]+).*/\1/' <<<"$line")
+    printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"ok"}]}}\n' "$id"
     exit 0
   fi
 done

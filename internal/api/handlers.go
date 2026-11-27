@@ -2023,7 +2023,16 @@ func (h *Handler) handleMCPProxy(w http.ResponseWriter, r *http.Request, server 
 			toolReq.ClientName = snap.Name
 			toolReq.ClientVersion = snap.Version
 		}
-		resp, err := h.svc.Invoke(r.Context(), toolReq)
+		// An upstream that streams its answer is relayed live: w switches to
+		// text/event-stream at the first intermediate message, and the
+		// response written below becomes the stream's last event.
+		w, stream, sink := newToolCallStream(w, req.Params)
+		defer stream.finish()
+		invokeCtx := r.Context()
+		if sink != nil {
+			invokeCtx = mcp.WithStreamSink(invokeCtx, sink)
+		}
+		resp, err := h.svc.Invoke(invokeCtx, toolReq)
 		if err != nil {
 			h.writeRPCError(w, req.ID, -32000, err.Error())
 			return

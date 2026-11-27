@@ -1445,7 +1445,24 @@ func (s *Service) finishExecution(ctx context.Context, inv Invocation, upstream 
 			CreatedAt: completed,
 		}
 	}
-	s.commitOrLog(recordCtx, inv, s.invocations.UpdateResult, evt)
+	evts := []Event{evt}
+	if len(result.Stream) > 0 || result.StreamDropped > 0 {
+		// The intermediate messages the upstream sent before its response,
+		// with what correlates them: the downstream request ID (also sent
+		// upstream as _meta.atryumRequestId), the upstream's request and
+		// session IDs, and this invocation (the event's own key).
+		streamed := Event{
+			InvocationID: inv.InvocationID, EventType: "invocation.streamed",
+			Payload: mustJSON(map[string]any{
+				"request_id": req.RequestID, "upstream": upstream.Name,
+				"upstream_request_id": result.UpstreamRequestID, "upstream_session_id": result.UpstreamSessionID,
+				"events": result.Stream, "dropped": result.StreamDropped,
+			}),
+			CreatedAt: completed,
+		}
+		evts = []Event{streamed, evt}
+	}
+	s.commitOrLog(recordCtx, inv, s.invocations.UpdateResult, evts...)
 	if inv.Status == StatusSucceeded {
 		s.completePlanAfterSuccessfulFinalAction(recordCtx, inv)
 	}
